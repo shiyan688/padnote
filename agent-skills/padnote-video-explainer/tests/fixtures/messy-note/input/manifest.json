@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "files": [
+    {"path": "input/assets/source-snippet.svg", "media_type": "image/svg+xml", "size_bytes": 613, "sha256": "b9c28d1611226713ab0b793b658e3c24f5cc3af847c50f852cb3277504665bd7"},
+    {"path": "input/content.md", "media_type": "text/markdown", "size_bytes": 366, "sha256": "5a50d5ebea29664f4341069132a6dff6c762378f832c346de30bdcebf01dc062"}
+  ]
+}

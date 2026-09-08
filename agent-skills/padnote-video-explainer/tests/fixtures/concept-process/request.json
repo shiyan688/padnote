@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "task_type": "video.explain.v1",
+  "task_id": "task-fixture-process",
+  "source": {"note_id": "note-process", "note_revision": 2, "title": "从观察到结论", "language": "zh-CN", "entrypoint": "input/content.md", "bundle_sha256": "6a854949548930256fcabfab1669fbddc04b90461610924ee5c882df319c355e"},
+  "brief": {"audience": "初中科学课程学习者", "learning_goal": "理解证据驱动的循环探究过程", "prerequisites": [], "target_duration_sec": 36, "aspect_ratio": "9:16", "style_preset": "clean-academic"},
+  "research": {"external_research": false},
+  "review": {"storyboard_required": true},
+  "voice": {"profile": "default-zh", "speed": 1.0}
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "source": {"bundle_sha256": "c901f60b557c6f9282a0663e1495a82649f0a0fbc4dc49dbef4d1abd95c85803", "note_id": "note-photosynthesis", "note_revision": 3},
+  "episode": {"title": "读懂一页光合作用速记", "audience": "刚开始学生物的中学生", "learning_goal": "区分光合作用的能量来源、物质来源和不确定陈述", "language": "zh-CN", "target_duration_sec": 40},
+  "claims": [
+    {"id": "claim-inputs", "text": "笔记把光、水和二氧化碳列为光合作用输入", "source_refs": ["note:首行反应式"], "verification": "user-provided", "confidence": "medium"},
+    {"id": "claim-stages", "text": "笔记将过程分为先提供能量载体、后固定二氧化碳", "source_refs": ["note:然后"], "verification": "user-provided", "confidence": "medium"},
+    {"id": "claim-breathing", "text": "植物只在白天呼吸", "source_refs": [], "verification": "uncertain", "confidence": "low"}
+  ],
+  "scenes": [
+    {"id": "scene-01", "learning_objective": "从杂乱速记中提取两个主问题", "claim_ids": ["claim-inputs", "claim-stages"], "narration": "这页速记层次不齐，我们先只抓两个问题：能量从哪里来，物质从哪里来。", "screen_text": ["能量来源", "物质来源"], "visual": {"type": "title", "data": {"title": "整理光合作用速记", "subtitle": "先分清能量与物质"}}, "animation_intent": {"kind": "split_focus", "explanation": "把杂乱信息压缩成两个互不混淆的观察维度"}, "estimated_duration_sec": 8},
+    {"id": "scene-02", "learning_objective": "识别原始速记中的关键信息与疑问", "claim_ids": ["claim-inputs", "claim-breathing"], "narration": "原笔记列出了反应物，也留下了一句带问号的判断。问号意味着它还不能当成已确认事实。", "screen_text": ["反应物线索", "待核实陈述"], "visual": {"type": "annotated_source", "data": {"asset_path": "input/assets/source-snippet.svg", "annotations": ["反应式提供物质线索", "带问号的句子保持 uncertain"]}}, "animation_intent": {"kind": "reveal_annotations", "explanation": "逐条标出原内容与不确定内容，训练来源意识"}, "estimated_duration_sec": 11},
+    {"id": "scene-03", "learning_objective": "区分光合作用中的能量线索与物质线索", "claim_ids": ["claim-inputs", "claim-stages"], "narration": "叶绿素吸收光，属于能量线索；水和二氧化碳进入反应，则属于物质线索。", "screen_text": ["光：能量线索", "水、二氧化碳：物质线索"], "visual": {"type": "comparison", "data": {"left": {"title": "能量", "items": ["来自光", "由叶绿素吸收"]}, "right": {"title": "物质", "items": ["水", "二氧化碳"]}}}, "animation_intent": {"kind": "compare_columns", "explanation": "用并列栏阻止能量与物质来源在记忆中混为一类"}, "estimated_duration_sec": 11},
+    {"id": "scene-04", "learning_objective": "保留不确定陈述而不把它升级为事实", "claim_ids": ["claim-breathing"], "narration": "最后，把植物是否只在白天呼吸保留为待核实问题。当前笔记没有给出证据，我们不擅自补答案。", "screen_text": ["待核实：植物只在白天呼吸？"], "visual": {"type": "process", "data": {"steps": ["发现问号", "标记 uncertain", "等待可靠来源核实"]}}, "animation_intent": {"kind": "advance_steps", "explanation": "示范如何处理低置信度课堂笔记而不制造新事实"}, "estimated_duration_sec": 10}
+  ],
+  "render_profile": {"aspect_ratio": "9:16", "width": 1080, "height": 1920, "fps": 30}
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "source": {"bundle_sha256": "d32c6fc92224eeb81ca2763c695173b95aa6860601f1d193a7d4610fd2376fc3", "note_id": "note-l1", "note_revision": 1},
+  "episode": {"title": "理解 L1 收敛", "audience": "学习实分析的本科生", "learning_goal": "理解 L1 收敛的定义和整体误差面积直觉", "language": "zh-CN", "target_duration_sec": 42},
+  "claims": [
+    {"id": "claim-definition", "text": "L1 收敛要求函数差的 L1 范数趋近于零", "source_refs": ["note:定义"], "verification": "user-provided", "confidence": "high"},
+    {"id": "claim-area", "text": "L1 范数可理解为绝对误差在整体上的积分", "source_refs": ["note:直觉"], "verification": "user-provided", "confidence": "high"},
+    {"id": "claim-pointwise", "text": "L1 收敛不直接声称每个点都收敛", "source_refs": ["note:一个提醒"], "verification": "user-provided", "confidence": "high"}
+  ],
+  "scenes": [
+    {"id": "scene-01", "learning_objective": "建立本节课的核心问题", "claim_ids": ["claim-definition"], "narration": "这一分钟，我们只回答一个问题：L1 收敛到底在衡量什么？", "screen_text": ["L1 收敛在衡量什么？"], "visual": {"type": "title", "data": {"title": "理解 L1 收敛", "subtitle": "从范数定义到误差面积"}}, "animation_intent": {"kind": "focus_title", "explanation": "先锁定唯一问题，减少进入公式前的认知负担"}, "estimated_duration_sec": 8},
+    {"id": "scene-02", "learning_objective": "把 L1 范数展开为积分", "claim_ids": ["claim-definition", "claim-area"], "narration": "先写出函数差的 L1 范数，再把范数展开成绝对值的积分。", "screen_text": ["范数 → 积分"], "visual": {"type": "formula_steps", "data": {"steps": ["\\|f_n-f\\|_1\\to0", "\\|f_n-f\\|_1=\\int_{\\mathbb R}|f_n(x)-f(x)|\\,dx", "\\int_{\\mathbb R}|f_n(x)-f(x)|\\,dx\\to0"]}}, "animation_intent": {"kind": "show_sequence", "explanation": "逐步展开符号，让学习者看到范数与积分是同一个量的两种写法"}, "estimated_duration_sec": 13},
+    {"id": "scene-03", "learning_objective": "理解绝对值与积分各自的作用", "claim_ids": ["claim-area"], "narration": "绝对值让正负误差不能互相抵消，积分则把整条曲线之间的误差面积加总。", "screen_text": ["绝对值：不抵消", "积分：加总整体误差"], "visual": {"type": "comparison", "data": {"left": {"title": "绝对值", "items": ["每处误差都按大小计入", "正负不能抵消"]}, "right": {"title": "积分", "items": ["沿整个定义域累积", "得到总误差面积"]}}}, "animation_intent": {"kind": "compare_columns", "explanation": "并列区分两个运算的教学角色，避免把它们混作一步"}, "estimated_duration_sec": 11},
+    {"id": "scene-04", "learning_objective": "区分整体误差与逐点收敛", "claim_ids": ["claim-pointwise"], "narration": "所以结论针对的是整体面积。它本身并没有保证每一个固定点都逐点靠近。", "screen_text": ["整体误差趋零 ≠ 逐点声明"], "visual": {"type": "formula_steps", "data": {"steps": ["\\int_{\\mathbb R}|f_n-f|\\,dx\\to0", "\\not\\Rightarrow\\; f_n(x)\\to f(x)\\text{ for every }x"]}}, "animation_intent": {"kind": "contrast_reveal", "explanation": "先重现已知结论，再显示不蕴含关系以阻止常见误解"}, "estimated_duration_sec": 10}
+  ],
+  "render_profile": {"aspect_ratio": "9:16", "width": 1080, "height": 1920, "fps": 30}
+}

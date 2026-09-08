@@ -1,0 +1,41 @@
+{
+  "name": "padnote-video-explainer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local worker and Agent Skill for PadNote video.explain.v1 tasks",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {"node": ">=22.22.0"},
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "validate:request": "node --import tsx scripts/validate-request.ts",
+    "validate:ir": "node --import tsx scripts/validate-ir.ts",
+    "validate:review": "node --import tsx scripts/validate-review.ts",
+    "storyboard": "node --import tsx scripts/build-storyboard.ts",
+    "audio:index": "node --import tsx scripts/index-agent-audio.ts",
+    "audio:prepare": "node --import tsx scripts/prepare-audio.ts",
+    "audio:fixture": "node --import tsx scripts/generate-fixture-audio.ts",
+    "validate:audio": "node --import tsx scripts/validate-audio.ts",
+    "validate:render": "node --import tsx scripts/validate-render.ts",
+    "render": "DISABLE_TELEMETRY=true node --import tsx scripts/render-video.ts",
+    "validate:result": "node --import tsx scripts/validate-result.ts"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "1.1.0",
+    "@ffprobe-installer/ffprobe": "2.1.2",
+    "@revideo/2d": "0.11.0",
+    "@revideo/core": "0.11.0",
+    "@revideo/renderer": "0.11.0",
+    "@revideo/ui": "0.11.0",
+    "@revideo/vite-plugin": "0.11.0",
+    "ajv": "8.20.0",
+    "katex": "0.18.5",
+    "puppeteer": "25.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.2"
+  }
+}

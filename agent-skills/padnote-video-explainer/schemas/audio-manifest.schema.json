@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://padnote.local/schemas/video-explain/audio-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "clips"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "clips": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["scene_id", "path", "media_type", "duration_ms", "size_bytes", "sha256"],
+        "properties": {
+          "scene_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+          "path": {"type": "string", "pattern": "^work/audio/[A-Za-z0-9][A-Za-z0-9._/-]*\\.wav$"},
+          "media_type": {"const": "audio/wav"},
+          "duration_ms": {"type": "integer", "minimum": 1},
+          "size_bytes": {"type": "integer", "minimum": 45},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "fixture": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "source": {"bundle_sha256": "6a854949548930256fcabfab1669fbddc04b90461610924ee5c882df319c355e", "note_id": "note-process", "note_revision": 2},
+  "episode": {"title": "证据怎样推动结论", "audience": "初中科学课程学习者", "learning_goal": "理解证据驱动的循环探究过程", "language": "zh-CN", "target_duration_sec": 36},
+  "claims": [
+    {"id": "claim-cycle", "text": "观察、解释、检验和比较证据构成可反复迭代的过程", "source_refs": ["note:从观察到可检验结论"], "verification": "user-provided", "confidence": "high"},
+    {"id": "claim-revision", "text": "新证据可以促使解释被修正", "source_refs": ["note:关键点"], "verification": "user-provided", "confidence": "high"}
+  ],
+  "scenes": [
+    {"id": "scene-01", "learning_objective": "明确科学探究由证据推进", "claim_ids": ["claim-cycle"], "narration": "科学探究不是猜中一次答案，而是让每一步都能被下一份证据检查。", "screen_text": ["让解释接受证据检查"], "visual": {"type": "title", "data": {"title": "从观察到结论", "subtitle": "一条可以回头修正的路径"}}, "animation_intent": {"kind": "focus_title", "explanation": "用证据这一主线统领后续流程"}, "estimated_duration_sec": 8},
+    {"id": "scene-02", "learning_objective": "记住探究过程的四个核心动作", "claim_ids": ["claim-cycle"], "narration": "先观察现象，提出一个解释，再设计检验，最后把结果与解释进行比较。", "screen_text": ["观察", "解释", "检验", "比较证据"], "visual": {"type": "process", "data": {"steps": ["观察现象", "提出解释", "设计检验", "比较证据"]}}, "animation_intent": {"kind": "advance_steps", "explanation": "按真实推理顺序逐步点亮，帮助学习者形成流程记忆"}, "estimated_duration_sec": 12},
+    {"id": "scene-03", "learning_objective": "理解证据不一致时要回到解释", "claim_ids": ["claim-cycle", "claim-revision"], "narration": "如果证据与预期不一致，路线不是结束，而是回到解释，修改后再检验。", "screen_text": ["不一致 → 修正解释 → 再检验"], "visual": {"type": "concept_map", "data": {"nodes": [{"id": "explanation", "label": "解释"}, {"id": "test", "label": "检验"}, {"id": "evidence", "label": "证据"}, {"id": "revision", "label": "修正"}], "edges": [{"from": "explanation", "to": "test"}, {"from": "test", "to": "evidence"}, {"from": "evidence", "to": "revision", "label": "不一致"}, {"from": "revision", "to": "explanation"}]}}, "animation_intent": {"kind": "trace_cycle", "explanation": "沿闭环描边，突出修正是探究的一部分而非失败"}, "estimated_duration_sec": 10},
+    {"id": "scene-04", "learning_objective": "把科学结论理解为可修订结论", "claim_ids": ["claim-revision"], "narration": "证据一致时，我们得到的是暂时结论；未来的新证据仍然有权让它改变。", "screen_text": ["结论暂时成立，并继续接受检验"], "visual": {"type": "process", "data": {"steps": ["证据一致", "形成暂时结论", "等待新证据"]}}, "animation_intent": {"kind": "advance_steps", "explanation": "让最后一步保持开放，避免把科学结论误解成永不变化"}, "estimated_duration_sec": 6}
+  ],
+  "render_profile": {"aspect_ratio": "9:16", "width": 1080, "height": 1920, "fps": 30}
+}

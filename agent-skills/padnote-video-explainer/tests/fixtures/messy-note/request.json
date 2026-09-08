@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "task_type": "video.explain.v1",
+  "task_id": "task-fixture-messy",
+  "source": {"note_id": "note-photosynthesis", "note_revision": 3, "title": "光合作用课堂速记", "language": "zh-CN", "entrypoint": "input/content.md", "bundle_sha256": "c901f60b557c6f9282a0663e1495a82649f0a0fbc4dc49dbef4d1abd95c85803"},
+  "brief": {"audience": "刚开始学生物的中学生", "learning_goal": "区分光合作用的能量来源、物质来源和不确定陈述", "prerequisites": ["细胞"], "target_duration_sec": 40, "aspect_ratio": "9:16", "style_preset": "clean-academic", "user_instructions": "保留并明确标出笔记中的不确定说法"},
+  "research": {"external_research": false},
+  "review": {"storyboard_required": true},
+  "voice": {"profile": "default-zh", "speed": 1.0}
+}

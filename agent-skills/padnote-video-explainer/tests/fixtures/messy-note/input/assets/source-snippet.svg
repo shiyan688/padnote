@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="480" viewBox="0 0 720 480">
+  <rect width="720" height="480" fill="#fbf8ef"/>
+  <path d="M55 105H665M55 185H665M55 265H665M55 345H665" stroke="#d6e0ed" stroke-width="2"/>
+  <g fill="none" stroke="#22354f" stroke-linecap="round" stroke-width="8">
+    <path d="M82 89c45-28 78 25 122-2 42-25 81 24 123-4"/>
+    <path d="M88 169c56-24 106 22 166-2 39-15 80 14 116-4"/>
+    <path d="M90 249c50-18 99 18 150-3 43-18 85 16 132-1"/>
+  </g>
+  <text x="86" y="405" font-family="sans-serif" font-size="34" fill="#8f5d2e">“只在白天呼吸？”</text>
+</svg>

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://padnote.local/schemas/video-explain/review.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "status", "lesson_ir_revision", "lesson_ir", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"const": "awaiting_storyboard_review"},
+    "lesson_ir_revision": {"type": "integer", "minimum": 1},
+    "lesson_ir": {"$ref": "#/$defs/file"},
+    "artifacts": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/storyboardFile"}}
+  },
+  "$defs": {
+    "file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "media_type", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"},
+        "media_type": {"enum": ["application/json", "text/html", "image/png"]},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "storyboardFile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "path", "media_type", "size_bytes", "sha256"],
+      "properties": {
+        "role": {"const": "storyboard"},
+        "path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"},
+        "media_type": {"enum": ["text/html", "image/png"]},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0",
+  "files": [
+    {"path": "input/content.md", "media_type": "text/markdown", "size_bytes": 484, "sha256": "721c0492bde5d85d6a6ebeef72d36f5838535535796f8ddafa779b4d6cec0d8e"}
+  ]
+}

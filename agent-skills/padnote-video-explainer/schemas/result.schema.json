@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://padnote.local/schemas/video-explain/result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "status", "source", "compiler", "lesson_ir", "artifacts", "qa"],
+  "properties": {
+    "schema_version": {"const": "1.0"}, "task_id": {"type": "string", "minLength": 1}, "status": {"const": "completed"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["bundle_sha256", "note_revision"], "properties": {"bundle_sha256": {"$ref": "#/$defs/sha256"}, "note_revision": {"type": "integer", "minimum": 1}}},
+    "compiler": {"type": "object", "additionalProperties": false, "required": ["skill", "skill_version", "renderer", "renderer_version", "agent_backend"], "properties": {"skill": {"const": "padnote-video-explainer"}, "skill_version": {"type": "string", "minLength": 1}, "renderer": {"const": "revideo"}, "renderer_version": {"type": "string", "minLength": 1}, "agent_backend": {"type": "string", "minLength": 1}}},
+    "lesson_ir": {"type": "object", "additionalProperties": false, "required": ["revision", "sha256"], "properties": {"revision": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}},
+    "artifacts": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/artifact"}},
+    "qa": {
+      "type": "object", "additionalProperties": false, "required": ["status", "checks"],
+      "properties": {
+        "status": {"const": "passed"},
+        "checks": {"type": "array", "minItems": 5, "uniqueItems": true, "items": {"enum": ["source_hash_matches", "scene_timing_matches_audio", "captions_end_at_audio_end", "safe_area_passed", "keyframes_passed", "composition_frames_match"]}}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["id", "role", "path", "media_type", "size_bytes", "sha256"], "properties": {"id": {"type": "string", "minLength": 1}, "role": {"enum": ["video", "captions", "thumbnail", "render_manifest", "qa_report"]}, "path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"}, "media_type": {"enum": ["video/mp4", "application/x-subrip", "image/png", "application/json"]}, "size_bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}}
+  }
+}
