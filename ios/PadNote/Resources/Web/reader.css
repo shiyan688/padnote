@@ -1,0 +1,15 @@
+:root { color-scheme: light; }
+body { margin: 0; padding: 16px; background: transparent; color: #1F2933; font: 16px/1.55 -apple-system, sans-serif; overflow-wrap: anywhere; }
+h1 { font-size: 1.6em; } h2 { font-size: 1.3em; } h3 { font-size: 1.1em; }
+h1,h2,h3 { line-height: 1.35; margin: 1em 0 .5em; }
+p { margin: .5em 0; } pre { white-space: pre-wrap; background: #F4F1E8; padding: 12px; border-radius: 9px; }
+ul, ol { margin: .5em 0; padding-left: 1.5em; } li { margin: .2em 0; }
+code { font: .9em ui-monospace, monospace; } blockquote { border-left: 3px solid #285EA8; margin-left: 0; padding-left: 16px; color: #6B7684; }
+.md-link { color: #285EA8; text-decoration: underline; }
+.code-block { white-space: pre-wrap; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+.diagram { margin: 16px 0; } .diagram svg { max-width: 100%; height: auto; }
+.paper { overflow: hidden; }
+.paper #content { display: flow-root; }
+.paper .diagram svg { max-height: 960px; }
+.paper .katex-display > .katex { white-space: normal; }

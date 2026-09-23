@@ -1,0 +1,2 @@
+-keep-file-name
+-keep-property-name

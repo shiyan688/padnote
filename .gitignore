@@ -1,0 +1,35 @@
+/.idea/
+/api/
+/tools/hermes/.runtime/
+/.hvigor/
+/.ohpm/
+/oh_modules/
+**/build/
+**/.preview/
+local.properties
+/.gradle/
+**/.gradle/
+/.gradle-user-home/
+/.toolchain/
+/.android/
+/dist/
+/tools/agent-probe/state/
+/agent-skills/padnote-video-explainer/node_modules/
+/agent-skills/padnote-video-explainer/.local-cache/
+/agent-skills/padnote-video-explainer/.local-output/
+*.hap
+*.app
+*.apk
+
+# Xcode local state and validation artifacts
+.DS_Store
+**/xcuserdata/
+*.xcuserstate
+/ios/DerivedData/
+/ios/build-device/
+/ios/TestResults/
+
+# Maintainer-only material
+/PROJECT_MEMORY.md
+/insight/
+/docs/launch/

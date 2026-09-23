@@ -1,0 +1,900 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+00C45FD35CB0F9C5F764F070 /* 00C45FD35CB0F9C5F764F070 */ = {
+		isa = PBXGroup;
+		children = (0A8BEBE211D6065E308B8B5A,B4944A7DC80B6E5E44D3FDA9,E0757F1EC06E75496C42F95E
+		);
+		name = Products;
+		sourceTree = "<group>";
+	};
+0299CD27F8C8BA6BD6DBB9F7 /* 0299CD27F8C8BA6BD6DBB9F7 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Services/NoteCoverStore.swift";
+		sourceTree = "<group>";
+	};
+05F6FA78B0685F4E411DEE38 /* 05F6FA78B0685F4E411DEE38 */ = {
+		isa = PBXBuildFile;
+		fileRef = 65E33306380FE03382DD46B1;
+	};
+0A8BEBE211D6065E308B8B5A /* 0A8BEBE211D6065E308B8B5A */ = {
+		isa = PBXFileReference;
+		explicitFileType = wrapper.application;
+		includeInIndex = 0;
+		path = "PadNote.app";
+		sourceTree = BUILT_PRODUCTS_DIR;
+	};
+0AE83E7C5F5ABF366940219C /* 0AE83E7C5F5ABF366940219C */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "NoteDocumentTests.swift";
+		sourceTree = "<group>";
+	};
+0DE3D4CCEFB9EB4F36DC3159 /* 0DE3D4CCEFB9EB4F36DC3159 */ = {
+		isa = PBXBuildFile;
+		fileRef = 64A61A378D0B0B8C40603BC5;
+	};
+0E8F9F8549B30764FB319A57 /* 0E8F9F8549B30764FB319A57 */ = {
+		isa = PBXBuildFile;
+		fileRef = 50CD7A4E6D268BC7D1E7B945;
+	};
+17557822A4261356C3870149 /* 17557822A4261356C3870149 */ = {
+		isa = PBXBuildFile;
+		fileRef = FF1FF45E1311A874D4521804;
+	};
+18326AAB62EDD637020B9572 /* 18326AAB62EDD637020B9572 */ = {
+		isa = XCConfigurationList;
+		buildConfigurations = (1D980406CAF683BBA2140BDD, E3AE751F91C84BFB5ECA96E6);
+		defaultConfigurationIsVisible = 0;
+		defaultConfigurationName = Release;
+	};
+1A9F0FAB9A61D20B63F0D58A /* 1A9F0FAB9A61D20B63F0D58A */ = {
+		isa = PBXBuildFile;
+		fileRef = 935896D9805B275E7EF5D9BD;
+	};
+1ADCABE2A2C8F0C546EA3F4E /* 1ADCABE2A2C8F0C546EA3F4E */ = {
+		isa = PBXBuildFile;
+		fileRef = 43716D03E4A01029B05F76C4;
+	};
+1D980406CAF683BBA2140BDD /* 1D980406CAF683BBA2140BDD */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNoteTests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad.unit";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PadNote.app/PadNote";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_OPTIMIZATION_LEVEL = -Onone;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				ENABLE_TESTABILITY = YES;
+		};
+		name = Debug;
+	};
+2002436B92EC2F0ECF3B2789 /* 2002436B92EC2F0ECF3B2789 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "CompiledTextTests.swift";
+		sourceTree = "<group>";
+	};
+21D070BE8AD2C748EA597814 /* 21D070BE8AD2C748EA597814 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/CompiledTextRenderer.swift";
+		sourceTree = "<group>";
+	};
+23FB5979E09BA45597D37AEF /* 23FB5979E09BA45597D37AEF */ = {
+		isa = PBXBuildFile;
+		fileRef = 461AC9F02EF65124B371D3EC;
+	};
+247BF104A9AD002C539DA531 /* 247BF104A9AD002C539DA531 */ = {
+		isa = XCConfigurationList;
+		buildConfigurations = (E3EBCBBFB33611052F1F254E, 45A51FDE45C8C9313F9CC216);
+		defaultConfigurationIsVisible = 0;
+		defaultConfigurationName = Release;
+	};
+256EE72728DD4D0CD3D07BB8 /* 256EE72728DD4D0CD3D07BB8 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AI/AIClient.swift";
+		sourceTree = "<group>";
+	};
+258E6DC4E95E87C9162FD1EE /* 258E6DC4E95E87C9162FD1EE */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNote";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				INFOPLIST_FILE = "PadNote/Info.plist";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				SWIFT_OPTIMIZATION_LEVEL = -Onone;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				ENABLE_TESTABILITY = YES;
+		};
+		name = Debug;
+	};
+2CF1F0FC606418A6AC2FF03A /* 2CF1F0FC606418A6AC2FF03A */ = {
+		isa = PBXBuildFile;
+		fileRef = AB2F506535336CB46622F5A6;
+	};
+2EB151182FC32CF0648469F8 /* 2EB151182FC32CF0648469F8 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "NoteAIConversationTests.swift";
+		sourceTree = "<group>";
+	};
+2ED29CCC7877072B2239F85A /* 2ED29CCC7877072B2239F85A */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Agent/AgentConnectionClient.swift";
+		sourceTree = "<group>";
+	};
+30FCD4D962D18C557545BA48 /* 30FCD4D962D18C557545BA48 */ = {
+		isa = XCConfigurationList;
+		buildConfigurations = (E57D16BE0B8827C9CB991E7C, C3FEF41C64174C6B6DA69AEE);
+		defaultConfigurationIsVisible = 0;
+		defaultConfigurationName = Release;
+	};
+33CB754B6815366C331A0E83 /* 33CB754B6815366C331A0E83 */ = {
+		isa = PBXBuildFile;
+		fileRef = D5E9719FC95DFBFD2A98926E;
+	};
+398CD00B713F6DB765354734 /* 398CD00B713F6DB765354734 */ = {
+		isa = XCConfigurationList;
+		buildConfigurations = (258E6DC4E95E87C9162FD1EE, 5B0DF600C7D5BA204902754C);
+		defaultConfigurationIsVisible = 0;
+		defaultConfigurationName = Release;
+	};
+3BE5C704148406E58FE0AB5F /* 3BE5C704148406E58FE0AB5F */ = {
+		isa = PBXSourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			78C0CB8606968E36A791B900 /* 78C0CB8606968E36A791B900 */,
+			A05CABA562B683A48BA2467A /* A05CABA562B683A48BA2467A */,
+			1ADCABE2A2C8F0C546EA3F4E /* 1ADCABE2A2C8F0C546EA3F4E */,
+			C98EE62E77A86B8E83B0177E /* C98EE62E77A86B8E83B0177E */,
+			23FB5979E09BA45597D37AEF /* 23FB5979E09BA45597D37AEF */,
+			7720A685FA999ED4C4A2226F /* 7720A685FA999ED4C4A2226F */,
+			7F998392AE9640B2BEEC4FE4 /* 7F998392AE9640B2BEEC4FE4 */,
+			C1634E3F04D2505D8F6F643D /* C1634E3F04D2505D8F6F643D */,
+			2CF1F0FC606418A6AC2FF03A /* 2CF1F0FC606418A6AC2FF03A */,
+			1A9F0FAB9A61D20B63F0D58A /* 1A9F0FAB9A61D20B63F0D58A */,
+			A12197CDA2CE98A3BDC6BA55 /* A12197CDA2CE98A3BDC6BA55 */,
+			FA17E96350C551404CBEEFF3 /* FA17E96350C551404CBEEFF3 */,
+			7188382884703C81C799AABE /* 7188382884703C81C799AABE */,
+			52723228BCFBE8FB45E3D785 /* 52723228BCFBE8FB45E3D785 */,
+			0E8F9F8549B30764FB319A57 /* 0E8F9F8549B30764FB319A57 */,
+			5071926EE6935F8B2D2FF2C1 /* 5071926EE6935F8B2D2FF2C1 */,
+			87765F03E0A71D361EAB4404 /* 87765F03E0A71D361EAB4404 */,
+			6AC512802C2367569B0648A7 /* 6AC512802C2367569B0648A7 */,
+			907154859E762975332E497F /* 907154859E762975332E497F */,
+			0DE3D4CCEFB9EB4F36DC3159 /* 0DE3D4CCEFB9EB4F36DC3159 */,
+			78D992ED14637CA18E153559 /* 78D992ED14637CA18E153559 */,
+			5D2DE2A08CFADD757F4F3F30 /* 5D2DE2A08CFADD757F4F3F30 */,
+			FDC8A8A772AEF450FA8E35B0 /* FDC8A8A772AEF450FA8E35B0 */,
+			B4C72F2231F044FF07B6AEDA /* B4C72F2231F044FF07B6AEDA */,
+			71592562986573E3926DDC13 /* 71592562986573E3926DDC13 */,
+			5D8E5BC8A65DCF90A7629415 /* 5D8E5BC8A65DCF90A7629415 */,
+			17557822A4261356C3870149 /* 17557822A4261356C3870149 */,
+			82AB1A0FA2459486BDF52ADF /* 82AB1A0FA2459486BDF52ADF */,
+			33CB754B6815366C331A0E83 /* 33CB754B6815366C331A0E83 */,
+			AA3C34125AFDDAC4C575A498 /* AA3C34125AFDDAC4C575A498 */,
+			5177BDCBB0482ED5622B3097 /* 5177BDCBB0482ED5622B3097 */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+3BF94C8FBF05EF54A4AA5ED0 /* 3BF94C8FBF05EF54A4AA5ED0 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AgentTests.swift";
+		sourceTree = "<group>";
+	};
+3F07184715FCAD1324DDE8FD /* 3F07184715FCAD1324DDE8FD */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "PadNoteUITests.swift";
+		sourceTree = "<group>";
+	};
+40FBF3D1894D72CB4CD425AA /* 40FBF3D1894D72CB4CD425AA */ = {
+		isa = PBXBuildFile;
+		fileRef = EBCE0E467C594AF2AC0EA8BA;
+	};
+41C491609D96679944EA6D46 /* 41C491609D96679944EA6D46 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/NoteRenderer.swift";
+		sourceTree = "<group>";
+	};
+41DE110AC8BCC8CB2411AD0F /* 41DE110AC8BCC8CB2411AD0F */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Models/NoteDocument.swift";
+		sourceTree = "<group>";
+	};
+427223F718FD5A10D542A01E /* 427223F718FD5A10D542A01E */ = {
+		isa = PBXBuildFile;
+		fileRef = E17B13A96B293496FF27A30F;
+	};
+43716D03E4A01029B05F76C4 /* 43716D03E4A01029B05F76C4 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AI/MathTextView.swift";
+		sourceTree = "<group>";
+	};
+43943EB98D1F6F473170C58E /* 43943EB98D1F6F473170C58E */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+45A51FDE45C8C9313F9CC216 /* 45A51FDE45C8C9313F9CC216 */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+		};
+		name = Release;
+	};
+461AC9F02EF65124B371D3EC /* 461AC9F02EF65124B371D3EC */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AI/NoteToolEngine.swift";
+		sourceTree = "<group>";
+	};
+4CAF9D3D38B5B939342C7FF7 /* 4CAF9D3D38B5B939342C7FF7 */ = {
+		isa = PBXSourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			F12633C0DC87E8749DFB817D /* F12633C0DC87E8749DFB817D */,
+			B930D4B4FECF09CB6E9B68DF /* B930D4B4FECF09CB6E9B68DF */,
+			A6DFDF42DE1B1C82CDD0C427 /* A6DFDF42DE1B1C82CDD0C427 */,
+			71290BDF79F865667A7B3382 /* 71290BDF79F865667A7B3382 */,
+			05F6FA78B0685F4E411DEE38 /* 05F6FA78B0685F4E411DEE38 */,
+			EEE3E1CF04D980B450C5D358 /* EEE3E1CF04D980B450C5D358 */,
+			C10B0FC461185116B1F958D3 /* C10B0FC461185116B1F958D3 */,
+			40FBF3D1894D72CB4CD425AA /* 40FBF3D1894D72CB4CD425AA */,
+			5C0D4779822EC9C7DDAC5F70 /* 5C0D4779822EC9C7DDAC5F70 */,
+			EA2D1C1C3B47D93F68147952 /* EA2D1C1C3B47D93F68147952 */,
+			D858E6F9D5E3D3D762C6F13D /* D858E6F9D5E3D3D762C6F13D */,
+			DAD55FAA7869E8A1E95F33FE /* DAD55FAA7869E8A1E95F33FE */,
+			A080699142ADAF90783868F8 /* A080699142ADAF90783868F8 */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+5071926EE6935F8B2D2FF2C1 /* 5071926EE6935F8B2D2FF2C1 */ = {
+		isa = PBXBuildFile;
+		fileRef = 41C491609D96679944EA6D46;
+	};
+50CD7A4E6D268BC7D1E7B945 /* 50CD7A4E6D268BC7D1E7B945 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/NoteCanvas.swift";
+		sourceTree = "<group>";
+	};
+5177BDCBB0482ED5622B3097 /* 5177BDCBB0482ED5622B3097 */ = {
+		isa = PBXBuildFile;
+		fileRef = 833E8511518AE10651E98BD8;
+	};
+525D86087A999DF8C84EF709 /* 525D86087A999DF8C84EF709 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "MathRenderingTests.swift";
+		sourceTree = "<group>";
+	};
+52723228BCFBE8FB45E3D785 /* 52723228BCFBE8FB45E3D785 */ = {
+		isa = PBXBuildFile;
+		fileRef = A1EF2DB6EFE56FC68F3D4840;
+	};
+53A28CA57C1C32AC4B3D966D /* 53A28CA57C1C32AC4B3D966D */ = {
+		isa = PBXNativeTarget;
+		buildConfigurationList = 398CD00B713F6DB765354734;
+		buildPhases = (3BE5C704148406E58FE0AB5F,5B9773D84493B3D713DB9AC0,B681E6ECC54B86FE775FEC3C);
+		buildRules = ();
+		dependencies = ();
+		name = "PadNote";
+		productName = "PadNote";
+		productReference = 0A8BEBE211D6065E308B8B5A;
+		productType = "com.apple.product-type.application";
+	};
+551897D0F198B7E015A69D3F /* 551897D0F198B7E015A69D3F */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AI/NoteAIConversation.swift";
+		sourceTree = "<group>";
+	};
+5B0DF600C7D5BA204902754C /* 5B0DF600C7D5BA204902754C */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNote";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				INFOPLIST_FILE = "PadNote/Info.plist";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				SWIFT_OPTIMIZATION_LEVEL = -O;
+		};
+		name = Release;
+	};
+5B9773D84493B3D713DB9AC0 /* 5B9773D84493B3D713DB9AC0 */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+5C0D4779822EC9C7DDAC5F70 /* 5C0D4779822EC9C7DDAC5F70 */ = {
+		isa = PBXBuildFile;
+		fileRef = 525D86087A999DF8C84EF709;
+	};
+5D2DE2A08CFADD757F4F3F30 /* 5D2DE2A08CFADD757F4F3F30 */ = {
+		isa = PBXBuildFile;
+		fileRef = D56240CFB5724C0CC882B80C;
+	};
+5D8E5BC8A65DCF90A7629415 /* 5D8E5BC8A65DCF90A7629415 */ = {
+		isa = PBXBuildFile;
+		fileRef = 9D7A30A4926798C33373D73E;
+	};
+5DFD06579BC2873180D14780 /* 5DFD06579BC2873180D14780 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/InkEraser.swift";
+		sourceTree = "<group>";
+	};
+64A61A378D0B0B8C40603BC5 /* 64A61A378D0B0B8C40603BC5 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Services/NoteArchive.swift";
+		sourceTree = "<group>";
+	};
+65E33306380FE03382DD46B1 /* 65E33306380FE03382DD46B1 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "CanvasSettingsTests.swift";
+		sourceTree = "<group>";
+	};
+6AC512802C2367569B0648A7 /* 6AC512802C2367569B0648A7 */ = {
+		isa = PBXBuildFile;
+		fileRef = 41DE110AC8BCC8CB2411AD0F;
+	};
+6B49BA14D9B649EA1C624C51 /* 6B49BA14D9B649EA1C624C51 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/FloatingAIPanel.swift";
+		sourceTree = "<group>";
+	};
+7044B98E5D8782DA37E4768C /* 7044B98E5D8782DA37E4768C */ = {
+		isa = PBXGroup;
+		children = (
+			BF6FEC432E019315CF24B32D /* BF6FEC432E019315CF24B32D */,
+			7A14661DC665234BBFAEA29C /* 7A14661DC665234BBFAEA29C */,
+			3BF94C8FBF05EF54A4AA5ED0 /* 3BF94C8FBF05EF54A4AA5ED0 */,
+			D0AA0FAF123EF0FEBB9A90F9 /* D0AA0FAF123EF0FEBB9A90F9 */,
+			65E33306380FE03382DD46B1 /* 65E33306380FE03382DD46B1 */,
+			99AF9F3D202E40A90BFBB1FE /* 99AF9F3D202E40A90BFBB1FE */,
+			2002436B92EC2F0ECF3B2789 /* 2002436B92EC2F0ECF3B2789 */,
+			EBCE0E467C594AF2AC0EA8BA /* EBCE0E467C594AF2AC0EA8BA */,
+			525D86087A999DF8C84EF709 /* 525D86087A999DF8C84EF709 */,
+			2EB151182FC32CF0648469F8 /* 2EB151182FC32CF0648469F8 */,
+			C132D1EA79BF58E661F06E6D /* C132D1EA79BF58E661F06E6D */,
+			0AE83E7C5F5ABF366940219C /* 0AE83E7C5F5ABF366940219C */,
+			DFCAAB598645F43E088F4F83 /* DFCAAB598645F43E088F4F83 */,
+		);
+		path = PadNoteTests;
+		sourceTree = "<group>";
+	};
+705E7D28CF1FD34392EC205D /* 705E7D28CF1FD34392EC205D */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+70FCF5D702FBAE3F6DF7DCA7 /* 70FCF5D702FBAE3F6DF7DCA7 */ = {
+		isa = PBXTargetDependency;
+		target = 53A28CA57C1C32AC4B3D966D;
+	};
+71290BDF79F865667A7B3382 /* 71290BDF79F865667A7B3382 */ = {
+		isa = PBXBuildFile;
+		fileRef = D0AA0FAF123EF0FEBB9A90F9;
+	};
+71592562986573E3926DDC13 /* 71592562986573E3926DDC13 */ = {
+		isa = PBXBuildFile;
+		fileRef = 6B49BA14D9B649EA1C624C51;
+	};
+7188382884703C81C799AABE /* 7188382884703C81C799AABE */ = {
+		isa = PBXBuildFile;
+		fileRef = 5DFD06579BC2873180D14780;
+	};
+7720A685FA999ED4C4A2226F /* 7720A685FA999ED4C4A2226F */ = {
+		isa = PBXBuildFile;
+		fileRef = 2ED29CCC7877072B2239F85A;
+	};
+78C0CB8606968E36A791B900 /* 78C0CB8606968E36A791B900 */ = {
+		isa = PBXBuildFile;
+		fileRef = 256EE72728DD4D0CD3D07BB8;
+	};
+78D992ED14637CA18E153559 /* 78D992ED14637CA18E153559 */ = {
+		isa = PBXBuildFile;
+		fileRef = 0299CD27F8C8BA6BD6DBB9F7;
+	};
+7A14661DC665234BBFAEA29C /* 7A14661DC665234BBFAEA29C */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AIProfileTests.swift";
+		sourceTree = "<group>";
+	};
+7F998392AE9640B2BEEC4FE4 /* 7F998392AE9640B2BEEC4FE4 */ = {
+		isa = PBXBuildFile;
+		fileRef = 8F6BF8B9CD4971D2EEEA0EC6;
+	};
+811D33C293DE1926F6977133 /* 811D33C293DE1926F6977133 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/NoteCoverPicker.swift";
+		sourceTree = "<group>";
+	};
+82AB1A0FA2459486BDF52ADF /* 82AB1A0FA2459486BDF52ADF */ = {
+		isa = PBXBuildFile;
+		fileRef = 811D33C293DE1926F6977133;
+	};
+833E8511518AE10651E98BD8 /* 833E8511518AE10651E98BD8 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/VaultViews.swift";
+		sourceTree = "<group>";
+	};
+836FD5D304980E4A164E7EBC /* 836FD5D304980E4A164E7EBC */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+867D1B2F23774B3A2AE019F2 /* 867D1B2F23774B3A2AE019F2 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/NoteTextLayout.swift";
+		sourceTree = "<group>";
+	};
+87765F03E0A71D361EAB4404 /* 87765F03E0A71D361EAB4404 */ = {
+		isa = PBXBuildFile;
+		fileRef = 867D1B2F23774B3A2AE019F2;
+	};
+88E01E074D49E7CAAE3BAF93 /* 88E01E074D49E7CAAE3BAF93 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = folder.assetcatalog;
+		path = "PadNote/Resources/Assets.xcassets";
+		sourceTree = "<group>";
+	};
+8B71931A8FBBD0859FC4A8D7 /* 8B71931A8FBBD0859FC4A8D7 */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+8BC32130C9645E532F132BB9 /* 8BC32130C9645E532F132BB9 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Agent/VideoTaskBundleIO.swift";
+		sourceTree = "<group>";
+	};
+8F6BF8B9CD4971D2EEEA0EC6 /* 8F6BF8B9CD4971D2EEEA0EC6 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Agent/AgentConnectionStore.swift";
+		sourceTree = "<group>";
+	};
+907154859E762975332E497F /* 907154859E762975332E497F */ = {
+		isa = PBXBuildFile;
+		fileRef = 9F6C583F1DAE237788A5B8FE;
+	};
+935896D9805B275E7EF5D9BD /* 935896D9805B275E7EF5D9BD */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "App/PadNoteApp.swift";
+		sourceTree = "<group>";
+	};
+97484EFC018F464F2F768A9E /* 97484EFC018F464F2F768A9E */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AI/AIViews.swift";
+		sourceTree = "<group>";
+	};
+98F54143AB4E86B28C3AFEE0 /* 98F54143AB4E86B28C3AFEE0 */ = {
+		isa = PBXProject;
+		buildConfigurationList = 247BF104A9AD002C539DA531;
+		compatibilityVersion = "Xcode 16.0";
+		developmentRegion = en;
+		knownRegions = (en, Base);
+		mainGroup = ADCF10F76EBF2A74473E9DC4;
+		productRefGroup = 00C45FD35CB0F9C5F764F070;
+		targets = (53A28CA57C1C32AC4B3D966D, D0A26DA4303245D0BBA1A43D, AB14F2F83BD2C3F286C14AAA);
+	};
+99AF9F3D202E40A90BFBB1FE /* 99AF9F3D202E40A90BFBB1FE */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "CanvasTests.swift";
+		sourceTree = "<group>";
+	};
+9D1F2B3F17BB8AA6FB663F5C /* 9D1F2B3F17BB8AA6FB663F5C */ = {
+		isa = PBXGroup;
+		children = (
+			3F07184715FCAD1324DDE8FD /* 3F07184715FCAD1324DDE8FD */,
+		);
+		path = PadNoteUITests;
+		sourceTree = "<group>";
+	};
+9D7A30A4926798C33373D73E /* 9D7A30A4926798C33373D73E */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/InkToolOptions.swift";
+		sourceTree = "<group>";
+	};
+9F6C583F1DAE237788A5B8FE /* 9F6C583F1DAE237788A5B8FE */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Models/NotePageOperations.swift";
+		sourceTree = "<group>";
+	};
+A05CABA562B683A48BA2467A /* A05CABA562B683A48BA2467A */ = {
+		isa = PBXBuildFile;
+		fileRef = 97484EFC018F464F2F768A9E;
+	};
+A080699142ADAF90783868F8 /* A080699142ADAF90783868F8 */ = {
+		isa = PBXBuildFile;
+		fileRef = DFCAAB598645F43E088F4F83;
+	};
+A12197CDA2CE98A3BDC6BA55 /* A12197CDA2CE98A3BDC6BA55 */ = {
+		isa = PBXBuildFile;
+		fileRef = A14EBA7EFF9A464DC14C4A91;
+	};
+A14EBA7EFF9A464DC14C4A91 /* A14EBA7EFF9A464DC14C4A91 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/CanvasController.swift";
+		sourceTree = "<group>";
+	};
+A1EF2DB6EFE56FC68F3D4840 /* A1EF2DB6EFE56FC68F3D4840 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Canvas/InlineTextEditor.swift";
+		sourceTree = "<group>";
+	};
+A4A278AB910FF23269E15F66 /* A4A278AB910FF23269E15F66 */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+A6DFDF42DE1B1C82CDD0C427 /* A6DFDF42DE1B1C82CDD0C427 */ = {
+		isa = PBXBuildFile;
+		fileRef = 3BF94C8FBF05EF54A4AA5ED0;
+	};
+AA3C34125AFDDAC4C575A498 /* AA3C34125AFDDAC4C575A498 */ = {
+		isa = PBXBuildFile;
+		fileRef = BCAE8E5C6910BE356F9A1C20;
+	};
+AB14F2F83BD2C3F286C14AAA /* AB14F2F83BD2C3F286C14AAA */ = {
+		isa = PBXNativeTarget;
+		buildConfigurationList = 30FCD4D962D18C557545BA48;
+		buildPhases = (D111DCEF63D89DE869F8E571,8B71931A8FBBD0859FC4A8D7);
+		buildRules = ();
+		dependencies = (BDBF209AB85E27E3B00769E6,);
+		name = "PadNoteUITests";
+		productName = "PadNoteUITests";
+		productReference = E0757F1EC06E75496C42F95E;
+		productType = "com.apple.product-type.bundle.ui-testing";
+	};
+AB2F506535336CB46622F5A6 /* AB2F506535336CB46622F5A6 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Agent/VideoTaskExportView.swift";
+		sourceTree = "<group>";
+	};
+ABB5945989F127642B9C509A /* ABB5945989F127642B9C509A */ = {
+		isa = PBXBuildFile;
+		fileRef = 88E01E074D49E7CAAE3BAF93;
+	};
+ADCF10F76EBF2A74473E9DC4 /* ADCF10F76EBF2A74473E9DC4 */ = {
+		isa = PBXGroup;
+		children = (CF8D0BD4B75E8C2C174692A5,7044B98E5D8782DA37E4768C,9D1F2B3F17BB8AA6FB663F5C,E17B13A96B293496FF27A30F,88E01E074D49E7CAAE3BAF93,00C45FD35CB0F9C5F764F070
+		);
+		sourceTree = "<group>";
+	};
+B4944A7DC80B6E5E44D3FDA9 /* B4944A7DC80B6E5E44D3FDA9 */ = {
+		isa = PBXFileReference;
+		explicitFileType = wrapper.cfbundle;
+		includeInIndex = 0;
+		path = "PadNoteTests.xctest";
+		sourceTree = BUILT_PRODUCTS_DIR;
+	};
+B4C72F2231F044FF07B6AEDA /* B4C72F2231F044FF07B6AEDA */ = {
+		isa = PBXBuildFile;
+		fileRef = BCAD17CB13336A47593CDA52;
+	};
+B681E6ECC54B86FE775FEC3C /* B681E6ECC54B86FE775FEC3C */ = {
+		isa = PBXResourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			427223F718FD5A10D542A01E /* 427223F718FD5A10D542A01E */,
+			ABB5945989F127642B9C509A /* ABB5945989F127642B9C509A */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+B930D4B4FECF09CB6E9B68DF /* B930D4B4FECF09CB6E9B68DF */ = {
+		isa = PBXBuildFile;
+		fileRef = 7A14661DC665234BBFAEA29C;
+	};
+BCAD17CB13336A47593CDA52 /* BCAD17CB13336A47593CDA52 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/BookshelfView.swift";
+		sourceTree = "<group>";
+	};
+BCAE8E5C6910BE356F9A1C20 /* BCAE8E5C6910BE356F9A1C20 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/PadTheme.swift";
+		sourceTree = "<group>";
+	};
+BDBF209AB85E27E3B00769E6 /* BDBF209AB85E27E3B00769E6 */ = {
+		isa = PBXTargetDependency;
+		target = 53A28CA57C1C32AC4B3D966D;
+	};
+BF6FEC432E019315CF24B32D /* BF6FEC432E019315CF24B32D */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "AIClientTests.swift";
+		sourceTree = "<group>";
+	};
+C10B0FC461185116B1F958D3 /* C10B0FC461185116B1F958D3 */ = {
+		isa = PBXBuildFile;
+		fileRef = 2002436B92EC2F0ECF3B2789;
+	};
+C132D1EA79BF58E661F06E6D /* C132D1EA79BF58E661F06E6D */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "NoteCoverTests.swift";
+		sourceTree = "<group>";
+	};
+C1634E3F04D2505D8F6F643D /* C1634E3F04D2505D8F6F643D */ = {
+		isa = PBXBuildFile;
+		fileRef = 8BC32130C9645E532F132BB9;
+	};
+C3FEF41C64174C6B6DA69AEE /* C3FEF41C64174C6B6DA69AEE */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNoteUITests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad.ui";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_TARGET_NAME = PadNote;
+				SWIFT_OPTIMIZATION_LEVEL = -O;
+		};
+		name = Release;
+	};
+C7BC3BC4D9ECF56C276D5F5E /* C7BC3BC4D9ECF56C276D5F5E */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Services/VaultLibrary.swift";
+		sourceTree = "<group>";
+	};
+C98EE62E77A86B8E83B0177E /* C98EE62E77A86B8E83B0177E */ = {
+		isa = PBXBuildFile;
+		fileRef = 551897D0F198B7E015A69D3F;
+	};
+CF8D0BD4B75E8C2C174692A5 /* CF8D0BD4B75E8C2C174692A5 */ = {
+		isa = PBXGroup;
+		children = (
+			256EE72728DD4D0CD3D07BB8 /* 256EE72728DD4D0CD3D07BB8 */,
+			97484EFC018F464F2F768A9E /* 97484EFC018F464F2F768A9E */,
+			43716D03E4A01029B05F76C4 /* 43716D03E4A01029B05F76C4 */,
+			551897D0F198B7E015A69D3F /* 551897D0F198B7E015A69D3F */,
+			461AC9F02EF65124B371D3EC /* 461AC9F02EF65124B371D3EC */,
+			2ED29CCC7877072B2239F85A /* 2ED29CCC7877072B2239F85A */,
+			8F6BF8B9CD4971D2EEEA0EC6 /* 8F6BF8B9CD4971D2EEEA0EC6 */,
+			8BC32130C9645E532F132BB9 /* 8BC32130C9645E532F132BB9 */,
+			AB2F506535336CB46622F5A6 /* AB2F506535336CB46622F5A6 */,
+			935896D9805B275E7EF5D9BD /* 935896D9805B275E7EF5D9BD */,
+			A14EBA7EFF9A464DC14C4A91 /* A14EBA7EFF9A464DC14C4A91 */,
+			21D070BE8AD2C748EA597814 /* 21D070BE8AD2C748EA597814 */,
+			5DFD06579BC2873180D14780 /* 5DFD06579BC2873180D14780 */,
+			A1EF2DB6EFE56FC68F3D4840 /* A1EF2DB6EFE56FC68F3D4840 */,
+			50CD7A4E6D268BC7D1E7B945 /* 50CD7A4E6D268BC7D1E7B945 */,
+			41C491609D96679944EA6D46 /* 41C491609D96679944EA6D46 */,
+			867D1B2F23774B3A2AE019F2 /* 867D1B2F23774B3A2AE019F2 */,
+			41DE110AC8BCC8CB2411AD0F /* 41DE110AC8BCC8CB2411AD0F */,
+			9F6C583F1DAE237788A5B8FE /* 9F6C583F1DAE237788A5B8FE */,
+			64A61A378D0B0B8C40603BC5 /* 64A61A378D0B0B8C40603BC5 */,
+			0299CD27F8C8BA6BD6DBB9F7 /* 0299CD27F8C8BA6BD6DBB9F7 */,
+			D56240CFB5724C0CC882B80C /* D56240CFB5724C0CC882B80C */,
+			C7BC3BC4D9ECF56C276D5F5E /* C7BC3BC4D9ECF56C276D5F5E */,
+			BCAD17CB13336A47593CDA52 /* BCAD17CB13336A47593CDA52 */,
+			6B49BA14D9B649EA1C624C51 /* 6B49BA14D9B649EA1C624C51 */,
+			9D7A30A4926798C33373D73E /* 9D7A30A4926798C33373D73E */,
+			FF1FF45E1311A874D4521804 /* FF1FF45E1311A874D4521804 */,
+			811D33C293DE1926F6977133 /* 811D33C293DE1926F6977133 */,
+			D5E9719FC95DFBFD2A98926E /* D5E9719FC95DFBFD2A98926E */,
+			BCAE8E5C6910BE356F9A1C20 /* BCAE8E5C6910BE356F9A1C20 */,
+			833E8511518AE10651E98BD8 /* 833E8511518AE10651E98BD8 */,
+		);
+		path = PadNote;
+		sourceTree = "<group>";
+	};
+D0A26DA4303245D0BBA1A43D /* D0A26DA4303245D0BBA1A43D */ = {
+		isa = PBXNativeTarget;
+		buildConfigurationList = 18326AAB62EDD637020B9572;
+		buildPhases = (4CAF9D3D38B5B939342C7FF7,A4A278AB910FF23269E15F66);
+		buildRules = ();
+		dependencies = (70FCF5D702FBAE3F6DF7DCA7,);
+		name = "PadNoteTests";
+		productName = "PadNoteTests";
+		productReference = B4944A7DC80B6E5E44D3FDA9;
+		productType = "com.apple.product-type.bundle.unit-test";
+	};
+D0AA0FAF123EF0FEBB9A90F9 /* D0AA0FAF123EF0FEBB9A90F9 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "BetaCanvasTests.swift";
+		sourceTree = "<group>";
+	};
+D111DCEF63D89DE869F8E571 /* D111DCEF63D89DE869F8E571 */ = {
+		isa = PBXSourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			F2DD42D02B260BFE7C22D494 /* F2DD42D02B260BFE7C22D494 */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+D56240CFB5724C0CC882B80C /* D56240CFB5724C0CC882B80C */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Services/NoteLibrary.swift";
+		sourceTree = "<group>";
+	};
+D5E9719FC95DFBFD2A98926E /* D5E9719FC95DFBFD2A98926E */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/NoteEditorView.swift";
+		sourceTree = "<group>";
+	};
+D858E6F9D5E3D3D762C6F13D /* D858E6F9D5E3D3D762C6F13D */ = {
+		isa = PBXBuildFile;
+		fileRef = C132D1EA79BF58E661F06E6D;
+	};
+DAD55FAA7869E8A1E95F33FE /* DAD55FAA7869E8A1E95F33FE */ = {
+		isa = PBXBuildFile;
+		fileRef = 0AE83E7C5F5ABF366940219C;
+	};
+DFCAAB598645F43E088F4F83 /* DFCAAB598645F43E088F4F83 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "NoteToolTests.swift";
+		sourceTree = "<group>";
+	};
+E0757F1EC06E75496C42F95E /* E0757F1EC06E75496C42F95E */ = {
+		isa = PBXFileReference;
+		explicitFileType = wrapper.cfbundle;
+		includeInIndex = 0;
+		path = "PadNoteUITests.xctest";
+		sourceTree = BUILT_PRODUCTS_DIR;
+	};
+E17B13A96B293496FF27A30F /* E17B13A96B293496FF27A30F */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = folder;
+		name = Web;
+		path = "PadNote/Resources/Web";
+		sourceTree = "<group>";
+	};
+E3AE751F91C84BFB5ECA96E6 /* E3AE751F91C84BFB5ECA96E6 */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNoteTests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad.unit";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PadNote.app/PadNote";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_OPTIMIZATION_LEVEL = -O;
+		};
+		name = Release;
+	};
+E3EBCBBFB33611052F1F254E /* E3EBCBBFB33611052F1F254E */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+		};
+		name = Debug;
+	};
+E57D16BE0B8827C9CB991E7C /* E57D16BE0B8827C9CB991E7C */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+				PRODUCT_NAME = "PadNoteUITests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.padnote.ipad.ui";
+				SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos);
+				SWIFT_VERSION = 5.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_ENABLE_MODULES = YES;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_TARGET_NAME = PadNote;
+				SWIFT_OPTIMIZATION_LEVEL = -Onone;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				ENABLE_TESTABILITY = YES;
+		};
+		name = Debug;
+	};
+EA2D1C1C3B47D93F68147952 /* EA2D1C1C3B47D93F68147952 */ = {
+		isa = PBXBuildFile;
+		fileRef = 2EB151182FC32CF0648469F8;
+	};
+EBCE0E467C594AF2AC0EA8BA /* EBCE0E467C594AF2AC0EA8BA */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "InkEraserTests.swift";
+		sourceTree = "<group>";
+	};
+EEE3E1CF04D980B450C5D358 /* EEE3E1CF04D980B450C5D358 */ = {
+		isa = PBXBuildFile;
+		fileRef = 99AF9F3D202E40A90BFBB1FE;
+	};
+F12633C0DC87E8749DFB817D /* F12633C0DC87E8749DFB817D */ = {
+		isa = PBXBuildFile;
+		fileRef = BF6FEC432E019315CF24B32D;
+	};
+F2DD42D02B260BFE7C22D494 /* F2DD42D02B260BFE7C22D494 */ = {
+		isa = PBXBuildFile;
+		fileRef = 3F07184715FCAD1324DDE8FD;
+	};
+FA17E96350C551404CBEEFF3 /* FA17E96350C551404CBEEFF3 */ = {
+		isa = PBXBuildFile;
+		fileRef = 21D070BE8AD2C748EA597814;
+	};
+FDC8A8A772AEF450FA8E35B0 /* FDC8A8A772AEF450FA8E35B0 */ = {
+		isa = PBXBuildFile;
+		fileRef = C7BC3BC4D9ECF56C276D5F5E;
+	};
+FF1FF45E1311A874D4521804 /* FF1FF45E1311A874D4521804 */ = {
+		isa = PBXFileReference;
+		lastKnownFileType = sourcecode.swift;
+		path = "Views/NewNoteView.swift";
+		sourceTree = "<group>";
+	};
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0;
+}

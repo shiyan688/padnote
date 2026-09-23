@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "PadNote HarmonyOS entry module",
+  "main": "",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}

@@ -1,0 +1,18 @@
+{
+  "hvigorVersion": "5.0.2",
+  "dependencies": {
+    "@ohos/hvigor-ohos-plugin": "5.0.2"
+  },
+  "execution": {
+    "daemon": true,
+    "incremental": true,
+    "parallel": true,
+    "typeCheck": true
+  },
+  "logging": {
+    "level": "info"
+  },
+  "debugging": {
+    "stacktrace": false
+  }
+}

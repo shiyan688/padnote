@@ -1,0 +1,11 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "padnote",
+  "version": "0.1.0",
+  "description": "AI-native handwriting notes for HarmonyOS tablets",
+  "main": "",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}

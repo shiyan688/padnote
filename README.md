@@ -1,172 +1,67 @@
 # PadNote
 
-面向平板与手写笔的 AI 原生笔记原型。当前可安装主线是 Android 平板应用，Huawei MatePad Air / HarmonyOS 4.2 是首台真机；后续平台顺序为 Android 平板优先、iPad 跟进，不把产品架构绑定到华为。仓库暂时保留早期 HarmonyOS ArkUI 原生工程，但不与 Android 主线同步扩功能。
+面向学生、科研用户和开发者的平板 Agent 入口 beta：用手写与绘画表达，再结合可编辑文本、圈选 AI 和本地 Markdown 知识库处理内容。
 
-项目的当前进度、已确认决策、风险和下一步统一维护在 `PROJECT_MEMORY.md`。
+> Android 与 iPad 原生客户端以源码形式开放，处于 beta。手写设备体验和真实模型服务仍需实际验收；请先阅读构建说明与当前边界。
 
-## 当前可用
+PadNote 的核心思想，是让平板成为个人思考与学习工作台，让记录、理解、推导、知识积累和 AI 协作自然连在一起。长期愿景是做一个更好的平板端 Agent 入口：用户可以通过写写画画与 Agent 沟通。当前产品以手写笔记、可编辑内容、圈选 AI 和有限的笔记工具为基础，处于 beta，尚未实现完整的 Agent 通信、执行与结果回传闭环。
 
-- 书架采用统一视觉系统（白卡、书写蓝主色、药丸按钮），首启有三步上手引导卡
-- 知识库一级可见：空状态即显示转换步骤与隐私说明，标题旁「这是什么？」有完整解释；AI 卡片内提示可跨笔记提问
-- ArkUI `Canvas` 原生书写画布
-- 记录每个点的坐标、时间和原始压力值
-- 按压力动态调整线宽
-- 连续 HSV 调色盘与明度调节
-- 画笔 0.3–8.0 dp、橡皮 8–64 dp 独立粗细滑杆
-- 撤销、清空、手动保存，以及停笔 600 ms 后自动保存当前笔记
-- 启动书架、多笔记新建/打开/重命名/删除，按更新时间排列
-- 应用私有目录中的原子索引与独立笔记文件；中断写入后可从 `.bak`/`.tmp` 恢复
-- 首次升级自动把旧 `padnote-current.json` 复制为书架中的“旧版笔记”，旧文件继续保留
-- 通过系统文件选择器无损导入/导出 `.padnote.json`，不申请文件存储权限
-- 新建笔记时可选纸张（白纸／横线／方格／点阵）、比例（适应屏幕／A4）和方向（竖／横），并有实时缩略预览；A4 严格保持 1:1.414，两侧可能留白。样式在创建时确定，之后不可更改
-- 连续纵向多页面；工具栏可手动加页，书架显示页数
-- 默认仅笔模式下单指拖动画布、双指缩放；关闭仅笔后单指编辑、双指仍可导航
-- 到达最后一页底部后继续上滑会实时拉出下一页纸张；露出 1/3 后松手添加，不足则平滑回弹
-- 页面内可插入 PPT 式透明文字对象；点选后可拖动/缩放，双击编辑，默认 LaTeX、可切换 Markdown
-- 长文字默认保持可读字号并按段落、公式和代码块自动跨页；字号可手动调整，套索任一片段即可统一编辑、移动、改宽或删除整组
-- 拖动跨页文字的任一片段都会整组移动，拖动时以半透明虚线预览重排后的落点；拖到页面上/下边缘停住约 0.5 秒会自动翻到相邻页，可把文字移到当前看不到的页
-- Android M2：纯图标工具栏、画笔、局部矢量橡皮、套索选择
-- 选区可用手写笔或手指拖动，并支持复制、删除、取消
-- 覆盖书写、擦除、移动、复制、删除和清空的 30 步撤销/重做
-- 点击画笔/橡皮图标弹出圆角粗细设置卡，顶部不再常驻尺寸滑杆
-- 彩色环调色盘、五个常用快捷色，画笔图标同步显示当前墨水色
-- Android M3.1：套索隐私遮罩、最大边 1600 px 的圈内 PNG、AI 讲解/Markdown 操作和发送前预览
-- Android M3.2：可拖动、最小化的浮动 AI 对话卡，支持讲解/Markdown 预设、自由输入和多轮追问
-- AI 回答中的 `\[...\]`、`\(...\)`、`$$...$$` 和 `$...$` 由随包离线 KaTeX 编译为可视公式与 MathML
-- 自定义 OpenAI-compatible HTTPS endpoint/model，API Key 由 Android Keystore 使用 AES-GCM 加密
-- 多配置档案管理：多套 AI 配置一键切换（cc-switch 式），内置智谱/DeepSeek/阿里百炼/MiniMax/Kimi 厂商预设（含阿里 Token Plan 与 MiniMax Token Plan 订阅预设，附 Key 获取指引），旧单配置自动迁移
-- 可选"转写 + 回答"两段式路线：视觉模型先把圈选手写转成 Markdown/LaTeX 文本并显示供核对，纯文本回答模型再执行讲解与笔记写入；追问复用转写结果，不再重复上传图片
-- 知识库：手写笔记一键数字化为 Obsidian 兼容的 Markdown 格式笔记（公式 LaTeX、流程图 Mermaid），书架内阅读/导出/删除，原笔记修改后提示重新生成；Mermaid 与 KaTeX 均随包离线渲染
-- AI 可读取知识库：`search_vault` 按关键词跨笔记检索（返回笔记、页码与原文行），`read_vault_note` 读取整本或按页读取格式笔记；两者均为只读，模型不能改动知识库
+## 可以做什么
 
-## Huawei MatePad Air / HarmonyOS 4.2 安装
+- 用手写笔记录，保留原始坐标、压力和时间；支持局部橡皮、套索、撤销、高亮、图形、图片与多页。
+- 编辑 LaTeX/Markdown 源码，在纸面离线显示公式和 Mermaid；长内容按文字流跨页。
+- 圈选后预览发送内容，使用自己的模型 API 进行讲解和整理；可选视觉转写后交给文本模型回答。
+- AI 通过有限的笔记工具写入结论，整轮写入可一次撤销；用户可关闭写入。
+- 将笔记整理为本地 Markdown 知识库，搜索与导出；支持 PDF 批注和可编辑笔记文件交换。
 
-本设备路线使用已签名的 Android 兼容调试包：`dist/PadNote-0.17.5-debug.apk`。
+## 平台与体验方式
 
-SHA-256：`0b7b0d1e181b5f745d19a02c3e4d027ddb1a9f882eb7b68deddd196b45837766`
+| 平台 | 当前入口 | 验证范围 |
+| --- | --- | --- |
+| Android | Android Studio 或 Gradle Wrapper 构建 debug beta | 最低 API 24；不同平板与手写笔仍需实际验收 |
+| iPad | Xcode 打开 `ios/PadNote.xcodeproj`，scheme `PadNote` | 最低 iPadOS 17；62 单元测试、3 UI 测试和无签名 arm64 构建通过；Pencil/真实模型待验收 |
 
-1. 把 APK 传到平板后点击安装；若系统询问是否允许当前文件管理器安装外部应用，只需对该安装来源临时授权。
-2. 启动后先进入书架。可以新建笔记，点卡片打开已有笔记，或从系统文件选择器导入 `.padnote.json`；卡片的“更多”支持重命名和确认删除。
-3. 从 0.1.0–0.5.0 覆盖升级时，旧的单笔记会自动复制到书架并命名为“旧版笔记”；原始旧文件不会被删除。
-4. 编辑器左上角书架图标返回书架；工具栏的保存和导出图标分别立即保存、通过系统位置选择器导出当前矢量笔记。书架卡片也可直接导出。
-5. 默认“仅笔”开启：手写笔负责编辑，单指拖动镜头，双指捏合缩放；套索选框内仍可用单指拖动选区。关闭“仅笔”后单指可书写/擦除/套索，第二根手指落下会取消这次未完成编辑并切换为双指导航。
-6. 工具栏的叠页加号图标会在文档末尾添加页面并跳转过去。浏览已有页面和普通上拖始终 1:1 跟手；只有越过末页、下一页纸张真正开始露出的创建段才使用连续橡皮筋阻力。实际露出高度达到 1/3 后松手，预览页原地转为正式页，不足则平滑回弹。
-7. 点画笔或橡皮图标，会在图标下方打开圆角设置卡；卡片内可看实时笔画/擦除范围预览，并用滑杆调节粗细。
-8. 彩色环图标打开连续 HSV 调色盘；其旁五个色点可直接选常用墨蓝、蓝、朱红、绿和紫色。画笔图标会同步显示当前墨水颜色。
-9. 橡皮只移除圆形游标覆盖的部分，快速划动时也会自动补齐擦除轨迹；一次连续擦除可用一次撤销恢复。
-10. 选择虚线套索图标，圈住笔画并闭合；蓝色框出现后可用手写笔或手指直接拖动。
-11. 选中内容后，点套索旁的闪光 AI 图标打开浮动卡片。按住蓝色标题区域可拖动；点“—”最小化，点“□”恢复，点“×”关闭。请求在最小化后仍会继续。
-12. 卡片内可直接点“讲解”或“整理 Markdown”，也可在输入框写自己的要求；收到回答后继续输入即可多轮追问。模型返回的标准 LaTeX 会在本机编译为可视公式，公式显示不访问网络。
-13. 首次发送会要求配置 AI。配置以“档案”管理：点 AI 卡片设置图标打开配置列表，可新建多套配置并一键切换当前使用的档案；新建时可选厂商预设（智谱 BigModel／DeepSeek／阿里云百炼／MiniMax／Kimi）自动填地址与推荐模型，再粘贴 API Key 即可。路线二选一：**直连多模态**（一个支持图像的模型看图并回答），或**转写 + 回答两段式**（视觉模型先把圈选手写转成 Markdown/LaTeX 文本并显示在卡片供核对，纯文本回答模型再执行讲解与笔记写入；同一选区的追问复用转写结果，不再重复上传图片）。只接受 HTTPS，Key 经 Android Keystore 使用 AES-GCM 加密，不写入笔记或日志；0.13.x 及更早的单配置会在升级后自动迁移为名为“默认配置”的直连档案。
-14. 每次新建对话首次发送前，应用会列明上传 PNG 的尺寸、大小和目标 endpoint；确认后才发送。模型响应当前为非流式，完成后一次性显示在卡片中。
-15. 点工具栏文字图标可插入 PPT 式页面文字对象。完成后只显示编译内容，需用套索圈中后才显示边框、右上删除和右下宽度调整；双击任一片段会直接在对象内编辑整组统一源码。默认按 LaTeX 编译，也可切换 Markdown；源码和格式切换会在 90 ms 防抖后实时编译。
-16. 长内容不会自动缩小到难以阅读，而是保持当前字号，按段落、标题、列表、公式和代码块边界排到后续页面；页面不足时自动新增。编辑栏的 `A−/A+` 可在 10–32sp 间手动改字号并触发整组重排。套索任一页片段会选中整组，移动、调整宽度、删除和撤销均以同一文字流处理。
-17. 支持 function calling 的模型会自行判断哪些内容值得留在笔记里：解法、讲解和整理后的要点写进页面，辨认过程和说明只留在对话卡片。工具栏的「写入页面／仅卡片」现在的含义是**是否允许模型改动笔记**；选「仅卡片」时模型只能读取页面结构。模型一次写入无论跨几页，都可用一次撤销完整回退。若所用模型不支持 function calling，应用会退回旧的整段写入方式并在卡片中说明。
-18. 套索选中文字对象后，左上角出现 `A−／A+` 可直接调字号，不需要进入编辑状态；字号作用于整个文本流，改完自动重排。行距在双击进入编辑面板后用 `⇱／⇲` 调节，范围 1.1–2.0。
-19. 拖动跨页文字的任意片段都会移动整组，手指下的片段落在放手处；拖动过程中虚线框显示重排后各片段的落点。要移到当前看不见的页，把片段拖到页面上边缘或下边缘停住，画布会自动滚到相邻页。
-20. 0.11.1 与 0.1.0–0.11.0 使用同一包名和调试签名，可直接覆盖安装并保留应用私有数据。旧笔记会在打开时自动迁移为新的文本流格式。
-21. 书架笔记卡片的"更多 → 转为格式笔记"可把整本手写笔记数字化为知识库格式笔记：逐页发送给视觉模型转写为 Markdown（数学公式 LaTeX、手绘流程图 Mermaid），已有文字对象原样嵌入；产物为 Obsidian 兼容的 `.md` 文件，可在书架"知识库"区块阅读、导出或删除。数字化会上传整页内容（不再是仅圈选区域），转换前会明确确认。原笔记修改后条目会提示重新生成。Mermaid 与 KaTeX 均随包离线渲染，显示不访问网络。
-22. AI 现在能读知识库了：圈选后提问"我之前哪本笔记讲过……"之类跨笔记问题时，模型会先用 `search_vault` 检索全部格式笔记（返回命中行所在笔记与页码），再用 `read_vault_note` 读取原文，然后照常决定哪些内容经 `write_text` 写进页面。检索命中的文本会发送到你配置的模型 endpoint；知识库本身对模型严格只读。
+当前没有已确认的 App Store 或 TestFlight 下载入口。Android 安装包仅在发布版本、文件哈希与下载链接核对后添加；源码构建不等于提供通用签名安装包。
 
-APK 包名为 `com.padnote.android.debug`，最低 Android API 为 24，只声明 AI 调用所需的 `INTERNET` 权限；系统文件选择器不需要广泛存储权限。笔记位于应用私有目录的 `notes/<id>.json`，索引为 `padnote-index.json`。新保存文件使用 schemaVersion 8，除页面几何、页数、纸张样式、相对缩放和视口中心外，记录每个 LaTeX/Markdown 文本流的统一源码、格式、字号、行宽和页相对锚点；跨页片段不再逐个保存，而是在打开笔记时按当前排版器重新计算，因此文件体积不随答案长度重复膨胀。schemaVersion 1/2/3/4/5/6/7 旧笔记仍可读取，打开时自动迁移并在下次保存时升级。当前是开发调试签名；商业发布前将改用独立 release 签名。
+## 本地构建
 
-## 在真机运行
+Android 需要 JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0。配置 `JAVA_HOME` 与 `ANDROID_SDK_ROOT`（或 `ANDROID_HOME`），然后：
 
-当前工程目标是 HarmonyOS 5.0.5 / API 17，原因是压感字段从 API 15 起提供，API 17 对现有 NEXT 平板更稳妥。
-
-本节专指未来的 ArkUI 原生 HAP 路线；HarmonyOS 4.2 的 MatePad Air 请优先使用上面的 APK。
-
-### 安装包说明
-
-- 当前原生鸿蒙工程生成的是签名后的 `.hap`，这是设备安装和运行的基本单元。
-- `.app` 是提交应用市场的发布包，内部包含 HAP/HSP。
-- `.apk` 是 Android 路线的产物；只有仍兼容 Android 应用的旧鸿蒙设备才可能使用，不能替代 HarmonyOS NEXT 原生 HAP。
-
-1. 使用匹配 HarmonyOS 5.0.5 SDK 的 DevEco Studio 打开本目录。
-2. 若 IDE 提示 Hvigor 版本不匹配，使用 `Tools > Upgrade Dependencies` 让工程构建插件与本机 DevEco 配套。
-3. 在 `File > Project Structure > Signing Configs` 中开启自动签名。
-4. 连接已开启开发者模式的鸿蒙设备，选择 `entry` 后运行。
-5. 首次测试请依次验证：手写、轻重压线宽、撤销、退到桌面再打开后的恢复。
-
-本执行环境没有 DevEco Studio、HarmonyOS SDK 或 `hdc`，因此源码已经完成静态校验，但首轮 HAP 编译和真机触控验证需要在你的开发机上进行。若你的设备系统低于 API 15，需要先升级系统或暂时移除压力字段。
-
-仓库静态检查可运行：
-
-```bash
-node tools/static-check.mjs
-```
-
-本仓库配套的构建工具链位于 `/public/home/wangyg/padnote-tools/`（JDK 17 + Android SDK 35 + Gradle 8.9），Gradle 缓存统一放在其中的 `gradle-home/`，仓库目录不保存工具缓存。构建脚本默认使用它，无需任何环境变量：
-
-```bash
+```sh
 tools/build-android-apk.sh
 ```
 
-### OpenClaw / Hermes 协议探针
+脚本调用随项目的 Gradle 8.9 Wrapper，首次构建会下载 Gradle/依赖；构建并 lint debug beta、验证 APK 签名并输出 SHA-256。JVM 测试：
 
-外部 Agent 对接当前处于 Phase 0：仓库已提供独立 JVM 探针，不把实验连接代码塞进 APK。Hermes 探针验证官方 `/v1/capabilities` 的 run、SSE、停止与审批能力；OpenClaw 探针完成 v4 WebSocket challenge、Ed25519 设备签名、配对响应和只读 health RPC。完整边界见 `docs/AGENT_INTEGRATION.md`。
-
-```bash
-PADNOTE_AGENT_URL=https://agent.example.com \
-PADNOTE_AGENT_TOKEN='本地凭据' \
-tools/run-agent-probe.sh hermes
-
-PADNOTE_AGENT_URL=wss://gateway.example.com \
-PADNOTE_AGENT_TOKEN='gateway bootstrap token' \
-tools/run-agent-probe.sh openclaw
+```sh
+cd android
+./gradlew :app:testDebugUnitTest
 ```
 
-OpenClaw 首次连接可能返回 `PAIRING_REQUIRED`；在电脑端审核并批准输出中的 requestId 后，用同一 state 目录再次运行。探针不会发送任何笔记内容，也不申请写权限。
+iPad：在 Xcode 选择 iPad Simulator 后运行。真机选择自己的 Apple Development Team 并完成设备配对。详细步骤见 [iPad 说明](ios/README.md)。
 
-在其他机器上自备 JDK 17 和 Android SDK 35 时，用环境变量覆盖默认路径即可：
+开发辅助：`node tools/static-check.mjs` 检查文件与关键产品约束；`bash tools/tests/test-build-android-script.sh` 使用隔离的模拟工具链检查构建脚本。`tools/emulator/` 是需要预先配置 SDK、AVD 和工具链的 Linux 辅助脚本，UI 测试会清除目标模拟器里的 beta 应用数据。`tools/e2e/` 是真实模型测试，需显式提供 `E2E_API_KEY`、服务地址和模型，运行会调用所选服务。
 
-```bash
-JAVA_HOME=/path/to/jdk17 ANDROID_SDK_ROOT=/path/to/android-sdk tools/build-android-apk.sh
-```
+## 模型与数据
 
-### 无界面 Android 平板回归
+AI 功能需要用户自己的兼容 HTTPS API 与 Key，服务费用取决于所选供应商。密钥通过 Android Keystore/iOS Keychain 保存。笔记先保存在本地；使用圈选 AI、整本数字化或知识库 AI 时，会按已确认范围把相应内容发往用户配置的服务。公式和图表的本地渲染不访问网络。
 
-本机模拟器资产与项目分离：SDK/系统镜像在 `/public/home/wangyg/padnote-tools/android-sdk`，唯一的 API 35 平板 AVD 在 `/public/home/wangyg/padnote-tools/avd`，日志、PID、测试结果和模拟器临时文件统一放在 `/public/home/wangyg/padnote-tools/emulator-runtime`；仓库只保存脚本和测试源码，不使用 `/tmp` 保存 PadNote 运行态。运行下面入口会启动模拟器、构建并安装应用和测试 APK、执行书架 UI 冒烟测试，最后自动关机：
+两端交换的是笔记文件，没有自动云同步。两端排版和设备手感仍需共同验收；iPad 封面目前是本机 sidecar，不随笔记 JSON 导出。
 
-```bash
-tools/emulator/run-ui-smoke.sh
-```
+## 当前边界
 
-模拟器固定为低优先级、最多 4 个 CPU、4 GB 客体内存且无窗口/音频/快照，不会后台常驻；若 `/dev/kvm` 可用会自动启用硬件加速。当前宿主未开放 `/dev/kvm`，API 35 x86_64 镜像在软件 TCG 下 20 分钟内无法保持 Android framework 稳定，UI 测试 APK 已编译但尚未实际跑通；脚本和 AVD 已就绪，宿主开放 KVM 后可直接重跑。无论模拟器是否加速，手写延迟、压感、手掌误触、帧率和跟笔性仍必须在实体平板上测。
+项目处于 beta。模型兼容性、长文档性能和真实手写笔体验需要持续验证。AI 回复当前非流式。电脑 Agent 当前提供 HTTPS 能力检查和视频任务 ZIP 导出；Hermes run/SSE/审批/产物回传与 OpenClaw Gateway Bridge 尚未完成。
 
-## 代码入口
+更长期的方向是让手写和绘画成为与平板 Agent 沟通的自然入口；这部分仍属于产品愿景，不代表当前已具备完整的 Agent 通信、执行或回传能力。
 
-- `entry/src/main/ets/pages/Index.ets`：画布、触摸采样和工具栏
-- `android/app/src/main/java/com/padnote/android/NoteCanvasView.java`：MatePad Air 的 Android 墨迹层
-- `android/app/src/main/java/com/padnote/android/NoteStore.java`：多笔记索引、迁移、原子存储和导入校验
-- `android/app/src/main/java/com/padnote/android/MainActivity.java`：启动书架、编辑器、系统导入导出和 AI 卡片
-- `android/app/src/main/java/com/padnote/android/AiMathWebView.java`：禁用网络的离线 LaTeX/KaTeX 显示层
-- `android/app/src/main/java/com/padnote/android/CompiledTextWebView.java`：文本框的离线 LaTeX/Markdown 编译显示层
-- `android/app/src/main/java/com/padnote/android/TextFlow.java`：页面文字的唯一事实源与唯一写入点（源码、字号、行距、页相对锚点）
-- `android/app/src/main/java/com/padnote/android/NoteTextBox.java`：由文本流派生的单页片段，不持有独立内容也不参与持久化
-- `android/app/src/main/java/com/padnote/android/NoteTools.java`：模型可调用的四个工具（读页面结构、写入文字、调排版、移动）
-- `android/app/src/main/java/com/padnote/android/PageMap.java`：给模型看的页面结构——8 条带占用/空白、空白容量以行数与字数表示、笔迹位置聚类
-- `android/app/src/main/java/com/padnote/android/PlacementResolver.java`：把「写在选区下方」这类位置约束解析为真实几何
-- `tools/layout-calibration/`：用随包真实 KaTeX 校准分页估算器；改渲染层 CSS 后必须重跑
-- `entry/src/main/ets/model/InkModel.ets`：可演进的原始笔迹格式
-- `entry/src/main/ets/services/NoteStore.ets`：沙箱 JSON 存取
-- `docs/ARCHITECTURE.md`：产品架构与接下来怎么做
-- `docs/DESIGN_LANGUAGE.md`：设计语言与审美契约（改任何 UI 前必读）
-- `docs/AI_CONTRACT.md`：多模态模型的供应商无关接口草案
-- `docs/AGENT_INTEGRATION.md`：OpenClaw/Hermes 协议、权限边界与任务/产物方向
-- `tools/agent-probe/`：独立 JVM 协议探针和离线 Hermes/OpenClaw 假服务测试
+早期 HarmonyOS ArkUI 目录如随快照保留，仅作历史原型，不代表当前完整支持 HarmonyOS NEXT。
 
-## 下一里程碑
+## 反馈与贡献
 
-主线程 0.17.5（PDF 导入）与 Beta `0.18.0-beta.2`（独立包 ID `com.padnote.android.beta`，与原版并存、数据互不覆盖）均已完成构建与 JVM/Lint 验证，待 MatePad 真机按顺序验收：
+反馈请附：平台、设备/手写笔、系统、版本、最小复现步骤、预期/实际结果；模型问题附供应商/模型名称和已脱敏错误信息。请勿提交真实 API Key、私人笔记或签名证书。
 
-1. **0.18 基础能力**：页面缩略图管理卡（跳页、复制、删除、上下移）、高亮笔与几何图形笔手感、图片导入的方向与缩放、保存重开后图片与页面重排一致；「页面已合并」标准 PDF 导出在常用阅读器里的兼容性。
-2. **draw_diagram（Beta）**：圈选 → AI 画示意图的自动避让与整图换页、密集笔迹下的落点、图表源码编辑与保存重开；Mermaid 渲染错误目前仅可见提示、不回传模型，注意收集错误样例。
-3. **0.17.5 PDF**：导入真实课件 PDF 后圈选原文问 AI、批注与原文的持久化往返、`.padnote.zip` 跨设备导入导出；AI 自动写入应落在新增空白附注页而不遮盖原文。
-4. **书架视觉**：三列网格、卡片高度与品牌区密度的真机观感。
+优先欢迎：真机验收、数据往返、排版问题、模型兼容性和文档改进。涉及笔记数据格式或 AI 写入权限的改动，请同时给出迁移与回归验证。
 
-随后是 Agent 连接的下一阶段：用真实 OpenClaw 实例跑通 Phase 0 探针与设备配对；健康检查通过后，从格式笔记菜单导出首个 `video.explain.v1` 任务包并用真实后端消费，形成第一条端到端知识生产闭环。再往后是 0.18 审计列出的稳定性项（UI 线程序列化、墨迹缓存重建、AI 写入事务化）与 AI 请求的流式/取消。
+## 许可证
 
-## 许可状态
-
-PadNote 自研代码尚未对外授予开源许可（`UNLICENSED`），代码所有者仍可自行商业化。Android 公式显示随包包含 MIT 许可的 KaTeX 0.17.0，完整许可证和版本来源见 `THIRD_PARTY_NOTICES.md`；这类宽松许可允许商业使用，但正式发布仍应保留版权与许可声明。
+PadNote Android 与 iPad 客户端的自研代码（含手写引擎）采用 [MIT 许可](LICENSE)，范围见 [LICENSING.md](LICENSING.md)。MIT 允许商用和闭源衍生版本，要求保留版权与许可声明。第三方资产保留原许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)。已有视频 Agent 子项目的 Apache-2.0 许可单独保留。

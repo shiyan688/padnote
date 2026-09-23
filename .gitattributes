@@ -1,0 +1,6 @@
+# Preserve the upstream web bundle byte-for-byte for license/hash verification.
+android/app/src/main/assets/mermaid/mermaid.min.js -whitespace
+ios/PadNote/Resources/Web/mermaid/mermaid.min.js -whitespace
+
+# The upstream Windows Gradle wrapper uses CRLF line endings.
+android/gradlew.bat whitespace=cr-at-eol

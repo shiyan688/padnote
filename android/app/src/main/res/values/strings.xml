@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PadNote</string>
+    <string name="ai_card_busy">AI 助手 · 正在回答</string>
+    <string name="ai_card_minimized">AI 助手 · 已最小化</string>
+    <string name="ai_card_drag">AI 助手 · 拖动这里</string>
+    <string name="ai_config_saved">API 已安全保存 · 首次发送前会确认</string>
+</resources>

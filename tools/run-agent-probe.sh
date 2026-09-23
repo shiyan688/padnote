@@ -8,7 +8,7 @@ fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 project_root=$(cd "${script_dir}/.." && pwd)
-toolchain_root="${PADNOTE_TOOLCHAIN_ROOT:-/public/home/wangyg/padnote-tools}"
+toolchain_root="${PADNOTE_TOOLCHAIN_ROOT:-${project_root}/.toolchain}"
 java_home="${JAVA_HOME:-${toolchain_root}/jdk}"
 gradle_home_dir="${PADNOTE_GRADLE_USER_HOME:-${toolchain_root}/gradle-home}"
 gradle_command="${PADNOTE_GRADLE_BIN:-${toolchain_root}/gradle/gradle-8.9/bin/gradle}"

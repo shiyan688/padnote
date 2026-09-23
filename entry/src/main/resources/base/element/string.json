@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "PadNote handwriting workspace"
+    },
+    {
+      "name": "entryability_desc",
+      "value": "PadNote main ability"
+    },
+    {
+      "name": "entryability_label",
+      "value": "PadNote"
+    }
+  ]
+}
