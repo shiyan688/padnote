@@ -6,7 +6,7 @@ PadNote 是一个面向 Android 平板和 iPad 的开源项目，探索用手写
 
 Android · iPad · 自选模型 · 本地笔记 · MIT
 
-[下载 Android 测试版](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.2) · [从源码构建](#从源码构建) · [项目方向](#从笔记到-agent-入口) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载 Android 测试版](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.6) · [从源码构建](#从源码构建) · [项目方向](#从笔记到-agent-入口) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 ## 在同一页里，把问题想清楚
 
@@ -45,10 +45,12 @@ Android 与 iPad 通过笔记文件交换内容，目前没有自动云同步。
 
 Android 可以直接下载安装 APK，最低 Android 7.0 / API 24：
 
-- [最新 beta：0.18.0-beta.2](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.2/PadNote-Android-0.18.0-beta.2-debug.apk)
+- [最新 beta：0.18.0-beta.6](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.6/PadNote-Android-0.18.0-beta.6-debug.apk)
 - [原主线：0.17.5](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.2/PadNote-Android-0.17.5-debug.apk)，供继续使用原主线的用户选择。
 
-下载后在平板上打开 APK，按系统提示安装。目前是调试签名测试包；beta 与原主线可以同时安装，笔记通过导出、导入迁移。版本信息与 SHA-256 校验文件见 [Release](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.2)。
+下载后在平板上打开 APK，按系统提示安装。目前是调试签名测试包；beta 与原主线可以同时安装，笔记通过导出、导入迁移。版本信息与 SHA-256 校验文件见 [Release](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.6)。
+
+beta.6 改善了纸面文字、公式和图表排版，并修复 Android PDF 导出遗漏文字的问题。可以导入[排版体验笔记](docs/fixtures/paper-layout-demo.padnote.json)，无需模型配置即可查看效果；PDF 检查步骤见[导出验收](docs/PDF_EXPORT_QA.md)。电脑 Agent 设置页已加入离线连接教程。
 
 iPad 源码已公开，最低 iPadOS 17。安装版稍后提供，目前需要通过 Xcode 自行签名运行，暂无 IPA、App Store 或 TestFlight 入口。
 
@@ -106,7 +108,7 @@ tools/build-android-apk.sh
 <details>
 <summary>测试与发布验证</summary>
 
-2026-09-23 的公开源码通过了 Android 编译、Lint、签名校验和 43 项 JVM 测试，以及 iPad arm64 无签名构建。iPad 此前通过 62 项单元测试和 3 项 UI 测试；这些结果不替代真实手写笔和模型服务的使用验证。
+beta.6 的 Android 构建、59 项 JVM 测试和 APK 签名校验通过；Lint 无错误，保留 8 项既有界面字符串警告。纸面与 PDF 导出的原生回归已编译，尚未在 Android 设备运行。iPad 排版相关 20 项模拟器测试及 arm64 无签名构建通过。测试结果不替代实际平板、手写笔和模型服务的使用验证。
 
 Android 单元测试：
 

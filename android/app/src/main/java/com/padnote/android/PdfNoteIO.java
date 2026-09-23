@@ -3,14 +3,20 @@ package com.padnote.android;
 import android.content.Context;
 import android.graphics.pdf.PdfRenderer;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.pdf.PdfDocument;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.widget.FrameLayout;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -110,25 +116,111 @@ final class PdfNoteIO {
         }
     }
 
-    /** Creates a portable, flattened PDF containing every rendered notebook page. */
-    static void exportFlattenedPdf(NoteCanvasView canvas, OutputStream output) throws Exception {
+    interface ProgressListener {
+        void onPageRendered(int completedPages, int totalPages);
+    }
+
+    /**
+     * Creates a flattened PDF from a frozen document snapshot.
+     *
+     * <p>The caller owns one worker thread for the complete PdfDocument lifecycle.
+     * Only attached WebView rendering is dispatched to the main thread. Returning
+     * means every page was finished and the supplied stream was flushed.
+     */
+    static void exportFlattenedPdf(NoteCanvasView.PdfExportSnapshot snapshot,
+                                   FrameLayout attachedRenderHost, OutputStream output,
+                                   Handler mainHandler, ProgressListener progress)
+            throws Exception {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw new IllegalStateException("PDF 文件写入不能在主线程执行");
+        }
+        if (snapshot == null || attachedRenderHost == null || output == null ||
+                mainHandler == null) {
+            throw new IllegalArgumentException("PDF 导出参数不完整");
+        }
         PdfDocument pdf = new PdfDocument();
         try {
-            int pages = canvas.getPageCount();
+            int pages = snapshot.getPageCount();
             for (int page = 0; page < pages; page++) {
-                byte[] png = canvas.renderPagePng(page, 1800);
-                if (png == null) throw new IOException("无法渲染第 " + (page + 1) + " 页");
-                Bitmap bitmap = BitmapFactory.decodeByteArray(png, 0, png.length);
-                if (bitmap == null) throw new IOException("页面图像无法解码");
-                PdfDocument.Page current = pdf.startPage(new PdfDocument.PageInfo.Builder(
-                        bitmap.getWidth(), bitmap.getHeight(), page + 1).create());
-                current.getCanvas().drawBitmap(bitmap, 0, 0, null);
-                pdf.finishPage(current);
-                bitmap.recycle();
+                Bitmap bitmap = snapshot.renderBasePage(page, 1800);
+                AtomicReference<Bitmap> rendered = new AtomicReference<>();
+                AtomicReference<Exception> failure = new AtomicReference<>();
+                AtomicBoolean accepting = new AtomicBoolean(true);
+                CountDownLatch ready = new CountDownLatch(1);
+                int pageIndex = page;
+                mainHandler.post(() -> {
+                    NoteCanvasView.PdfExportSnapshot.PageCallback callback =
+                            new NoteCanvasView.PdfExportSnapshot.PageCallback() {
+                            @Override
+                            public void onRendered(Bitmap completePage) {
+                                if (accepting.compareAndSet(true, false)) {
+                                    rendered.set(completePage);
+                                    ready.countDown();
+                                }
+                            }
+
+                            @Override
+                            public void onFailure(Exception error) {
+                                if (accepting.compareAndSet(true, false)) {
+                                    failure.set(error);
+                                    ready.countDown();
+                                }
+                            }
+                        };
+                    try {
+                        snapshot.renderTextForPage(pageIndex, bitmap,
+                                attachedRenderHost, callback);
+                    } catch (RuntimeException | OutOfMemoryError error) {
+                        snapshot.close();
+                        callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                                " 页文字渲染无法启动", error));
+                    }
+                });
+                boolean pageReady;
+                try {
+                    pageReady = ready.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    accepting.set(false);
+                    snapshot.close();
+                    throw new IOException("PDF 导出已中断", interrupted);
+                }
+                if (!pageReady) {
+                    accepting.set(false);
+                    snapshot.close();
+                    // Do not recycle here: a compositor callback already running
+                    // on a stalled main thread may still hold the bitmap. Closing
+                    // the snapshot invalidates it before that callback can draw.
+                    throw new IOException("第 " + (page + 1) + " 页文字渲染超时");
+                }
+                if (failure.get() != null) {
+                    bitmap.recycle();
+                    throw failure.get();
+                }
+                Bitmap completedPage = rendered.get();
+                if (completedPage == null || completedPage.isRecycled()) {
+                    if (!bitmap.isRecycled()) bitmap.recycle();
+                    throw new IOException("第 " + (page + 1) + " 页未完成渲染");
+                }
+                PdfDocument.Page current = null;
+                try {
+                    current = pdf.startPage(new PdfDocument.PageInfo.Builder(
+                            completedPage.getWidth(), completedPage.getHeight(), page + 1).create());
+                    current.getCanvas().drawBitmap(completedPage, 0, 0, null);
+                } finally {
+                    if (current != null) pdf.finishPage(current);
+                    completedPage.recycle();
+                }
+                if (progress != null) {
+                    int complete = page + 1;
+                    mainHandler.post(() -> progress.onPageRendered(complete, pages));
+                }
             }
             pdf.writeTo(output);
+            output.flush();
         } finally {
             pdf.close();
+            snapshot.close();
         }
     }
 }

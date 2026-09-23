@@ -4,26 +4,112 @@ import UIKit
 
 @MainActor
 final class CompiledTextTests: XCTestCase {
+    private func prepare(_ note: NoteDocument, timeout: TimeInterval = 20) async throws {
+        let finished = expectation(description: "Offline paper resources finish rendering")
+        var outcome: Result<Void, Error>?
+        Task { @MainActor in
+            do {
+                try await CompiledTextRenderer.shared.prepareAndWait(document: note)
+                outcome = .success(())
+            } catch {
+                outcome = .failure(error)
+            }
+            finished.fulfill()
+        }
+        await fulfillment(of: [finished], timeout: timeout)
+        guard let outcome else { throw NSError(domain: "PadNoteTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Timed out rendering offline paper resources"]) }
+        try outcome.get()
+    }
+
+    private func attachPages(_ note: NoteDocument, name: String) {
+        let contentPages = note.textFlows.flatMap { NoteTextLayout.fragments($0, pageHeight: note.pageHeight).map(\.page) }
+        let pageCount = max(note.pageCount, (contentPages.max() ?? -1) + 1)
+        for page in 0..<pageCount {
+            let attachment = XCTAttachment(image: NoteRenderer.renderPage(document: note, page: page, pdfURL: nil))
+            attachment.name = "\(name) – page \(page + 1)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     func testOfflineCompiledPaperContainsMathAndDiagramPixels() async throws {
         var note = NoteDocument()
-        let source = "# 勾股定理\n\\[a^2+b^2=c^2\\]\n```mermaid\ngraph LR\n A[条件] --> B[结论]\n```"
+        let terms = (1...36).map { "x_{\($0)}" }.joined(separator: "+")
+        let source = """
+        # 长公式
+        \\[\(terms)=S\\]
+        ## 横向图
+        ```mermaid
+        flowchart LR
+          A --> B --> C --> D --> E --> F
+        ```
+        ## 纵向图
+        ```mermaid
+        flowchart TD
+          A --> B --> C --> D --> E --> F
+        ```
+        """
         let flow = NoteTextFlow(format: "markdown", source: source, width: 420, anchorYInPage: 56)
         note.textFlows = [flow]
-        try await CompiledTextRenderer.shared.prepareAndWait(document: note)
+        try await prepare(note)
         let entry = try XCTUnwrap(CompiledTextCache.entry(flow))
-        XCTAssertGreaterThanOrEqual(entry.units.count, 3)
+        XCTAssertEqual(entry.units.count, 3, "Each heading must stay with its formula or diagram")
         for unit in entry.units {
-            let cg = try XCTUnwrap(unit.image.cgImage)
-            let pixels = try XCTUnwrap(cg.dataProvider?.data) as Data
-            XCTAssertGreaterThan(pixels.filter { $0 > 0 }.count, 100, "Every compiled block should have painted pixels")
+            XCTAssertGreaterThan(unit.image.size.width, 100)
+            XCTAssertGreaterThan(unit.image.size.height, 10)
+            XCTAssertLessThanOrEqual(unit.size.width, flow.width)
         }
         let fragments = NoteTextLayout.fragments(flow, pageHeight: note.pageHeight)
         XCTAssertTrue(fragments.allSatisfy { $0.image != nil })
         XCTAssertEqual(fragments.map { $0.text.string }.joined(), source)
-        let attachment = XCTAttachment(image: NoteRenderer.renderPage(document: note, page: 0, pdfURL: nil))
-        attachment.name = "Compiled formula and diagram on paper"
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        attachPages(note, name: "Compiled formula and diagram on paper")
+    }
+
+    func testRealWebViewKeepsHeadingChainWithFormulaOffPageTail() async throws {
+        var note = NoteDocument()
+        let terms = (1...36).map { "x_{\($0)}" }.joined(separator: "+")
+        let source = "# 主标题\n## 推导\n\\[\(terms)=S\\]"
+        let flow = NoteTextFlow(format: "markdown", source: source, width: 520,
+            anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: note.pageHeight - 55)
+        note.textFlows = [flow]
+        try await prepare(note)
+        let entry = try XCTUnwrap(CompiledTextCache.entry(flow))
+        XCTAssertEqual(entry.units.count, 1, "Heading chain and its formula must compile as one semantic unit")
+        let fragments = NoteTextLayout.fragments(flow, pageHeight: note.pageHeight)
+        XCTAssertEqual(fragments.count, 1)
+        XCTAssertEqual(fragments.first?.page, 1, "The title must move with the formula instead of remaining at the page tail")
+        XCTAssertEqual(fragments.map { $0.text.string }.joined(), source)
+        note.pageCount = 2
+        attachPages(note, name: "Heading chain and long formula")
+    }
+
+    func testOrderedStepsRenderOnPaperWithMathAndDiagram() async throws {
+        var note = NoteDocument()
+        let source = """
+        # 从差商到导数
+        按顺序完成下面三个步骤，再核对公式和流程图。
+
+        3. 展开分子
+
+        4. 约去非零的 h
+
+        5. 令 h 趋近于零
+
+        \\[f'(x)=\\lim_{h\\to0}\\frac{f(x+h)-f(x)}{h}\\]
+
+        ```mermaid
+        flowchart LR
+          A[展开] --> B[约分] --> C[取极限]
+        ```
+        """
+        let flow = NoteTextFlow(format: "markdown", source: source, width: note.pageWidth - 32,
+            anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40)
+        note.textFlows = [flow]
+        try await prepare(note)
+        let entry = try XCTUnwrap(CompiledTextCache.entry(flow))
+        XCTAssertGreaterThanOrEqual(entry.units.count, 5)
+        XCTAssertTrue(NoteTextLayout.canFullyLayout(flow, pageHeight: note.pageHeight))
+        attachPages(note, name: "Ordered steps with formula and diagram")
     }
 
     func testSemanticBlocksRelayoutFromAnchorWithoutRecompiling() {

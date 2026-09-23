@@ -116,6 +116,8 @@ final class NoteTextBoxView extends FrameLayout {
     private String renderedSource;
     private float renderedFontSizeSp = -1f;
     private float renderedLineHeight = -1f;
+    /** World-space column width used by the current compiled document. */
+    private float renderedWidth = -1f;
     /** Canvas scale the current render was produced at. */
     private float renderedScale = -1f;
     private float pendingRenderScale = 1f;
@@ -792,15 +794,18 @@ final class NoteTextBoxView extends FrameLayout {
         String normalizedSource = source == null ? "" : source;
         float normalizedFontSize = TextFlow.clampFontSize(fontSizeSp);
         float normalizedLineHeight = TextFlow.clampLineHeight(lineHeight);
+        float normalizedWidth = model == null ? -1f : model.width;
         if (renderedFormat == normalizedFormat && normalizedSource.equals(renderedSource) &&
                 Math.abs(renderedFontSizeSp - normalizedFontSize) < 0.01f &&
-                Math.abs(renderedLineHeight - normalizedLineHeight) < 0.001f) {
+                Math.abs(renderedLineHeight - normalizedLineHeight) < 0.001f &&
+                Math.abs(renderedWidth - normalizedWidth) < 0.5f) {
             return;
         }
         renderedFormat = normalizedFormat;
         renderedSource = normalizedSource;
         renderedFontSizeSp = normalizedFontSize;
         renderedLineHeight = normalizedLineHeight;
+        renderedWidth = normalizedWidth;
         if (renderedScale <= 0f) {
             renderedScale = Math.max(0.01f, viewportScale);
         }

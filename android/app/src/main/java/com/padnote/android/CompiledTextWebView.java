@@ -4,7 +4,9 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Color;
 import android.os.Build;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -16,12 +18,25 @@ import java.util.regex.Pattern;
 @SuppressLint("ViewConstructor")
 final class CompiledTextWebView extends WebView {
     private static final String ASSET_BASE = "file:///android_asset/katex/";
+    private static final int READY_POLL_LIMIT = 100;
+    private static final long READY_POLL_INTERVAL_MS = 50L;
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
     private static final Pattern UNORDERED = Pattern.compile("^\\s*[-*+]\\s+(.+)$");
-    private static final Pattern ORDERED = Pattern.compile("^\\s*\\d+[.)]\\s+(.+)$");
+    private static final Pattern ORDERED = Pattern.compile("^\\s*(\\d+)[.)]\\s+(.+)$");
+    /** Invalidates readiness polls left behind by a previous render. */
+    private int renderGeneration;
+    private ExportReadyListener exportReadyListener;
+    private int exportReadyGeneration = -1;
+    private boolean renderingCancelled;
 
-    @SuppressLint("SetJavaScriptEnabled")
     CompiledTextWebView(Context context, NoteTextBox.Format format, String source) {
+        this(context);
+        render(format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT);
+    }
+
+    /** Empty renderer used by export so no superseded initial load can fail it. */
+    @SuppressLint("SetJavaScriptEnabled")
+    CompiledTextWebView(Context context) {
         super(context);
         setBackgroundColor(Color.TRANSPARENT);
         setOverScrollMode(OVER_SCROLL_IF_CONTENT_SCROLLS);
@@ -57,17 +72,40 @@ final class CompiledTextWebView extends WebView {
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 return true;
             }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        WebResourceError error) {
+                if (exportReadyListener != null) {
+                    failExportRender(renderGeneration, "文字资源加载失败");
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                            WebResourceResponse errorResponse) {
+                if (exportReadyListener != null) {
+                    failExportRender(renderGeneration, "文字资源加载失败");
+                }
+            }
             @Override
             public void onPageFinished(WebView view, String url) {
-                reportRenderedHeight();
+                if (!renderingCancelled) {
+                    pollRenderedHeightWhenReady(renderGeneration, 0);
+                }
             }
         });
-        render(format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT);
     }
 
     /** Receives the height the content actually needed, in CSS px (= dp). */
     interface HeightListener {
         void onMeasuredHeight(float heightDp);
+    }
+
+    interface ExportReadyListener {
+        void onReady(float measuredHeightPx, float visualHeightPx);
+
+        void onFailure(String message);
     }
 
     private HeightListener heightListener;
@@ -76,14 +114,34 @@ final class CompiledTextWebView extends WebView {
         this.heightListener = listener;
     }
 
+    /** Invalidates delayed JS/compositor callbacks before an export WebView dies. */
+    void cancelPendingRendering() {
+        renderingCancelled = true;
+        renderGeneration += 1;
+        exportReadyGeneration = -1;
+        exportReadyListener = null;
+        heightListener = null;
+        stopLoading();
+    }
+
     void render(NoteTextBox.Format format, String source) {
         render(format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT);
     }
 
     void render(NoteTextBox.Format format, String source, float fontSizeSp,
                 float lineHeight) {
+        renderingCancelled = false;
+        renderGeneration += 1;
         loadDataWithBaseURL(ASSET_BASE, buildHtml(format, source, fontSizeSp, lineHeight),
                 "text/html", "UTF-8", null);
+    }
+
+    /** Renders an attached offscreen export view and reports a compositor-ready frame. */
+    void renderForExport(NoteTextBox.Format format, String source, float fontSizeSp,
+                         float lineHeight, ExportReadyListener listener) {
+        exportReadyListener = listener;
+        render(format, source, fontSizeSp, lineHeight);
+        exportReadyGeneration = renderGeneration;
     }
 
     /**
@@ -95,6 +153,7 @@ final class CompiledTextWebView extends WebView {
      * byte-stable. Vault documents scroll naturally and are never measured.
      */
     void renderDocument(String markdown) {
+        renderingCancelled = false;
         loadDataWithBaseURL(ASSET_BASE, buildDocumentHtml(markdown),
                 "text/html", "UTF-8", null);
     }
@@ -154,24 +213,85 @@ final class CompiledTextWebView extends WebView {
      * this WebView has network, file and storage access switched off, and adding an
      * injected object would widen that surface for one number.
      */
-    private void reportRenderedHeight() {
-        // KaTeX and webfont loading both finish after onPageFinished, so the page
-        // records its own settled height and this only reads that value back.
+    private void pollRenderedHeightWhenReady(int generation, int attempt) {
+        if (renderingCancelled || generation != renderGeneration) {
+            return;
+        }
+        // The page flips __padnoteReady only after KaTeX fonts and every Mermaid
+        // render have settled. Polling the state avoids device-dependent timeout
+        // guesses while keeping the WebView free of a JavaScript bridge.
         evaluateJavascript(
-                "(function(){return String(window.__padnoteHeight||0);})()",
+                "(function(){return window.__padnoteError?'!':window.__padnoteReady?" +
+                        "String(window.__padnoteHeight||0)+'|'+" +
+                        "String(window.__padnoteVisualHeight||window.__padnoteHeight||0):'';})()",
                 value -> {
-                    if (heightListener == null || value == null) {
+                    if (renderingCancelled || generation != renderGeneration) {
+                        return;
+                    }
+                    String normalized = value == null ? "" : value.replace("\"", "").trim();
+                    if ("!".equals(normalized)) {
+                        failExportRender(generation, "文字脚本渲染失败");
+                        return;
+                    }
+                    if (normalized.isEmpty()) {
+                        if (attempt + 1 < READY_POLL_LIMIT) {
+                            postDelayed(() -> pollRenderedHeightWhenReady(
+                                    generation, attempt + 1), READY_POLL_INTERVAL_MS);
+                        } else {
+                            failExportRender(generation, "文字资源渲染超时");
+                        }
                         return;
                     }
                     try {
-                        float measured = Float.parseFloat(value.replace("\"", "").trim());
-                        if (measured > 0f) {
+                        String[] parts = normalized.split("\\|", 2);
+                        float measured = Float.parseFloat(parts[0]);
+                        float visual = parts.length == 2 ? Float.parseFloat(parts[1]) : measured;
+                        if (heightListener != null && measured > 0f) {
                             heightListener.onMeasuredHeight(measured);
                         }
+                        signalExportFrameWhenVisible(generation, measured, visual);
                     } catch (NumberFormatException malformed) {
                         // A page that cannot report its height keeps the estimate.
+                        failExportRender(generation, "文字渲染高度无效");
                     }
                 });
+    }
+
+    private void signalExportFrameWhenVisible(int generation, float measuredHeightPx,
+                                               float visualHeightPx) {
+        if (exportReadyListener == null || exportReadyGeneration != generation ||
+                generation != renderGeneration) {
+            return;
+        }
+        ExportReadyListener expected = exportReadyListener;
+        postVisualStateCallback(generation, new VisualStateCallback() {
+            @Override
+            public void onComplete(long requestId) {
+                if (exportReadyListener != expected || exportReadyGeneration != generation ||
+                        generation != renderGeneration) {
+                    return;
+                }
+                exportReadyListener = null;
+                expected.onReady(measuredHeightPx, visualHeightPx);
+            }
+        });
+        // postVisualStateCallback has no failure callback. Bound it separately so
+        // a detached or failed compositor cannot make PDF export wait forever.
+        postDelayed(() -> {
+            if (exportReadyListener == expected && exportReadyGeneration == generation) {
+                exportReadyListener = null;
+                expected.onFailure("文字画面提交超时");
+            }
+        }, READY_POLL_LIMIT * READY_POLL_INTERVAL_MS);
+    }
+
+    private void failExportRender(int generation, String message) {
+        if (exportReadyListener == null || exportReadyGeneration != generation) {
+            return;
+        }
+        ExportReadyListener listener = exportReadyListener;
+        exportReadyListener = null;
+        listener.onFailure(message);
     }
 
     /**
@@ -207,42 +327,65 @@ final class CompiledTextWebView extends WebView {
                 "style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'\">" +
                 "<link rel=\"stylesheet\" href=\"katex.min.css\">" +
                 "<style>html,body{margin:0;padding:0;background:transparent;color:#17212b;" +
-                "font-family:sans-serif;font-size:" + safeFontSize + "px;" +
+                "font-family:system-ui,-apple-system,sans-serif;font-size:" + safeFontSize + "px;" +
                 "line-height:" + safeLineHeight + "}" +
                 ".content{padding:10px 12px;overflow-wrap:anywhere}.latex-root{text-align:center;" +
-                "padding:" + mathGap + "px 4px;overflow-x:auto}.math-display{display:block;" +
-                "text-align:center;overflow-x:auto;margin:" + mathGap + "px 0}" +
+                "padding:" + mathGap + "px 4px;overflow:visible}.math-display{display:block;" +
+                "text-align:center;overflow:visible;margin:" + mathGap + "px 0}" +
                 ".math-inline{display:inline-block;margin:0 2px}" +
+                ".latex-root .katex-html,.math-display .katex-html{white-space:normal}" +
+                ".latex-root .katex-html>.base,.math-display .katex-html>.base{" +
+                "display:inline-block;white-space:nowrap;max-width:100%}" +
                 "h1,h2,h3,h4,h5,h6{margin:" + headingTop + "px 0 " + blockGap +
-                "px;line-height:1.22}p{margin:" + blockGap + "px 0}" +
+                "px;line-height:1.2;color:#1f2933}h1{font-size:1.55em}h2{font-size:1.32em}" +
+                "h3{font-size:1.16em}h4{font-size:1em}h5,h6{font-size:.92em}" +
+                "p{margin:" + blockGap + "px 0}" +
                 "ul,ol{margin:" + blockGap + "px 0;padding-left:" + listIndent + "px}" +
-                "li{margin:0}blockquote{margin:" + mathGap + "px 0;padding:" +
+                "li{margin:0 0 " + Math.max(1, blockGap / 2) + "px}blockquote{margin:" + mathGap + "px 0;padding:" +
                 blockGap + "px 10px;" +
                 "border-left:3px solid #7894b8;background:#eef3f8}code{font-family:monospace;" +
                 "background:#eef0f2;border-radius:4px;padding:1px 4px}pre{white-space:pre-wrap;" +
                 "margin:" + blockGap + "px 0;" +
                 "background:#eef0f2;border-radius:7px;padding:8px}.md-link{color:#285ea8}" +
-                // Fixed 4:3 viewport also gives the paginator a deterministic cost.
-                "pre.mermaid{position:relative;height:0;padding:75% 0 0;overflow:hidden;background:transparent}" +
-                "pre.mermaid svg{position:absolute;inset:0;width:100%;height:100%;max-width:none!important}" +
-                ".diagram-error{position:absolute;inset:0;padding:12px;white-space:pre-wrap;color:#8f2f2b}" +
+                "pre.mermaid{padding:8px 0;overflow:visible;background:transparent;text-align:center}" +
+                // A diagram is one indivisible source block. Keep its real viewBox
+                // ratio, but contain unusually tall diagrams inside the paper
+                // fragment instead of leaving an invisible clipped tail.
+                "pre.mermaid svg{display:block;width:auto;height:auto;margin:0 auto;" +
+                "max-width:100%!important;object-fit:contain}" +
+                ".diagram-error{display:block;padding:12px;white-space:pre-wrap;color:#8f2f2b}" +
                 ".katex-error{color:#8f2f2b}</style></head><body><div class=\"content\">" +
                 body + "</div><script src=\"katex.min.js\"></script><script>" +
+                "window.__padnoteReady=false;window.__padnoteError='';window.__padnoteHeight=0;" +
+                "window.__padnoteVisualHeight=0;window.addEventListener('error',function(){" +
+                "window.__padnoteError='resource';});" +
+                "window.__padnoteDiagramExtra=0;window.__padnoteUnclippedExtra=0;" +
                 "document.querySelectorAll('[data-tex]').forEach(function(el){" +
                 "katex.render(el.getAttribute('data-tex'),el,{displayMode:el.getAttribute('data-display')==='1'," +
                 "throwOnError:false,strict:'ignore',trust:false,output:'htmlAndMathml'});});" +
+                "function __padnoteFitMath(){window.__padnoteUnclippedExtra=window.__padnoteDiagramExtra||0;" +
+                "document.querySelectorAll('.latex-root,.math-display').forEach(function(el){" +
+                "var k=el.querySelector('.katex');if(!k)return;k.style.fontSize='1em';" +
+                "var available=el.clientWidth;var bases=k.querySelectorAll('.katex-html>.base');" +
+                "bases.forEach(function(base){base.style.fontSize='1em';var baseWidth=base.scrollWidth;" +
+                "if(baseWidth>available&&available>0){base.style.fontSize=(available/baseWidth*.995)+'em';}});" +
+                "var r=k.getBoundingClientRect();" +
+                "var availableHeight=Math.max(12,window.innerHeight-el.getBoundingClientRect().top-12);" +
+                "var scale=Math.min(1,available/Math.max(1,Math.max(k.scrollWidth,r.width))," +
+                "availableHeight/Math.max(1,r.height));" +
+                "if(scale<1){window.__padnoteUnclippedExtra+=r.height*(1-scale);" +
+                "k.style.fontSize=(scale*.995)+'em';}});}" +
                 // Record the settled height so the native side can correct a
                 // pagination estimate that came in too low and would clip the tail.
-                // Measured after fonts resolve, because KaTeX metrics shift once
-                // its webfonts land.
                 "function __padnoteMeasure(){var c=document.querySelector('.content');" +
-                "if(!c)return;var s=getComputedStyle(c);" +
-                "window.__padnoteHeight=Math.ceil(Math.max(c.getBoundingClientRect().height," +
-                "c.scrollHeight+parseFloat(s.paddingTop)+parseFloat(s.paddingBottom)));}" +
-                "__padnoteMeasure();" +
-                "if(document.fonts&&document.fonts.ready){" +
-                "document.fonts.ready.then(function(){" +
-                "requestAnimationFrame(function(){requestAnimationFrame(__padnoteMeasure);});});}" +
+                "if(!c)return;" +
+                "window.__padnoteVisualHeight=Math.ceil(Math.max(c.getBoundingClientRect().height,c.scrollHeight));" +
+                "window.__padnoteHeight=Math.ceil(window.__padnoteVisualHeight+" +
+                "(window.__padnoteUnclippedExtra||0));window.__padnoteReady=true;}" +
+                "function __padnoteSettle(){var fonts=document.fonts&&document.fonts.ready?" +
+                "document.fonts.ready:Promise.resolve();fonts.then(function(){" +
+                "requestAnimationFrame(function(){requestAnimationFrame(function(){" +
+                "__padnoteFitMath();__padnoteMeasure();});});});}" +
                 "</script>" + (body.contains("class=\"mermaid\"") ?
                 "<script src=\"../mermaid/mermaid.min.js\"></script><script>" +
                 "mermaid.initialize({startOnLoad:false,theme:'base',securityLevel:'strict'," +
@@ -252,10 +395,20 @@ final class CompiledTextWebView extends WebView {
                 "(async function(){var nodes=document.querySelectorAll('pre.mermaid');" +
                 "for(var i=0;i<nodes.length;i++){var el=nodes[i],code=el.textContent;el.textContent='';" +
                 "try{var result=await mermaid.render('padnote-diagram-'+i,code);el.innerHTML=result.svg;" +
-                "el.querySelector('svg').setAttribute('preserveAspectRatio','xMidYMid meet');}" +
+                "var svg=el.querySelector('svg');svg.setAttribute('preserveAspectRatio','xMidYMid meet');" +
+                "var vb=svg.viewBox&&svg.viewBox.baseVal;var naturalWidth=vb&&vb.width?vb.width:svg.getBoundingClientRect().width;" +
+                "var naturalHeight=vb&&vb.height?vb.height:svg.getBoundingClientRect().height;" +
+                "var maxWidth=el.clientWidth;var maxHeight=Math.max(72,window.innerHeight-el.getBoundingClientRect().top-18);" +
+                "var widthScale=Math.min(1,maxWidth/Math.max(1,naturalWidth));" +
+                "var diagramScale=Math.min(widthScale,maxHeight/Math.max(1,naturalHeight));" +
+                "window.__padnoteDiagramExtra+=Math.max(0,naturalHeight*(widthScale-diagramScale));" +
+                "svg.removeAttribute('width');svg.removeAttribute('height');" +
+                "svg.style.width=Math.max(1,naturalWidth*diagramScale)+'px';" +
+                "svg.style.height=Math.max(1,naturalHeight*diagramScale)+'px';}" +
                 "catch(error){var msg=document.createElement('span');msg.className='diagram-error';" +
                 "msg.textContent='示意图语法有误，请编辑 Mermaid 源码或让 AI 重新生成。';el.appendChild(msg);}}" +
-                "__padnoteMeasure();})();</script>" : "") + "</body></html>";
+                "__padnoteSettle();})();</script>" :
+                "<script>__padnoteSettle();</script>") + "</body></html>";
     }
 
     static String normalizeLatexSource(String source) {
@@ -353,10 +506,14 @@ final class CompiledTextWebView extends WebView {
             }
             if (isOrdered) {
                 if (!orderedList) {
-                    html.append("<ol>");
+                    // A flow may be split between any two list items, and blank
+                    // lines intentionally close a list run. Preserve the first
+                    // marker of every run so a later fragment does not restart
+                    // numbered steps at 1.
+                    html.append("<ol start=\"").append(ordered.group(1)).append("\">");
                     orderedList = true;
                 }
-                html.append("<li>").append(markdownInline(ordered.group(1))).append("</li>");
+                html.append("<li>").append(markdownInline(ordered.group(2))).append("</li>");
                 continue;
             }
             if (line.trim().isEmpty()) {

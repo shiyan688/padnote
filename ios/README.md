@@ -41,3 +41,5 @@ PADNOTE_SIMULATOR_ID=172ECBE4-DB05-400A-8051-7D9B3DB0C775 ios/scripts/verify.sh
 ```
 
 脚本把 derived data 和日志放入 `ios/build`；测试报告另存于忽略的 `ios/TestResults`。不会安装工具或修改用户签名配置。
+
+2026-09-23 排版更新：build 44 的 Canvas、CompiledText 与 Math 共 20 项针对性模拟器测试通过，arm64 无签名构建通过；Apple Pencil 和真机仍需验证。电脑 Agent 页已加入共用的离线连接教程。

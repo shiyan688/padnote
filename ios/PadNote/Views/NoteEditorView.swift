@@ -291,8 +291,8 @@ struct NoteEditorView: View {
                 guard page < 500 else { return }
                 if needsPage { note.pageCount += 1 }
                 let flow = NoteTextFlow(id: UUID().uuidString, format: format, source: clean, fontSizeSp: size,
-                                        lineHeight: 1.35, width: note.pageWidth - 96, anchorPageIndex: page,
-                                        anchorXInPage: 48, anchorYInPage: 56)
+                                        lineHeight: 1.35, width: note.pageWidth - 32, anchorPageIndex: page,
+                                        anchorXInPage: 16, anchorYInPage: 40)
                 note.textFlows.append(flow)
             }
         }

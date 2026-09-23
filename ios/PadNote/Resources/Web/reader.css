@@ -1,15 +1,18 @@
 :root { color-scheme: light; }
 body { margin: 0; padding: 16px; background: transparent; color: #1F2933; font: 16px/1.55 -apple-system, sans-serif; overflow-wrap: anywhere; }
-h1 { font-size: 1.6em; } h2 { font-size: 1.3em; } h3 { font-size: 1.1em; }
-h1,h2,h3 { line-height: 1.35; margin: 1em 0 .5em; }
-p { margin: .5em 0; } pre { white-space: pre-wrap; background: #F4F1E8; padding: 12px; border-radius: 9px; }
-ul, ol { margin: .5em 0; padding-left: 1.5em; } li { margin: .2em 0; }
+h1 { font-size: 1.55em; } h2 { font-size: 1.28em; } h3 { font-size: 1.1em; }
+h1,h2,h3 { line-height: 1.25; margin: 1.15em 0 .38em; font-weight: 700; }
+h1:first-child,h2:first-child,h3:first-child { margin-top: 0; }
+p { margin: .38em 0 .72em; } pre { white-space: pre-wrap; background: #F4F1E8; padding: 12px; border-radius: 9px; }
+ul, ol { margin: .38em 0 .72em; padding-left: 1.5em; } li { margin: .18em 0; }
 code { font: .9em ui-monospace, monospace; } blockquote { border-left: 3px solid #285EA8; margin-left: 0; padding-left: 16px; color: #6B7684; }
 .md-link { color: #285EA8; text-decoration: underline; }
 .code-block { white-space: pre-wrap; }
-.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
-.diagram { margin: 16px 0; } .diagram svg { max-width: 100%; height: auto; }
+.katex-display { overflow: visible; padding: 6px 0 8px; margin: .55em 0 .8em; }
+.katex-display > .katex { display: inline-block; max-width: 100%; transform-origin: left center; }
+.katex-display > .katex.wrapped-formula { display: block; width: 100%; }
+.katex-display > .katex.wrapped-formula > .katex-html { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; row-gap: .35em; }
+.diagram { margin: 12px 0 16px; line-height: 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
 .paper { overflow: hidden; }
 .paper #content { display: flow-root; }
-.paper .diagram svg { max-height: 960px; }
-.paper .katex-display > .katex { white-space: normal; }
+.paper .katex-display > .katex .base { white-space: nowrap; }

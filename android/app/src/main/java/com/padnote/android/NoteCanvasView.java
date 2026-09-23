@@ -13,10 +13,14 @@ import android.graphics.PorterDuff;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.view.animation.DecelerateInterpolator;
 
 import org.json.JSONArray;
@@ -24,6 +28,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -75,6 +80,346 @@ public final class NoteCanvasView extends View {
             this.strokeCount = strokeCount;
             this.pointCount = pointCount;
             this.lassoMaskApplied = lassoMaskApplied;
+        }
+    }
+
+    /** Immutable document state used by the final PDF exporter. */
+    static final class PdfExportSnapshot implements AutoCloseable {
+        interface PageCallback {
+            void onRendered(Bitmap page);
+
+            void onFailure(Exception error);
+        }
+
+        private final NoteCanvasView owner;
+        private final int pageCount;
+        private final float pageWidth;
+        private final float pageHeight;
+        private final float pageGap;
+        private final float density;
+        private final PageStyle pageStyle;
+        private final List<InkStroke> strokes;
+        private final List<NoteImage> images;
+        private final List<NoteTextBox> textBoxes;
+        private final PdfBackground pdfBackground;
+        private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private volatile boolean closed;
+        private boolean resourcesClosed;
+        private CompiledTextWebView activeTextView;
+        private FrameLayout activeHost;
+        private PageCallback activePageCallback;
+
+        PdfExportSnapshot(NoteCanvasView owner, int pageCount, float pageWidth,
+                          float pageHeight, float pageGap, float density,
+                          PageStyle pageStyle, List<InkStroke> strokes,
+                          List<NoteImage> images, List<NoteTextBox> textBoxes,
+                          PdfBackground pdfBackground) {
+            this.owner = owner;
+            this.pageCount = pageCount;
+            this.pageWidth = pageWidth;
+            this.pageHeight = pageHeight;
+            this.pageGap = pageGap;
+            this.density = density;
+            this.pageStyle = pageStyle;
+            this.strokes = strokes;
+            this.images = images;
+            this.textBoxes = textBoxes;
+            this.pdfBackground = pdfBackground;
+        }
+
+        int getPageCount() {
+            return pageCount;
+        }
+
+        /** Draws everything except compiled text. Called by the export worker. */
+        Bitmap renderBasePage(int pageIndex, int maxDimensionPx) throws IOException {
+            if (closed || pageIndex < 0 || pageIndex >= pageCount) {
+                throw new IOException("PDF 导出快照已失效");
+            }
+            float longest = Math.max(pageWidth, pageHeight);
+            float scale = Math.min(2f, Math.max(1f, Math.max(1, maxDimensionPx) / longest));
+            int width = Math.max(1, Math.round(pageWidth * scale));
+            int height = Math.max(1, Math.round(pageHeight * scale));
+            Bitmap bitmap;
+            try {
+                bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            } catch (RuntimeException | OutOfMemoryError error) {
+                throw new IOException("无法分配第 " + (pageIndex + 1) + " 页图像", error);
+            }
+            Canvas canvas = new Canvas(bitmap);
+            try {
+                canvas.drawColor(PAPER_COLOR);
+                canvas.save();
+                canvas.scale(scale, scale);
+                drawSnapshotPage(canvas, pageIndex);
+                canvas.restore();
+            } catch (RuntimeException | OutOfMemoryError error) {
+                bitmap.recycle();
+                throw new IOException("无法渲染第 " + (pageIndex + 1) + " 页", error);
+            }
+            return bitmap;
+        }
+
+        private void drawSnapshotPage(Canvas canvas, int pageIndex) {
+            float top = pageIndex * (pageHeight + pageGap);
+            canvas.save();
+            canvas.clipRect(0, 0, pageWidth, pageHeight);
+            if (pdfBackground == null || !pdfBackground.hasPage(pageIndex)) {
+                drawRuling(canvas);
+            }
+            if (pdfBackground != null) {
+                pdfBackground.draw(canvas, pageIndex,
+                        new RectF(0, 0, pageWidth, pageHeight), true);
+            }
+            Paint imagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+            for (NoteImage image : images) {
+                if (image.page != pageIndex) continue;
+                canvas.drawBitmap(image.bitmap, null,
+                        new RectF(image.x, image.y, image.x + image.width,
+                                image.y + image.height), imagePaint);
+            }
+            canvas.translate(0, -top);
+            Paint inkPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+            for (InkStroke stroke : strokes) {
+                drawSnapshotStroke(canvas, inkPaint, stroke);
+            }
+            canvas.restore();
+        }
+
+        private void drawRuling(Canvas canvas) {
+            if (pageStyle.paper == PageStyle.Paper.BLANK) return;
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setColor(GUIDE_COLOR);
+            paint.setStrokeWidth(Math.max(1f, density * 0.6f));
+            float gap = Math.max(density * 18f,
+                    Math.min(density * 44f, pageHeight / 26f));
+            if (pageStyle.paper == PageStyle.Paper.DOTTED) {
+                paint.setStyle(Paint.Style.FILL);
+                float radius = Math.max(density * 0.7f, gap * 0.035f);
+                for (float y = gap; y < pageHeight; y += gap) {
+                    for (float x = gap; x < pageWidth; x += gap) {
+                        canvas.drawCircle(x, y, radius, paint);
+                    }
+                }
+                return;
+            }
+            for (float y = gap; y < pageHeight; y += gap) {
+                canvas.drawLine(0, y, pageWidth, y, paint);
+            }
+            if (pageStyle.paper == PageStyle.Paper.GRID) {
+                for (float x = gap; x < pageWidth; x += gap) {
+                    canvas.drawLine(x, 0, x, pageHeight, paint);
+                }
+            }
+        }
+
+        private static void drawSnapshotStroke(Canvas canvas, Paint paint, InkStroke stroke) {
+            if (stroke.points.isEmpty()) return;
+            paint.setColor(stroke.color);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            if (stroke.highlighter) {
+                Path path = new Path();
+                InkPoint first = stroke.points.get(0);
+                path.moveTo(first.x, first.y);
+                if (stroke.points.size() == 1) path.lineTo(first.x + 0.01f, first.y);
+                for (int index = 1; index < stroke.points.size(); index++) {
+                    InkPoint point = stroke.points.get(index);
+                    path.lineTo(point.x, point.y);
+                }
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(stroke.baseWidth);
+                canvas.drawPath(path, paint);
+                return;
+            }
+            if (stroke.points.size() == 1) {
+                InkPoint point = stroke.points.get(0);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(point.x, point.y,
+                        pressureWidth(point, stroke.baseWidth) / 2f, paint);
+                return;
+            }
+            paint.setStyle(Paint.Style.STROKE);
+            for (int index = 1; index < stroke.points.size(); index++) {
+                InkPoint from = stroke.points.get(index - 1);
+                InkPoint to = stroke.points.get(index);
+                paint.setStrokeWidth((pressureWidth(from, stroke.baseWidth) +
+                        pressureWidth(to, stroke.baseWidth)) / 2f);
+                canvas.drawLine(from.x, from.y, to.x, to.y, paint);
+            }
+        }
+
+        private static float pressureWidth(InkPoint point, float baseWidth) {
+            float pressure = point.pressure > 0 ? Math.min(point.pressure, 1f) : 0.5f;
+            return baseWidth * (0.45f + pressure * 0.95f);
+        }
+
+        static float containScaleForExport(float reservedNativeHeight,
+                                           float visualCssHeight, float density) {
+            float visualNativeHeight = visualCssHeight * density;
+            if (!Float.isFinite(visualNativeHeight) || visualNativeHeight <= 0f) return 0f;
+            return Math.min(1f, Math.max(1f, reservedNativeHeight) / visualNativeHeight);
+        }
+
+        /** Adds compiled fragments to a base bitmap. Must be called on the UI thread. */
+        void renderTextForPage(int pageIndex, Bitmap page, FrameLayout attachedHost,
+                               PageCallback callback) {
+            if (Looper.myLooper() != Looper.getMainLooper()) {
+                callback.onFailure(new IllegalStateException("文字页面必须在主线程渲染"));
+                return;
+            }
+            if (closed || page == null || page.isRecycled() ||
+                    attachedHost == null || !attachedHost.isAttachedToWindow()) {
+                callback.onFailure(new IOException("PDF 文字渲染容器不可用"));
+                return;
+            }
+            List<NoteTextBox> pageText = new ArrayList<>();
+            for (NoteTextBox box : textBoxes) {
+                if (box.pageIndex == pageIndex) pageText.add(box);
+            }
+            activePageCallback = callback;
+            startTextFragment(pageIndex, page, attachedHost, pageText, 0, callback);
+        }
+
+        private void startTextFragment(int pageIndex, Bitmap page, FrameLayout host,
+                                       List<NoteTextBox> pageText, int index,
+                                       PageCallback callback) {
+            try {
+                renderTextFragment(pageIndex, page, host, pageText, index, callback);
+            } catch (RuntimeException | OutOfMemoryError error) {
+                if (activeTextView != null && activeHost != null) {
+                    disposeTextView(activeHost, activeTextView);
+                }
+                activePageCallback = null;
+                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                        " 页文字渲染无法启动", error));
+            }
+        }
+
+        private void renderTextFragment(int pageIndex, Bitmap page, FrameLayout host,
+                                        List<NoteTextBox> pageText, int index,
+                                        PageCallback callback) {
+            if (closed) {
+                activePageCallback = null;
+                callback.onFailure(new IOException("PDF 导出已取消"));
+                return;
+            }
+            if (index >= pageText.size()) {
+                activePageCallback = null;
+                callback.onRendered(page);
+                return;
+            }
+            NoteTextBox box = pageText.get(index);
+            float outputScale = page.getWidth() / pageWidth;
+            // Match the live overlay's native geometry. WebView reports document
+            // height in CSS px, which is converted with density below; scaling
+            // the WebView itself would leave fixed CSS padding at a different
+            // proportion and could change wrapping in the exported page.
+            int viewWidth = Math.max(1, Math.round(box.width));
+            // A non-visible fragment may still have an estimated reservation.
+            // Give it two paper heights to lay out its complete DOM; if it still
+            // overflows, fail rather than silently drawing a clipped export.
+            int viewHeight = Math.max(1, Math.round(pageHeight * 2f));
+            CompiledTextWebView view = new CompiledTextWebView(owner.getContext());
+            view.setVisibility(View.VISIBLE);
+            view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+            view.getSettings().setOffscreenPreRaster(true);
+            activeTextView = view;
+            activeHost = host;
+            host.addView(view, new FrameLayout.LayoutParams(viewWidth, viewHeight));
+            int widthSpec = View.MeasureSpec.makeMeasureSpec(viewWidth, View.MeasureSpec.EXACTLY);
+            int heightSpec = View.MeasureSpec.makeMeasureSpec(viewHeight, View.MeasureSpec.EXACTLY);
+            view.measure(widthSpec, heightSpec);
+            view.layout(0, 0, viewWidth, viewHeight);
+            view.renderForExport(box.format, box.displaySource(), box.fontSizeSp,
+                    box.lineHeight, new CompiledTextWebView.ExportReadyListener() {
+                        @Override
+                        public void onReady(float measuredHeightPx, float visualHeightPx) {
+                            if (closed || activeTextView != view) {
+                                disposeTextView(host, view);
+                                if (closed && activePageCallback == callback) {
+                                    activePageCallback = null;
+                                    callback.onFailure(new IOException("PDF 导出已取消"));
+                                }
+                                return;
+                            }
+                            float visualNativeHeight = visualHeightPx * density;
+                            if (!Float.isFinite(visualNativeHeight) || visualNativeHeight <= 0f ||
+                                    visualNativeHeight > viewHeight + density) {
+                                disposeTextView(host, view);
+                                activePageCallback = null;
+                                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                                        " 页文字内容超出可渲染范围"));
+                                return;
+                            }
+                            try {
+                                float localY = box.y - pageIndex * (pageHeight + pageGap);
+                                float reservedHeight = Math.max(1f, box.height);
+                                float contain = containScaleForExport(
+                                        reservedHeight, visualHeightPx, density);
+                                Canvas canvas = new Canvas(page);
+                                canvas.save();
+                                canvas.clipRect(box.x * outputScale, localY * outputScale,
+                                        (box.x + box.width) * outputScale,
+                                        (localY + box.height) * outputScale);
+                                canvas.translate(box.x * outputScale, localY * outputScale);
+                                canvas.scale(outputScale * contain, outputScale * contain);
+                                view.draw(canvas);
+                                canvas.restore();
+                            } catch (RuntimeException | OutOfMemoryError error) {
+                                disposeTextView(host, view);
+                                activePageCallback = null;
+                                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                                        " 页文字合成失败", error));
+                                return;
+                            }
+                            disposeTextView(host, view);
+                            startTextFragment(pageIndex, page, host, pageText,
+                                    index + 1, callback);
+                        }
+
+                        @Override
+                        public void onFailure(String message) {
+                            disposeTextView(host, view);
+                            activePageCallback = null;
+                            callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                                    " 页" + message));
+                        }
+                    });
+        }
+
+        private void disposeTextView(FrameLayout host, CompiledTextWebView view) {
+            view.cancelPendingRendering();
+            if (view.getParent() == host) host.removeView(view);
+            view.destroy();
+            if (activeTextView == view) {
+                activeTextView = null;
+                activeHost = null;
+            }
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+            if (Looper.myLooper() != Looper.getMainLooper()) {
+                mainHandler.post(this::disposeResources);
+            } else {
+                disposeResources();
+            }
+        }
+
+        private void disposeResources() {
+            if (resourcesClosed) return;
+            resourcesClosed = true;
+            if (activeTextView != null && activeHost != null) {
+                disposeTextView(activeHost, activeTextView);
+            }
+            if (activePageCallback != null) {
+                PageCallback callback = activePageCallback;
+                activePageCallback = null;
+                callback.onFailure(new IOException("PDF 导出已取消"));
+            }
+            if (pdfBackground != null) pdfBackground.close();
         }
     }
 
@@ -504,14 +849,17 @@ public final class NoteCanvasView extends View {
             return null;
         }
         pushUndoSnapshot();
-        float width = Math.min(pageWidth - dp(32), dp(380));
-        float height = Math.min(pageHeight - dp(32), dp(180));
+        float margin = dp(16);
+        float minimumWidth = Math.min(dp(180), pageWidth - margin * 2f);
         int pageIndex = pageIndexForWorldY(requestedY);
         float top = pageTop(pageIndex);
-        float x = clamp(requestedX, dp(16),
-                Math.max(dp(16), pageWidth - width - dp(16)));
-        float y = clamp(requestedY, top + dp(16),
-                Math.max(top + dp(16), top + pageHeight - height - dp(16)));
+        float x = clamp(requestedX, margin,
+                Math.max(margin, pageWidth - margin - minimumWidth));
+        // A newly authored flow uses the paper remaining to the right of the
+        // insertion point. Existing saved widths remain untouched in fromJson().
+        float width = Math.max(minimumWidth, pageWidth - margin - x);
+        float y = clamp(requestedY, top + margin,
+                Math.max(top + margin, top + pageHeight - margin - dp(72)));
         TextFlow flow = new TextFlow(
                 "flow-" + UUID.randomUUID().toString().replace("-", ""),
                 format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT, width,
@@ -550,41 +898,28 @@ public final class NoteCanvasView extends View {
         anchor.top = clamp(anchor.top, top + margin, pageBottom);
         anchor.bottom = clamp(anchor.bottom, anchor.top, pageBottom);
 
-        float desiredWidth = Math.min(dp(430), pageWidth - margin * 2f);
-        int visualLines = normalizedSource.split("\\r?\\n", -1).length +
-                normalizedSource.length() / 64;
-        float desiredHeight = clamp(dp(118 + Math.min(16, visualLines) * 18),
-                dp(180), dp(410));
-        float minimumWidth = Math.min(dp(240), desiredWidth);
-        float minimumHeight = Math.min(dp(150), desiredHeight);
-        float x;
+        float width = pageWidth - margin * 2f;
+        float x = margin;
         float y;
-        float width = desiredWidth;
-        float height = desiredHeight;
 
-        float rightSpace = pageRight - anchor.right - gap;
-        float belowSpace = pageBottom - anchor.bottom - gap;
-        float aboveSpace = anchor.top - (top + margin) - gap;
-        float leftSpace = anchor.left - margin - gap;
-        if (rightSpace >= minimumWidth) {
-            width = Math.min(desiredWidth, rightSpace);
-            x = anchor.right + gap;
-            y = clamp(anchor.top, top + margin, pageBottom - height);
-        } else if (belowSpace >= minimumHeight) {
-            height = Math.min(desiredHeight, belowSpace);
-            x = clamp(anchor.left, margin, pageRight - width);
-            y = anchor.bottom + gap;
-        } else if (aboveSpace >= minimumHeight) {
-            height = Math.min(desiredHeight, aboveSpace);
-            x = clamp(anchor.left, margin, pageRight - width);
-            y = anchor.top - gap - height;
-        } else if (leftSpace >= minimumWidth) {
-            width = Math.min(desiredWidth, leftSpace);
-            x = anchor.left - gap - width;
-            y = clamp(anchor.top, top + margin, pageBottom - height);
+        // Automatic answers never cover handwriting or an existing text flow.
+        // Use a genuinely empty band only when the whole answer fits there;
+        // otherwise start after the current document so every overflow page is
+        // blank too. The selection remains the page preference, not an obstacle
+        // the layout is allowed to paint over.
+        RectF freeRegion = pageIndex < pdfPageCount ? null : largestFreeRegion(pageIndex);
+        float neededHeight = estimateUnfragmentedFlowHeight(
+                format == null ? NoteTextBox.Format.MARKDOWN : format,
+                normalizedSource, width, 16f, TextFlow.DEFAULT_LINE_HEIGHT);
+        if (freeRegion != null && freeRegion.height() >= neededHeight + gap) {
+            y = Math.max(freeRegion.top, anchor.bottom + gap);
+            if (y + neededHeight > freeRegion.bottom) {
+                y = freeRegion.top;
+            }
         } else {
-            x = clamp(anchor.left, margin, pageRight - width);
-            y = clamp(anchor.bottom + gap, top + margin, pageBottom - height);
+            pageIndex = pageCount;
+            top = pageTop(pageIndex);
+            y = top + margin;
         }
 
         pushUndoSnapshot();
@@ -690,6 +1025,7 @@ public final class NoteCanvasView extends View {
         // over-reserve space for simpler text. Relearn from the new render.
         flow.heightCorrection = 1f;
         flow.heightCorrectionPasses = 0;
+        flow.clearMeasuredMermaidHeights();
         NoteTextBox firstFragment = reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -942,6 +1278,7 @@ public final class NoteCanvasView extends View {
         // content; relearn it from the next render.
         flow.heightCorrection = 1f;
         flow.heightCorrectionPasses = 0;
+        flow.clearMeasuredMermaidHeights();
         reflowFlow(flow);
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
@@ -1018,6 +1355,7 @@ public final class NoteCanvasView extends View {
         // Learned at the previous size, so it no longer describes this content.
         flow.heightCorrection = 1f;
         flow.heightCorrectionPasses = 0;
+        flow.clearMeasuredMermaidHeights();
         reflowFlow(flow);
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
@@ -1035,6 +1373,7 @@ public final class NoteCanvasView extends View {
         probe.width = width;
         probe.fontSizeSp = fontSizeSp;
         probe.heightCorrection = 1f;
+        probe.clearMeasuredMermaidHeights();
         int savedPageCount = pageCount;
         float total = 0f;
         for (TextFragmentLayout layout : layoutFlow(probe)) {
@@ -1063,6 +1402,9 @@ public final class NoteCanvasView extends View {
         flow.width = width;
         flow.anchorXInPage = clamp(flow.anchorXInPage, margin,
                 Math.max(margin, pageWidth - width - margin));
+        flow.heightCorrection = 1f;
+        flow.heightCorrectionPasses = 0;
+        flow.clearMeasuredMermaidHeights();
         reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1165,6 +1507,7 @@ public final class NoteCanvasView extends View {
             float pageBottom = pageTop(pageIndex) + pageHeight - margin;
             float capacity = Math.max(dp(72), pageBottom - y);
             boolean finalAllowedPage = pageIndex == 499;
+            boolean continueOnSamePage = false;
             StringBuilder fragment = new StringBuilder();
             // Each fragment renders in its own WebView, so it pays the
             // .content padding (10px top + 10px bottom) exactly once.
@@ -1172,14 +1515,63 @@ public final class NoteCanvasView extends View {
             BlockKind previousKind = null;
             while (blockIndex < blocks.size()) {
                 String block = blocks.get(blockIndex);
+                boolean mermaid = flow.format == NoteTextBox.Format.MARKDOWN
+                        && block.trim().matches("(?is)^```mermaid\\s.*");
                 float blockHeight = estimateTextBlockHeight(flow.format, block, width,
                         flow.fontSizeSp, flow.lineHeight, previousKind)
                         * flow.heightCorrection;
+                float measuredMermaid = mermaid ? flow.measuredMermaidHeight(block) : 0f;
+                if (measuredMermaid > 0f) {
+                    // The measured value excludes the 20dp .content padding that
+                    // usedHeight already carries, so it can replace the estimate.
+                    blockHeight = measuredMermaid;
+                }
+                // Mermaid needs its own WebView measurement fragment, but a
+                // fragment boundary is not necessarily a physical page break.
+                if (mermaid && fragment.length() > 0 && !finalAllowedPage) {
+                    continueOnSamePage = canPlaceIsolatedFragmentOnSamePage(usedHeight,
+                            blockHeight, capacity, dp(20), dp(72));
+                    break;
+                }
+                // A heading is part of the section it introduces. If the first
+                // paragraph/formula cannot follow it, move both to the next page.
+                if (blockKindOf(flow.format, block) == BlockKind.HEADING
+                        && blockIndex + 1 < blocks.size()) {
+                    float followingHeight = estimateTextBlockHeight(flow.format,
+                            blocks.get(blockIndex + 1), width, flow.fontSizeSp,
+                            flow.lineHeight, BlockKind.HEADING) * flow.heightCorrection;
+                    if (isMermaidBlock(flow.format, blocks.get(blockIndex + 1))) {
+                        float measuredFollowing = flow.measuredMermaidHeight(
+                                blocks.get(blockIndex + 1));
+                        if (measuredFollowing > 0f) {
+                            followingHeight = measuredFollowing;
+                        }
+                        followingHeight = isolatedFragmentHeight(followingHeight,
+                                dp(20), dp(72));
+                        // The heading and diagram use separate WebViews. Include
+                        // the minimum height of the heading fragment in the keep
+                        // decision, otherwise a short heading can appear to fit
+                        // here and then be stranded when the 72dp minimum applies.
+                        blockHeight = Math.max(blockHeight, dp(72) - usedHeight);
+                    }
+                    boolean beginsAtPageTop = y <= pageTop(pageIndex) + margin + 1f;
+                    if (shouldKeepHeadingWithNext(finalAllowedPage,
+                            fragment.length() > 0, beginsAtPageTop, usedHeight,
+                            blockHeight, followingHeight, capacity)) {
+                        if (fragment.length() > 0) {
+                            break;
+                        }
+                        pageIndex += 1;
+                        y = pageTop(pageIndex) + margin;
+                        continue pages;
+                    }
+                }
                 if (!finalAllowedPage && fragment.length() == 0
-                        && flow.format == NoteTextBox.Format.MARKDOWN
-                        && block.trim().matches("(?is)^```mermaid\\s.*")
                         && usedHeight + blockHeight > capacity
                         && y > pageTop(pageIndex) + margin + 1f) {
+                    // Blocks are expanded against a full printable page. When a
+                    // same-page fragment boundary leaves a smaller tail, move an
+                    // otherwise indivisible first block instead of clipping it.
                     pageIndex += 1;
                     y = pageTop(pageIndex) + margin;
                     continue pages;
@@ -1195,6 +1587,13 @@ public final class NoteCanvasView extends View {
                 usedHeight += blockHeight;
                 previousKind = blockKindOf(flow.format, block);
                 blockIndex += 1;
+                if (mermaid && blockIndex < blocks.size() && !finalAllowedPage) {
+                    // End immediately after the diagram so its ready measurement
+                    // cannot include following prose. Continue below on the same
+                    // paper when there is room for another minimum fragment.
+                    continueOnSamePage = true;
+                    break;
+                }
                 if (!finalAllowedPage && usedHeight >= capacity) {
                     break;
                 }
@@ -1206,7 +1605,14 @@ public final class NoteCanvasView extends View {
             if (blockIndex >= blocks.size()) {
                 break;
             }
-            pageIndex += 1;
+            FragmentContinuation continuation = nextFragmentPlacement(pageIndex, y,
+                    height, pageBottom, pageTop(Math.min(499, pageIndex + 1)) + margin,
+                    dp(72), continueOnSamePage);
+            if (continuation.pageIndex == pageIndex) {
+                y = continuation.y;
+                continue;
+            }
+            pageIndex = continuation.pageIndex;
             if (pageIndex >= 500) {
                 break;
             }
@@ -1217,6 +1623,50 @@ public final class NoteCanvasView extends View {
             layouts.add(new TextFragmentLayout("", pageIndex, x, y, width, dp(72)));
         }
         return layouts;
+    }
+
+    /** Placement after an isolated renderer fragment; pure for pagination tests. */
+    static FragmentContinuation nextFragmentPlacement(int pageIndex, float currentY,
+                                                       float currentHeight, float pageBottom,
+                                                       float nextPageY, float minimumHeight,
+                                                       boolean samePageRequested) {
+        float nextY = currentY + currentHeight;
+        if (samePageRequested && pageBottom - nextY >= minimumHeight) {
+            return new FragmentContinuation(pageIndex, nextY);
+        }
+        return new FragmentContinuation(pageIndex + 1, nextPageY);
+    }
+
+    /** Full height of a standalone renderer fragment around one block. */
+    static float isolatedFragmentHeight(float blockHeight, float contentPadding,
+                                        float minimumHeight) {
+        return Math.max(minimumHeight, contentPadding + blockHeight);
+    }
+
+    /** Whether the current fragment and a following isolated block share a page. */
+    static boolean canPlaceIsolatedFragmentOnSamePage(float currentUsedHeight,
+                                                      float nextBlockHeight,
+                                                      float capacity,
+                                                      float contentPadding,
+                                                      float minimumHeight) {
+        float current = Math.max(minimumHeight, currentUsedHeight);
+        float next = isolatedFragmentHeight(nextBlockHeight, contentPadding, minimumHeight);
+        return current + next <= capacity;
+    }
+
+    static final class FragmentContinuation {
+        final int pageIndex;
+        final float y;
+
+        FragmentContinuation(int pageIndex, float y) {
+            this.pageIndex = pageIndex;
+            this.y = y;
+        }
+    }
+
+    private static boolean isMermaidBlock(NoteTextBox.Format format, String source) {
+        return format == NoteTextBox.Format.MARKDOWN && source != null
+                && source.trim().matches("(?is)^```mermaid\\s.*");
     }
 
     private List<String> splitTextFlowBlocks(NoteTextBox.Format format, String source) {
@@ -1292,6 +1742,23 @@ public final class NoteCanvasView extends View {
         return blocks;
     }
 
+    /** Height needed when deciding whether an automatic answer fits a free band. */
+    private float estimateUnfragmentedFlowHeight(NoteTextBox.Format format, String source,
+                                                  float width, float fontSizeSp,
+                                                  float lineHeight) {
+        List<String> blocks = expandOversizedTextBlocks(format,
+                splitTextFlowBlocks(format, source), width, fontSizeSp, lineHeight,
+                pageHeight - dp(32));
+        float height = dp(20);
+        BlockKind previous = null;
+        for (String block : blocks) {
+            height += estimateTextBlockHeight(format, block, width, fontSizeSp,
+                    lineHeight, previous);
+            previous = blockKindOf(format, block);
+        }
+        return Math.max(dp(72), height);
+    }
+
     private void appendBlockLine(StringBuilder block, String line) {
         if (block.length() > 0) {
             block.append('\n');
@@ -1305,6 +1772,22 @@ public final class NoteCanvasView extends View {
         }
         blocks.add(block.toString());
         block.setLength(0);
+    }
+
+    /** Pure policy seam used by pagination tests. */
+    static boolean shouldKeepHeadingWithNext(boolean finalAllowedPage,
+                                             boolean fragmentHasContent,
+                                             boolean beginsAtPageTop,
+                                             float usedHeight,
+                                             float headingHeight,
+                                             float followingHeight,
+                                             float capacity) {
+        if (finalAllowedPage || usedHeight + headingHeight + followingHeight <= capacity) {
+            return false;
+        }
+        // At a fresh page top an oversized pair must make progress; otherwise a
+        // heading at the tail of a page moves together with its first content.
+        return fragmentHasContent || !beginsAtPageTop;
     }
 
     /**
@@ -1343,7 +1826,7 @@ public final class NoteCanvasView extends View {
      * Estimated height of one rendered block, in device pixels.
      *
      * <p>The numbers below mirror the stylesheet in {@link CompiledTextWebView}:
-     * paragraphs use {@code line-height:1.55}, headings {@code 1.25} with the UA
+     * paragraphs use the flow line height, headings {@code 1.2} with explicit
      * font scale, {@code blockquote} adds 5px padding top and bottom, {@code pre}
      * adds 9px, and KaTeX display math contributes its own {@code margin:1em 0}
      * on top of {@code .math-display}. Heights were calibrated against real DOM
@@ -1365,12 +1848,15 @@ public final class NoteCanvasView extends View {
         float blockGap = Math.max(2f, Math.round(fontSizeSp * (flowLineHeight - 1f) * 0.55f));
 
         if (format == NoteTextBox.Format.MARKDOWN && trimmed.matches("(?is)^```mermaid\\s.*")) {
-            return Math.max(0f, width - dp(24)) * 0.75f + dp(blockGap * 2f);
+            return estimateMermaidHeight(trimmed, width, blockGap);
         }
 
         if (kind == BlockKind.MATH) {
             String tex = stripMathDelimiters(trimmed);
-            float em = displayMathEm(tex);
+            float usable = Math.max(dp(48), width - dp(32));
+            float renderedWidth = dp(mathWidthProxy(tex).length() * fontSizeSp * 0.58f);
+            int wrappedLines = Math.max(1, (int) Math.ceil(renderedWidth / usable));
+            float em = Math.max(displayMathEm(tex), wrappedLines * 1.35f);
             return dp(em * fontSizeSp + 2f * fontSizeSp + (blockGap + 2f) * 2f);
         }
 
@@ -1388,7 +1874,7 @@ public final class NoteCanvasView extends View {
                 }
                 fontSize = fontSizeSp * headingScale(level);
                 // Headings keep their own tight leading regardless of body leading.
-                lineHeightRatio = 1.22f;
+                lineHeightRatio = 1.2f;
                 body = trimmed.replaceFirst("^#{1,6}\\s+", "");
                 break;
             case LIST_ITEM:
@@ -1419,13 +1905,32 @@ public final class NoteCanvasView extends View {
         return collapsedTopMargin(kind, previous, blockGap) + height;
     }
 
+    /** Bootstrap reservation; the ready SVG measurement supplies the exact value. */
+    private float estimateMermaidHeight(String source, float width, float blockGap) {
+        int structuralLines = 0;
+        for (String line : (source == null ? "" : source).split("\\n", -1)) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !trimmed.startsWith("```")
+                    && !trimmed.matches("(?i)^(flowchart|graph)\\s+(tb|td|bt|lr|rl)\\s*$")) {
+                structuralLines += 1;
+            }
+        }
+        float usableWidth = Math.max(dp(120), width - dp(24));
+        float paperCapacity = Math.max(dp(72), pageHeight - dp(32));
+        // Source rows are a better lower bound for tall flowcharts, sequences,
+        // state diagrams and mindmaps than counting one particular arrow syntax.
+        float structuralHeight = dp(32 + Math.max(2, structuralLines) * 54f);
+        return Math.min(paperCapacity, Math.max(usableWidth * 0.48f,
+                structuralHeight) + dp(blockGap * 2f + 16f));
+    }
+
     private static float headingScale(int level) {
         switch (level) {
-            case 1: return 2.0f;
-            case 2: return 1.5f;
-            case 3: return 1.17f;
-            case 5: return 0.83f;
-            case 6: return 0.67f;
+            case 1: return 1.55f;
+            case 2: return 1.32f;
+            case 3: return 1.16f;
+            case 5:
+            case 6: return 0.92f;
             default: return 1.0f;
         }
     }
@@ -1812,6 +2317,27 @@ public final class NoteCanvasView extends View {
         }
         bitmap.recycle();
         return pngOutput.toByteArray();
+    }
+
+    /** Freezes final-export state without changing the OCR-only PNG path above. */
+    PdfExportSnapshot createPdfExportSnapshot() throws IOException {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw new IllegalStateException("PDF 导出快照必须在主线程创建");
+        }
+        ensurePageGeometry();
+        if (pageWidth <= 0f || pageHeight <= 0f) {
+            throw new IOException("纸张尺寸尚未就绪");
+        }
+        List<InkStroke> strokeCopies = new ArrayList<>(strokes.size());
+        for (InkStroke stroke : strokes) strokeCopies.add(stroke.copy());
+        List<NoteImage> imageCopies = new ArrayList<>(images.size());
+        for (NoteImage image : images) imageCopies.add(image.copy(false));
+        List<NoteTextBox> textCopies = copyTextBoxes(textBoxes);
+        PdfBackground backgroundCopy = pdfBackground == null
+                ? null : pdfBackground.copyFor(this);
+        return new PdfExportSnapshot(this, pageCount, pageWidth, pageHeight, pageGap,
+                getResources().getDisplayMetrics().density, pageStyle, strokeCopies,
+                imageCopies, textCopies, backgroundCopy);
     }
 
     /** Snapshot of the fact-source flows for vault assembly; call on UI thread. */
@@ -4403,6 +4929,7 @@ public final class NoteCanvasView extends View {
             if (fontSizeSp != null || lineHeight != null || width != null) {
                 flow.heightCorrection = 1f;
                 flow.heightCorrectionPasses = 0;
+                flow.clearMeasuredMermaidHeights();
             }
             if (width != null) {
                 flow.width = clamp(width * densityScale(), dp(180),
@@ -4478,8 +5005,9 @@ public final class NoteCanvasView extends View {
      * reports what it actually needed, and the flow records a correction factor so
      * the next layout reserves enough room.
      *
-     * <p>Corrections only ever grow the reservation. Shrinking on a low measurement
-     * would let the factor oscillate between two layouts that each look wrong.
+     * <p>Ordinary text corrections only grow the reservation. A Mermaid fragment
+     * is measured independently and can also shrink an overestimate; its settled
+     * height is keyed by source block and updated only outside a tolerance band.
      */
     void applyMeasuredFragmentHeight(String fragmentId, float measuredHeightDp) {
         NoteTextBox fragment = findTextBox(fragmentId);
@@ -4492,6 +5020,30 @@ public final class NoteCanvasView extends View {
         }
         float measured = dp(measuredHeightDp);
         float reserved = fragment.height;
+        boolean mermaid = isMermaidBlock(fragment.format, fragment.fragmentSource);
+        if (mermaid) {
+            // The renderer reports the width-fitted natural SVG height even when
+            // it had to visually contain it in the current viewport. Grow to that
+            // size up to one printable page; beyond that the SVG stays scaled to
+            // the page while preserving its complete viewBox.
+            float printableBlockHeight = Math.max(dp(52), pageHeight - dp(52));
+            // __padnoteHeight includes .content's 10px top and bottom padding;
+            // layoutFlow accounts for those once per fragment via usedHeight.
+            float corrected = Math.min(Math.max(dp(1), measured - dp(20)),
+                    printableBlockHeight);
+            float previous = flow.measuredMermaidHeight(fragment.fragmentSource);
+            float comparison = previous > 0f ? previous : Math.max(dp(1), reserved - dp(20));
+            float tolerance = Math.max(dp(2), comparison * (MEASURED_HEIGHT_TOLERANCE - 1f));
+            flow.recordMeasuredMermaidHeight(fragment.fragmentSource, corrected);
+            if (Math.abs(corrected - comparison) <= tolerance) {
+                return;
+            }
+            reflowFlow(flow);
+            dispatchTextBoxesChanged();
+            dispatchStats(0, corrected > comparison
+                    ? "已按示意图实际比例修正排版" : "已收紧示意图预留空间");
+            return;
+        }
         if (measured <= reserved * MEASURED_HEIGHT_TOLERANCE) {
             return;
         }

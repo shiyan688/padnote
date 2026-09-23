@@ -3,6 +3,9 @@ package com.padnote.android;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * Single source of truth for one run of page text.
  *
@@ -53,6 +56,8 @@ final class TextFlow {
     transient float heightCorrection = 1f;
     /** Corrections applied so far, bounding the measure-reflow loop. */
     transient int heightCorrectionPasses;
+    /** Width-fitted Mermaid block heights, excluding the fragment content padding. */
+    private final transient Map<String, Float> measuredMermaidHeights = new LinkedHashMap<>();
 
     TextFlow(String id, NoteTextBox.Format format, String source, float fontSizeSp,
              float lineHeight, float width, int anchorPageIndex, float anchorXInPage,
@@ -84,7 +89,27 @@ final class TextFlow {
                 width, anchorPageIndex, anchorXInPage, anchorYInPage);
         duplicate.heightCorrection = heightCorrection;
         duplicate.heightCorrectionPasses = heightCorrectionPasses;
+        duplicate.measuredMermaidHeights.putAll(measuredMermaidHeights);
         return duplicate;
+    }
+
+    float measuredMermaidHeight(String blockSource) {
+        Float measured = measuredMermaidHeights.get(mermaidKey(blockSource));
+        return measured == null ? 0f : measured;
+    }
+
+    void recordMeasuredMermaidHeight(String blockSource, float height) {
+        if (height > 0f && !Float.isNaN(height) && !Float.isInfinite(height)) {
+            measuredMermaidHeights.put(mermaidKey(blockSource), height);
+        }
+    }
+
+    void clearMeasuredMermaidHeights() {
+        measuredMermaidHeights.clear();
+    }
+
+    private static String mermaidKey(String blockSource) {
+        return blockSource == null ? "" : blockSource.trim();
     }
 
     JSONObject toJson() throws JSONException {

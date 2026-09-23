@@ -47,6 +47,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -120,6 +123,9 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     /** Section heading for the note grid; renderBookshelf keeps its count current. */
     private TextView shelfSectionTitle;
     private NoteCanvasView canvasView;
+    private NoteCanvasView.PdfExportSnapshot activePdfExportSnapshot;
+    private FrameLayout activePdfExportHost;
+    private AlertDialog activePdfExportDialog;
     private TextView statsView;
     private TextView saveStatusView;
     private TextView pressureView;
@@ -297,6 +303,18 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (activePdfExportSnapshot != null) {
+            activePdfExportSnapshot.close();
+            activePdfExportSnapshot = null;
+        }
+        if (activePdfExportHost != null && activePdfExportHost.getParent() == appFrame) {
+            appFrame.removeView(activePdfExportHost);
+        }
+        activePdfExportHost = null;
+        if (activePdfExportDialog != null && activePdfExportDialog.isShowing()) {
+            activePdfExportDialog.dismiss();
+        }
+        activePdfExportDialog = null;
         if (toolSettingsPopup != null) {
             toolSettingsPopup.dismiss();
         }
@@ -439,7 +457,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
         Button agentButton = pillButton("电脑 Agent", BUTTON_QUIET);
         AgentConnectionStore.Config agent = agentConnectionStore.load();
-        agentButton.setContentDescription(agent.connected ? "电脑 Agent 已连接" : "设置电脑 Agent");
+        agentButton.setContentDescription(agent.connected ? "电脑 Agent 连接测试通过" : "设置电脑 Agent");
         agentButton.setOnClickListener(view -> showAgentConnectionDialog());
         LinearLayout.LayoutParams agentParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
@@ -951,7 +969,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         Spinner kind = new Spinner(this);
         ArrayAdapter<String> kindAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_item,
-                new String[]{"Hermes Agent（HTTPS）", "OpenClaw Gateway（需 Bridge）"});
+                new String[]{"Hermes Agent（HTTPS）", "OpenClaw（当前未支持）"});
         kindAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         kind.setAdapter(kindAdapter);
         kind.setSelection(current.kind == AgentConnectionStore.Kind.OPENCLAW ? 1 : 0);
@@ -959,7 +977,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         EditText endpoint = new EditText(this);
         endpoint.setSingleLine(true);
         endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        endpoint.setHint("https://电脑地址:端口");
+        endpoint.setHint("必须是平板可访问且证书受信任的 https:// 地址");
         endpoint.setText(current.endpoint);
         body.addView(labeledField("电脑 Agent 地址", endpoint));
         EditText token = new EditText(this);
@@ -967,13 +985,34 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setHint(current.token.isEmpty() ? "粘贴本地连接令牌" : "已保存，留空保持不变");
         body.addView(labeledField("连接令牌", token));
-        TextView hint = text("PadNote 只做健康检查；任务提交、审批和视频回传由后续 Agent Bridge 负责。",
+        TextView hint = text("本版可测试 Hermes 连接；自动发送任务、处理审批和接收结果尚未实现。",
                 12, SECONDARY_TEXT);
         hint.setPadding(dp(4), dp(4), dp(4), dp(8));
         body.addView(hint);
+
+        LinearLayout guideRow = new LinearLayout(this);
+        guideRow.setOrientation(LinearLayout.VERTICAL);
+        TextView guideButton = text("如何连接另一台电脑？", 15, ACCENT_COLOR);
+        guideButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        guideButton.setMinHeight(dp(48));
+        guideButton.setPadding(dp(4), dp(10), dp(4), dp(4));
+        guideButton.setClickable(true);
+        guideButton.setFocusable(true);
+        guideButton.setOnClickListener(view -> AgentConnectionGuide.show(this));
+        guideRow.addView(guideButton, matchWrap());
+        TextView guideSummary = text("离线查看 Windows / WSL2、macOS 和 Linux 的 Hermes 连接步骤。",
+                12, SECONDARY_TEXT);
+        guideSummary.setPadding(dp(4), 0, dp(4), dp(12));
+        guideRow.addView(guideSummary, matchWrap());
+        body.addView(guideRow, matchWrap());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(body, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(current.connected ? "电脑 Agent · 已连接" : "连接电脑 Agent")
-                .setView(body)
+                .setTitle(current.connected ? "电脑 Agent · 连接测试通过" : "连接电脑 Agent")
+                .setView(scroll)
                 .setNegativeButton("关闭", null)
                 .setNeutralButton("断开", (ignored, which) -> {
                     agentConnectionStore.clear();
@@ -981,8 +1020,26 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 })
                 .setPositiveButton("保存并测试", null)
                 .create();
+        kind.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position == 1) {
+                    hint.setText("当前版本尚不能连接 OpenClaw，请选择 Hermes。");
+                } else {
+                    hint.setText("本版可测试 Hermes 连接；自动发送任务、处理审批和接收结果尚未实现。");
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(view -> {
+                    if (kind.getSelectedItemPosition() == 1) {
+                        hint.setText("当前版本尚不能连接 OpenClaw，请选择 Hermes。");
+                        return;
+                    }
                     String address = endpoint.getText().toString().trim();
                     if (!isValidHttpsEndpoint(address)) {
                         endpoint.setError("请输入 HTTPS 地址");
@@ -1003,15 +1060,15 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                         return;
                     }
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-                    hint.setText("正在检查 Agent capabilities…");
+                    hint.setText("正在检查电脑上的 Hermes 服务和连接令牌…");
                     AgentConnectionStore.Config saved = agentConnectionStore.load();
                     aiExecutor.execute(() -> {
                         try {
-                            String status = AgentConnectionClient.probe(saved);
+                            AgentConnectionClient.probe(saved);
                             agentConnectionStore.setConnected(true);
                             runOnUiThread(() -> {
                                 dialog.dismiss();
-                                Toast.makeText(this, status, Toast.LENGTH_SHORT).show();
+                                Toast.makeText(this, "连接测试通过", Toast.LENGTH_SHORT).show();
                                 refreshBookshelf();
                             });
                         } catch (Exception error) {
@@ -4289,25 +4346,93 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void exportPdfToUri(android.net.Uri uri) {
-        storageExecutor.execute(() -> {
-            try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                if (output == null) throw new IllegalStateException("无法打开所选位置");
-                final Exception[] failure = new Exception[1];
-                android.os.Handler main = new android.os.Handler(getMainLooper());
-                final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-                main.post(() -> {
-                    try { PdfNoteIO.exportFlattenedPdf(canvasView, output); }
-                    catch (Exception error) { failure[0] = error; }
-                    finally { done.countDown(); }
-                });
-                done.await();
-                if (failure[0] != null) throw failure[0];
-                runOnUiThread(() -> Toast.makeText(this, "已导出标准 PDF", Toast.LENGTH_SHORT).show());
+        final NoteCanvasView.PdfExportSnapshot snapshot;
+        try {
+            snapshot = canvasView.createPdfExportSnapshot();
+        } catch (Exception error) {
+            Toast.makeText(this, "PDF 导出失败：" + safeError(error), Toast.LENGTH_LONG).show();
+            return;
+        }
+        activePdfExportSnapshot = snapshot;
+        FrameLayout renderHost = new FrameLayout(this);
+        renderHost.setVisibility(View.VISIBLE);
+        renderHost.setAlpha(0.01f);
+        renderHost.setClipChildren(false);
+        renderHost.setClipToPadding(false);
+        renderHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        appFrame.addView(renderHost, new FrameLayout.LayoutParams(1, 1));
+        activePdfExportHost = renderHost;
+        AlertDialog progressDialog = new AlertDialog.Builder(this)
+                .setTitle("正在导出 PDF")
+                .setMessage("准备页面…")
+                .setCancelable(false)
+                .create();
+        progressDialog.show();
+        activePdfExportDialog = progressDialog;
+        Handler exportMainHandler = new Handler(Looper.getMainLooper());
+        Runnable exportTask = () -> {
+            File temporary = null;
+            Exception failure = null;
+            boolean success = false;
+            try {
+                temporary = File.createTempFile("flattened-export-", ".pdf", getCacheDir());
+                try (OutputStream tempOutput = new FileOutputStream(temporary)) {
+                    PdfNoteIO.exportFlattenedPdf(snapshot, renderHost, tempOutput,
+                            exportMainHandler, (complete, total) -> {
+                                if (progressDialog.isShowing()) {
+                                    progressDialog.setMessage("正在渲染第 " + complete + " / " + total + " 页");
+                                }
+                            });
+                }
+                // Open the user-selected destination only after the complete PDF
+                // exists locally. Success is reported after this stream flushes
+                // and closes, never after a partial render.
+                try (InputStream input = new FileInputStream(temporary);
+                     OutputStream output = getContentResolver().openOutputStream(uri)) {
+                    if (output == null) throw new IllegalStateException("无法打开所选位置");
+                    PdfNoteIO.copy(input, output, Long.MAX_VALUE);
+                    output.flush();
+                }
+                success = true;
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "PDF 导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                failure = error;
+            } catch (OutOfMemoryError error) {
+                failure = new java.io.IOException("导出页面过大，内存不足", error);
+            } finally {
+                snapshot.close();
+                if (temporary != null && !temporary.delete()) temporary.deleteOnExit();
+                boolean completed = success;
+                Exception result = failure == null
+                        ? new java.io.IOException("PDF 导出未完成") : failure;
+                exportMainHandler.post(() -> {
+                    if (activePdfExportSnapshot == snapshot) {
+                        activePdfExportSnapshot = null;
+                    }
+                    if (activePdfExportHost == renderHost) activePdfExportHost = null;
+                    if (activePdfExportDialog == progressDialog) activePdfExportDialog = null;
+                    if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
+                    if (progressDialog.isShowing()) progressDialog.dismiss();
+                    if (isFinishing() || isDestroyed()) return;
+                    Toast.makeText(this, completed ? "已导出标准 PDF" :
+                                    "PDF 导出失败：" + safeError(result),
+                            completed ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                });
             }
-        });
+        };
+        try {
+            storageExecutor.execute(exportTask);
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            if (activePdfExportSnapshot == snapshot) activePdfExportSnapshot = null;
+            if (activePdfExportHost == renderHost) activePdfExportHost = null;
+            if (activePdfExportDialog == progressDialog) activePdfExportDialog = null;
+            snapshot.close();
+            if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
+            if (progressDialog.isShowing()) progressDialog.dismiss();
+            if (!isFinishing() && !isDestroyed()) {
+                Toast.makeText(this, "PDF 导出失败：导出任务无法启动",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private void handleImportedImage(android.net.Uri uri) {

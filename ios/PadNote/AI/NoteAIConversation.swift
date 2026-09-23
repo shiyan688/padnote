@@ -95,7 +95,7 @@ enum NoteAIConversation {
             if let spacing = args["lineHeight"] as? Double, (1.1...2).contains(spacing) { flow?.lineHeight = spacing }
         }
         guard var flow else { return }
-        let requestedWidth = (placement?["widthDp"] as? Double) ?? (args["widthDp"] as? Double) ?? min(note.pageWidth - 32, 380)
+        let requestedWidth = (placement?["widthDp"] as? Double) ?? (args["widthDp"] as? Double) ?? (note.pageWidth - 32)
         guard requestedWidth.isFinite else { return }
         flow.width = min(max(120, requestedWidth), note.pageWidth - 32)
         var temporary = note; temporary.textFlows = [flow]

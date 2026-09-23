@@ -75,7 +75,9 @@ final class PlacementResolver {
             throw new Failure("缺少 placement");
         }
         float margin = 16f * density;
-        float defaultWidth = Math.min(pageWidth - margin * 2f, 380f * density);
+        // Unspecified width means "use the available paper", not a legacy
+        // 380dp text column. Explicit widthDp remains a stable authoring choice.
+        float defaultWidth = pageWidth - margin * 2f;
         float width = placement.has("widthDp")
                 ? clamp((float) placement.optDouble("widthDp") * density,
                         180f * density, pageWidth - margin * 2f)
@@ -151,6 +153,13 @@ final class PlacementResolver {
                 yInPage = anchor.bottom - top + gap;
                 break;
         }
+        if (!explicitWidth && !("right".equals(position) || "left".equals(position))) {
+            // Keep the relation to the source while using the rest of the line.
+            // Starting at the anchor is useful for short annotations; the width
+            // now follows the real page edge instead of an arbitrary constant.
+            xInPage = clamp(xInPage, margin, pageWidth - margin - minimumWidth);
+            width = pageWidth - margin - xInPage;
+        }
         if (width < minimumWidth) {
             throw new Failure("锚点 " + anchorName + " 的 " + position +
                     " 侧空间不足（可用宽度约 " + Math.round(width / density) +
@@ -181,9 +190,16 @@ final class PlacementResolver {
             throw new Failure("第 " + (pageIndex + 1) + " 页没有匹配 " + slot + " 的空白区域");
         }
         float top = pageIndex * (pageHeight + pageGap);
-        return new Placement(pageIndex, margin,
+        float regionLeft = clamp(region.left, margin, pageWidth - margin);
+        float regionWidth = Math.min(region.right - regionLeft,
+                pageWidth - regionLeft - margin);
+        if (regionWidth < 120f * density) {
+            throw new Failure("第 " + (pageIndex + 1) + " 页的 " + slot +
+                    " 空白区域太窄");
+        }
+        return new Placement(pageIndex, regionLeft,
                 clamp(region.top - top, margin, Math.max(margin, pageHeight - margin)),
-                width, "第 " + (pageIndex + 1) + " 页 " + slot);
+                Math.min(width, regionWidth), "第 " + (pageIndex + 1) + " 页 " + slot);
     }
 
     private static int parseFirstBand(String bands) {

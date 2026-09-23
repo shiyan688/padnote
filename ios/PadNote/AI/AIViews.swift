@@ -279,7 +279,7 @@ public struct AIAssistantView: View {
                     // Compile the existing flows and a temporary candidate
                     // first. Placement then uses the measured WebKit fragments
                     // instead of the pre-compilation CoreText estimate.
-                    let width = min(note.pageWidth - 32, 380)
+                    let width = note.pageWidth - 32
                     let candidate = NoteTextFlow(format: "markdown", source: source,
                         fontSizeSp: 16, lineHeight: 1.35, width: width,
                         anchorPageIndex: min(toolPage, max(0, note.pageCount - 1)),

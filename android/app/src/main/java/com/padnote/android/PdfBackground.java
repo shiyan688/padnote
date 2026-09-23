@@ -19,9 +19,18 @@ import java.util.concurrent.Executors;
 
 /** Original PDF stays on disk; only three visible-page bitmaps are retained. */
 final class PdfBackground {
+    private final File sourceFile;
     private final PdfRenderer renderer;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private final LruCache<Integer, Bitmap> pages = new LruCache<>(3);
+    private final LruCache<Integer, Bitmap> pages = new LruCache<Integer, Bitmap>(3) {
+        @Override
+        protected void entryRemoved(boolean evicted, Integer key, Bitmap oldValue,
+                                    Bitmap newValue) {
+            if (oldValue != null && oldValue != newValue && !oldValue.isRecycled()) {
+                oldValue.recycle();
+            }
+        }
+    };
     private final Set<Integer> pending = new HashSet<>();
     private final Set<Integer> failed = new HashSet<>();
     private final View owner;
@@ -31,11 +40,17 @@ final class PdfBackground {
     private volatile boolean closed;
 
     PdfBackground(File file, View owner) throws IOException {
+        sourceFile = file;
         this.owner = owner;
         label.setColor(Color.GRAY);
         ParcelFileDescriptor descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
         try { renderer = new PdfRenderer(descriptor); }
         catch (IOException | RuntimeException error) { descriptor.close(); throw error; }
+    }
+
+    /** Opens an independent renderer so export survives the live canvas closing. */
+    PdfBackground copyFor(View exportOwner) throws IOException {
+        return new PdfBackground(sourceFile, exportOwner);
     }
 
     boolean hasPage(int index) { return index >= 0 && index < renderer.getPageCount(); }

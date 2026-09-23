@@ -69,6 +69,24 @@ final class CanvasTests: XCTestCase {
         XCTAssertTrue(fragments.allSatisfy { $0.rect.maxY <= 460 })
     }
 
+    func testHeadingAtPageTailMovesWithFollowingBody() throws {
+        let flow = NoteTextFlow(format: "markdown", source: "# 不能孤立的标题\n紧随标题的正文。",
+            width: 300, anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 430)
+        let fragments = NoteTextLayout.fragments(flow, pageHeight: 500)
+        let first = try XCTUnwrap(fragments.first)
+        XCTAssertEqual(first.page, 1)
+        XCTAssertTrue(first.text.string.contains("不能孤立的标题"))
+        XCTAssertTrue(first.text.string.contains("紧随标题的正文"))
+        XCTAssertTrue(NoteTextLayout.canFullyLayout(flow, pageHeight: 500))
+    }
+
+    func testCoreTextFallbackKeepsOrderedListNumbers() {
+        let source = "3. 第三步\n\n4. 第四步\n7) 第七步"
+        let flow = NoteTextFlow(format: "markdown", source: source, width: 300, anchorYInPage: 40)
+        let rendered = NoteTextLayout.fragments(flow, pageHeight: 500).map { $0.text.string }.joined()
+        XCTAssertEqual(rendered, source + "\n")
+    }
+
     func testScrollPageUsesViewportCenterOnceAndRestoresRelativeZoom() {
         var note = NoteDocument(pageWidth: 1000, pageHeight: 1000, pageGap: 20, pageCount: 5)
         note.viewportZoom = 1

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 8,
+  "id": "paper-layout-experience",
+  "title": "PadNote 排版体验",
+  "updatedAt": 1790092800000,
+  "canvasWidth": 768,
+  "canvasHeight": 1086,
+  "pageWidth": 768,
+  "pageHeight": 1086,
+  "pageGap": 24,
+  "pageCount": 1,
+  "pdfPageCount": 0,
+  "viewportScale": 1,
+  "viewportZoom": 1,
+  "viewportCenterX": 384,
+  "viewportCenterY": 543,
+  "strokes": [],
+  "textFlows": [
+    {
+      "id": "paper-layout-flow",
+      "format": "markdown",
+      "source": "# 从差商到导数\n\n取函数 $f(x)=x^2$。先比较相邻两点的函数值，再让间隔趋近于零。下面把计算和解释放在一起，保留清晰的段落层次。\n\n## 从第 3 步开始\n\n3. 选取 $x$ 与 $x+h$ 两个点，记录对应的函数值。\n\n   这是对第 3 步的补充说明。后面的步骤应继续显示原有编号。\n\n4. 写出差商并展开平方项。\n\n   \\[\n   \\frac{f(x+h)-f(x)}{h}=\\frac{(x+h)^2-x^2}{h}=2x+h\n   \\]\n\n   先展开并约去 $h$；在约分之前，$h$ 不能直接取零。\n\n5. 让间隔趋近于零，得到瞬时变化率。\n\n   \\[\n   f'(x)=\\lim_{h\\to0}(2x+h)=2x\n   \\]\n\n   空行后的这段仍是第 5 步的解释。当本段跨到下一页时，后面的编号仍应连续。\n\n6. 区分平均变化率与瞬时变化率，并检查定义域。\n\n   在不同宽度下，段落可以自然换行；分页后仍应保留原有的序号。\n\n7. 对照下图检查推导次序。\n\n## 推导路径\n\n```mermaid\nflowchart LR\n A[选取两点] --> B[计算差商] --> C[令间隔趋零] --> D[得到导数]\n```\n\n图表之后的正文应紧接着出现，不应因为图表单独渲染而强制换页。横向图应完整收在纸面内，节点和箭头不被裁切。\n\n## 很长的公式\n\n\\[S=x_1+x_2+x_3+x_4+x_5+x_6+x_7+x_8+x_9+x_{10}+x_{11}+x_{12}+x_{13}+x_{14}+x_{15}+x_{16}+x_{17}+x_{18}\\]\n\n长公式应完整显示，不超出纸面右边界，并且仍可打开源文本编辑。\n\n> 结论：平方函数在 $x$ 处的导数为 $2x$。",
+      "fontSizeSp": 16,
+      "lineHeight": 1.35,
+      "width": 672,
+      "anchorPageIndex": 0,
+      "anchorXInPage": 48,
+      "anchorYInPage": 48
+    }
+  ],
+  "images": [],
+  "pageStyle": {
+    "paper": "ruled",
+    "ratio": "screen",
+    "landscape": false
+  },
+  "textBoxes": []
+}

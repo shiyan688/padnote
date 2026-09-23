@@ -193,10 +193,8 @@ public final class NoteToolEngine {
     private func resolve(_ placement: [String: Any]?, content: String, excluding: String? = nil, format: String = "markdown") -> Resolved? {
         guard let placement, Set(placement.keys).isSubset(of: ["relativeTo", "position", "page", "bands", "slot", "widthDp"]) else { return nil }
         if let value = placement["widthDp"], !(value is NSNumber) { return nil }
-        let requestedWidth = (placement["widthDp"] as? Double) ?? min(proposed.pageWidth - 32, 380)
-        guard requestedWidth.isFinite, requestedWidth > 0 else { return nil }
-        let width = min(max(requestedWidth, 120), proposed.pageWidth - 32)
-        guard width > 0 else { return nil }
+        let explicitWidth = placement["widthDp"] as? Double
+        guard explicitWidth?.isFinite ?? true, (explicitWidth ?? 1) > 0 else { return nil }
         var page = currentPage, x = 16.0, y = 40.0, interpretation = "页面空白处"
         if let anchor = placement["relativeTo"] as? String {
             guard let rect = anchorRect(anchor) else { return nil }
@@ -208,10 +206,9 @@ public final class NoteToolEngine {
             switch position {
             case "above": y = rect.minY - 90
             case "right": x = rect.maxX + 18; y = rect.minY
-            case "left": x = rect.minX - width - 18; y = rect.minY
+            case "left": x = 16; y = rect.minY
             default: y = rect.maxY + 18
             }
-            if x < 16 || x + width > proposed.pageWidth - 16 { x = rect.minX; y = rect.maxY + 18 }
             y -= Double(page) * (proposed.pageHeight + proposed.pageGap)
         } else if let number = placement["page"] as? Int, (1...500).contains(number) {
             page = min(number - 1, proposed.pageCount - 1)
@@ -229,13 +226,21 @@ public final class NoteToolEngine {
         // Original PDF pages are immutable backgrounds. AI answers start in
         // the annotation suffix and can create it when none exists yet.
         if page < proposed.pdfPageCount { page = proposed.pdfPageCount; x = 16; y = 40; interpretation += "（PDF 附注页）" }
-        x = min(max(16, x), proposed.pageWidth - width - 16)
+        let availableWidth = max(120, proposed.pageWidth - max(16, x) - 16)
+        let initialWidth = min(max(explicitWidth ?? availableWidth, 120), availableWidth)
+        if explicitWidth == nil, initialWidth < min(320, proposed.pageWidth - 32) {
+            x = 16
+        }
+        let resolvedWidth = explicitWidth.map { min(max($0, 120), proposed.pageWidth - x - 16) }
+            ?? (proposed.pageWidth - x - 16)
+        guard resolvedWidth >= 120 else { return nil }
+        x = min(max(16, x), proposed.pageWidth - resolvedWidth - 16)
         y = max(40, y)
         for _ in 0..<2000 {
             if y >= proposed.pageHeight - 40 { page += 1; y = 40 }
             guard page < 500 else { return nil }
             var candidate = proposed.textFlows.first(where: { $0.id == excluding }) ?? NoteTextFlow(format: format, source: content)
-            candidate.width = width; candidate.anchorPageIndex = page; candidate.anchorXInPage = x; candidate.anchorYInPage = y
+            candidate.width = resolvedWidth; candidate.anchorPageIndex = page; candidate.anchorXInPage = x; candidate.anchorYInPage = y
             guard NoteTextLayout.canFullyLayout(candidate, pageHeight: proposed.pageHeight) else { return nil }
             let fragments = NoteTextLayout.fragments(candidate, pageHeight: proposed.pageHeight)
             guard !fragments.isEmpty else { return nil }
@@ -244,7 +249,7 @@ public final class NoteToolEngine {
                 else { page = collision.page + 1; y = 40 }
                 continue
             }
-            return Resolved(page: page, x: x, y: y, width: width, note: interpretation)
+            return Resolved(page: page, x: x, y: y, width: resolvedWidth, note: interpretation)
         }
         return nil
     }
@@ -261,7 +266,7 @@ public final class NoteToolEngine {
         return nil
     }
     private func pageForWorldY(_ y: Double) -> Int { min(max(0, Int(y / (proposed.pageHeight + proposed.pageGap))), max(0, proposed.pageCount - 1)) }
-    private func estimatedHeight(_ content: String) -> Double { let flow = NoteTextFlow(source: content, width: min(proposed.pageWidth - 32, 380), anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40); let fragments = NoteTextLayout.fragments(flow, pageHeight: proposed.pageHeight); return max(42, fragments.first?.rect.height ?? 42) }
+    private func estimatedHeight(_ content: String) -> Double { let flow = NoteTextFlow(source: content, width: proposed.pageWidth - 32, anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40); let fragments = NoteTextLayout.fragments(flow, pageHeight: proposed.pageHeight); return max(42, fragments.first?.rect.height ?? 42) }
     private func collides(_ rect: CGRect, page: Int, excluding: String?) -> Bool { if proposed.strokes.contains(where: { stroke in strokePage(stroke) == page && strokeRect(stroke).intersects(rect.insetBy(dx: -8, dy: -8)) }) { return true }; return proposed.images.contains { $0.page == page && CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height).intersects(rect) } || proposed.textFlows.contains { flow in guard flow.id != excluding else { return false }; return NoteTextLayout.fragments(flow, pageHeight: proposed.pageHeight).contains { $0.page == page && $0.rect.intersects(rect) } } }
     private func occupiedBands(_ page: Int) -> [Bool] { (0..<Self.bandCount).map { band in let r = CGRect(x: 0, y: Double(band) * proposed.pageHeight / 8, width: proposed.pageWidth, height: proposed.pageHeight / 8); return proposed.strokes.contains { strokePage($0) == page && strokeRect($0).intersects(r) } || proposed.textFlows.contains { flow in NoteTextLayout.fragments(flow, pageHeight: proposed.pageHeight).contains { $0.page == page && $0.rect.intersects(r) } } || proposed.images.contains { $0.page == page && CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height).intersects(r) } } }
     private func largestFreeRect(_ page: Int) -> CGRect? { let free = occupiedBands(page); var best: (Int, Int)?; var start: Int?; for i in 0...free.count { if i < free.count && !free[i] { if start == nil { start = i } } else if let s = start { if best == nil || i - s > best!.1 - best!.0 { best = (s, i - 1) }; start = nil } }; guard let (first,last) = best else { return nil }; return CGRect(x: 16, y: Double(first) * proposed.pageHeight / 8 + 16, width: proposed.pageWidth - 32, height: Double(last - first + 1) * proposed.pageHeight / 8 - 32) }

@@ -50,16 +50,33 @@ public struct AgentSettingsView: View {
     @State private var token = ""
     @State private var status: String?
     @State private var checking = false
+    @State private var showingConnectionGuide = false
+    @State private var didLoadStoredConnection = false
     private let store = AgentConnectionStore()
     public init() {}
     public var body: some View {
         NavigationStack { Form {
-            Picker("Agent 类型", selection: $kind) { Text("Hermes（HTTPS）").tag(AgentKind.hermes); Text("OpenClaw（需 Bridge）").tag(AgentKind.openClaw) }
+            Picker("Agent 类型", selection: $kind) { Text("Hermes（HTTPS）").tag(AgentKind.hermes); Text("OpenClaw（当前未支持）").tag(AgentKind.openClaw) }
+            Section {
+                Button { showingConnectionGuide = true } label: {
+                    Label("如何连接另一台电脑？", systemImage: "questionmark.circle.fill")
+                        .font(.headline)
+                }
+            } footer: {
+                Text("本版仅支持连接测试；任务发送与状态回传尚未实现。")
+            }
             Section("连接") { TextField("HTTPS 地址", text: $endpoint).textInputAutocapitalization(.never).autocorrectionDisabled(); SecureField("连接令牌", text: $token) }
             if let status { Text(status).foregroundStyle(.secondary) }
             Button(checking ? "正在检查…" : "保存并测试") { check() }.disabled(checking)
             if store.load().complete { Button("断开连接", role: .destructive) { store.clear(); endpoint = ""; token = ""; status = "已断开" } }
-        }.navigationTitle("电脑 Agent").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }.onAppear { let c = store.load(); kind = c.kind; endpoint = c.endpoint; token = c.token } }
+        }.navigationTitle("电脑 Agent").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .onAppear {
+                guard !didLoadStoredConnection else { return }
+                didLoadStoredConnection = true
+                let c = store.load(); kind = c.kind; endpoint = c.endpoint; token = c.token
+            }
+            .sheet(isPresented: $showingConnectionGuide) { AgentConnectionGuideView() }
+        }
     }
-    private func check() { checking = true; status = nil; Task { @MainActor in do { try store.save(kind: kind, endpoint: endpoint, token: token); let saved = store.load(); let message = try await AgentConnectionClient().probe(saved); let current = store.load(); guard current.kind == saved.kind && current.endpoint == saved.endpoint && current.token == saved.token else { throw AgentConnectionError.incomplete }; store.setConnected(true); status = message } catch { store.setConnected(false); status = error.localizedDescription }; checking = false } }
+    private func check() { checking = true; status = nil; Task { @MainActor in do { try store.save(kind: kind, endpoint: endpoint, token: token); let saved = store.load(); _ = try await AgentConnectionClient().probe(saved); let current = store.load(); guard current.kind == saved.kind && current.endpoint == saved.endpoint && current.token == saved.token else { throw AgentConnectionError.incomplete }; store.setConnected(true); status = "连接测试通过" } catch { store.setConnected(false); status = error.localizedDescription }; checking = false } }
 }

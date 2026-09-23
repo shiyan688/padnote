@@ -17,14 +17,43 @@ final class NoteToolTests: XCTestCase {
         XCTAssertEqual(allowed.proposedNote?.textFlows.count, 1)
     }
 
+    func testNewAITextUsesAvailablePaperWidthUnlessWidthIsExplicit() throws {
+        let note = NoteDocument(pageWidth: 768, pageHeight: 1086)
+        let automatic = engine(note: note).invoke(name: "write_text", callID: "auto",
+            argumentsJSON: #"{"content":"正文","placement":{"page":1}}"#,
+            authorization: .createInFreeSpace)
+        let automaticFlow = try XCTUnwrap(automatic.proposedNote?.textFlows.first)
+        XCTAssertEqual(automaticFlow.anchorXInPage, 16)
+        XCTAssertEqual(automaticFlow.width, 736, "Default AI prose should use the available paper column")
+
+        let explicit = engine(note: note).invoke(name: "write_text", callID: "narrow",
+            argumentsJSON: #"{"content":"窄栏","placement":{"page":1,"widthDp":240}}"#,
+            authorization: .createInFreeSpace)
+        XCTAssertEqual(explicit.proposedNote?.textFlows.first?.width, 240,
+            "An explicit width remains an author choice")
+    }
+
+    func testFullWidthAITextMovesBelowInkInsteadOfCoveringIt() throws {
+        var note = NoteDocument(pageWidth: 768, pageHeight: 1086)
+        note.strokes = [InkStroke(points: [InkPoint(x: 20, y: 48), InkPoint(x: 740, y: 74)])]
+        let result = engine(note: note).invoke(name: "write_text", callID: "avoid-ink",
+            argumentsJSON: #"{"content":"AI 正文应避开已有笔迹。","placement":{"page":1}}"#,
+            authorization: .createInFreeSpace)
+        let flow = try XCTUnwrap(result.proposedNote?.textFlows.first)
+        XCTAssertEqual(flow.width, 736)
+        XCTAssertGreaterThan(flow.anchorYInPage, 74)
+    }
+
     func testExistingFlowNeedsExplicitModifyPermission() throws {
         var note = NoteDocument(title: "已有")
-        note.textFlows = [NoteTextFlow(source: "old", anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 16)]
+        note.textFlows = [NoteTextFlow(source: "old", width: 222, anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 16)]
         let e = engine(note: note)
         let id = note.textFlows[0].id
         let args = "{\"flowId\":\"\(id)\",\"fontSizeSp\":24}"
         XCTAssertFalse(e.invoke(name: "set_text_flow_style", callID: "s", argumentsJSON: args, authorization: .createInFreeSpace).mutated)
-        XCTAssertTrue(e.invoke(name: "set_text_flow_style", callID: "s2", argumentsJSON: args, authorization: .modifyExisting).mutated)
+        let modified = e.invoke(name: "set_text_flow_style", callID: "s2", argumentsJSON: args, authorization: .modifyExisting)
+        XCTAssertTrue(modified.mutated)
+        XCTAssertEqual(modified.proposedNote?.textFlows.first?.width, 222, "Editing style must preserve a legacy or explicit width")
     }
 
     func testRawCoordinatesRejectedAndDuplicateCallIsIdempotent() throws {

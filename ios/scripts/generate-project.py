@@ -27,6 +27,7 @@ def main():
     main_group = ident("group:main")
     products_group = ident("group:products")
     resources_ref = ident("resource:Web")
+    guide_ref = ident("resource:agent-connection-guide.json")
     objects = []
     def obj(kind, body, key): objects.append((key, f"{key} /* {key} */ = {{\n{body}\n\t}};"))
     def file_ref(path, file_type="sourcecode.swift"):
@@ -47,6 +48,7 @@ def main():
     for source in ui_sources:
         rel = source.relative_to(ROOT / "PadNoteUITests").as_posix(); ref = file_ref(rel); ui_refs.append(ref); ui_build.append(build_file(ref, "ui"))
     obj("PBXFileReference", "\t\tisa = PBXFileReference;\n\t\tlastKnownFileType = folder;\n\t\tname = Web;\n\t\tpath = \"PadNote/Resources/Web\";\n\t\tsourceTree = \"<group>\";", resources_ref)
+    obj("PBXFileReference", "\t\tisa = PBXFileReference;\n\t\tlastKnownFileType = text.json;\n\t\tname = agent-connection-guide.json;\n\t\tpath = \"../android/app/src/main/assets/agent-connection-guide.json\";\n\t\tsourceTree = \"<group>\";", guide_ref)
     asset_ref = None
     asset_catalog = ROOT / "PadNote/Resources/Assets.xcassets"
     if asset_catalog.exists():
@@ -55,7 +57,7 @@ def main():
     app_product_ref = ident("productref:PadNote"); unit_product_ref = ident("productref:PadNoteTests"); ui_product_ref = ident("productref:PadNoteUITests")
     for key, name, typ in [(app_product_ref, "PadNote.app", "wrapper.application"), (unit_product_ref, "PadNoteTests.xctest", "wrapper.cfbundle"), (ui_product_ref, "PadNoteUITests.xctest", "wrapper.cfbundle")]:
         obj("PBXFileReference", f"\t\tisa = PBXFileReference;\n\t\texplicitFileType = {typ};\n\t\tincludeInIndex = 0;\n\t\tpath = {q(name)};\n\t\tsourceTree = BUILT_PRODUCTS_DIR;", key)
-    app_res_build = [build_file(resources_ref, "resources")]
+    app_res_build = [build_file(resources_ref, "resources"), build_file(guide_ref, "resources")]
     if asset_ref: app_res_build.append(build_file(asset_ref, "resources"))
     app_sources_phase = ident("phase:sources:app"); unit_sources_phase = ident("phase:sources:unit"); ui_sources_phase = ident("phase:sources:ui"); app_res_phase = ident("phase:resources:app"); app_frameworks = ident("phase:frameworks:app"); unit_frameworks = ident("phase:frameworks:unit"); ui_frameworks = ident("phase:frameworks:ui"); app_copy = ident("phase:copy:app"); unit_copy = ident("phase:copy:unit"); ui_copy = ident("phase:copy:ui")
     def refs_text(refs): return "".join("\n\t\t\t" + ref + " /* " + ref + " */," for ref in refs)
@@ -80,7 +82,7 @@ def main():
     obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({refs_text(ui_refs)}\n\t\t);\n\t\tpath = PadNoteUITests;\n\t\tsourceTree = \"<group>\";", ui_group)
     obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_product_ref},{unit_product_ref},{ui_product_ref}\n\t\t);\n\t\tname = Products;\n\t\tsourceTree = \"<group>\";", products_group)
     asset_child = "," + asset_ref if asset_ref else ""
-    obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_group},{test_group},{ui_group},{resources_ref}{asset_child},{products_group}\n\t\t);\n\t\tsourceTree = \"<group>\";", main_group)
+    obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_group},{test_group},{ui_group},{resources_ref},{guide_ref}{asset_child},{products_group}\n\t\t);\n\t\tsourceTree = \"<group>\";", main_group)
     def target(name, product, product_ref, sources, frameworks, resources=None, kind="app", host=False, dependency=None):
         phase = ident("phase:" + name); debug_cfg = ident("cfg:" + name + ":debug"); release_cfg = ident("cfg:" + name + ":release")
         for key, config_name, debug in [(debug_cfg, "Debug", True), (release_cfg, "Release", False)]: obj("XCBuildConfiguration", f"\t\tisa = XCBuildConfiguration;\n\t\tbuildSettings = {{\n{settings(name if kind != 'app' else 'PadNote', kind, debug, host)}\n\t\t}};\n\t\tname = {config_name};", key)
