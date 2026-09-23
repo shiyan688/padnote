@@ -1,67 +1,119 @@
 # PadNote
 
-面向学生、科研用户和开发者的平板 Agent 入口 beta：用手写与绘画表达，再结合可编辑文本、圈选 AI 和本地 Markdown 知识库处理内容。
+**写写画画，与 AI 一起思考。**
 
-> Android 与 iPad 原生客户端以源码形式开放，处于 beta。手写设备体验和真实模型服务仍需实际验收；请先阅读构建说明与当前边界。
+PadNote 是一个面向 Android 平板和 iPad 的开源项目，探索用手写和绘画与 Agent 沟通。目前从笔记开始：写下推导，圈出疑问，让 AI 解释或整理，再把有用的结果留在原页，接着往下写。
 
-PadNote 的核心思想，是让平板成为个人思考与学习工作台，让记录、理解、推导、知识积累和 AI 协作自然连在一起。长期愿景是做一个更好的平板端 Agent 入口：用户可以通过写写画画与 Agent 沟通。当前产品以手写笔记、可编辑内容、圈选 AI 和有限的笔记工具为基础，处于 beta，尚未实现完整的 Agent 通信、执行与结果回传闭环。
+Android · iPad · 自选模型 · 本地笔记 · MIT
 
-## 可以做什么
+[开始使用](#开始使用) · [项目方向](#从笔记到-agent-入口) · [参与开发](#参与开发) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
-- 用手写笔记录，保留原始坐标、压力和时间；支持局部橡皮、套索、撤销、高亮、图形、图片与多页。
-- 编辑 LaTeX/Markdown 源码，在纸面离线显示公式和 Mermaid；长内容按文字流跨页。
-- 圈选后预览发送内容，使用自己的模型 API 进行讲解和整理；可选视觉转写后交给文本模型回答。
-- AI 通过有限的笔记工具写入结论，整轮写入可一次撤销；用户可关闭写入。
-- 将笔记整理为本地 Markdown 知识库，搜索与导出；支持 PDF 批注和可编辑笔记文件交换。
+## 在同一页里，把问题想清楚
 
-## 平台与体验方式
+写到一半的推导、读到不明白的段落，可以圈选后直接提问。发送前，先确认要交给模型看的内容；回答回来后，可以继续追问，也可以允许 AI 把解释写进笔记。
 
-| 平台 | 当前入口 | 验证范围 |
-| --- | --- | --- |
-| Android | Android Studio 或 Gradle Wrapper 构建 debug beta | 最低 API 24；不同平板与手写笔仍需实际验收 |
-| iPad | Xcode 打开 `ios/PadNote.xcodeproj`，scheme `PadNote` | 最低 iPadOS 17；62 单元测试、3 UI 测试和无签名 arm64 构建通过；Pencil/真实模型待验收 |
+纸面上的结果仍然可以编辑。公式保留 LaTeX 源码，文字支持 Markdown，图表使用 Mermaid。你可以改一个符号、补一段说明，或移动整段内容；长答案会按内容分段、跨页排版。
 
-当前没有已确认的 App Store 或 TestFlight 下载入口。Android 安装包仅在发布版本、文件哈希与下载链接核对后添加；源码构建不等于提供通用签名安装包。
+笔记积累起来以后，可以整理成 Markdown 知识库，按关键词检索、跨笔记提问，也可以导出到其他工具继续使用。
 
-## 本地构建
+| 日常操作 | 当前支持 |
+| --- | --- |
+| 写与画 | 压感笔迹、局部橡皮、套索、高亮、几何图形、图片、撤销与重做 |
+| 阅读与整理 | 多页笔记、页面管理、PDF 导入批注与导出 |
+| 公式与图表 | 可编辑的 LaTeX / Markdown，离线渲染公式与 Mermaid |
+| 与 AI 讨论 | 圈选问答、多轮追问、多模型配置、可选“视觉转写 → 文本回答” |
+| 留下结果 | AI 通过笔记工具写入内容；用户控制写入权限，整次写入可撤销 |
+| 积累知识 | 笔记数字化、本地 Markdown 知识库、检索与导出 |
 
-Android 需要 JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0。配置 `JAVA_HOME` 与 `ANDROID_SDK_ROOT`（或 `ANDROID_HOME`），然后：
+## 从笔记到 Agent 入口
+
+PadNote 的核心思想，是把平板做成个人的思考与学习工作台，让记录、理解、推导、知识积累和 AI 协作自然连在一起。
+
+更长远的目标，是做一个更好的平板 Agent 入口。写下任务、画一张草图、圈出需要修改的地方，都可以成为表达意图的方式；Agent 返回结果后，人还可以在结果上批注，继续交流。
+
+手写笔记是这条路线的起点。接下来要逐步连接外部 Agent，让纸面上的想法能够交给它处理，再把结果带回画布。当前已提供 Agent 能力检查和视频任务包导出；任务执行、进度跟踪、审批与结果回传仍在开发路线中。
+
+## 模型自己选，笔记留在本地
+
+PadNote 支持自填 OpenAI-compatible HTTPS 地址、模型和 API Key，可保存多套配置。模型服务及费用由用户自行选择，密钥保存在 Android Keystore 或 iOS Keychain 中。
+
+笔记默认保存在设备上。使用 AI 时，相应的选区、笔记或知识库内容会按确认的范围发送给所选服务；手写转写需要模型，已有公式和图表的显示在本地完成。
+
+Android 与 iPad 通过笔记文件交换内容，目前没有自动云同步。
+
+## 开始使用
+
+当前提供源码，项目处于 beta。Android 最低 API 24，iPad 最低 iPadOS 17。尚未提供 App Store 或 TestFlight 安装入口。
+
+先克隆仓库：
+
+```sh
+git clone https://github.com/shiyan688/padnote.git
+cd padnote
+```
+
+### Android
+
+准备 JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0，配置 `JAVA_HOME` 与 `ANDROID_SDK_ROOT`（或 `ANDROID_HOME`），然后运行：
 
 ```sh
 tools/build-android-apk.sh
 ```
 
-脚本调用随项目的 Gradle 8.9 Wrapper，首次构建会下载 Gradle/依赖；构建并 lint debug beta、验证 APK 签名并输出 SHA-256。JVM 测试：
+脚本使用仓库中的 Gradle 8.9 Wrapper，完成编译、Lint 和 APK 签名校验，将调试安装包输出到 `dist/`。首次构建需要下载 Gradle 和依赖。
+
+### iPad
+
+用 Xcode 打开 `ios/PadNote.xcodeproj`，选择 `PadNote` scheme 和 iPad Simulator 后运行。连接真机时，在 Signing & Capabilities 中选择自己的 Apple Development Team。
+
+详细步骤和功能说明见 [iPad README](ios/README.md)。
+
+### 目前还需要打磨的地方
+
+- Apple Pencil 的延迟、压感和防误触，以及不同 Android 平板的书写体验，需要继续做真机验证。
+- 模型对手写的识别和工具调用能力各有差异；当前 AI 回答会在生成完成后一次显示。
+- 长文档性能、两端排版与文件往返仍需要更多实际使用反馈。iPad 封面目前只保存在本机，不随笔记文件交换。
+- 外部 Agent 的完整工作流尚未接通，具体设计见 [Agent 对接说明](docs/AGENT_INTEGRATION.md)。
+
+## 参与开发
+
+欢迎从你实际遇到的问题开始：某支笔写起来不对、某个公式排版出错、某个模型无法调用工具，或者一份笔记在两台设备之间交换时出了问题。
+
+[提交 Issue](https://github.com/shiyan688/padnote/issues) 时，请附设备与系统、使用版本、复现步骤和预期结果；模型相关问题再附模型名称和脱敏后的错误信息。请勿上传 API Key 或私人笔记。
+
+代码入口：
+
+| 目录 | 内容 |
+| --- | --- |
+| `android/` | Android 原生客户端与测试 |
+| `ios/` | SwiftUI / UIKit iPad 客户端与测试 |
+| `docs/` | AI 工具、PDF 与 Agent 接口约定 |
+| `agent-skills/` | 视频讲解 Agent 子项目 |
+| `tools/` | 构建、检查与开发辅助脚本 |
+| `entry/` | 早期 HarmonyOS ArkUI 原型，未与双端主线同步 |
+
+涉及笔记格式或 AI 写入权限的改动，请一并说明迁移方式和验证结果。
+
+<details>
+<summary>测试与发布验证</summary>
+
+2026-09-23 的公开源码通过了 Android 编译、Lint、签名校验和 43 项 JVM 测试，以及 iPad arm64 无签名构建。iPad 此前通过 62 项单元测试和 3 项 UI 测试；这些结果不替代真实手写笔和模型服务的使用验证。
+
+Android 单元测试：
 
 ```sh
 cd android
 ./gradlew :app:testDebugUnitTest
 ```
 
-iPad：在 Xcode 选择 iPad Simulator 后运行。真机选择自己的 Apple Development Team 并完成设备配对。详细步骤见 [iPad 说明](ios/README.md)。
+仓库根目录下可运行 `node tools/static-check.mjs` 检查文件与关键约束，或运行 `bash tools/tests/test-build-android-script.sh` 检查构建脚本。
 
-开发辅助：`node tools/static-check.mjs` 检查文件与关键产品约束；`bash tools/tests/test-build-android-script.sh` 使用隔离的模拟工具链检查构建脚本。`tools/emulator/` 是需要预先配置 SDK、AVD 和工具链的 Linux 辅助脚本，UI 测试会清除目标模拟器里的 beta 应用数据。`tools/e2e/` 是真实模型测试，需显式提供 `E2E_API_KEY`、服务地址和模型，运行会调用所选服务。
+`tools/emulator/` 是 Linux 模拟器辅助脚本，需预先配置 SDK、AVD 和工具链，测试会清除目标模拟器中的 beta 应用数据。`tools/e2e/` 用于真实模型测试，需显式提供 `E2E_API_KEY`、服务地址和模型，运行会调用所选服务。
 
-## 模型与数据
+</details>
 
-AI 功能需要用户自己的兼容 HTTPS API 与 Key，服务费用取决于所选供应商。密钥通过 Android Keystore/iOS Keychain 保存。笔记先保存在本地；使用圈选 AI、整本数字化或知识库 AI 时，会按已确认范围把相应内容发往用户配置的服务。公式和图表的本地渲染不访问网络。
+## 开源许可
 
-两端交换的是笔记文件，没有自动云同步。两端排版和设备手感仍需共同验收；iPad 封面目前是本机 sidecar，不随笔记 JSON 导出。
+Android 与 iPad 客户端的自研代码，包括手写引擎，采用 [MIT 许可证](LICENSE)。欢迎使用、修改和分发，也允许商业使用与闭源衍生；请保留版权与许可声明。
 
-## 当前边界
-
-项目处于 beta。模型兼容性、长文档性能和真实手写笔体验需要持续验证。AI 回复当前非流式。电脑 Agent 当前提供 HTTPS 能力检查和视频任务 ZIP 导出；Hermes run/SSE/审批/产物回传与 OpenClaw Gateway Bridge 尚未完成。
-
-更长期的方向是让手写和绘画成为与平板 Agent 沟通的自然入口；这部分仍属于产品愿景，不代表当前已具备完整的 Agent 通信、执行或回传能力。
-
-早期 HarmonyOS ArkUI 目录如随快照保留，仅作历史原型，不代表当前完整支持 HarmonyOS NEXT。
-
-## 反馈与贡献
-
-反馈请附：平台、设备/手写笔、系统、版本、最小复现步骤、预期/实际结果；模型问题附供应商/模型名称和已脱敏错误信息。请勿提交真实 API Key、私人笔记或签名证书。
-
-优先欢迎：真机验收、数据往返、排版问题、模型兼容性和文档改进。涉及笔记数据格式或 AI 写入权限的改动，请同时给出迁移与回归验证。
-
-## 许可证
-
-PadNote Android 与 iPad 客户端的自研代码（含手写引擎）采用 [MIT 许可](LICENSE)，范围见 [LICENSING.md](LICENSING.md)。MIT 允许商用和闭源衍生版本，要求保留版权与许可声明。第三方资产保留原许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)。已有视频 Agent 子项目的 Apache-2.0 许可单独保留。
+视频 Agent 子项目保留 Apache-2.0，第三方组件遵循各自许可证。详见 [许可范围](LICENSING.md) 与 [第三方声明](THIRD_PARTY_NOTICES.md)。
