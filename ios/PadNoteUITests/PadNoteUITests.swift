@@ -11,6 +11,11 @@ final class PadNoteUITests: XCTestCase {
         app.launch()
     }
 
+    override func tearDownWithError() throws {
+        app?.terminate()
+        app = nil
+    }
+
     func testCreateAddPageReturnReopenAndPersist() throws {
         let newNote = app.buttons["newNoteButton"]
         XCTAssertTrue(newNote.waitForExistence(timeout: 5))
@@ -98,5 +103,96 @@ final class PadNoteUITests: XCTestCase {
         app.buttons["关闭 AI"].tap()
         XCTAssertFalse(app.buttons["最小化 AI"].exists)
         XCTAssertTrue(app.buttons["backToShelf"].exists)
+    }
+
+    func testRenderFailureCanBeEditedWithoutDuplicatingFlowAndPersistsAfterReopen() throws {
+        let titleValue = "Render UI " + String(UUID().uuidString.prefix(6))
+        XCTAssertTrue(app.buttons["newNoteButton"].waitForExistence(timeout: 5))
+        app.buttons["newNoteButton"].tap()
+        let title = app.textFields["noteTitleField"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap(); title.typeText(titleValue)
+        app.buttons["createNoteConfirm"].tap()
+        let canvas = app.descendants(matching: .any).matching(identifier: "noteCanvas").firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+
+        app.buttons["insertTextButton"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.25)).tap()
+        let inlineSource = app.textViews["inlineTextSource"]
+        XCTAssertTrue(inlineSource.waitForExistence(timeout: 5))
+        inlineSource.tap(); inlineSource.typeText("\\frac{")
+        app.buttons["finishInlineText"].tap()
+
+        let failureEntry = app.buttons["renderFailureEntry"]
+        XCTAssertTrue(failureEntry.waitForExistence(timeout: 15), "invalid LaTeX must expose the paper recovery entry")
+        let failureShot = XCTAttachment(screenshot: app.screenshot())
+        failureShot.name = "Actual paper render failure entry"
+        failureShot.lifetime = .keepAlways
+        add(failureShot)
+        failureEntry.tap()
+
+        let rows = app.buttons.matching(identifier: "textFlowEditButton")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(rows.count, 1)
+        let edit = app.buttons["renderFailureEditSource"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let editor = app.textViews["textSourceEditor"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, "\\frac{")
+        replaceText(in: editor, with: "x^2+y^2=z^2")
+        app.buttons["saveTextButton"].tap()
+
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: failureEntry)
+        wait(for: [gone], timeout: 15)
+        openTextManager()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(rows.count, 1, "repair must update the existing flow rather than insert a second object")
+        let repairedSource = app.descendants(matching: .any).matching(identifier: "textFlowSource").firstMatch
+        XCTAssertTrue(repairedSource.waitForExistence(timeout: 5))
+        XCTAssertEqual(repairedSource.label, "x^2+y^2=z^2")
+        let repairedShot = XCTAttachment(screenshot: app.screenshot())
+        repairedShot.name = "Repaired source with one text flow"
+        repairedShot.lifetime = .keepAlways
+        add(repairedShot)
+        app.navigationBars["页面文字"].buttons["完成"].tap()
+
+        let saveStatus = app.descendants(matching: .any).matching(identifier: "saveStatus").firstMatch
+        let saved = expectation(for: NSPredicate(format: "label BEGINSWITH '已保存'"), evaluatedWith: saveStatus)
+        wait(for: [saved], timeout: 10)
+        app.buttons["backToShelf"].tap()
+        let note = app.buttons["note-\(titleValue)"]
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        note.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        XCTAssertFalse(failureEntry.waitForExistence(timeout: 2))
+        openTextManager()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "textFlowSource").firstMatch.label,
+                       "x^2+y^2=z^2", "the repaired source must survive closing and reopening the note")
+        let reopenShot = XCTAttachment(screenshot: app.screenshot())
+        reopenShot.name = "Reopened note keeps repaired render source"
+        reopenShot.lifetime = .keepAlways
+        add(reopenShot)
+    }
+
+    private func openTextManager() {
+        let more = app.buttons["moreActionsButton"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        let manage = app.buttons["管理文字"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 3))
+        manage.tap()
+    }
+
+    private func replaceText(in element: XCUIElement, with value: String) {
+        for _ in 0..<3 {
+            if element.value as? String == value { return }
+            element.tap()
+            element.typeKey("a", modifierFlags: .command)
+            element.typeText(value)
+        }
+        XCTAssertEqual(element.value as? String, value, "keyboard replacement must be confirmed before saving")
     }
 }

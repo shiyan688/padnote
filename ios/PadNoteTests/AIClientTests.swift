@@ -5,6 +5,7 @@ final class AIClientTests: XCTestCase {
     final class Store: SecretStore {
         func read(reference: String) throws -> String? { "test-key" }
         func write(_ value: String, reference: String) throws {}
+        func delete(reference: String) throws {}
     }
 
     final class ProtocolStub: URLProtocol {

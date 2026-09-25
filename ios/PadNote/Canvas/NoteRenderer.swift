@@ -5,6 +5,16 @@ import PDFKit
 /// Rendering is intentionally stateless and uses the portable raw stroke
 /// arrays. PencilKit is not used, so Android and iOS can exchange documents.
 public enum NoteRenderer {
+    enum PDFExportError: Error, LocalizedError {
+        case incompleteText
+        case tooManyPages
+        var errorDescription: String? {
+            switch self {
+            case .incompleteText: return "文字排版尚未完整生成，请修复或重试后再导出。"
+            case .tooManyPages: return "文字分页超过 500 页，无法完整导出。"
+            }
+        }
+    }
     private static let pdfLock = NSRecursiveLock()
     private static var cachedPDFURL: URL?
     private static var cachedPDF: PDFDocument?
@@ -54,19 +64,40 @@ public enum NoteRenderer {
     }
 
     public static func exportPDF(document: NoteDocument, pdfURL: URL?) -> Data {
+        makePDF(document: document, pdfURL: pdfURL, compiledText: nil)
+    }
+
+    static func exportVerifiedPDF(document: NoteDocument, pdfURL: URL?,
+                                  compiledText: [String: [CompiledTextCache.Unit]]) throws -> Data {
+        var requiredPages = document.pageCount
+        for flow in document.textFlows where !flow.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let units = compiledText[flow.id], !units.isEmpty else { throw PDFExportError.incompleteText }
+            let fragments = NoteTextLayout.compiledFragments(units, flow: flow, pageHeight: document.pageHeight)
+            guard fragments.count == units.count else { throw PDFExportError.tooManyPages }
+            requiredPages = max(requiredPages, (fragments.last?.page ?? flow.anchorPageIndex) + 1)
+        }
+        guard requiredPages <= 500 else { throw PDFExportError.tooManyPages }
+        var snapshot = document
+        snapshot.pageCount = requiredPages
+        return makePDF(document: snapshot, pdfURL: pdfURL, compiledText: compiledText)
+    }
+
+    private static func makePDF(document: NoteDocument, pdfURL: URL?,
+                                compiledText: [String: [CompiledTextCache.Unit]]?) -> Data {
         let data = NSMutableData()
         let mediaBox = CGRect(x: 0, y: 0, width: CGFloat(document.pageWidth), height: CGFloat(document.pageHeight))
         UIGraphicsBeginPDFContextToData(data, mediaBox, nil)
         for page in 0..<max(1, document.pageCount) {
             UIGraphicsBeginPDFPageWithInfo(mediaBox, nil)
             guard let context = UIGraphicsGetCurrentContext() else { continue }
-            drawPage(document: document, page: page, pdfURL: pdfURL, in: context)
+            drawPage(document: document, page: page, pdfURL: pdfURL, compiledText: compiledText, in: context)
         }
         UIGraphicsEndPDFContext()
         return data as Data
     }
 
-    static func drawPage(document: NoteDocument, page: Int, pdfURL: URL?, in context: CGContext) {
+    static func drawPage(document: NoteDocument, page: Int, pdfURL: URL?,
+                         compiledText: [String: [CompiledTextCache.Unit]]? = nil, in context: CGContext) {
         let width = CGFloat(document.pageWidth)
         let height = CGFloat(document.pageHeight)
         context.saveGState()
@@ -84,7 +115,13 @@ public enum NoteRenderer {
         }
 
         for flow in document.textFlows {
-            for fragment in NoteTextLayout.fragments(flow, pageHeight: document.pageHeight) where fragment.page == page {
+            let fragments: [NoteTextLayout.Fragment]
+            if let units = compiledText?[flow.id] {
+                fragments = NoteTextLayout.compiledFragments(units, flow: flow, pageHeight: document.pageHeight)
+            } else {
+                fragments = NoteTextLayout.fragments(flow, pageHeight: document.pageHeight)
+            }
+            for fragment in fragments where fragment.page == page {
                 NoteTextLayout.draw(fragment, in: context)
             }
         }

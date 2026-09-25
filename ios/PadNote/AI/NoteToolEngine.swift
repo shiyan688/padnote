@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CryptoKit
 
 /// The authority granted for one AI task. Existing content always needs an
 /// explicit `.modifyExisting` grant; the default permits reads and new flows.
@@ -11,11 +12,31 @@ public enum NoteToolPermission: Int, Codable, Comparable {
 }
 
 public struct NoteToolVaultEntry: Codable, Equatable, Identifiable {
-    public var id: String
-    public var title: String
-    public var markdown: String
-    public init(id: String, title: String, markdown: String) {
-        self.id = id; self.title = title; self.markdown = markdown
+    public static let maximumEntryBytes = 512 * 1024
+    public static let maximumTotalBytes = 2 * 1024 * 1024
+    public static let maximumEntries = 12
+    public let id: String
+    public let title: String
+    public let markdown: String
+    public let sourceRevision: Double?
+    public let contentSHA256: String
+    public init(id: String, title: String, markdown: String, sourceRevision: Double? = nil) {
+        self.id = id; self.title = title; self.markdown = markdown; self.sourceRevision = sourceRevision
+        contentSHA256 = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public var contentByteCount: Int { markdown.utf8.count }
+
+    public static func bounded(_ entries: [Self]) -> [Self] {
+        var total = 0
+        var result: [Self] = []
+        for entry in entries where result.count < maximumEntries {
+            let bytes = entry.contentByteCount
+            guard bytes <= maximumEntryBytes, total <= maximumTotalBytes - bytes else { continue }
+            result.append(entry)
+            total += bytes
+        }
+        return result
     }
 }
 
@@ -44,7 +65,8 @@ public final class NoteToolEngine {
     public init(note: NoteDocument, currentPage: Int = 0, selectionBounds: CGRect? = nil,
                 vault: [NoteToolVaultEntry] = []) {
         self.original = note; self.proposed = note
-        self.currentPage = max(0, currentPage); self.selection = selectionBounds; self.vault = vault
+        self.currentPage = max(0, currentPage); self.selection = selectionBounds
+        self.vault = NoteToolVaultEntry.bounded(vault)
     }
 
     public var proposedNote: NoteDocument { proposed }
@@ -80,14 +102,16 @@ public final class NoteToolEngine {
         func f(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required]]]
         }
-        let tools: [[String: Any]] = [
+        var tools: [[String: Any]] = [
             f("read_page_map", "读取笔记结构与空白区域，规划写入位置。", ["page": ["type":"integer"]], []),
             f("write_text", "在页面空白处插入可编辑文字。", ["content":["type":"string"], "format":["type":"string", "enum":["markdown","latex"]], "placement":placement], ["content","placement"]),
             f("draw_diagram", "插入可编辑的 Mermaid 示意图。", ["code":["type":"string"], "placement":placement], ["code","placement"]),
             f("set_text_flow_style", "调整已有文字流样式。", ["flowId":["type":"string"], "fontSizeSp":["type":"number"], "lineHeight":["type":"number"], "widthDp":["type":"number"]], ["flowId"]),
-            f("move_text_flow", "移动已有文字流到页面空白处。", ["flowId":["type":"string"], "placement":placement], ["flowId","placement"]),
-            f("search_vault", "搜索知识库正文。", ["query":["type":"string"]], ["query"]),
-            f("read_vault_note", "读取知识库笔记全文或指定页内容。", ["id":["type":"string"], "title":["type":"string"], "page":["type":"integer"]], [])]
+            f("move_text_flow", "移动已有文字流到页面空白处。", ["flowId":["type":"string"], "placement":placement], ["flowId","placement"])]
+        if !vault.isEmpty {
+            tools.append(f("search_vault", "搜索本次明确选择的知识库材料。", ["query":["type":"string"]], ["query"]))
+            tools.append(f("read_vault_note", "读取本次明确选择的知识库材料全文或指定页内容。", ["id":["type":"string"], "title":["type":"string"], "page":["type":"integer"]], []))
+        }
         return encode(tools) ?? "[]"
     }
 
@@ -101,10 +125,15 @@ public final class NoteToolEngine {
                 "freeBandCount": occupied.filter { !$0 }.count, "approximateFreeLines": Int(Double(occupied.filter { !$0 }.count) * proposed.pageHeight / 8 / 22), "pdfBackground": page < proposed.pdfPageCount]
             if detailed {
                 entry["textFlows"] = proposed.textFlows.filter { $0.anchorPageIndex == page }.map {
-                    ["flowId": $0.id, "source": $0.source, "format": $0.format, "fontSizeSp": $0.fontSizeSp,
-                     "lineHeight": $0.lineHeight, "bands": bandString(for: flowBounds($0).rect)]
+                    ["flowId": $0.id, "format": $0.format, "fontSizeSp": $0.fontSizeSp,
+                     "lineHeight": $0.lineHeight, "widthDp": $0.width,
+                     "bands": bandString(for: flowBounds($0).rect)]
                 }
                 entry["inkClusters"] = inkClusters(page).prefix(200).map { ["clusterId": $0.id, "bands": bandString(for: $0.rect), "strokeCount": $0.count, "recognized": false] }
+                entry["images"] = proposed.images.filter { $0.page == page }.map {
+                    ["imageId": $0.id, "widthDp": $0.width, "heightDp": $0.height,
+                     "bands": bandString(for: CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height))]
+                }
                 entry["freeBands"] = occupied.enumerated().filter { !$0.element }.map { $0.offset + 1 }
             } else { entry["textFlowCount"] = proposed.textFlows.filter { $0.anchorPageIndex == page }.count }
             pages.append(entry)

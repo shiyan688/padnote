@@ -10,14 +10,14 @@ struct VaultNote: Codable, Identifiable {
 }
 
 @MainActor
-final class VaultLibrary: ObservableObject {
+final class VaultLibrary: ObservableObject, DigitizationVaultPublishing {
     @Published var notes: [VaultNote] = []
     @Published var errorMessage: String?
     private let directory: URL
 
-    init() {
+    init(directory: URL? = nil) {
         let testing = ProcessInfo.processInfo.arguments.contains("--uitesting")
-        directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(testing ? "PadNoteUITestVault" : "PadNoteVault", isDirectory: true)
         reload()
     }
@@ -33,11 +33,21 @@ final class VaultLibrary: ObservableObject {
     }
 
     func save(note: NoteDocument, markdown: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let existingCreatedAt = notes.first(where: { $0.id == note.id })?.createdAt
         let entry = VaultNote(id: note.id, title: note.title, markdown: markdown,
-                              sourceUpdatedAt: note.updatedAt, createdAt: Date())
+                              sourceUpdatedAt: note.updatedAt, createdAt: existingCreatedAt ?? Date())
         let data = try JSONEncoder().encode(entry)
         try data.write(to: directory.appendingPathComponent("\(safeID(note.id)).json"), options: .atomic)
         reload()
+    }
+
+    func publishDigitization(note: NoteDocument, checkpoint: DigitizationCheckpoint) throws {
+        guard checkpoint.source.noteID == note.id, checkpoint.isComplete,
+              checkpoint.state == .readyToPublish else {
+            throw DigitizationError.invalidSource("只有全部页面完成的数字化批次才能保存到知识库。")
+        }
+        try save(note: note, markdown: checkpoint.markdown(markIncomplete: false))
     }
 
     func delete(_ note: VaultNote) throws {

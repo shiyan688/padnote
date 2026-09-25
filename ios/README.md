@@ -27,7 +27,7 @@ PadNote Android 与 iPad 客户端的自研代码（含手写引擎）采用 [MI
 
 ## 验证与边界
 
-2026-09-22：Xcode 27 / iOS 27 的 iPad Pro 11-inch (M5) 模拟器通过 62 项单元测试、3 项 UI 测试；iPad 真机 arm64 无签名构建通过。测试涵盖跨平台数据、局部橡皮、文本排版像素、离线数学、模型路由/取消、工具权限/事务、Agent/ZIP、封面及保存重启 UI 流程。
+2026-09-22：Xcode 27 / iOS 27 的 iPad Pro 11-inch (M5) 模拟器通过 62 项单元测试、3 项 UI 测试；iPad 真机 arm64 无签名构建通过。结果包为 `ios/TestResults/Beta-final-6.xcresult` 和 `Beta-ai-ui-9.xcresult`，持续状态记录在 `PROJECT_MEMORY.md`。测试涵盖跨平台数据、局部橡皮、文本排版像素、离线数学、模型路由/取消、工具权限/事务、Agent/ZIP、封面及保存重启 UI 流程。
 
 真实模型 endpoint、Hermes 实例及 Apple Pencil 的延迟/压感/防误触仍需使用实际配置与 iPad 验收；当前测试使用隔离的本地夹具。Hermes 任务提交/SSE/审批/产物回传和 OpenClaw Gateway Bridge 与 Android beta 一样仍属下一阶段。
 
@@ -41,5 +41,3 @@ PADNOTE_SIMULATOR_ID=172ECBE4-DB05-400A-8051-7D9B3DB0C775 ios/scripts/verify.sh
 ```
 
 脚本把 derived data 和日志放入 `ios/build`；测试报告另存于忽略的 `ios/TestResults`。不会安装工具或修改用户签名配置。
-
-2026-09-23 排版更新：build 44 的 Canvas、CompiledText 与 Math 共 20 项针对性模拟器测试通过，arm64 无签名构建通过；Apple Pencil 和真机仍需验证。电脑 Agent 页已加入共用的离线连接教程。

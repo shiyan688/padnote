@@ -28,6 +28,7 @@ def main():
     products_group = ident("group:products")
     resources_ref = ident("resource:Web")
     guide_ref = ident("resource:agent-connection-guide.json")
+    legacy_fixtures_ref = ident("resource:legacy-notes")
     objects = []
     def obj(kind, body, key): objects.append((key, f"{key} /* {key} */ = {{\n{body}\n\t}};"))
     def file_ref(path, file_type="sourcecode.swift"):
@@ -49,6 +50,7 @@ def main():
         rel = source.relative_to(ROOT / "PadNoteUITests").as_posix(); ref = file_ref(rel); ui_refs.append(ref); ui_build.append(build_file(ref, "ui"))
     obj("PBXFileReference", "\t\tisa = PBXFileReference;\n\t\tlastKnownFileType = folder;\n\t\tname = Web;\n\t\tpath = \"PadNote/Resources/Web\";\n\t\tsourceTree = \"<group>\";", resources_ref)
     obj("PBXFileReference", "\t\tisa = PBXFileReference;\n\t\tlastKnownFileType = text.json;\n\t\tname = agent-connection-guide.json;\n\t\tpath = \"../android/app/src/main/assets/agent-connection-guide.json\";\n\t\tsourceTree = \"<group>\";", guide_ref)
+    obj("PBXFileReference", "\t\tisa = PBXFileReference;\n\t\tlastKnownFileType = folder;\n\t\tname = legacy-notes;\n\t\tpath = \"../docs/fixtures/legacy-notes\";\n\t\tsourceTree = \"<group>\";", legacy_fixtures_ref)
     asset_ref = None
     asset_catalog = ROOT / "PadNote/Resources/Assets.xcassets"
     if asset_catalog.exists():
@@ -58,11 +60,12 @@ def main():
     for key, name, typ in [(app_product_ref, "PadNote.app", "wrapper.application"), (unit_product_ref, "PadNoteTests.xctest", "wrapper.cfbundle"), (ui_product_ref, "PadNoteUITests.xctest", "wrapper.cfbundle")]:
         obj("PBXFileReference", f"\t\tisa = PBXFileReference;\n\t\texplicitFileType = {typ};\n\t\tincludeInIndex = 0;\n\t\tpath = {q(name)};\n\t\tsourceTree = BUILT_PRODUCTS_DIR;", key)
     app_res_build = [build_file(resources_ref, "resources"), build_file(guide_ref, "resources")]
+    unit_res_build = [build_file(legacy_fixtures_ref, "unit-resources")]
     if asset_ref: app_res_build.append(build_file(asset_ref, "resources"))
-    app_sources_phase = ident("phase:sources:app"); unit_sources_phase = ident("phase:sources:unit"); ui_sources_phase = ident("phase:sources:ui"); app_res_phase = ident("phase:resources:app"); app_frameworks = ident("phase:frameworks:app"); unit_frameworks = ident("phase:frameworks:unit"); ui_frameworks = ident("phase:frameworks:ui"); app_copy = ident("phase:copy:app"); unit_copy = ident("phase:copy:unit"); ui_copy = ident("phase:copy:ui")
+    app_sources_phase = ident("phase:sources:app"); unit_sources_phase = ident("phase:sources:unit"); ui_sources_phase = ident("phase:sources:ui"); app_res_phase = ident("phase:resources:app"); unit_res_phase = ident("phase:resources:unit"); app_frameworks = ident("phase:frameworks:app"); unit_frameworks = ident("phase:frameworks:unit"); ui_frameworks = ident("phase:frameworks:ui"); app_copy = ident("phase:copy:app"); unit_copy = ident("phase:copy:unit"); ui_copy = ident("phase:copy:ui")
     def refs_text(refs): return "".join("\n\t\t\t" + ref + " /* " + ref + " */," for ref in refs)
-    for key, files in [(app_sources_phase, app_build), (unit_sources_phase, unit_build), (ui_sources_phase, ui_build), (app_res_phase, app_res_build), (app_frameworks, []), (unit_frameworks, []), (ui_frameworks, []), (app_copy, []), (unit_copy, []), (ui_copy, [])]:
-        kind = "PBXResourcesBuildPhase" if key == app_res_phase else "PBXSourcesBuildPhase" if key in (app_sources_phase, unit_sources_phase, ui_sources_phase) else "PBXFrameworksBuildPhase"
+    for key, files in [(app_sources_phase, app_build), (unit_sources_phase, unit_build), (ui_sources_phase, ui_build), (app_res_phase, app_res_build), (unit_res_phase, unit_res_build), (app_frameworks, []), (unit_frameworks, []), (ui_frameworks, []), (app_copy, []), (unit_copy, []), (ui_copy, [])]:
+        kind = "PBXResourcesBuildPhase" if key in (app_res_phase, unit_res_phase) else "PBXSourcesBuildPhase" if key in (app_sources_phase, unit_sources_phase, ui_sources_phase) else "PBXFrameworksBuildPhase"
         obj(kind, f"\t\tisa = {kind};\n\t\tbuildActionMask = 2147483647;\n\t\tfiles = ({refs_text(files)}\n\t\t);\n\t\trunOnlyForDeploymentPostprocessing = 0;", key)
     def settings(product, kind, debug, host=False):
         values = [f"PRODUCT_NAME = {q(product)}", f"PRODUCT_BUNDLE_IDENTIFIER = {q('com.padnote.ipad' if kind == 'app' else 'com.padnote.ipad.' + kind)}", "SUPPORTED_PLATFORMS = (iphonesimulator, iphoneos)", "SWIFT_VERSION = 5.0", "IPHONEOS_DEPLOYMENT_TARGET = 17.0", "TARGETED_DEVICE_FAMILY = 2", "CODE_SIGN_STYLE = Automatic", "CLANG_ENABLE_MODULES = YES", "LD_RUNPATH_SEARCH_PATHS = (\"$(inherited)\", \"@executable_path/Frameworks\")"]
@@ -82,7 +85,7 @@ def main():
     obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({refs_text(ui_refs)}\n\t\t);\n\t\tpath = PadNoteUITests;\n\t\tsourceTree = \"<group>\";", ui_group)
     obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_product_ref},{unit_product_ref},{ui_product_ref}\n\t\t);\n\t\tname = Products;\n\t\tsourceTree = \"<group>\";", products_group)
     asset_child = "," + asset_ref if asset_ref else ""
-    obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_group},{test_group},{ui_group},{resources_ref},{guide_ref}{asset_child},{products_group}\n\t\t);\n\t\tsourceTree = \"<group>\";", main_group)
+    obj("PBXGroup", f"\t\tisa = PBXGroup;\n\t\tchildren = ({app_group},{test_group},{ui_group},{resources_ref},{guide_ref},{legacy_fixtures_ref}{asset_child},{products_group}\n\t\t);\n\t\tsourceTree = \"<group>\";", main_group)
     def target(name, product, product_ref, sources, frameworks, resources=None, kind="app", host=False, dependency=None):
         phase = ident("phase:" + name); debug_cfg = ident("cfg:" + name + ":debug"); release_cfg = ident("cfg:" + name + ":release")
         for key, config_name, debug in [(debug_cfg, "Debug", True), (release_cfg, "Release", False)]: obj("XCBuildConfiguration", f"\t\tisa = XCBuildConfiguration;\n\t\tbuildSettings = {{\n{settings(name if kind != 'app' else 'PadNote', kind, debug, host)}\n\t\t}};\n\t\tname = {config_name};", key)
@@ -94,7 +97,7 @@ def main():
         obj("PBXNativeTarget", f"\t\tisa = PBXNativeTarget;\n\t\tbuildConfigurationList = {cfg};\n\t\tbuildPhases = ({sources},{frameworks}{',' + resources if resources else ''});\n\t\tbuildRules = ();\n\t\tdependencies = {dependency_text};\n\t\tname = {q(name)};\n\t\tproductName = {q(name)};\n\t\tproductReference = {product_ref};\n\t\tproductType = {q(product)};", phase)
         return phase
     app_native = target("PadNote", "com.apple.product-type.application", app_product_ref, app_sources_phase, app_frameworks, app_res_phase, "app")
-    unit_native = target("PadNoteTests", "com.apple.product-type.bundle.unit-test", unit_product_ref, unit_sources_phase, unit_frameworks, kind="unit", host=True, dependency=app_native)
+    unit_native = target("PadNoteTests", "com.apple.product-type.bundle.unit-test", unit_product_ref, unit_sources_phase, unit_frameworks, unit_res_phase, kind="unit", host=True, dependency=app_native)
     ui_native = target("PadNoteUITests", "com.apple.product-type.bundle.ui-testing", ui_product_ref, ui_sources_phase, ui_frameworks, kind="ui", dependency=app_native)
     obj("PBXProject", f"\t\tisa = PBXProject;\n\t\tbuildConfigurationList = {configs};\n\t\tcompatibilityVersion = \"Xcode 16.0\";\n\t\tdevelopmentRegion = en;\n\t\tknownRegions = (en, Base);\n\t\tmainGroup = {main_group};\n\t\tproductRefGroup = {products_group};\n\t\ttargets = ({app_native}, {unit_native}, {ui_native});", project_id)
     PROJECT.mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.18.0</string>
 	<key>CFBundleVersion</key>
-	<string>44</string>
+	<string>45</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations~ipad</key>
@@ -33,6 +33,8 @@
 	<string>APPL</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>扫描电脑连接助手生成的一次性配对二维码。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -64,6 +64,7 @@ public enum NotePageOperations {
             document.images[i].page -= 1
         }
         document.pageCount -= 1
+        bumpTopology(&document)
         return true
     }
 
@@ -91,6 +92,7 @@ public enum NotePageOperations {
         }
         document.images.append(contentsOf: pageImages)
         document.pageCount += 1
+        bumpTopology(&document)
         return true
     }
 
@@ -117,7 +119,23 @@ public enum NotePageOperations {
             let old = min(count - 1, max(0, document.images[i].page))
             document.images[i].page = mapping[old]
         }
+        bumpTopology(&document)
         return true
+    }
+
+    public static func appendBlankPage(in document: inout NoteDocument) -> Bool {
+        guard document.pageCount < maximumPageCount else { return false }
+        document.pageCount += 1
+        bumpTopology(&document)
+        return true
+    }
+
+    private static func bumpTopology(_ document: inout NoteDocument) {
+        if document.pageTopologyRevision < 1_000_000_000 {
+            document.pageTopologyRevision = max(0, document.pageTopologyRevision) + 1
+        } else {
+            document.pageTopologyRevision = 1_000_000_000
+        }
     }
 
     private static func valid(_ index: Int, _ document: NoteDocument) -> Bool { index >= 0 && index < document.pageCount }

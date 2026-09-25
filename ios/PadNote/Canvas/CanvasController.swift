@@ -65,6 +65,8 @@ public final class CanvasController: ObservableObject {
     @Published public private(set) var currentPage = 0
     @Published public private(set) var selectedTextFlowIDs: Set<String> = []
     @Published public private(set) var selectedTextFontSize: Double?
+    @Published public private(set) var aiHistoryRevision = 0
+    @Published public private(set) var hasActiveCanvasInput = false
     public private(set) var selectionBounds: CGRect?
 
     /// Root-owned inline editor hooks. Canvas only reports taps; it never
@@ -75,8 +77,14 @@ public final class CanvasController: ObservableObject {
 
     public private(set) var selectionImage: UIImage?
 
-    private var undoStack: [NoteDocument] = []
-    private var redoStack: [NoteDocument] = []
+    private struct HistoryEntry {
+        let document: NoteDocument
+        let aiApplications: [UUID: Bool]
+    }
+    private var undoStack: [HistoryEntry] = []
+    private var redoStack: [HistoryEntry] = []
+    private var aiApplications: [UUID: Bool] = [:]
+    private var pendingAIApplication: (id: UUID, applied: Bool)?
     private var editingGroupDepth = 0
     private var editingGroupRecorded = false
     private let settingsDefaults: UserDefaults
@@ -141,6 +149,15 @@ public final class CanvasController: ObservableObject {
         editHandler?(transform)
     }
 
+    public func performAIEdit(id: UUID, applied: Bool, _ transform: @escaping DocumentTransform) {
+        guard pendingAIApplication == nil else { return }
+        pendingAIApplication = (id, applied)
+        guard let editHandler else { pendingAIApplication = nil; return }
+        editHandler(transform)
+    }
+
+    public func aiApplicationState(for id: UUID) -> Bool? { aiApplications[id] }
+
     /// Coalesces a stream of small edits (for example inline text layout
     /// updates) into one undo entry. Nested callers share the outer group.
     public func beginEditingGroup() {
@@ -160,9 +177,10 @@ public final class CanvasController: ObservableObject {
         pendingHistoryCommand = .undo
         editHandler? { [weak self] document in
             guard let self, let previous = self.undoStack.popLast() else { return }
-            self.redoStack.append(document)
+            self.redoStack.append(.init(document: document, aiApplications: self.aiApplications))
             if self.redoStack.count > 30 { self.redoStack.removeFirst(self.redoStack.count - 30) }
-            document = previous
+            document = previous.document
+            self.replaceAIApplications(previous.aiApplications)
         }
     }
 
@@ -172,9 +190,10 @@ public final class CanvasController: ObservableObject {
         pendingHistoryCommand = .redo
         editHandler? { [weak self] document in
             guard let self, let next = self.redoStack.popLast() else { return }
-            self.undoStack.append(document)
+            self.undoStack.append(.init(document: document, aiApplications: self.aiApplications))
             if self.undoStack.count > 30 { self.undoStack.removeFirst(self.undoStack.count - 30) }
-            document = next
+            document = next.document
+            self.replaceAIApplications(next.aiApplications)
         }
     }
 
@@ -223,6 +242,10 @@ public final class CanvasController: ObservableObject {
         currentPage = next
     }
 
+    func setActiveCanvasInput(_ active: Bool) {
+        if hasActiveCanvasInput != active { hasActiveCanvasInput = active }
+    }
+
     public func pageImage(_ index: Int) -> UIImage? {
         guard let document = mountedDocument else { return nil }
         return NoteRenderer.renderPage(document: document, page: index, pdfURL: mountedPDFURL)
@@ -265,7 +288,7 @@ public final class CanvasController: ObservableObject {
             guard !editingGroupRecorded else { return }
             editingGroupRecorded = true
         }
-        undoStack.append(document)
+        undoStack.append(.init(document: document, aiApplications: aiApplications))
         if undoStack.count > 30 { undoStack.removeFirst(undoStack.count - 30) }
         redoStack.removeAll(keepingCapacity: true)
         canUndo = true
@@ -275,6 +298,19 @@ public final class CanvasController: ObservableObject {
     func consumeHistoryCommand() -> HistoryCommand? {
         defer { pendingHistoryCommand = nil }
         return pendingHistoryCommand
+    }
+
+    func finishPendingAIApplication(didChange: Bool) {
+        defer { pendingAIApplication = nil }
+        guard didChange, let pendingAIApplication else { return }
+        aiApplications[pendingAIApplication.id] = pendingAIApplication.applied
+        aiHistoryRevision &+= 1
+    }
+
+    private func replaceAIApplications(_ value: [UUID: Bool]) {
+        guard aiApplications != value else { return }
+        aiApplications = value
+        aiHistoryRevision &+= 1
     }
 }
 

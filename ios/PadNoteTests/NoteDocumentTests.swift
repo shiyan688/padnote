@@ -5,6 +5,10 @@ import zlib
 
 @MainActor
 final class NoteDocumentTests: XCTestCase {
+    private var legacyFixtureDirectory: URL {
+        Bundle(for: Self.self).resourceURL!.appendingPathComponent("legacy-notes", isDirectory: true)
+    }
+
     func testSchemaEightRoundTripPreservesInkPressureAndTime() throws {
         var note = NoteDocument(title: "Calculus", pageStyle: PageStyle(paper: "grid", ratio: "a4", landscape: true))
         note.updatedAt = 1_725_000_000_123
@@ -31,6 +35,77 @@ final class NoteDocumentTests: XCTestCase {
         XCTAssertEqual(note.textFlows[0].anchorPageIndex, 1)
     }
 
+    func testSharedSchemaOneThroughEightFixturesMigrateAndColdReopenWithoutLoss() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for version in 1...8 {
+            let fixture = legacyFixtureDirectory.appendingPathComponent("schema\(version).json")
+            var note = try NoteDocument.decode(Data(contentsOf: fixture))
+            XCTAssertEqual(note.strokes.first?.id, "stroke-v\(version)", "schema \(version) ink")
+            XCTAssertEqual(note.pageWidth, 600, "schema \(version) width")
+            XCTAssertEqual(note.pageHeight, 800, "schema \(version) height")
+
+            switch version {
+            case 1:
+                XCTAssertEqual(note.pageCount, 1); XCTAssertEqual(note.pageStyle.paper, "ruled")
+            case 2:
+                XCTAssertEqual(note.pageCount, 2); XCTAssertGreaterThan(note.strokes[0].points[0].y, note.pageHeight)
+                XCTAssertEqual(note.viewportZoom, 1.05)
+            case 3:
+                XCTAssertEqual(note.textFlows.first?.source, "x_3^2 + y_3^2 = 1")
+                XCTAssertEqual(note.textFlows.first?.anchorXInPage, 48)
+            case 4:
+                XCTAssertEqual(note.textFlows.count, 1)
+                XCTAssertEqual(note.textFlows.first?.id, "legacy-flow-v4")
+                XCTAssertEqual(note.textFlows.first?.anchorPageIndex, 1)
+                XCTAssertEqual(note.textFlows.first?.anchorYInPage, 100)
+            case 5:
+                XCTAssertEqual(note.textFlows.first?.lineHeight, 1.35)
+                XCTAssertEqual(note.textFlows.first?.anchorPageIndex, 1)
+            case 6:
+                XCTAssertEqual(note.pageStyle, PageStyle(paper: "grid", ratio: "a4", landscape: true))
+                XCTAssertEqual(note.textFlows.first?.source, #"\frac{6}{2}=3"#)
+            case 7:
+                XCTAssertEqual(note.pdfPageCount, 1)
+                XCTAssertEqual(note.textFlows.first?.anchorPageIndex, 1)
+            case 8:
+                XCTAssertEqual(note.images.first?.id, "image-v8")
+                XCTAssertNotNil(note.images.first.flatMap { Data(base64Encoded: $0.png) })
+            default: break
+            }
+
+            let noteRoot = root.appendingPathComponent("schema\(version)", isDirectory: true)
+            let library = NoteLibrary(directory: noteRoot)
+            if version == 7 {
+                try FileManager.default.createDirectory(at: noteRoot, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(
+                    at: legacyFixtureDirectory.appendingPathComponent("schema7-source.pdf"),
+                    to: noteRoot.appendingPathComponent("\(note.id).pdf"))
+            }
+            try library.save(note)
+            note.schemaVersion = 8
+            let reopened = NoteLibrary(directory: noteRoot)
+            XCTAssertEqual(reopened.notes.first, note, "schema \(version) must survive canonical save and cold reopen")
+            XCTAssertEqual(reopened.notes.first?.schemaVersion, 8)
+        }
+    }
+
+    func testSharedCorruptTailFixtureDoesNotPartiallyReplaceLiveLibrary() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let live = NoteDocument(title: "仍在的活文档")
+        try library.save(live)
+        let damaged = legacyFixtureDirectory.appendingPathComponent("schema8-corrupt-tail.json")
+        let copied = root.appendingPathComponent("corrupt-fixture.json")
+        try FileManager.default.copyItem(at: damaged, to: copied)
+
+        library.reload()
+        XCTAssertEqual(library.notes, [live])
+        XCTAssertTrue(library.recoveryItems.contains { $0.filename == copied.lastPathComponent })
+        XCTAssertThrowsError(try NoteDocument.decode(Data(contentsOf: damaged)))
+    }
+
     func testRejectsUnknownSchemaCorruptionAndLimits() throws {
         let unknown = #"{"schemaVersion":9,"strokes":[]}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(unknown)) { error in
@@ -41,6 +116,185 @@ final class NoteDocumentTests: XCTestCase {
         var tooManyPages = NoteDocument()
         tooManyPages.pageCount = 501
         XCTAssertThrowsError(try tooManyPages.encoded())
+
+        let budgetNote = NoteDocument(title: "预算一致")
+        let encoded = try budgetNote.encoded()
+        XCTAssertThrowsError(try budgetNote.encoded(maximumBytes: encoded.count - 1))
+        XCTAssertThrowsError(try NoteDocument.decode(encoded, maximumBytes: encoded.count - 1))
+    }
+
+    func testSameContentSaveRepairsMissingOrCorruptCanonicalBeforeReportingSuccess() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let note = NoteDocument(title: "Cold reopen")
+        try library.save(note)
+        let target = root.appendingPathComponent("\(note.id).json")
+
+        try Data("damaged".utf8).write(to: target)
+        try library.save(note)
+        XCTAssertEqual(NoteLibrary(directory: root).notes.first, note)
+
+        try FileManager.default.removeItem(at: target)
+        try library.save(note)
+        XCTAssertEqual(NoteLibrary(directory: root).notes.first, note)
+    }
+
+    func testInterruptedCanonicalSaveKeepsOldFileAndDraftSurvivesColdRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var failCanonical = false
+        let injected = NSError(domain: "NoteLibraryTests", code: 91)
+        let library = NoteLibrary(directory: root) { point, url in
+            failCanonical && point == .afterOriginalMoved && !url.path.contains("/.pending-edits/") ? injected : nil
+        }
+        var original = NoteDocument(title: "Original")
+        original.updatedAt = 100
+        try library.save(original)
+        let target = root.appendingPathComponent("\(original.id).json")
+        let originalBytes = try Data(contentsOf: target)
+
+        var changed = original
+        changed.title = "Unsaved newest"
+        changed.updatedAt = 200
+        let revision = library.nextDraftRevision(noteID: changed.id)
+        let draftPersisted = try await library.persistRegisteredDraft(changed, revision: revision)
+        XCTAssertTrue(draftPersisted)
+        failCanonical = true
+        XCTAssertThrowsError(try library.save(changed))
+        XCTAssertEqual(try Data(contentsOf: target), originalBytes)
+
+        let reopened = NoteLibrary(directory: root)
+        XCTAssertEqual(reopened.notes.first, original)
+        XCTAssertEqual(reopened.pendingDraft(noteID: changed.id)?.document, changed)
+    }
+
+    func testHandledFailureAfterTemporaryWriteCannotBePromotedOnColdRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var fail = false
+        let injected = NSError(domain: "NoteLibraryTests", code: 94)
+        let library = NoteLibrary(directory: root) { point, url in
+            fail && point == .afterTemporaryWrite && !url.path.contains("/.pending-edits/") ? injected : nil
+        }
+        var original = NoteDocument(title: "最后成功版本")
+        original.updatedAt = 100
+        try library.save(original)
+        var rejected = original
+        rejected.title = "已报告失败的版本"
+        rejected.updatedAt = 200
+        fail = true
+
+        XCTAssertThrowsError(try library.save(rejected))
+        let target = root.appendingPathComponent("\(original.id).json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".tmp"))
+        XCTAssertEqual(NoteLibrary(directory: root).notes.first, original)
+    }
+
+    func testCanonicalRecoveryPromotionFailurePreservesOnlyValidTemporaryForNextLaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var note = NoteDocument(title: "仅存临时候选")
+        note.updatedAt = 420
+        let target = root.appendingPathComponent("\(note.id).json")
+        let temporary = URL(fileURLWithPath: target.path + ".tmp")
+        let bytes = try note.encoded()
+        try bytes.write(to: temporary)
+        let failure = NSError(domain: "NoteLibraryTests", code: 92)
+
+        let failedPromotion = NoteLibrary(directory: root) { point, url in
+            point == .beforeVerification && url == target ? failure : nil
+        }
+        XCTAssertEqual(failedPromotion.notes.first, note, "a verified candidate remains usable in memory")
+        XCTAssertEqual(try Data(contentsOf: temporary), bytes, "promotion failure must retain the only durable source")
+        let recovery = try XCTUnwrap(failedPromotion.recoveryItems.first { $0.filename == temporary.lastPathComponent })
+        XCTAssertEqual(try Data(contentsOf: failedPromotion.exportRecoveryURL(for: recovery)), bytes)
+
+        let nextLaunch = NoteLibrary(directory: root)
+        XCTAssertEqual(nextLaunch.notes.first, note)
+        XCTAssertEqual(try NoteDocument.decode(Data(contentsOf: target)), note)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
+    }
+
+    func testDraftRecoveryPromotionFailurePreservesOnlyValidBackupForNextLaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let drafts = root.appendingPathComponent(".pending-edits", isDirectory: true)
+        try FileManager.default.createDirectory(at: drafts, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let note = NoteDocument(title: "仅存草稿备份")
+        let target = drafts.appendingPathComponent("\(note.id).draft.json")
+        let backup = URL(fileURLWithPath: target.path + ".bak")
+        let bytes = try PersistedNoteDraft(revision: 9, document: note).encoded()
+        try bytes.write(to: backup)
+        let failure = NSError(domain: "NoteLibraryTests", code: 93)
+
+        let failedPromotion = NoteLibrary(directory: root) { point, url in
+            point == .beforeVerification && url == target ? failure : nil
+        }
+        XCTAssertEqual(failedPromotion.pendingDraft(noteID: note.id)?.revision, 9)
+        XCTAssertEqual(try Data(contentsOf: backup), bytes)
+        XCTAssertTrue(failedPromotion.recoveryItems.contains { $0.filename == backup.lastPathComponent })
+
+        let nextLaunch = NoteLibrary(directory: root)
+        XCTAssertEqual(nextLaunch.pendingDraft(noteID: note.id)?.revision, 9)
+        XCTAssertEqual(try PersistedNoteDraft.decode(Data(contentsOf: target)).document, note)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testCorruptFileRemainsVisibleAndExportsOriginalBytes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let damaged = Data(#"{"schemaVersion":8,"id":"broken","strokes":[],"textFlows":["#.utf8)
+        let target = root.appendingPathComponent("broken.json")
+        try damaged.write(to: target)
+
+        let library = NoteLibrary(directory: root)
+        XCTAssertTrue(library.notes.isEmpty)
+        let recovery = try XCTUnwrap(library.recoveryItems.first)
+        XCTAssertEqual(try Data(contentsOf: target), damaged, "failed loading must not rewrite the original")
+        XCTAssertEqual(try Data(contentsOf: library.exportRecoveryURL(for: recovery)), damaged)
+    }
+
+    func testDraftRevisionsSurviveRestartAndOldCallbacksCannotReplaceOrClearNewerDraft() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = NoteLibrary(directory: root)
+        var note = NoteDocument(title: "Revision 7")
+        for revision in 1...7 { first.registerDraftRevision(noteID: note.id, revision: revision) }
+        let seventhPersisted = try await first.persistRegisteredDraft(note, revision: 7)
+        XCTAssertTrue(seventhPersisted)
+
+        let reopened = NoteLibrary(directory: root)
+        XCTAssertEqual(reopened.pendingDraft(noteID: note.id)?.revision, 7)
+        let next = reopened.nextDraftRevision(noteID: note.id)
+        XCTAssertEqual(next, 8)
+        let stale = note
+        note.title = "Revision 8"
+        note.updatedAt += 1
+        let stalePersisted = try await reopened.persistRegisteredDraft(stale, revision: 7)
+        XCTAssertFalse(stalePersisted)
+        let newestPersisted = try await reopened.persistRegisteredDraft(note, revision: next)
+        XCTAssertTrue(newestPersisted)
+        await reopened.markCanonicalSaved(noteID: note.id, revision: 7)
+        XCTAssertEqual(reopened.pendingDraft(noteID: note.id)?.revision, 8)
+        XCTAssertEqual(NoteLibrary(directory: root).pendingDraft(noteID: note.id)?.document.title, "Revision 8")
+    }
+
+    func testDeletingNoteInvalidatesInFlightDraftAndCannotResurrectIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let note = NoteDocument(title: "Delete")
+        try library.save(note)
+        let revision = library.nextDraftRevision(noteID: note.id)
+        let writer = Task { try await library.persistRegisteredDraft(note, revision: revision) }
+        try library.delete(note)
+        _ = try? await writer.value
+        let reopened = NoteLibrary(directory: root)
+        XCTAssertTrue(reopened.notes.isEmpty)
+        XCTAssertNil(reopened.pendingDraft(noteID: note.id))
     }
 
     func testImportUsesUniqueIDsAndRecoversBackup() throws {
