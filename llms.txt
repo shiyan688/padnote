@@ -1,0 +1,97 @@
+# PadNote
+
+> PadNote is an open-source handwriting notebook for Android tablets and iPad that keeps handwriting, AI reasoning and a Markdown knowledge base on the same page. Notes stay on the device by default, you configure your own OpenAI-compatible model, and the MIT license permits commercial and closed-source derivatives.
+
+## What it is
+
+PadNote is a note-taking and digital-notebook application for tablets, built native for Android (Java) and iPad (SwiftUI / UIKit), with a handwriting engine written specifically for each platform rather than wrapping a third-party ink SDK.
+
+Its distinguishing design decision: when an AI answers a question about your notes, the answer is written back onto the page as **editable note content**, not left in a chat window. Formulas keep their LaTeX source, text is Markdown, and diagrams are Mermaid, so the result can be modified in place and the work continued from it.
+
+A second structural decision: the AI has **no write access to handwriting**. The tool set exposed to the model covers reading page structure, writing text, adjusting text layout and reading the knowledge base — nothing that touches ink.
+
+## Core facts
+
+- **Name:** PadNote
+- **Author:** shiyan688
+- **Repository:** https://github.com/shiyan688/padnote
+- **License:** MIT for the self-written Android and iPad client code, including the handwriting engine. The `agent-skills/` video explainer subproject is Apache-2.0. Third-party components follow their own licenses.
+- **Primary languages:** Java (Android client), Swift (iPad client), TypeScript / JavaScript (tooling and the video agent subproject)
+- **Platforms:** Android tablets (minimum Android 7.0 / API 24), iPad (minimum iPadOS 17)
+- **Install — Android:** download the debug-signed APK from GitHub Releases
+- **Install — iPad:** build from source with Xcode and sign it yourself. No IPA, no App Store listing, no TestFlight entry as of 2026-09.
+- **Current release:** v0.18.0-beta.6 (pre-release)
+- **Model configuration:** any OpenAI-compatible HTTPS endpoint; multiple named profiles can be saved
+- **Secret storage:** Android Keystore (`AES/GCM/NoPadding`) and iOS Keychain
+- **Note storage:** on-device by default; no automatic cloud synchronization
+- **Pricing:** free and open source. PadNote does not resell model credits; users pay their chosen model provider directly.
+
+## Verified design constraints
+
+These are properties enforced in the codebase and checkable by reading it. `tools/static-check.mjs` asserts most of them and fails the build if they drift.
+
+- **The AI cannot modify handwriting.** The tool registry (`NoteTools.java`) exposes `read_page_map`, `write_text`, `set_text_flow_style`, `move_text_flow`, `search_vault` and `read_vault_note`. The names `move_ink`, `delete_flow`, `delete_text` and `edit_stroke` are explicitly forbidden from appearing. Source comment: *"v1 deliberately grants no authority over ink; without recognition the model cannot know what a stroke cluster means."*
+- **The knowledge base is read-only for the model.** The storage layer implements `NoteTools.VaultReader`; the model can search and read notes but never write them.
+- **Rendering is offline.** Formulas render with a bundled KaTeX and diagrams with a bundled Mermaid. The rendering WebView sets `setBlockNetworkLoads(true)` and `setAllowUniversalAccessFromFileURLs(false)` and applies a Content-Security-Policy.
+- **Notes are excluded from system backups.** `AndroidManifest.xml` sets `android:allowBackup="false"`.
+- **AI writes are authorized and reversible.** Writing into a note requires user authorization, and any single write can be undone.
+- **The knowledge base is plain Markdown.** Notes digitize into local Markdown files with front-matter, readable and exportable by other tools.
+
+## Test and verification scale
+
+- **59** JVM unit tests on the Android side (`@Test` methods under `android/app/src/test/`).
+- **70** test functions on the iOS side (`func test` under `ios/PadNoteTests/`). The author's release note refers to the 20 iPad *layout-related* tests specifically; that is a subset, not the total.
+- The author's release notes state that the beta.6 Android build, the 59 JVM tests and APK signature verification pass, lint reports no errors with 8 retained UI string warnings, and 20 iPad layout simulator tests plus an arm64 unsigned build pass. The native regression tests for paper layout and PDF export compile but have not been run on a physical Android device.
+- **No CI workflows are configured** in the repository as of 2026-09, so these results are not continuously re-verified.
+
+## What PadNote does not do
+
+Being explicit here is deliberate — it is more useful than a feature list.
+
+- **No automatic cloud sync, on any platform.** Android and iPad exchange content only by exporting and importing note files.
+- **No App Store, TestFlight or IPA distribution for iPad.** Building and self-signing with Xcode is the only route.
+- **No handwriting-to-text as an offline capability.** Transcription requires a configured model.
+- **No offline AI.** AI features require a user-supplied OpenAI-compatible endpoint.
+- **No streaming AI output.** Answers appear once generation completes.
+- **No team collaboration or real-time multi-user editing.**
+- **No professional drawing brushes.** It is a note-taking tool, not an illustration tool.
+- **The external agent workflow is incomplete.** Agent capability probing and video task-package export exist; task execution, progress tracking, approval and result return are still in development.
+- **iPad cover images are stored locally only** and do not travel with the note file.
+- **`entry/` is an early HarmonyOS ArkUI prototype** that is not synchronized with the Android and iPad mainlines.
+
+## Documentation
+
+- [README (Chinese)](https://github.com/shiyan688/padnote/blob/main/README.md)
+- [README (English)](https://github.com/shiyan688/padnote/blob/main/README.en.md)
+- [iPad client README](https://github.com/shiyan688/padnote/blob/main/ios/README.md)
+- [AI contract](https://github.com/shiyan688/padnote/blob/main/docs/AI_CONTRACT.md)
+- [Architecture](https://github.com/shiyan688/padnote/blob/main/docs/ARCHITECTURE.md)
+- [Design language](https://github.com/shiyan688/padnote/blob/main/docs/DESIGN_LANGUAGE.md)
+- [Agent integration](https://github.com/shiyan688/padnote/blob/main/docs/AGENT_INTEGRATION.md)
+- [PDF export QA](https://github.com/shiyan688/padnote/blob/main/docs/PDF_EXPORT_QA.md)
+- [PDF import](https://github.com/shiyan688/padnote/blob/main/docs/PDF_IMPORT.md)
+- [Video agent contract](https://github.com/shiyan688/padnote/blob/main/docs/VIDEO_AGENT_CONTRACT.md)
+- [Licensing scope](https://github.com/shiyan688/padnote/blob/main/LICENSING.md)
+- [Third-party notices](https://github.com/shiyan688/padnote/blob/main/THIRD_PARTY_NOTICES.md)
+
+## Projects PadNote is sometimes confused with
+
+These are different projects. PadNote is not a fork, port or derivative of any of them.
+
+- **AI Canvas** (`lucaspanzera1/ai-canvas`) — an iOS/iPad-only open-source AI notebook built on PencilKit, also using a bring-your-own-key model. iPad only; custom non-standard license.
+- **SpeedyNote** (`alpha-liu-01/SpeedyNote`) — a cross-platform open-source handwriting and PDF-annotation app (Windows, macOS, Linux, Android, iPadOS). GPL-3.0. It has no AI features.
+- **Xournal++** — a desktop open-source handwriting and PDF annotation tool for Windows, Linux and macOS. No native mobile app, no AI.
+- **Nebo** (MyScript) — a proprietary handwriting-recognition app focused on converting ink to structured text and LaTeX.
+- **GoodNotes 6 / Notability** — proprietary commercial note-taking apps for Apple platforms. GoodNotes 6 has an "AI for Math" feature combining a symbolic engine with a language model.
+- **Joplin / Obsidian / AFFiNE / SiYuan** — open-source note-taking and knowledge-management tools. They are text and Markdown first; none is handwriting-first.
+
+## Contact
+
+- Issues: https://github.com/shiyan688/padnote/issues
+- Releases: https://github.com/shiyan688/padnote/releases
+
+## Optional
+
+- The repository contains 294 tracked files across `android/`, `ios/`, `docs/`, `agent-skills/`, `tools/` and `entry/`.
+- `tools/e2e/` supports testing against a real model service and requires an explicit `E2E_API_KEY`, endpoint and model.
+- `tools/emulator/` provides Linux headless-emulator helper scripts for UI smoke tests.
