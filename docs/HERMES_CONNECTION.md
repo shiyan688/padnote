@@ -1,111 +1,109 @@
-# 连接另一台电脑的 Hermes
+# 连接电脑上的 Agent
 
-在电脑上启动 Hermes，再把它的 HTTPS 地址和连接令牌填入 PadNote。下面以 Windows / WSL2 为例；应用内也提供同样内容的离线教程。
+推荐在运行 Hermes 的电脑上打开 PadNote 连接助手，再用平板扫码配对。支持保存多个连接；也可以手动填写已有 HTTPS 地址和令牌。教程可离线阅读。
 
-## 当前能做什么
+此文档随 beta.7 连接助手预览版提供；GitHub 上的 beta.6 只有旧版连接检查。实际版本与验收范围见版本说明。
 
-本版支持检查 Hermes 服务、令牌和接口能力。测试通过后可导出讲解视频任务包，交给电脑上的 Agent。自动发送任务、查看执行进度、处理审批和接收结果尚未实现。OpenClaw 当前也未接通。
+## 先选连接方式
 
-## 1. 准备电脑和平板
+连接助手：在电脑检测 Hermes，配对后从平板发送文字任务或笔记任务包，查看状态、处理当前任务的审批并取回文件。Hermes 的长期令牌留在电脑。
+手动直连：填写 Hermes 的 HTTPS 地址与 API_SERVER_KEY，可发送文字任务；任务包和任务目录中的文件回传需要连接助手。
+OpenClaw 目前只有检测与引导，尚不能在 PadNote 中执行任务。接口检查通过也不代表电脑已安装视频 Skill、TTS 或渲染依赖。
 
-电脑的 WSL2 中应已安装并配置好 Hermes，能够在终端正常对话。Windows 和平板分别安装 Tailscale，登录同一私人网络，并保持连接。
+## 1 · 打开电脑连接助手
 
-下文使用 Tailscale Serve 提供 HTTPS 地址；它只在你的 Tailscale 网络内共享服务。如果已有平板可访问、证书受信任的 HTTPS 入口，可跳到第 6 步。
+Windows / WSL2：解压连接助手，运行 Start-PadNote.cmd，选择已经安装 Hermes 的 WSL 发行版。助手和 Hermes 必须在同一 WSL 环境中，才能共享本次任务的文件。Hermes 已能在终端对话时，保留原有安装和模型配置。
+电脑管理页默认在 http://127.0.0.1:8766 打开。只在自己的电脑打开这个页面，不要将管理端口共享给平板。
 
-## 2. 在 WSL 里准备连接令牌
+## 2 · 选择 Hermes 并检查接口
 
-打开安装 Hermes 的 WSL 终端。已有 API Server 时，使用其现有 `API_SERVER_KEY`，不要重复生成。首次配置可运行下面的命令生成随机令牌，将输出保存在自己的密码管理器中：
+在助手中选择检测到的 Hermes，按提示使用该实例的配置；识别不了时手动添加本机接口地址和 API_SERVER_KEY。默认地址为 http://127.0.0.1:8642。运行接口检查，通过后才生成配对码。
+“终端能对话”不一定表示 API Server 已启用。若助手提示未启用，按下方补充步骤操作，不需要重新安装 Hermes。
 
-```sh
-openssl rand -hex 32
+## 3 · 让平板能找到电脑
+
+Windows 和平板安装 Tailscale，登录同一私人网络并保持在线。先在 Windows PowerShell 检查下面的地址，看到 HTTP 响应即可；HTTP 404 也说明端口有响应。连接被拒绝或超时，则先检查 WSL 和助手是否运行、Windows 能否访问 WSL 的 localhost。
+
+```
+curl.exe --max-time 10 -i http://127.0.0.1:8765/
 ```
 
-这个令牌用于访问 Hermes，与模型厂商的 API Key 分开。
+## 4 · 建立 HTTPS 入口
 
-## 3. 在 WSL 里启用 API Server
+在 Windows PowerShell 先查看现有 Serve 配置。确认没有占用同一入口的其他服务后，将设备 API 的 8765 端口接到 HTTPS。首次使用按终端提示启用 HTTPS。复制输出的完整 https:// 地址，包括可能出现的端口号。不要共享管理页的 8766 端口。
 
-编辑 `~/.hermes/.env`，保留原有配置，新增或更新下面四项。把占位文字换成第 2 步的令牌。默认使用 8642 端口；如果更改端口，后面的命令也要一起更改。
+```
+tailscale serve status
+tailscale serve --bg --https=443 http://127.0.0.1:8765
+tailscale serve status
+```
 
-```dotenv
+## 5 · 扫码，在电脑确认
+
+回到电脑助手，选择要连接的实例，填入上一步的 HTTPS 地址，生成配对码。在 PadNote 的电脑 Agent 页面选择扫码添加；也可复制完整配对内容，用粘贴入口添加。核对显示的电脑地址后发起申请，再回电脑点击“刷新待批准设备”，核对后批准这台平板。
+配对码只有 5 分钟有效且只能使用一次。平板不需要复制 Hermes 的长期令牌。配对成功后检查连接，再发送简单任务验证。
+
+## 连接多个 Agent
+
+每个实例单独添加、命名和配对。同一电脑上有两个 Hermes 实例时，它们需要各自正确的地址、端口或 profile；另一台电脑则使用自己的助手和 HTTPS 地址。默认 Agent 只影响新建任务，发送前仍要核对目标。已有任务始终留在原连接中，不会因为切换默认而转交给别的 Agent。
+
+## 发送任务与接收结果
+
+先发一个简单文字任务，例如“只回复：连接成功，不要操作文件”。确认能收到结果后，再发送选定的笔记内容或视频任务包。任务页可查看状态、刷新、停止或处理当前待审批操作；网络中断后回到原任务继续查询。
+任务包只发送本次选定内容。返回文件通过校验后由你预览或保存，不会自动覆盖笔记。视频生成仍需要电脑 Agent 的视频 Skill、配音和渲染工具；普通文字回复成功不代表视频已经生成。
+
+## 补充 · 启用 Hermes API Server
+
+在安装 Hermes 的 WSL 中编辑该实例实际使用的 .env。默认是 ~/.hermes/.env；使用 profile 或 HERMES_HOME 时以实际配置为准。保留原有内容，只补充缺失的 API Server 设置。已有 API_SERVER_KEY 就沿用；没有时可先用 openssl rand -hex 32 生成随机令牌，替换下面的占位文字。这个令牌与模型厂商 API Key 不同。
+
+```
 API_SERVER_ENABLED=true
 API_SERVER_KEY=替换成你的随机令牌
 API_SERVER_HOST=127.0.0.1
 API_SERVER_PORT=8642
 ```
 
-使用自定义 `HERMES_HOME` 或 profile 时，请编辑该实例实际使用的配置文件。
+## 补充 · 启动接口
 
-## 4. 在 WSL 里启动 Hermes
+在同一个 Hermes 环境中运行 hermes gateway。已经运行的 Gateway 需要等当前任务结束后重启，才能加载新配置；不要同时启动重复进程。确认日志中出现 API Server 后，回助手点击“刷新发现”，再次点击“使用这套配置”，然后检测实例。电脑、WSL、Hermes 和连接助手都需保持运行。
 
-在同一个 Hermes 环境中运行：
-
-```sh
+```
 hermes gateway
 ```
 
-若 Gateway 已在运行，需在当前任务结束后重启它以加载新配置。确认启动日志中出现 API Server 和 8642 端口；测试期间保持这个 WSL 终端和电脑运行。
+## 备选 · 手动直连
 
-## 5. 在 Windows PowerShell 里检查
+已有可访问的 Hermes HTTPS 入口时，在 PadNote 手动添加连接，选择 Hermes 直连。地址只填根地址，不额外追加 /v1 或 /chat/completions；令牌只填该实例 API_SERVER_KEY 的值，不带变量名、引号或 Bearer。
+如果自行用 Tailscale 配置直连，转发目标是 Hermes 的 8642，而助手路线转发的是 8765。不要把两种地址混用。平板的 localhost / 127.0.0.1 指向平板自身，不能用作另一台电脑的地址。
 
-下面的命令在 Windows PowerShell 中执行，不是在 WSL 中：
+## macOS / Linux
 
-```powershell
-curl.exe --max-time 10 http://127.0.0.1:8642/health
+在运行 Hermes 的电脑上解压助手：macOS 运行 Start-PadNote.command，Linux 运行 start-padnote.sh。随后使用同样的管理页、接口检查和配对流程。检查命令用 curl 替换 curl.exe；这两种系统没有 Windows 到 WSL 的 localhost 转发步骤。
+
+## 连接失败时
+
+超时 / 找不到电脑：确认电脑没有休眠，WSL、Hermes、助手与两端 Tailscale 都在线；核对完整 HTTPS 地址。
+401 / 403：手动直连时核对 API_SERVER_KEY；助手连接时检查设备授权是否被撤销，必要时重新配对。
+502 / 接口未启用：先在助手检测 Hermes，再检查 Windows 到 WSL 的 localhost，最后检查 Serve。
+证书错误：使用 Serve 输出的域名和受信任证书，不能只把 http 改成 https。
+404 / 服务身份不符：确认没有混用 Hermes 直连与助手地址，也没有附加 /v1。
+任务已提交但结果不明：保留原任务，使用原任务重试或查询，不要连续新建相同任务。
+配置发生变化：旧任务不会向新地址或新实例发送凭据；回原电脑检查任务状态。
+
+## 停止任务、删除连接和撤销授权
+
+任务页的“停止”请求电脑停止当前任务，需要等电脑返回结果；关闭页面不会停止任务。平板删除连接只删除本机配置，仍会保留任务记录，也不会撤销电脑端授权。需要禁用某台平板时，在电脑助手的已授权设备中撤销对应连接；其他实例不受影响。
+如需关闭本教程创建的 HTTPS 入口，先查看 tailscale serve status，确认没有影响同一入口上的其他服务，再执行下面的命令。
+
 ```
-
-正常应返回包含 `status` 的 JSON。若连接被拒绝或超时，先确认 WSL 中的 API Server 正在运行，以及 Windows 能通过 localhost 访问 WSL 服务；先解决这一步，再配置 HTTPS。
-
-## 5a. 在 Windows PowerShell 里取得 HTTPS 地址
-
-确认 Windows 已安装并连接 Tailscale，再运行：
-
-```powershell
-tailscale serve --bg --https=443 http://127.0.0.1:8642
-tailscale serve status
-```
-
-首次使用时按终端提示启用 HTTPS。复制输出中以 `https://` 开头、通常以 `.ts.net` 结尾的完整地址，保留输出中可能出现的端口号。Serve 会在后台运行；Hermes 仍需保持运行。如提示权限不足，以管理员身份打开 PowerShell 后重试。
-
-## 6. 回到 PadNote 填写
-
-关闭应用内教程，选择“Hermes Agent（HTTPS）”。地址填写第 5a 步的 HTTPS 地址；令牌只填 `API_SERVER_KEY` 的值，不带 `API_SERVER_KEY=`、引号或 `Bearer` 前缀。点击“保存并测试”。
-
-地址不要额外追加 `/v1` 或 `/chat/completions`。PadNote 会自行检查 `/v1/capabilities`。
-
-## 地址和令牌分别从哪里来
-
-- 地址来自 Tailscale Serve 的输出，或你自行配置的 HTTPS 服务入口。
-- 令牌来自运行中的 Hermes 实例的 `API_SERVER_KEY`。
-- 平板里的 `localhost`、`127.0.0.1` 指向平板自身，不能代表另一台电脑。
-- WSL 的 `172.x` 内部地址也不是本教程使用的地址。
-
-## macOS / Linux 怎么操作
-
-Hermes 的配置内容和启动命令相同。把上面的电脑端步骤放在运行 Hermes 的那台电脑上执行；健康检查用 `curl` 替换 Windows 的 `curl.exe`。Tailscale 也安装在这台电脑和平板上。macOS / Linux 无需 Windows 到 WSL 的 localhost 转发步骤。
-
-## 连接失败时先看这里
-
-- **HTTP 401 / 403**：核对正在运行的实例与令牌，修改配置后重启 Gateway；同时确认服务的访问权限。
-- **超时 / 找不到主机**：检查电脑、Hermes 和两端 Tailscale 是否在线，地址是否抄完整。
-- **HTTP 502**：检查第 5 步，HTTPS 入口可能无法访问 WSL 中的服务。
-- **证书错误**：使用 Serve 输出的 HTTPS 域名或受信任的证书，不能只把 `http` 改成 `https`。
-- **HTTP 404 / 响应不是 Hermes**：检查地址是否多加了 `/v1`，是否指向了模型接口或网页仪表盘。
-- **缺少能力**：服务已响应，但当前 Hermes 版本与 PadNote 的接口要求不匹配。这类错误需要核对两端版本，反复更换令牌没有作用。
-
-## 停止这次共享
-
-如需关闭本教程建立的 HTTPS 入口，在 Windows PowerShell 中执行：
-
-```powershell
 tailscale serve --bg --https=443 off
 ```
 
-它会关闭该设备 443 端口的 Serve 入口；若已将同一入口用于其他服务，请先查看 `tailscale serve status`。关闭 PadNote 或点击“断开”只清除应用连接信息，不会停止电脑上的服务。
+## 参考
 
-## 官方资料
-
-- [Hermes API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
-- [Hermes 环境变量](https://hermes-agent.nousresearch.com/docs/reference/environment-variables)
-- [Tailscale 下载](https://tailscale.com/download)
-- [Tailscale Serve 配置](https://tailscale.com/docs/reference/tailscale-cli/serve)
-- [Microsoft WSL 网络](https://learn.microsoft.com/en-us/windows/wsl/networking)
+- [PadNote · 下载与版本说明](https://github.com/shiyan688/padnote/releases)
+- [Hermes · API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
+- [Hermes · 环境变量](https://hermes-agent.nousresearch.com/docs/reference/environment-variables)
+- [Tailscale · 下载](https://tailscale.com/download)
+- [Tailscale · Serve 配置](https://tailscale.com/docs/reference/tailscale-cli/serve)
+- [Microsoft · WSL 网络](https://learn.microsoft.com/en-us/windows/wsl/networking)

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 4,
+  "id": "fixture-schema-4",
+  "title": "Schema 4 构造回归样例",
+  "updatedAt": 1700000000004,
+  "pageCount": 3,
+  "strokes": [
+    {
+      "id": "stroke-v4",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000004,
+      "points": [
+        {
+          "x": 20,
+          "y": 40,
+          "timestamp": 1700000000004,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 70,
+          "timestamp": 1700000000014,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "pageWidth": 600,
+  "pageHeight": 800,
+  "pageGap": 24,
+  "canvasWidth": 600,
+  "canvasHeight": 800,
+  "viewportScale": 1.1,
+  "viewportZoom": 1.05,
+  "viewportCenterX": 300,
+  "viewportCenterY": 400,
+  "textBoxes": [
+    {
+      "id": "legacy-fragment-v4-1",
+      "flowId": "legacy-flow-v4",
+      "flowIndex": 1,
+      "flowCount": 2,
+      "format": "markdown",
+      "source": "# Schema 4 跨页标题\n\n第一段。\n\n第二页片段仍重复完整源码。",
+      "fragmentSource": "第二页片段仍重复完整源码。",
+      "fontSizeSp": 17,
+      "pageIndex": 2,
+      "x": 44,
+      "y": 1740,
+      "width": 480,
+      "height": 100
+    },
+    {
+      "id": "legacy-fragment-v4-0",
+      "flowId": "legacy-flow-v4",
+      "flowIndex": 0,
+      "flowCount": 2,
+      "format": "markdown",
+      "source": "# Schema 4 跨页标题\n\n第一段。\n\n第二页片段仍重复完整源码。",
+      "fragmentSource": "# Schema 4 跨页标题\n\n第一段。",
+      "fontSizeSp": 17,
+      "pageIndex": 1,
+      "x": 44,
+      "y": 924,
+      "width": 480,
+      "height": 300
+    }
+  ]
+}
