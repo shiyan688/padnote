@@ -4,6 +4,8 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -31,6 +33,7 @@ import android.view.Window;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -42,6 +45,9 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -62,8 +68,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
 public final class MainActivity extends Activity implements NoteCanvasView.Listener {
@@ -74,6 +84,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private static final int REQUEST_IMPORT_IMAGE = 7105;
     private static final int REQUEST_EXPORT_PDF = 7106;
     private static final int REQUEST_EXPORT_VIDEO_TASK = 7107;
+    private static final int REQUEST_EXPORT_AGENT_ARTIFACT = 7108;
+    private static final int REQUEST_EXPORT_RECOVERY = 7109;
     private static final int SURFACE_COLOR = Color.rgb(244, 241, 232);
     private static final int TOOLBAR_COLOR = Color.rgb(238, 241, 242);
     private static final int INK_COLOR = Color.rgb(23, 33, 43);
@@ -113,7 +125,6 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService digitizeExecutor = Executors.newSingleThreadExecutor();
     private final List<ColorSwatchButton> colorSwatches = new ArrayList<>();
     private final List<OpenAiCompatibleClient.Message> aiMessages = new ArrayList<>();
 
@@ -126,6 +137,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private NoteCanvasView.PdfExportSnapshot activePdfExportSnapshot;
     private FrameLayout activePdfExportHost;
     private AlertDialog activePdfExportDialog;
+    private Future<?> activePdfExportFuture;
+    private AtomicBoolean activePdfExportCancelled;
     private TextView statsView;
     private TextView saveStatusView;
     private TextView pressureView;
@@ -150,8 +163,14 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private TextView aiCardTitle;
     private TextView aiStatusView;
     private TextView aiMinimizeButton;
+    private TextView aiSettingsButton;
+    private TextView aiMaterialsSummary;
+    private Button aiMaterialsButton;
+    private Button aiMaterialsPreviewButton;
     private EditText aiInputView;
     private Button aiSendButton;
+    private Button aiRetryButton;
+    private CheckBox aiReviewTranscriptCheck;
     private Button aiExplainButton;
     private Button aiMarkdownButton;
     private Button aiDiagramButton;
@@ -161,6 +180,15 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private NoteCanvasView.AiSelectionSnapshot aiSelectionSnapshot;
     private RectF aiResultAnchorBounds;
     private AiConfigStore aiConfigStore;
+    private AiConversationStore aiConversationStore;
+    private AiConversationStore.Snapshot aiConversationSnapshot;
+    private final List<AiConversationStore.VisibleEntry> aiVisibleTimeline = new ArrayList<>();
+    private boolean renderingAiTimeline;
+    private boolean aiConversationLoading;
+    private int aiConversationLoadSerial;
+    private boolean aiConversationSaveFailureShown;
+    private String aiPdfDigest = "";
+    private boolean aiPdfDigestAvailable = true;
     private VaultStore vaultStore;
     private AgentConnectionStore agentConnectionStore;
     private SharedPreferences preferences;
@@ -173,8 +201,12 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private String pendingVideoAudience;
     private String pendingVideoGoal;
     private int pendingVideoDuration;
-    /** True while a whole-note digitization is running; guards re-entry. */
-    private boolean digitizing = false;
+    private String pendingAgentArtifactTaskId;
+    private String pendingAgentArtifactId;
+    private File pendingRecoveryFile;
+    private AiConversationStore.Snapshot pendingAiConversationRecoverySnapshot;
+    private String pendingRecoveryName;
+    private DigitizationController digitizationController;
     private boolean editorVisible = false;
     private int bookshelfLoadGeneration = 0;
     private float penWidthDp = 2f;
@@ -187,14 +219,19 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private boolean penOnlyEnabled = true;
     private boolean aiCardMinimized = false;
     private boolean aiBusy = false;
+    private boolean aiMaterialLoading = false;
     private boolean aiUploadConfirmed = false;
     private boolean aiOutputInline = true;
+    /** Session diagnostic; fallback decisions use each frozen request's own marker. */
+    private boolean aiToolsHonoured = false;
     private int aiSessionSerial = 0;
-    /**
-     * Tools the model may call; nothing outside this set can run. Created in
-     * {@link #onCreate} because the knowledge-base readers need the vault store.
-     */
-    private NoteToolRegistry aiToolRegistry;
+    private int aiRequestSerial = 0;
+    private AiPendingRequest activeAiRequest;
+    private AiPendingRequest retryableAiRequest;
+    private AlertDialog aiTranscriptReviewDialog;
+    private final List<AiEditCardBinding> aiEditCards = new ArrayList<>();
+    /** Immutable material authority for the current selection/profile context. */
+    private AiReadScope aiReadScope;
     /**
      * Authority for the current task. Tied to the existing page-output switch:
      * "仅卡片" withholds write access entirely, so the toggle now means
@@ -203,18 +240,13 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private NoteTool.Permission aiGrantedPermission = NoteTool.Permission.READ_ONLY;
     /**
      * Most rounds of tool calls allowed per task. Bounds cost without preventing
-     * the read-then-write workflow; requests are non-streaming with no cancel, so
-     * an unbounded loop would spend the user's money.
+     * the read-then-write workflow; even cancellable non-streaming calls may
+     * already have reached the provider, so an unbounded loop could spend money.
      */
     private static final int MAX_AI_TOOL_ROUNDS = 4;
+    enum SplitResumeStep { TRANSCRIBE, REVIEW, ANSWER }
     /** Tool call ids already run, so a retried request cannot write twice. */
     private final Set<String> aiExecutedToolCallIds = new HashSet<>();
-    /**
-     * Whether this provider has ever honoured the tools field. BYOK endpoints are
-     * arbitrary, so when a model never calls a tool the old paste-everything path
-     * remains the only way page writing works at all.
-     */
-    private boolean aiToolsHonoured = false;
     /**
      * Transcript of the selection produced by the split route's first leg.
      * Lives for one selection session: follow-up questions reuse it instead of
@@ -222,6 +254,127 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
      * selection or card closes.
      */
     private String aiSessionTranscript = null;
+
+    /** Frozen authority, recipient and payload for one user turn and its retries. */
+    private static final class AiPendingRequest {
+        final int id;
+        final int session;
+        final String noteId;
+        final String recipientProfileId;
+        final long recipientProfileRevision;
+        final String transcriptionExecutorLabel;
+        final String answerExecutorLabel;
+        final boolean split;
+        final byte[] pngBytes;
+        final AiConfigStore.Config directConfig;
+        final AiConfigStore.Config transcribeConfig;
+        final AiConfigStore.Config answerConfig;
+        final NoteToolContext toolContext;
+        final JSONObject pageMap;
+        final JSONArray offeredTools;
+        final NoteToolRegistry tools;
+        final NoteTool.Permission permission;
+        final List<OpenAiCompatibleClient.Message> messages;
+        final boolean reviewTranscript;
+        OpenAiCompatibleClient.Cancellation cancellation;
+        String transcript;
+        boolean transcriptFolded;
+        boolean transcriptAccepted;
+        boolean toolsStarted;
+        boolean toolsHonoured;
+        final Set<String> executedToolCallIds = new HashSet<>();
+        final ToolCallReplayCache toolReplay = new ToolCallReplayCache();
+        final NoteCanvasView.AiEditRecord edits;
+        AiEditCardBinding editBinding;
+        long expectedDocumentRevision;
+
+        AiPendingRequest(int id, int session, String noteId, String recipientProfileId,
+                         long recipientProfileRevision,
+                         String transcriptionExecutorLabel, String answerExecutorLabel,
+                         long expectedDocumentRevision,
+                         boolean split, byte[] pngBytes,
+                         AiConfigStore.Config directConfig,
+                         AiConfigStore.Config transcribeConfig,
+                         AiConfigStore.Config answerConfig,
+                         NoteToolContext toolContext, JSONObject pageMap,
+                         JSONArray offeredTools, NoteToolRegistry tools,
+                         NoteTool.Permission permission,
+                         List<OpenAiCompatibleClient.Message> messages,
+                         String transcript, boolean reviewTranscript) {
+            this.id = id;
+            this.session = session;
+            this.noteId = noteId;
+            this.recipientProfileId = recipientProfileId == null ? "" : recipientProfileId;
+            this.recipientProfileRevision = recipientProfileRevision;
+            this.transcriptionExecutorLabel = transcriptionExecutorLabel == null
+                    ? "" : transcriptionExecutorLabel;
+            this.answerExecutorLabel = answerExecutorLabel == null ? "" : answerExecutorLabel;
+            this.expectedDocumentRevision = expectedDocumentRevision;
+            this.split = split;
+            this.pngBytes = pngBytes;
+            this.directConfig = directConfig;
+            this.transcribeConfig = transcribeConfig;
+            this.answerConfig = answerConfig;
+            this.toolContext = toolContext;
+            this.pageMap = pageMap;
+            this.offeredTools = offeredTools;
+            this.tools = tools;
+            this.permission = permission;
+            this.messages = messages;
+            this.transcript = transcript;
+            this.reviewTranscript = reviewTranscript;
+            this.transcriptFolded = transcript != null;
+            this.transcriptAccepted = transcript != null;
+            this.edits = new NoteCanvasView.AiEditRecord(
+                    "ai-request-" + session + "-" + id);
+        }
+
+        boolean canRetry() { return !toolsStarted; }
+    }
+
+    static final class CachedToolResult {
+        final String signature;
+        final String payload;
+        final String summary;
+        final boolean ok;
+
+        CachedToolResult(String signature, NoteTool.Result result) {
+            this.signature = signature;
+            this.payload = result.payload.toString();
+            this.summary = result.summary;
+            this.ok = result.ok;
+        }
+
+        boolean matches(OpenAiCompatibleClient.ToolCall call) {
+            return signature.equals(toolCallSignature(call));
+        }
+    }
+
+    static final class ToolCallReplayCache {
+        private final Map<String, CachedToolResult> values = new LinkedHashMap<>();
+
+        CachedToolResult find(OpenAiCompatibleClient.ToolCall call) {
+            return call == null ? null : values.get(call.id);
+        }
+
+        void record(OpenAiCompatibleClient.ToolCall call, NoteTool.Result result) {
+            values.put(call.id, new CachedToolResult(toolCallSignature(call), result));
+        }
+    }
+
+    private static final class AiEditCardBinding {
+        final String noteId;
+        final NoteCanvasView.AiEditRecord record;
+        LinearLayout card;
+        TextView status;
+        Button action;
+        Button locate;
+
+        AiEditCardBinding(String noteId, NoteCanvasView.AiEditRecord record) {
+            this.noteId = noteId;
+            this.record = record;
+        }
+    }
     /** Paper for a note being created; null when opening an existing note. */
     private PageStyle pendingPageStyle;
     private float aiDragStartRawX;
@@ -241,9 +394,17 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     private int totalPageCount = 1;
     private int canvasZoomPercent = 100;
     private boolean restoreCompleted = false;
+    private long documentRevision;
+    private long lastSavedRevision;
+    private boolean saveInFlight;
+    private boolean saveQueued;
+    private boolean pendingLeaveAfterSave;
+    private boolean pendingSaveToast;
+    private String pendingUnsavedJson;
     private final Map<String, NoteTextBoxView> textBoxViews = new LinkedHashMap<>();
     /** Bookshelf entries from the last render; vault staleness checks read it. */
     private List<NoteStore.Entry> lastShelfEntries = new ArrayList<>();
+    private List<NoteStore.RecoveryEntry> lastRecoveryEntries = new ArrayList<>();
     /** Decoded shelf covers keyed by note id; refreshed with the entry list. */
     private java.util.Map<String, Bitmap> lastShelfCovers = new java.util.HashMap<>();
     /** Cover-pick target; null while choosing for a note that does not exist yet. */
@@ -264,12 +425,9 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         super.onCreate(savedInstanceState);
         preferences = getSharedPreferences("padnote-tools", MODE_PRIVATE);
         aiConfigStore = new AiConfigStore(this);
+        aiConversationStore = new AiConversationStore(this);
         vaultStore = new VaultStore(this);
         agentConnectionStore = new AgentConnectionStore(this);
-        // Core document tools plus the read-only knowledge-base readers; the
-        // registry stays the only execution path, so an unregistered name still
-        // cannot run no matter what the model asks for.
-        aiToolRegistry = NoteTools.createDefault(vaultStore);
         penWidthDp = Math.max(MIN_PEN_WIDTH_DP, Math.min(MAX_PEN_WIDTH_DP,
                 preferences.getFloat("penWidthDp", 2f)));
         eraserSizeDp = preferences.getFloat("eraserSizeDp", 30f);
@@ -291,18 +449,25 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     @Override
     protected void onPause() {
         super.onPause();
+        if (digitizationController != null) digitizationController.pause();
         if (editorVisible) {
             commitInlineTextEditorExcept(null);
         }
         handler.removeCallbacks(delayedSave);
         if (editorVisible) {
             saveDocument(false);
+            persistAiConversation();
         }
     }
 
     @Override
     protected void onDestroy() {
+        if (digitizationController != null) digitizationController.close();
         handler.removeCallbacksAndMessages(null);
+        if (activePdfExportCancelled != null) activePdfExportCancelled.set(true);
+        if (activePdfExportFuture != null) activePdfExportFuture.cancel(true);
+        activePdfExportFuture = null;
+        activePdfExportCancelled = null;
         if (activePdfExportSnapshot != null) {
             activePdfExportSnapshot.close();
             activePdfExportSnapshot = null;
@@ -318,7 +483,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         if (toolSettingsPopup != null) {
             toolSettingsPopup.dismiss();
         }
-        closeAiCard();
+        collapseAiCard(false);
+        releaseAiSelectionSnapshot();
         disposeTextBoxViews();
         storageExecutor.shutdown();
         aiExecutor.shutdownNow();
@@ -335,6 +501,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
 
     @Override
     public void onDocumentChanged() {
+        documentRevision += 1;
+        refreshAiEditCards();
         saveStatusView.setText("等待自动保存");
         handler.removeCallbacks(delayedSave);
         handler.postDelayed(delayedSave, 600);
@@ -347,7 +515,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         setActionEnabled(undoButton, canUndo);
         setActionEnabled(redoButton, canRedo);
         boolean hasSelection = selectedStrokes > 0;
-        setActionEnabled(aiButton, hasSelection);
+        setActionEnabled(aiButton, hasSelection || aiConversationSnapshot != null
+                || aiConversationLoading);
         setActionEnabled(duplicateButton, hasSelection);
         setActionEnabled(deleteSelectionButton, hasSelection);
         setActionEnabled(cancelSelectionButton, hasSelection);
@@ -370,6 +539,12 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     @Override
     public void onTextBoxesChanged(List<NoteTextBox> textBoxes) {
         updateTextBoxOverlays(textBoxes);
+        if (canvasView != null) {
+            for (AiEditCardBinding binding : aiEditCards) {
+                canvasView.refreshAiEditFootprint(binding.record);
+            }
+            refreshAiEditCards();
+        }
     }
 
     @Override
@@ -407,10 +582,12 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void showBookshelf() {
+        if (digitizationController != null) digitizationController.pause();
         handler.removeCallbacks(delayedSave);
         disposeTextBoxViews();
         editorVisible = false;
         restoreCompleted = false;
+        pendingLeaveAfterSave = false;
         bookshelfLoadGeneration += 1;
         if (toolSettingsPopup != null) {
             toolSettingsPopup.dismiss();
@@ -456,8 +633,10 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         actions.addView(importButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
         Button agentButton = pillButton("电脑 Agent", BUTTON_QUIET);
-        AgentConnectionStore.Config agent = agentConnectionStore.load();
-        agentButton.setContentDescription(agent.connected ? "电脑 Agent 连接测试通过" : "设置电脑 Agent");
+        List<AgentConnectionStore.Config> agentProfiles = agentConnectionStore.listSummaries();
+        long verifiedAgents = agentProfiles.stream().filter(AgentConnectionStore.Config::verified).count();
+        agentButton.setContentDescription(agentProfiles.isEmpty() ? "设置电脑 Agent" :
+                "已保存 " + agentProfiles.size() + " 个电脑 Agent，其中 " + verifiedAgents + " 个已验证");
         agentButton.setOnClickListener(view -> showAgentConnectionDialog());
         LinearLayout.LayoutParams agentParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
@@ -580,6 +759,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         storageExecutor.execute(() -> {
             try {
                 List<NoteStore.Entry> entries = NoteStore.list(this);
+                List<NoteStore.RecoveryEntry> recoveryEntries = NoteStore.listRecovery(this);
                 java.util.Map<String, Bitmap> covers = new java.util.HashMap<>();
                 for (NoteStore.Entry entry : entries) {
                     Bitmap cover = CoverStore.load(this, entry.id, 320);
@@ -590,7 +770,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 runOnUiThread(() -> {
                     if (!editorVisible && generation == bookshelfLoadGeneration) {
                         lastShelfCovers = covers;
-                        renderBookshelf(entries);
+                        renderBookshelf(entries, recoveryEntries);
                     }
                 });
             } catch (Exception error) {
@@ -615,9 +795,11 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         }
     }
 
-    private void renderBookshelf(List<NoteStore.Entry> entries) {
+    private void renderBookshelf(List<NoteStore.Entry> entries,
+                                 List<NoteStore.RecoveryEntry> recoveryEntries) {
         bookshelfList.removeAllViews();
         lastShelfEntries = entries;
+        lastRecoveryEntries = recoveryEntries;
         shelfSectionTitle.setText(entries.isEmpty() ? "最近笔记"
                 : String.format(Locale.CHINA, "最近笔记 · %d", entries.size()));
         addFirstRunGuideCard();
@@ -641,6 +823,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
             empty.addView(create, buttonParams);
             bookshelfList.addView(empty, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
+            renderRecoverySection(recoveryEntries);
             renderVaultSection();
             return;
         }
@@ -661,7 +844,66 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
             bookshelfList.addView(row, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
+        renderRecoverySection(recoveryEntries);
         renderVaultSection();
+    }
+
+    private void renderRecoverySection(List<NoteStore.RecoveryEntry> entries) {
+        if (entries == null || entries.isEmpty()) return;
+        TextView heading = text("需要恢复 · " + entries.size(), 17, Color.rgb(143, 47, 43));
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        heading.setPadding(dp(30), dp(24), dp(30), dp(8));
+        bookshelfList.addView(heading, matchWrap());
+        for (NoteStore.RecoveryEntry entry : entries) {
+            LinearLayout card = cardSurface(16f, 18);
+            card.addView(text(entry.label + " · " + entry.noteId, 14, INK_COLOR));
+            card.addView(text("原文件仍保留。可先导出；未保存副本可确认恢复。",
+                    12, SECONDARY_TEXT));
+            LinearLayout actions = new LinearLayout(this);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            if (entry.unsavedDraft) {
+                Button restore = pillButton("恢复副本", BUTTON_TONAL);
+                restore.setOnClickListener(view -> restoreRecoveryDraft(entry));
+                actions.addView(restore, new LinearLayout.LayoutParams(0, dp(40), 1f));
+            }
+            Button export = pillButton("导出原文件", BUTTON_QUIET);
+            export.setOnClickListener(view -> launchRecoveryExport(entry));
+            LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            exportParams.leftMargin = dp(8);
+            actions.addView(export, exportParams);
+            LinearLayout.LayoutParams actionParams = matchWrap();
+            actionParams.topMargin = dp(10);
+            card.addView(actions, actionParams);
+            LinearLayout.LayoutParams cardParams = matchWrap();
+            cardParams.setMargins(dp(30), dp(6), dp(30), dp(6));
+            bookshelfList.addView(card, cardParams);
+        }
+    }
+
+    private void restoreRecoveryDraft(NoteStore.RecoveryEntry recovery) {
+        storageExecutor.execute(() -> {
+            try {
+                NoteStore.Entry restored = NoteStore.restoreDraft(this, recovery.noteId);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "未保存修改已恢复", Toast.LENGTH_SHORT).show();
+                    openNote(restored);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "恢复失败：" + safeError(error), Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void launchRecoveryExport(NoteStore.RecoveryEntry recovery) {
+        pendingRecoveryFile = recovery.file;
+        pendingAiConversationRecoverySnapshot = null;
+        pendingRecoveryName = recovery.noteId + "-recovery.json";
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, pendingRecoveryName);
+        startActivityForResult(intent, REQUEST_EXPORT_RECOVERY);
     }
 
     /**
@@ -703,7 +945,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                         + "也可以问「我之前的笔记里…」。", ACCENT_COLOR));
         card.addView(guideStep("03", "转成格式笔记",
                 "笔记卡片「更多 → 转为格式笔记」：整本变成 Obsidian 兼容的 "
-                        + "Markdown 知识库，AI 提问时会自动检索它。", ACCENT_COLOR));
+                        + "Markdown 知识库；在 AI 卡片明确选定后才会读取。", ACCENT_COLOR));
     }
 
     /** One icon + bold lead + caption line, used by every guide surface. */
@@ -797,7 +1039,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         guide.addView(guideStep("②", "点卡片「更多 → 转为格式笔记」",
                 "需要先在 AI 卡片里配置一次模型。", VAULT_COLOR));
         guide.addView(guideStep("③", "转换结果出现在这里",
-                "可阅读、导出 .md 拷入 Obsidian；圈选提问时 AI 也会检索它。",
+                "可阅读、导出 .md 拷入 Obsidian；也可在 AI 卡片选它作为本次额外材料。",
                 VAULT_COLOR));
         TextView privacy = text("上传说明：数字化会把整页内容发送给你配置的模型，"
                 + "而不只是圈选区域；转换前会再次确认。", 11, AMBER_TEXT);
@@ -816,8 +1058,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 + "人读美观、软件可读，整个目录可以直接拷进 Obsidian。", INK_COLOR));
         body.addView(dialogParagraph("生成方式：书架笔记卡片 → 更多 → 转为格式笔记。"
                 + "每一页发给你配置的视觉模型转写后按页合并，原手写稿不受影响。", INK_COLOR));
-        body.addView(dialogParagraph("与 AI 的关系：从 0.16 起，圈选提问时模型可以"
-                + "检索并阅读整个知识库——试试问「我之前哪本笔记讲过…」。", INK_COLOR));
+        body.addView(dialogParagraph("与 AI 的关系：知识库默认不会发给模型。"
+                + "圈选后可在 AI 卡片选择具体格式笔记，预览并冻结本次可读副本。", INK_COLOR));
         body.addView(dialogParagraph("存储与隐私：文件保存在应用私有目录，"
                 + "只有数字化和你的主动提问会把内容发送到模型端点。", SECONDARY_TEXT));
         new AlertDialog.Builder(this)
@@ -904,16 +1146,13 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
 
     /** Per-vault-note overflow: export and delete live here, not on the card face. */
     private void showVaultMoreMenu(VaultStore.VaultNote note) {
-        AgentConnectionStore.Config agent = agentConnectionStore.load();
-        String[] actions = agent.connected
-                ? new String[]{"导出 .md", "生成视频任务包", "删除"}
-                : new String[]{"导出 .md", "删除"};
+        String[] actions = new String[]{"导出 .md", "生成视频任务包", "删除"};
         new AlertDialog.Builder(this)
                 .setTitle(note.title)
                 .setItems(actions, (dialog, which) -> {
                     if (which == 0) {
                         launchExportVaultFile(note);
-                    } else if (agent.connected && which == 1) {
+                    } else if (which == 1) {
                         showVideoTaskDialog(note);
                     } else {
                         new AlertDialog.Builder(this)
@@ -950,9 +1189,31 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         body.addView(labeledField("目标时长（秒）", duration));
         new AlertDialog.Builder(this)
                 .setTitle("生成讲解视频任务")
-                .setMessage("先导出标准任务包，再交给电脑上的 Hermes、OpenClaw 或其他 Agent。任务包不含 API Key。")
+                .setMessage("可直接发送到已连接的电脑，也可离线导出标准任务包。任务包不含 API Key。")
                 .setView(body)
                 .setNegativeButton("取消", null)
+                .setNeutralButton("发送到电脑", (dialog, which) -> {
+                    String selectedAudience = audience.getText().toString().trim();
+                    String selectedGoal = goal.getText().toString().trim();
+                    int selectedDuration = parseVideoDuration(duration.getText().toString());
+                    AgentTaskDialogs tasks = new AgentTaskDialogs(this,
+                            agentConnectionStore, aiExecutor, this::launchCreateAgentArtifactDocument);
+                    tasks.chooseAndSubmitBundle("生成讲解视频 · " + note.title,
+                            "请按任务包 request.json 先生成分镜和审阅产物，等待用户确认，不开始完整视频渲染。",
+                            note.noteId, Math.max(1L, note.sourceModifiedAt / 1000L), () -> {
+                                String markdown = vaultStore.read(note.fileName);
+                                java.io.ByteArrayOutputStream output =
+                                        new java.io.ByteArrayOutputStream();
+                                VideoTaskBundleIO.write(output, note.noteId,
+                                        Math.max(1L, note.sourceModifiedAt / 1000L), note.title,
+                                        markdown, selectedAudience.isEmpty()
+                                                ? "希望理解这份笔记的学习者" : selectedAudience,
+                                        selectedGoal.isEmpty()
+                                                ? "理解并记住这份笔记的核心概念" : selectedGoal,
+                                        selectedDuration, "zh-CN-neutral", 1f);
+                                return output.toByteArray();
+                            });
+                })
                 .setPositiveButton("导出任务包", (dialog, which) -> {
                     pendingVideoTaskFile = note.fileName;
                     pendingVideoAudience = audience.getText().toString().trim();
@@ -964,123 +1225,28 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void showAgentConnectionDialog() {
-        AgentConnectionStore.Config current = agentConnectionStore.load();
-        LinearLayout body = verticalPanel();
-        Spinner kind = new Spinner(this);
-        ArrayAdapter<String> kindAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item,
-                new String[]{"Hermes Agent（HTTPS）", "OpenClaw（当前未支持）"});
-        kindAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        kind.setAdapter(kindAdapter);
-        kind.setSelection(current.kind == AgentConnectionStore.Kind.OPENCLAW ? 1 : 0);
-        body.addView(labeledSpinner("Agent 类型", kind));
-        EditText endpoint = new EditText(this);
-        endpoint.setSingleLine(true);
-        endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        endpoint.setHint("必须是平板可访问且证书受信任的 https:// 地址");
-        endpoint.setText(current.endpoint);
-        body.addView(labeledField("电脑 Agent 地址", endpoint));
-        EditText token = new EditText(this);
-        token.setSingleLine(true);
-        token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        token.setHint(current.token.isEmpty() ? "粘贴本地连接令牌" : "已保存，留空保持不变");
-        body.addView(labeledField("连接令牌", token));
-        TextView hint = text("本版可测试 Hermes 连接；自动发送任务、处理审批和接收结果尚未实现。",
-                12, SECONDARY_TEXT);
-        hint.setPadding(dp(4), dp(4), dp(4), dp(8));
-        body.addView(hint);
+        new AgentConnectionDialogs(this, agentConnectionStore, aiExecutor,
+                this::refreshBookshelf, this::launchAgentPairingQr,
+                this::launchCreateAgentArtifactDocument).show();
+    }
 
-        LinearLayout guideRow = new LinearLayout(this);
-        guideRow.setOrientation(LinearLayout.VERTICAL);
-        TextView guideButton = text("如何连接另一台电脑？", 15, ACCENT_COLOR);
-        guideButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        guideButton.setMinHeight(dp(48));
-        guideButton.setPadding(dp(4), dp(10), dp(4), dp(4));
-        guideButton.setClickable(true);
-        guideButton.setFocusable(true);
-        guideButton.setOnClickListener(view -> AgentConnectionGuide.show(this));
-        guideRow.addView(guideButton, matchWrap());
-        TextView guideSummary = text("离线查看 Windows / WSL2、macOS 和 Linux 的 Hermes 连接步骤。",
-                12, SECONDARY_TEXT);
-        guideSummary.setPadding(dp(4), 0, dp(4), dp(12));
-        guideRow.addView(guideSummary, matchWrap());
-        body.addView(guideRow, matchWrap());
+    private void launchAgentPairingQr() {
+        new IntentIntegrator(this).setDesiredBarcodeFormats(
+                        java.util.Collections.singletonList(IntentIntegrator.QR_CODE))
+                .setPrompt("扫描电脑连接助手显示的二维码")
+                .setBeepEnabled(false).setOrientationLocked(false).initiateScan();
+    }
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.addView(body, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(current.connected ? "电脑 Agent · 连接测试通过" : "连接电脑 Agent")
-                .setView(scroll)
-                .setNegativeButton("关闭", null)
-                .setNeutralButton("断开", (ignored, which) -> {
-                    agentConnectionStore.clear();
-                    refreshBookshelf();
-                })
-                .setPositiveButton("保存并测试", null)
-                .create();
-        kind.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position == 1) {
-                    hint.setText("当前版本尚不能连接 OpenClaw，请选择 Hermes。");
-                } else {
-                    hint.setText("本版可测试 Hermes 连接；自动发送任务、处理审批和接收结果尚未实现。");
-                }
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    if (kind.getSelectedItemPosition() == 1) {
-                        hint.setText("当前版本尚不能连接 OpenClaw，请选择 Hermes。");
-                        return;
-                    }
-                    String address = endpoint.getText().toString().trim();
-                    if (!isValidHttpsEndpoint(address)) {
-                        endpoint.setError("请输入 HTTPS 地址");
-                        return;
-                    }
-                    String secret = token.getText().toString().trim();
-                    if (secret.isEmpty()) secret = current.token;
-                    if (secret.isEmpty()) {
-                        token.setError("请输入连接令牌");
-                        return;
-                    }
-                    AgentConnectionStore.Kind selected = kind.getSelectedItemPosition() == 1
-                            ? AgentConnectionStore.Kind.OPENCLAW : AgentConnectionStore.Kind.HERMES;
-                    try {
-                        agentConnectionStore.save(selected, address, secret);
-                    } catch (Exception error) {
-                        Toast.makeText(this, "连接信息保存失败", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-                    hint.setText("正在检查电脑上的 Hermes 服务和连接令牌…");
-                    AgentConnectionStore.Config saved = agentConnectionStore.load();
-                    aiExecutor.execute(() -> {
-                        try {
-                            AgentConnectionClient.probe(saved);
-                            agentConnectionStore.setConnected(true);
-                            runOnUiThread(() -> {
-                                dialog.dismiss();
-                                Toast.makeText(this, "连接测试通过", Toast.LENGTH_SHORT).show();
-                                refreshBookshelf();
-                            });
-                        } catch (Exception error) {
-                            agentConnectionStore.setConnected(false);
-                            runOnUiThread(() -> {
-                                hint.setText("连接失败：" + safeError(error));
-                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
-                            });
-                        }
-                    });
-                }));
-        dialog.show();
+    private void launchCreateAgentArtifactDocument(AgentTaskStore.Task task,
+                                                   AgentTaskStore.Artifact artifact) {
+        pendingAgentArtifactTaskId = task.clientTaskId;
+        pendingAgentArtifactId = artifact.id;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(artifact.mediaType == null || artifact.mediaType.isEmpty()
+                ? "application/octet-stream" : artifact.mediaType);
+        intent.putExtra(Intent.EXTRA_TITLE, safeFileName(artifact.name));
+        startActivityForResult(intent, REQUEST_EXPORT_AGENT_ARTIFACT);
     }
 
     private LinearLayout labeledSpinner(String label, Spinner spinner) {
@@ -1585,10 +1751,28 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
         bookshelfLoadGeneration += 1;
+        releaseAiSelectionSnapshot();
+        aiConversationLoadSerial += 1;
+        aiConversationSnapshot = null;
+        aiConversationSaveFailureShown = false;
+        aiVisibleTimeline.clear();
+        aiMessages.clear();
+        aiReadScope = null;
+        aiSessionTranscript = null;
+        aiUploadConfirmed = false;
+        aiPdfDigest = "";
+        aiPdfDigestAvailable = false;
         currentNoteId = entry.id;
         currentNoteTitle = entry.title;
         editorVisible = true;
         restoreCompleted = false;
+        documentRevision = 0;
+        lastSavedRevision = 0;
+        saveInFlight = false;
+        saveQueued = false;
+        pendingLeaveAfterSave = false;
+        pendingSaveToast = false;
+        pendingUnsavedJson = null;
         pendingPageStyle = styleForNewNote;
         setContentView(createContentView());
         restoreDocument();
@@ -1710,6 +1894,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 .setPositiveButton("删除", (dialog, which) -> storageExecutor.execute(() -> {
                     try {
                         CoverStore.remove(this, entry.id);
+                        aiConversationStore.clear(entry.id);
                         NoteStore.delete(this, entry.id);
                         runOnUiThread(this::refreshBookshelf);
                     } catch (Exception error) {
@@ -2639,12 +2824,15 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         aiCardTitle.setOnTouchListener(this::handleAiCardDrag);
         header.addView(aiCardTitle, new LinearLayout.LayoutParams(0, dp(42), 1f));
 
-        TextView settings = aiHeaderControl("⚙", "配置 AI API");
-        settings.setOnClickListener(view -> showAiManagerDialog(null));
-        header.addView(settings);
+        aiSettingsButton = aiHeaderControl("⚙", "配置 AI API");
+        aiSettingsButton.setOnClickListener(view -> showAiManagerDialog(null));
+        header.addView(aiSettingsButton);
         aiMinimizeButton = aiHeaderControl("—", "最小化 AI 卡片");
         aiMinimizeButton.setOnClickListener(view -> setAiCardMinimized(!aiCardMinimized));
         header.addView(aiMinimizeButton);
+        TextView clearConversation = aiHeaderControl("⌫", "清空本笔记 AI 对话");
+        clearConversation.setOnClickListener(view -> confirmClearAiConversation());
+        header.addView(clearConversation);
         TextView close = aiHeaderControl("×", "关闭 AI 卡片");
         close.setOnClickListener(view -> closeAiCard());
         header.addView(close);
@@ -2654,12 +2842,18 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         aiCardBody = new LinearLayout(this);
         aiCardBody.setOrientation(LinearLayout.VERTICAL);
         aiCardBody.setPadding(dp(14), dp(12), dp(14), dp(12));
+        aiConversationScroll = new ScrollView(this);
+        aiConversationScroll.setFillViewport(false);
+        LinearLayout scrollContent = new LinearLayout(this);
+        scrollContent.setOrientation(LinearLayout.VERTICAL);
+        aiConversationScroll.addView(scrollContent, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         aiSelectionPreview = new ImageView(this);
         aiSelectionPreview.setContentDescription("本次 AI 对话使用的圈选图片");
         aiSelectionPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         aiSelectionPreview.setBackgroundColor(Color.rgb(235, 236, 232));
-        aiCardBody.addView(aiSelectionPreview, new LinearLayout.LayoutParams(
+        scrollContent.addView(aiSelectionPreview, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(105)));
 
         aiStatusView = text("等待选择笔记", 12, Color.rgb(93, 105, 115));
@@ -2672,8 +2866,8 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         TextView outputModeLabel = text("回答显示", 12, Color.rgb(93, 105, 115));
         outputModeRow.addView(outputModeLabel,
                 new LinearLayout.LayoutParams(0, dp(38), 0.7f));
-        aiInlineOutputButton = aiCardButton("写入页面");
-        aiInlineOutputButton.setContentDescription("AI 回答默认写入圈选原文附近");
+        aiInlineOutputButton = aiCardButton("允许工具写入");
+        aiInlineOutputButton.setContentDescription("允许 AI 使用笔记工具在空白处写入");
         aiInlineOutputButton.setOnClickListener(view -> setAiOutputInline(true, true));
         outputModeRow.addView(aiInlineOutputButton,
                 new LinearLayout.LayoutParams(0, dp(38), 1f));
@@ -2683,7 +2877,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         LinearLayout.LayoutParams cardModeParams = new LinearLayout.LayoutParams(0, dp(38), 0.85f);
         cardModeParams.setMargins(dp(6), 0, 0, 0);
         outputModeRow.addView(aiCardOutputButton, cardModeParams);
-        aiCardBody.addView(outputModeRow);
+        scrollContent.addView(outputModeRow);
 
         LinearLayout presets = new LinearLayout(this);
         presets.setOrientation(LinearLayout.HORIZONTAL);
@@ -2697,28 +2891,48 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0, dp(42), 1.35f);
         markdownParams.setMargins(dp(8), 0, 0, 0);
         presets.addView(aiMarkdownButton, markdownParams);
-        aiCardBody.addView(presets);
+        scrollContent.addView(presets);
 
         aiDiagramButton = aiCardButton("画示意图 · Beta");
         aiDiagramButton.setOnClickListener(view -> requestAiMessage(
                 "请把圈选内容中最适合图解的关系画成一张简明示意图，调用 draw_diagram 写入笔记。"
                         + "先查看页面空白，默认放在相关原文下方；不要遮挡手写。标签用中文，辨认不清时先问我。"));
-        aiCardBody.addView(aiDiagramButton, new LinearLayout.LayoutParams(
+        scrollContent.addView(aiDiagramButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
 
-        // The knowledge-base tools are invisible until used; a one-line hint in
-        // the card is the only place users see that cross-note questions exist.
-        TextView vaultHint = text("也可以问知识库：「我之前哪本笔记讲过…」",
-                11, FAINT_TEXT);
-        vaultHint.setPadding(dp(4), dp(5), dp(4), 0);
-        aiCardBody.addView(vaultHint);
+        aiMaterialsSummary = text("额外材料：未选择（默认不读取知识库）", 11, FAINT_TEXT);
+        aiMaterialsSummary.setPadding(dp(4), dp(7), dp(4), dp(2));
+        scrollContent.addView(aiMaterialsSummary);
+        LinearLayout materialRow = new LinearLayout(this);
+        materialRow.setOrientation(LinearLayout.HORIZONTAL);
+        aiMaterialsButton = aiCardButton("选择额外材料");
+        aiMaterialsButton.setOnClickListener(view -> showAiMaterialPicker());
+        materialRow.addView(aiMaterialsButton, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        aiMaterialsPreviewButton = aiCardButton("预览");
+        aiMaterialsPreviewButton.setEnabled(false);
+        aiMaterialsPreviewButton.setOnClickListener(view -> showAiMaterialPreview());
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(0, dp(38), 0.55f);
+        previewParams.setMargins(dp(6), 0, 0, 0);
+        materialRow.addView(aiMaterialsPreviewButton, previewParams);
+        scrollContent.addView(materialRow);
+
+        aiReviewTranscriptCheck = new CheckBox(this);
+        aiReviewTranscriptCheck.setText("两段式转写后先校对");
+        aiReviewTranscriptCheck.setTextSize(12);
+        aiReviewTranscriptCheck.setTextColor(SECONDARY_TEXT);
+        aiReviewTranscriptCheck.setChecked(
+                preferences.getBoolean("aiReviewTranscription", false));
+        aiReviewTranscriptCheck.setOnCheckedChangeListener((button, checked) ->
+                preferences.edit().putBoolean("aiReviewTranscription", checked).apply());
+        aiReviewTranscriptCheck.setContentDescription(
+                "可选：先编辑手写转写，再交给回答模型；默认直接继续");
+        scrollContent.addView(aiReviewTranscriptCheck,
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
 
         aiConversationView = new LinearLayout(this);
         aiConversationView.setOrientation(LinearLayout.VERTICAL);
         aiConversationView.setPadding(0, dp(8), 0, dp(8));
-        aiConversationScroll = new ScrollView(this);
-        aiConversationScroll.setFillViewport(true);
-        aiConversationScroll.addView(aiConversationView, new ScrollView.LayoutParams(
+        scrollContent.addView(aiConversationView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
@@ -2745,11 +2959,22 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         sendParams.setMargins(dp(8), 0, 0, 0);
         inputRow.addView(aiSendButton, sendParams);
         aiSendButton.setOnClickListener(view -> {
+            if (aiBusy) {
+                cancelActiveAiRequest(true);
+                return;
+            }
             String message = aiInputView.getText().toString().trim();
             if (!message.isEmpty()) {
                 requestAiMessage(message);
             }
         });
+        aiRetryButton = aiCardButton("重试");
+        aiRetryButton.setVisibility(View.GONE);
+        aiRetryButton.setContentDescription("使用原请求、材料范围和接收地址重试");
+        aiRetryButton.setOnClickListener(view -> retryAiRequest());
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(dp(68), dp(54));
+        retryParams.setMargins(dp(6), 0, 0, 0);
+        inputRow.addView(aiRetryButton, retryParams);
         aiCardBody.addView(inputRow);
 
         card.addView(aiCardBody, new LinearLayout.LayoutParams(
@@ -2791,7 +3016,15 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         return button;
     }
 
-    private void setAiOutputInline(boolean inline, boolean persist) {
+    void setAiOutputInline(boolean inline, boolean persist) {
+        if (aiBusy || aiMaterialLoading) {
+            Toast.makeText(this, aiMaterialLoading
+                            ? "正在冻结材料，请完成或取消后再修改写入权限"
+                            : "当前请求已冻结写入权限；完成或取消后再修改",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        boolean changed = aiOutputInline != inline;
         aiOutputInline = inline;
         // The switch now gates authority rather than destination: the model always
         // replies in the card, and this decides whether it may also write to the
@@ -2800,6 +3033,9 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         aiGrantedPermission = inline
                 ? NoteTool.Permission.CREATE_IN_FREE_SPACE
                 : NoteTool.Permission.READ_ONLY;
+        if (changed) {
+            rotateAiWireContextPreservingMaterials();
+        }
         updateAiOutputModeButtons();
         if (persist) {
             preferences.edit().putBoolean("aiOutputInline", inline).apply();
@@ -2811,6 +3047,34 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                         : "AI 只能读取笔记结构，不会写入页面；回答只显示在卡片中。");
             }
         }
+    }
+
+    /** Starts a fresh wire context while keeping the visible audit trail. */
+    private void rotateAiWireContextPreservingMaterials() {
+        AiVaultSnapshot retainedVault = aiReadScope == null
+                ? null : aiReadScope.vaultSnapshot();
+        boolean sourceStillCurrent = aiConversationSnapshot == null || (canvasView != null
+                && aiConversationSnapshot.binding.semanticDigest.equals(
+                canvasView.aiConversationFingerprint())
+                && aiConversationSnapshot.binding.pdfDigest.equals(aiPdfDigest));
+        clearAiRequestState();
+        aiSessionSerial += 1;
+        aiMessages.clear();
+        aiExecutedToolCallIds.clear();
+        aiSessionTranscript = null;
+        aiToolsHonoured = false;
+        aiUploadConfirmed = false;
+        if (!sourceStillCurrent) {
+            releaseAiSelectionSnapshot();
+            aiReadScope = null;
+        } else if (aiReadScope != null) {
+            AiConfigStore.Profile active = aiConfigStore.activeProfile();
+            aiReadScope = AiReadScope.selectionOnly(currentNoteId, aiSessionSerial,
+                    aiProfileIdentity(active)).withVault(retainedVault);
+        }
+        appendAiBoundary("发送范围或权限已变化；此前聊天仅保留供查看，不会继续发送。");
+        refreshAiRecipientBindingPreservingSource();
+        updateAiMaterialsUi();
     }
 
     private void updateAiOutputModeButtons() {
@@ -2939,13 +3203,38 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
 
     private void openAiCardForSelection() {
         if (canvasView.getSelectionCount() == 0) {
+            if (aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty()) {
+                showAiCard();
+            } else if (aiConversationLoading) {
+                Toast.makeText(this, "正在恢复本笔记的 AI 对话", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "请先圈选内容，或打开已有对话", Toast.LENGTH_SHORT).show();
+            }
             return;
         }
+        if (aiConversationSnapshot != null && aiSelectionSnapshot != null) {
+            new AlertDialog.Builder(this)
+                    .setTitle("继续旧材料，还是使用当前圈选？")
+                    .setMessage("继续会保留可发送上下文。使用当前圈选会保留可见聊天，"
+                            + "但旧聊天和旧图片不会继续发送。")
+                    .setNegativeButton("取消", null)
+                    .setNeutralButton("继续旧材料", (dialog, which) -> showAiCard())
+                    .setPositiveButton("使用当前圈选", (dialog, which) ->
+                            replaceAiSelectionWithCurrent())
+                    .show();
+            return;
+        }
+        replaceAiSelectionWithCurrent();
+    }
+
+    private void replaceAiSelectionWithCurrent() {
         NoteCanvasView.AiSelectionSnapshot snapshot = canvasView.renderAiSelection(1600);
         if (snapshot == null) {
             Toast.makeText(this, "无法生成当前选区", Toast.LENGTH_SHORT).show();
             return;
         }
+        boolean replacingContext = aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty();
+        clearAiRequestState();
         releaseAiSelectionSnapshot();
         aiSessionSerial += 1;
         aiExecutedToolCallIds.clear();
@@ -2953,18 +3242,32 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         aiResultAnchorBounds = new RectF(snapshot.sourceBounds);
         aiMessages.clear();
         aiSessionTranscript = null;
+        aiToolsHonoured = false;
         aiUploadConfirmed = false;
+        AiConfigStore.Profile activeProfile = aiConfigStore.activeProfile();
+        aiReadScope = AiReadScope.selectionOnly(currentNoteId, aiSessionSerial,
+                aiProfileIdentity(activeProfile));
+        updateAiMaterialsUi();
         setAiBusy(false);
-        clearAiConversation();
+        clearAiConversationViews();
+        renderAiTimeline();
         aiSelectionPreview.setImageBitmap(snapshot.bitmap);
         String mask = snapshot.lassoMaskApplied ? "套索遮罩已生效" : "矩形选区";
         aiStatusView.setText(String.format(Locale.CHINA,
                 "%d × %d · %.1f KB · %s · 首次发送前会确认",
                 snapshot.bitmap.getWidth(), snapshot.bitmap.getHeight(),
                 snapshot.pngBytes.length / 1024f, mask));
-        addAiNotice(aiOutputInline
-                ? "选区已载入。回答默认写入原文附近并编译显示；也可切换为“仅卡片”。"
-                : "选区已载入。回答当前只显示在对话卡片；可切换为“写入页面”。");
+        addAiNotice(replacingContext
+                ? "已用当前圈选开始新的发送上下文；旧聊天仅保留供查看，不会发送给模型。"
+                : (aiOutputInline
+                ? "选区已载入。已允许模型按需调用笔记工具；普通文字回答仍先留在卡片。"
+                : "选区已载入。回答只显示在对话卡片，模型不能写入页面。"));
+        initializeAiConversationForSelection(activeProfile);
+        showAiCard();
+    }
+
+    private void showAiCard() {
+        if (aiCard == null) return;
         aiCard.setVisibility(View.VISIBLE);
         setAiCardMinimized(false);
         aiCard.bringToFront();
@@ -2978,6 +3281,256 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
             }
             moveAiCardTo(savedX, savedY);
         });
+    }
+
+    private void updateAiMaterialsUi() {
+        if (aiMaterialsSummary == null || aiMaterialsButton == null
+                || aiMaterialsPreviewButton == null) {
+            return;
+        }
+        List<String> titles = aiReadScope == null
+                ? java.util.Collections.emptyList() : aiReadScope.vaultTitles();
+        if (titles.isEmpty()) {
+            aiMaterialsSummary.setText("额外材料：未选择（默认不读取知识库）");
+            aiMaterialsButton.setEnabled(!aiBusy && !aiMaterialLoading);
+            aiMaterialsPreviewButton.setEnabled(false);
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int index = 0; index < titles.size(); index++) {
+            if (index > 0) {
+                names.append("、");
+            }
+            names.append(titles.get(index));
+        }
+        aiMaterialsSummary.setText("额外材料：" + titles.size() + " 本 · " + names);
+        aiMaterialsButton.setEnabled(!aiBusy && !aiMaterialLoading);
+        aiMaterialsPreviewButton.setEnabled(!aiBusy && !aiMaterialLoading);
+    }
+
+    /** Lets the user freeze an explicit subset; merely opening the list grants nothing. */
+    private void showAiMaterialPicker() {
+        if (aiBusy || aiMaterialLoading) {
+            Toast.makeText(this, "请等待当前回答完成", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (aiReadScope == null || aiSelectionSnapshot == null) {
+            Toast.makeText(this, "请先圈选笔记", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<VaultStore.VaultNote> available = vaultStore.list();
+        if (available.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("选择额外材料")
+                    .setMessage("知识库还没有格式笔记。请先在书架将具体笔记转为格式笔记。")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            return;
+        }
+        String[] labels = new String[available.size()];
+        boolean[] checked = new boolean[available.size()];
+        Set<String> selected = aiReadScope.vaultNoteIds();
+        for (int index = 0; index < available.size(); index++) {
+            VaultStore.VaultNote note = available.get(index);
+            labels[index] = note.title == null || note.title.isEmpty()
+                    ? note.fileName.replaceAll("\\.md$", "") : note.title;
+            checked[index] = selected.contains(note.noteId);
+        }
+        createAiMaterialPickerDialog(available, labels, checked, ids -> {
+                    final AiReadScope sourceScope = aiReadScope;
+                    final int sourceSession = aiSessionSerial;
+                    if (ids.isEmpty()) {
+                        replaceAiReadScope(sourceScope.withVault(null),
+                                "已取消额外材料权限，新对话只读取圈选内容。");
+                        return;
+                    }
+                    aiStatusView.setText("正在冻结已选材料…");
+                    setAiMaterialLoading(true);
+                    storageExecutor.execute(() -> {
+                        try {
+                            AiVaultSnapshot snapshot = AiVaultSnapshot.capture(vaultStore, ids);
+                            runOnUiThread(() -> {
+                                if (aiBusy || sourceSession != aiSessionSerial
+                                        || aiReadScope != sourceScope) {
+                                    return;
+                                }
+                                setAiMaterialLoading(false);
+                                replaceAiReadScope(sourceScope.withVault(snapshot),
+                                        "已冻结 " + snapshot.titles().size()
+                                                + " 本额外材料，新对话仅可读取这些副本。");
+                            });
+                        } catch (Exception error) {
+                            runOnUiThread(() -> {
+                                if (sourceSession != aiSessionSerial) {
+                                    return;
+                                }
+                                aiStatusView.setText("额外材料未加入");
+                                setAiMaterialLoading(false);
+                                Toast.makeText(this, error.getMessage() == null
+                                                ? "读取材料失败" : error.getMessage(),
+                                        Toast.LENGTH_LONG).show();
+                            });
+                        }
+                    });
+                }).show();
+    }
+
+    /** Production dialog factory kept package-visible for an ActivityScenario UI assertion. */
+    AlertDialog createAiMaterialPickerDialog(List<VaultStore.VaultNote> available,
+                                               String[] labels, boolean[] checked,
+                                               Consumer<Set<String>> onConfirm) {
+        return new AlertDialog.Builder(this)
+                .setTitle("选择本次可读材料（改变后开始新对话）")
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) ->
+                        checked[which] = isChecked)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("冻结选定材料", (dialog, which) -> {
+                    Set<String> ids = new java.util.LinkedHashSet<>();
+                    for (int index = 0; index < available.size(); index++) {
+                        if (checked[index]) {
+                            ids.add(available.get(index).noteId);
+                        }
+                    }
+                    onConfirm.accept(ids);
+                })
+                .create();
+    }
+
+    private void showAiMaterialPreview() {
+        if (aiBusy || aiMaterialLoading || aiReadScope == null || !aiReadScope.hasVaultNotes()) {
+            return;
+        }
+        AiVaultSnapshot snapshot = aiReadScope.vaultSnapshot();
+        StringBuilder preview = new StringBuilder();
+        for (VaultStore.VaultNote note : snapshot.list()) {
+            if (preview.length() > 0) {
+                preview.append("\n\n──────\n\n");
+            }
+            preview.append("【").append(note.title).append("】\n");
+            String content = snapshot.read(note.fileName);
+            int limit = Math.min(content.length(), 8000);
+            preview.append(content, 0, limit);
+            if (limit < content.length()) {
+                preview.append("\n…（预览已截断）");
+            }
+        }
+        TextView content = text(preview.toString(), 12, INK_COLOR);
+        content.setTextIsSelectable(true);
+        content.setPadding(dp(16), dp(8), dp(16), dp(8));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content, matchWrap());
+        new AlertDialog.Builder(this)
+                .setTitle("本次可读材料预览")
+                .setView(scroll)
+                .setPositiveButton("关闭", null)
+                .show();
+    }
+
+    /** Scope changes create a fresh context so old model/tool text cannot cross the boundary. */
+    void replaceAiReadScope(AiReadScope next, String notice) {
+        if (aiBusy || next == null) {
+            return;
+        }
+        clearAiRequestState();
+        if (aiConversationSnapshot != null && canvasView != null
+                && (!aiConversationSnapshot.binding.semanticDigest.equals(
+                canvasView.aiConversationFingerprint())
+                || !aiConversationSnapshot.binding.pdfDigest.equals(aiPdfDigest))) {
+            releaseAiSelectionSnapshot();
+            next = null;
+        }
+        aiSessionSerial += 1;
+        aiReadScope = next;
+        aiMessages.clear();
+        aiExecutedToolCallIds.clear();
+        aiSessionTranscript = null;
+        aiToolsHonoured = false;
+        aiUploadConfirmed = false;
+        appendAiBoundary(notice);
+        refreshAiRecipientBindingPreservingSource();
+        if (aiStatusView != null) {
+            aiStatusView.setText("材料范围已更新 · 发送前会重新确认");
+        }
+        updateAiMaterialsUi();
+    }
+
+    void resetAiContextForProfileChange(AiConfigStore.Profile profile) {
+        if (aiBusy || aiMaterialLoading) {
+            return;
+        }
+        clearAiRequestState();
+        if (aiReadScope != null) {
+            replaceAiReadScope(aiReadScope.withProfile(aiProfileIdentity(profile)),
+                    "AI 配置已变更，已开始新对话并保留当前已选材料副本。");
+            return;
+        }
+        aiSessionSerial += 1;
+        aiMessages.clear();
+        aiExecutedToolCallIds.clear();
+        aiSessionTranscript = null;
+        aiToolsHonoured = false;
+        aiUploadConfirmed = false;
+        if (aiConversationSnapshot != null) {
+            appendAiBoundary("AI 配置已变更；旧聊天仅保留供查看，不会发送给新的接收模型。");
+            refreshAiRecipientBindingPreservingSource();
+        }
+    }
+
+    boolean aiRecipientChangeAllowed() {
+        return !aiBusy && !aiMaterialLoading;
+    }
+
+    private boolean requireAiRecipientChangeAllowed() {
+        if (aiRecipientChangeAllowed()) return true;
+        String message = aiMaterialLoading
+                ? "正在冻结材料，请完成或取消后再修改 AI 配置"
+                : "AI 请求进行中，请完成或取消后再修改接收模型";
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        if (aiStatusView != null) aiStatusView.setText(message);
+        return false;
+    }
+
+    boolean activateAiProfile(AiConfigStore.Profile profile) {
+        if (profile == null || profile.id == null || profile.id.isEmpty()) return false;
+        if (profile.id.equals(aiConfigStore.activeProfileId())) return true;
+        if (!requireAiRecipientChangeAllowed()) return false;
+        aiConfigStore.setActiveProfileId(profile.id);
+        resetAiContextForProfileChange(profile);
+        return true;
+    }
+
+    boolean deleteAiProfile(AiConfigStore.Profile profile) {
+        if (profile == null || profile.id == null || profile.id.isEmpty()) return false;
+        boolean removedActive = profile.id.equals(aiConfigStore.activeProfileId());
+        if (removedActive && !requireAiRecipientChangeAllowed()) return false;
+        aiConfigStore.deleteProfile(profile.id);
+        if (removedActive) resetAiContextForProfileChange(aiConfigStore.activeProfile());
+        return true;
+    }
+
+    boolean saveAiProfile(AiConfigStore.Profile profile, String directKey,
+                          String transcribeKey, String answerKey,
+                          boolean activate) throws Exception {
+        if (profile == null) return false;
+        boolean affectsActive = activate
+                || java.util.Objects.equals(profile.id, aiConfigStore.activeProfileId());
+        if (affectsActive && !requireAiRecipientChangeAllowed()) return false;
+        aiConfigStore.saveProfile(profile, directKey, transcribeKey, answerKey);
+        if (activate) aiConfigStore.setActiveProfileId(profile.id);
+        if (affectsActive) {
+            resetAiContextForProfileChange(profile);
+        }
+        return true;
+    }
+
+    private static String aiProfileIdentity(AiConfigStore.Profile profile) {
+        if (profile == null) {
+            return "";
+        }
+        return profile.id + "\n" + profile.split + "\n"
+                + profile.directEndpoint + "\n" + profile.directModel + "\n"
+                + profile.transcribeEndpoint + "\n" + profile.transcribeModel + "\n"
+                + profile.answerEndpoint + "\n" + profile.answerModel;
     }
 
     private void setAiCardMinimized(boolean minimized) {
@@ -3028,7 +3581,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         if (aiCardTitle == null) {
             return;
         }
-        if (aiBusy) {
+        if (aiBusy || aiMaterialLoading) {
             aiCardTitle.setText(R.string.ai_card_busy);
         } else if (aiCardMinimized) {
             aiCardTitle.setText(R.string.ai_card_minimized);
@@ -3038,17 +3591,91 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void closeAiCard() {
+        collapseAiCard(true);
+    }
+
+    private void collapseAiCard(boolean userVisible) {
+        boolean cancelledRequest = activeAiRequest != null;
+        clearAiRequestState();
         aiSessionSerial += 1;
-        aiExecutedToolCallIds.clear();
-        aiMessages.clear();
-        aiSessionTranscript = null;
-        aiUploadConfirmed = false;
-        aiBusy = false;
-        releaseAiSelectionSnapshot();
-        clearAiConversation();
+        aiMaterialLoading = false;
+        setAiBusy(false);
+        if (cancelledRequest) {
+            addAiNotice("收起卡片时已停止本机等待；请求若已到达服务商，处理或计费可能仍继续。");
+        }
+        persistAiConversation();
         if (aiCard != null) {
             aiCard.setVisibility(View.GONE);
         }
+        if (userVisible && saveStatusView != null) {
+            saveStatusView.setText("AI 对话已收起，可从工具栏恢复");
+        }
+    }
+
+    private void confirmClearAiConversation() {
+        if (aiBusy || aiMaterialLoading) {
+            Toast.makeText(this, "请先取消当前请求，再清空对话", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("清空本笔记的 AI 对话？")
+                .setMessage("可见聊天、发送上下文和冻结材料都会从本机删除。笔记内容不会改变。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("清空", (dialog, which) -> clearAiConversationExplicitly())
+                .show();
+    }
+
+    private void clearAiConversationExplicitly() {
+        clearAiRequestState();
+        aiSessionSerial += 1;
+        // A first-session create may still be running on the storage executor.
+        // Invalidate its UI callback before enqueueing the durable tombstone so
+        // the completed create cannot repopulate memory after an explicit clear.
+        aiConversationLoadSerial += 1;
+        aiConversationLoading = false;
+        updateAiInteractionEnabled();
+        String noteId = currentNoteId;
+        int clearSession = aiSessionSerial;
+        AiConversationStore.Snapshot previous = aiConversationSnapshot;
+        aiConversationSnapshot = null;
+        aiConversationSaveFailureShown = false;
+        aiVisibleTimeline.clear();
+        aiMessages.clear();
+        aiExecutedToolCallIds.clear();
+        aiSessionTranscript = null;
+        aiToolsHonoured = false;
+        aiUploadConfirmed = false;
+        aiReadScope = null;
+        releaseAiSelectionSnapshot();
+        clearAiConversationViews();
+        updateAiMaterialsUi();
+        aiStatusView.setText("对话已清空 · 圈选内容可开始新对话");
+        if (noteId != null) storageExecutor.execute(() -> {
+            try { aiConversationStore.clear(noteId); }
+            catch (Exception error) { runOnUiThread(() -> {
+                if (clearSession != aiSessionSerial || !noteId.equals(currentNoteId)) return;
+                if (previous != null) {
+                    aiConversationSnapshot = previous;
+                    aiVisibleTimeline.clear();
+                    aiVisibleTimeline.addAll(previous.visibleTimeline);
+                    aiMessages.clear();
+                    aiMessages.addAll(previous.wireHistory);
+                    aiSessionTranscript = previous.transcript;
+                    aiUploadConfirmed = previous.uploadConfirmed;
+                    try {
+                        aiSelectionSnapshot = previous.selection == null
+                                ? null : previous.selection.toCanvas();
+                        if (aiSelectionSnapshot != null) {
+                            aiSelectionPreview.setImageBitmap(aiSelectionSnapshot.bitmap);
+                            aiReadScope = AiReadScope.selectionOnly(currentNoteId,
+                                    aiSessionSerial, aiProfileIdentity(aiConfigStore.activeProfile()))
+                                    .withVault(previous.vault);
+                        }
+                    } catch (Exception ignored) { aiSelectionSnapshot = null; }
+                    renderAiTimeline();
+                }
+                aiStatusView.setText("对话清空失败，原记录仍保留：" + safeError(error));
+            }); }
+        });
     }
 
     private void releaseAiSelectionSnapshot() {
@@ -3063,6 +3690,15 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void addAiNotice(String message) {
+        if (!renderingAiTimeline) {
+            aiVisibleTimeline.add(new AiConversationStore.VisibleEntry(
+                    "notice", "assistant", message, "", false));
+            persistAiConversation();
+        }
+        // Recipient/material changes can rotate the wire context while the AI
+        // card is not inflated (for example, from the profile manager). Keep
+        // the audit entry above; rendering will replay it when the card opens.
+        if (aiConversationView == null) return;
         TextView notice = text(message, 12, Color.rgb(94, 107, 117));
         notice.setGravity(Gravity.CENTER);
         notice.setPadding(dp(12), dp(8), dp(12), dp(8));
@@ -3071,21 +3707,231 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         scrollAiConversationToBottom();
     }
 
+    private void ensureAiEditCard(AiPendingRequest request) {
+        if (request == null || !request.edits.hasChanges()) return;
+        if (request.editBinding == null) {
+            String receipt = "";
+            String receiptDigest = "";
+            try {
+                JSONObject receiptJson = canvasView.serializeAiEditRecord(request.edits);
+                receipt = receiptJson.toString();
+                receiptDigest = receiptJson.optString("digest");
+            } catch (Exception ignored) { }
+            aiVisibleTimeline.add(new AiConversationStore.VisibleEntry("result", "assistant",
+                    "本轮已写入 " + request.edits.changedFlowCount() + " 处文字修改",
+                    request.answerExecutorLabel, false, request.edits.changedFlowIds(),
+                    receiptDigest, receipt));
+            persistAiConversation();
+            request.editBinding = new AiEditCardBinding(request.noteId, request.edits);
+            installAiEditCard(request.editBinding);
+        }
+        refreshAiEditCard(request.editBinding);
+    }
+
+    private void installAiEditCard(AiEditCardBinding binding) {
+        if (binding == null || aiConversationView == null || binding.card != null) return;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(roundedBackground(Color.rgb(241, 246, 250),
+                Color.rgb(180, 197, 210), 10));
+        TextView status = text("", 12, INK_COLOR);
+        status.setContentDescription("AI 修改状态");
+        card.addView(status, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button locate = aiCardButton("定位结果");
+        locate.setContentDescription("定位本次 AI 修改结果");
+        locate.setOnClickListener(view -> {
+            if (canvasView != null && canvasView.locateAiEdit(binding.record)) {
+                aiStatusView.setText("已定位本次 AI 修改");
+            }
+        });
+        actions.addView(locate, new LinearLayout.LayoutParams(0, dp(40), 0.7f));
+        Button action = aiCardButton("撤销本次 AI 修改");
+        action.setContentDescription("撤销或重新应用本次 AI 修改");
+        action.setOnClickListener(view -> applyAiEditCard(binding));
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        actionParams.setMargins(dp(6), 0, 0, 0);
+        actions.addView(action, actionParams);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        actionsParams.setMargins(0, dp(8), 0, 0);
+        card.addView(actions, actionsParams);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardParams.setMargins(0, dp(5), 0, dp(5));
+        aiConversationView.addView(card, cardParams);
+        binding.card = card;
+        binding.status = status;
+        binding.action = action;
+        binding.locate = locate;
+        aiEditCards.add(binding);
+        refreshAiEditCard(binding);
+        scrollAiConversationToBottom();
+    }
+
+    private void applyAiEditCard(AiEditCardBinding binding) {
+        if (binding == null || canvasView == null || aiBusy) return;
+        if (!java.util.Objects.equals(binding.noteId, currentNoteId)) {
+            binding.status.setText("这项结果属于另一份笔记，无法在当前页面操作");
+            binding.action.setEnabled(false);
+            return;
+        }
+        NoteCanvasView.AiEditState state = canvasView.aiEditState(binding.record);
+        boolean reapply = state == NoteCanvasView.AiEditState.UNDONE;
+        NoteCanvasView.AiEditApplyResult result = canvasView.applyAiEdit(
+                binding.record, reapply);
+        if (result.changedFlows > 0) {
+            updateTextBoxOverlays(canvasView.getTextBoxes());
+        } else if (result.state == NoteCanvasView.AiEditState.CONFLICT) {
+            addAiNotice("相关文字已被编辑或删除。为保护当前内容，本次操作没有修改任何对象。");
+        } else if (result.state == NoteCanvasView.AiEditState.BUSY) {
+            addAiNotice("请先结束当前书写或拖动，再操作本次 AI 修改。");
+        }
+        refreshAiEditCards();
+    }
+
+    private void refreshAiEditCards() {
+        if (canvasView == null || aiEditCards.isEmpty()) return;
+        for (AiEditCardBinding binding : new ArrayList<>(aiEditCards)) {
+            refreshAiEditCard(binding);
+        }
+    }
+
+    private void refreshAiEditCard(AiEditCardBinding binding) {
+        if (binding == null || binding.status == null || binding.action == null
+                || binding.locate == null) return;
+        if (!java.util.Objects.equals(binding.noteId, currentNoteId)) {
+            binding.status.setText("本次 AI 修改属于另一份笔记");
+            binding.action.setEnabled(false);
+            binding.locate.setEnabled(false);
+            return;
+        }
+        NoteCanvasView.AiEditState state = canvasView.aiEditState(binding.record);
+        int count = binding.record.changedFlowCount();
+        binding.locate.setEnabled(!aiBusy && canvasView.hasAiEditTarget(binding.record));
+        switch (state) {
+            case APPLIED:
+                binding.status.setText("本次 AI 修改已写入笔记 · " + count + "处文字修改");
+                binding.action.setText("撤销本次 AI 修改");
+                binding.action.setEnabled(!aiBusy);
+                break;
+            case UNDONE:
+                binding.status.setText("本次 AI 修改已撤销");
+                binding.action.setText("重新应用本次 AI 修改");
+                binding.action.setEnabled(!aiBusy);
+                break;
+            case MIXED:
+                binding.status.setText("本次 AI 修改已被普通撤销部分改变");
+                binding.action.setText("撤销剩余 AI 修改");
+                binding.action.setEnabled(!aiBusy);
+                break;
+            case CONFLICT:
+                binding.status.setText("相关文字已被编辑或删除 · 已保护当前内容");
+                binding.action.setText("无法安全覆盖");
+                binding.action.setEnabled(false);
+                break;
+            case BUSY:
+                binding.status.setText("请先结束当前书写或拖动");
+                binding.action.setEnabled(false);
+                break;
+            case EMPTY:
+            default:
+                binding.status.setText("本次请求没有修改笔记");
+                binding.action.setVisibility(View.GONE);
+                break;
+        }
+    }
+
+    /** Test-only fixture hook: attaches a local edit record without a network request. */
+    void installAiEditRecordForTest(String noteId, NoteCanvasView.AiEditRecord record) {
+        currentNoteId = noteId;
+        editorVisible = true;
+        if (aiCard != null) aiCard.setVisibility(View.VISIBLE);
+        AiEditCardBinding binding = new AiEditCardBinding(noteId, record);
+        installAiEditCard(binding);
+    }
+
+    NoteCanvasView canvasForTest() { return canvasView; }
+
     private void addAiMessageBubble(String role, String message, boolean error) {
+        addAiMessageBubble(role, message, error, "");
+    }
+
+    private void addAiMessageBubble(String role, String message, boolean error,
+                                    String executorLabel) {
+        if (!renderingAiTimeline) {
+            aiVisibleTimeline.add(new AiConversationStore.VisibleEntry(
+                    "message", role, message, executorLabel, error));
+            persistAiConversation();
+        }
         LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
         row.setGravity("user".equals(role) ? Gravity.END : Gravity.START);
+        if (executorLabel != null && !executorLabel.isEmpty()) {
+            TextView executor = text(executorLabel, 10, Color.rgb(102, 113, 122));
+            executor.setContentDescription("本轮实际执行者");
+            row.addView(executor, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
         int fill = error ? Color.rgb(252, 232, 229)
                 : ("user".equals(role) ? Color.rgb(218, 230, 247) : Color.WHITE);
         int stroke = error ? Color.rgb(222, 157, 151) : Color.rgb(214, 220, 224);
         View bubble;
         LinearLayout.LayoutParams bubbleParams;
         if (!error && "assistant".equals(role) && AiMathWebView.containsMath(message)) {
-            AiMathWebView formulaView = new AiMathWebView(this, message);
+            AiMathWebView formulaView = new AiMathWebView(this, message, false);
+            AiMathWebView[] formulaHolder = new AiMathWebView[]{formulaView};
             formulaView.setContentDescription("AI 回答；LaTeX 公式已本地可视化");
-            formulaView.setBackground(roundedBackground(fill, stroke, 12));
-            bubble = formulaView;
+            LinearLayout formulaContainer = new LinearLayout(this);
+            formulaContainer.setOrientation(LinearLayout.VERTICAL);
+            formulaContainer.setBackground(roundedBackground(fill, stroke, 12));
+            formulaContainer.addView(formulaView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+            LinearLayout recovery = new LinearLayout(this);
+            recovery.setOrientation(LinearLayout.VERTICAL);
+            recovery.setPadding(dp(10), dp(7), dp(10), dp(9));
+            recovery.setVisibility(View.GONE);
+            recovery.setContentDescription("AI 回答公式显示失败");
+            TextView recoveryStatus = text("显示失败", 12, Color.rgb(143, 47, 43));
+            recovery.addView(recoveryStatus, matchWrap());
+            LinearLayout actions = new LinearLayout(this);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            Button viewSource = pillButton("查看源码", BUTTON_QUIET);
+            Button copySource = pillButton("复制", BUTTON_QUIET);
+            Button editDisplay = pillButton("编辑", BUTTON_QUIET);
+            Button retry = pillButton("重新显示", BUTTON_TONAL);
+            actions.addView(viewSource, new LinearLayout.LayoutParams(0, dp(38), 1f));
+            actions.addView(copySource, new LinearLayout.LayoutParams(0, dp(38), .7f));
+            actions.addView(editDisplay, new LinearLayout.LayoutParams(0, dp(38), .7f));
+            actions.addView(retry, new LinearLayout.LayoutParams(0, dp(38), 1f));
+            recovery.addView(actions, matchWrap());
+            formulaContainer.addView(recovery, matchWrap());
+            viewSource.setOnClickListener(view -> showLocalSource(
+                    "AI 回答源码", formulaHolder[0].displaySource()));
+            copySource.setOnClickListener(view -> copyLocalSource(
+                    "PadNote AI 回答源码", formulaHolder[0].displaySource()));
+            editDisplay.setOnClickListener(view -> editLocalDisplaySource(
+                    "编辑本次显示副本", formulaHolder[0].displaySource(),
+                    edited -> formulaHolder[0].renderDisplayCopy(edited),
+                    "只修改本次本地显示，不会改变对话记录，也不会再次请求模型。"));
+            retry.setOnClickListener(view -> {
+                retry.setEnabled(false);
+                recoveryStatus.setText("正在重新显示…");
+                formulaHolder[0].retryCurrentRender();
+            });
+            configureAiMathRecovery(formulaView, formulaHolder, formulaContainer,
+                    recovery, recoveryStatus, retry);
+            formulaView.post(() -> {
+                if (formulaHolder[0] == formulaView && formulaView.getParent() != null) {
+                    formulaView.renderDisplayCopy(message);
+                }
+            });
+            bubble = formulaContainer;
             bubbleParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         } else {
             TextView textBubble = text(message, 13,
                     error ? Color.rgb(143, 47, 43) : INK_COLOR);
@@ -3103,6 +3949,38 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         aiConversationView.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         scrollAiConversationToBottom();
+    }
+
+    private void configureAiMathRecovery(AiMathWebView view, AiMathWebView[] holder,
+                                         LinearLayout container, LinearLayout recovery,
+                                         TextView status, Button retry) {
+        view.setRenderStateListener(state -> {
+            if (holder[0] != view) return;
+            retry.setEnabled(true);
+            if (state.isReady()) {
+                recovery.setVisibility(View.GONE);
+                return;
+            }
+            status.setText("显示失败 · " + state.message);
+            recovery.setVisibility(View.VISIBLE);
+            if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
+                String source = view.displaySource();
+                container.post(() -> {
+                    if (holder[0] != view || container.getParent() == null) return;
+                    container.removeView(view);
+                    // A renderer crash is an error state, not permission to start
+                    // another attempt. Attach a fresh blank renderer and wait for
+                    // the user's explicit "重新显示" action.
+                    AiMathWebView replacement = new AiMathWebView(this, source, false);
+                    replacement.setContentDescription("AI 回答；LaTeX 公式本地显示");
+                    holder[0] = replacement;
+                    container.addView(replacement, 0, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+                    configureAiMathRecovery(replacement, holder, container,
+                            recovery, status, retry);
+                });
+            }
+        });
     }
 
     private void presentAiAnswer(String answer) {
@@ -3131,12 +4009,435 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         setAiCardMinimized(true);
     }
 
-    private void clearAiConversation() {
+    private void clearAiConversationViews() {
         if (aiConversationView == null) {
             return;
         }
         destroyMathViews(aiConversationView);
         aiConversationView.removeAllViews();
+        aiEditCards.clear();
+    }
+
+    private void renderAiTimeline() {
+        if (aiConversationView == null) return;
+        clearAiConversationViews();
+        renderingAiTimeline = true;
+        try {
+            String liveAdoptionDigest = null;
+            for (int index = 0; index < aiVisibleTimeline.size(); index++) {
+                AiConversationStore.VisibleEntry entry = aiVisibleTimeline.get(index);
+                if ("notice".equals(entry.kind)) addAiNotice(entry.text);
+                else if ("result".equals(entry.kind)) addColdAiResultCard(entry);
+                else {
+                    addAiMessageBubble(entry.role, entry.text, entry.error,
+                            entry.executorLabel);
+                    if (!entry.adoptionId.isEmpty()) {
+                        if (liveAdoptionDigest == null && canvasView != null) {
+                            liveAdoptionDigest = canvasView.aiConversationFingerprint();
+                        }
+                        addAnswerAdoptionAction(entry, index, liveAdoptionDigest);
+                    }
+                }
+            }
+        } finally {
+            renderingAiTimeline = false;
+        }
+    }
+
+    private void addColdAiResultCard(AiConversationStore.VisibleEntry entry) {
+        if (canvasView != null && !entry.receiptJson.isEmpty()) {
+            try {
+                NoteCanvasView.AiEditRecord record = canvasView.restoreAiEditRecord(
+                        new JSONObject(entry.receiptJson));
+                if (record != null) {
+                    installAiEditCard(new AiEditCardBinding(currentNoteId, record));
+                    return;
+                }
+            } catch (Exception ignored) { }
+        }
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(roundedBackground(Color.rgb(241, 246, 250),
+                Color.rgb(180, 197, 210), 10));
+        card.setContentDescription("历史 AI 修改结果卡");
+        TextView title = text(entry.text, 12, INK_COLOR);
+        card.addView(title, matchWrap());
+        TextView status = text("重新打开后仅供核对；未保存可完整验证的对象凭据，"
+                + "因此不会开放撤销或重新应用。", 11, Color.rgb(94, 107, 117));
+        status.setContentDescription("历史 AI 修改操作不可用");
+        status.setPadding(0, dp(5), 0, 0);
+        card.addView(status, matchWrap());
+        aiConversationView.addView(card, matchWrap());
+    }
+
+    private void addAnswerAdoptionAction(AiConversationStore.VisibleEntry entry,
+                                         int timelineIndex, String liveDigest) {
+        if (aiConversationView == null || entry == null || entry.adoptionAnchor == null) return;
+        Button apply = aiCardButton("写入笔记");
+        apply.setContentDescription("将这条回答写入笔记");
+        boolean available = canAdoptAnswer(entry, liveDigest);
+        apply.setEnabled(available);
+        if (!available) apply.setText("来源已变化，不能写入");
+        apply.setOnClickListener(view -> applyAdoptableAnswer(entry.adoptionId,
+                timelineIndex, apply));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        params.setMargins(0, 0, 0, dp(5));
+        aiConversationView.addView(apply, params);
+    }
+
+    private boolean canAdoptAnswer(AiConversationStore.VisibleEntry entry) {
+        return canAdoptAnswer(entry, canvasView == null
+                ? null : canvasView.aiConversationFingerprint());
+    }
+
+    private boolean canAdoptAnswer(AiConversationStore.VisibleEntry entry,
+                                   String liveDigest) {
+        if (entry == null || entry.adoptionId.isEmpty() || entry.adoptionAnchor == null
+                || entry.adopted || canvasView == null || canvasView.isUserInteractionActive()
+                || !aiPdfDigestAvailable || currentNoteId == null) return false;
+        if (!entry.adoptionSourceDigest.equals(liveDigest)
+                || !entry.adoptionPdfDigest.equals(aiPdfDigest)) return false;
+        try {
+            NoteTool.Permission frozen = NoteTool.Permission.valueOf(entry.adoptionPermission);
+            return frozen != NoteTool.Permission.READ_ONLY && frozen == aiGrantedPermission;
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    private void applyAdoptableAnswer(String adoptionId, int suggestedIndex, Button button) {
+        int index = -1;
+        if (suggestedIndex >= 0 && suggestedIndex < aiVisibleTimeline.size()
+                && adoptionId.equals(aiVisibleTimeline.get(suggestedIndex).adoptionId)) {
+            index = suggestedIndex;
+        } else {
+            for (int candidate = 0; candidate < aiVisibleTimeline.size(); candidate++) {
+                if (adoptionId.equals(aiVisibleTimeline.get(candidate).adoptionId)) {
+                    index = candidate;
+                    break;
+                }
+            }
+        }
+        if (index < 0) return;
+        AiConversationStore.VisibleEntry entry = aiVisibleTimeline.get(index);
+        if (aiBusy || aiMaterialLoading || !canAdoptAnswer(entry)) {
+            aiStatusView.setText("来源、权限或页面已变化，未写入旧回答");
+            button.setEnabled(false);
+            return;
+        }
+        NoteCanvasView.AiEditRecord record = canvasView.newAiEditRecord(
+                "answer-adoption-" + entry.adoptionId);
+        NoteCanvasView.AiEditSnapshot before = canvasView.captureAiEditSnapshot();
+        canvasView.beginAiUndoTransaction(record.ownerId);
+        NoteTextBox inserted = null;
+        RuntimeException insertionFailure = null;
+        boolean changed;
+        try {
+            inserted = canvasView.addAiResultTextBox(NoteTextBox.Format.MARKDOWN,
+                    entry.text, entry.adoptionAnchor);
+        } catch (RuntimeException failure) {
+            insertionFailure = failure;
+        } finally {
+            changed = finishAiMutation(record, before);
+        }
+        if (!changed) {
+            aiStatusView.setText(insertionFailure == null
+                    ? "页面正被操作或没有可用位置，回答未写入"
+                    : "回答写入失败，原回答仍保留在卡片中");
+            button.setEnabled(false);
+            return;
+        }
+        selectedTextBoxId = null;
+        selectedTextFlowId = null;
+        if (inserted != null) {
+            aiResultAnchorBounds = new RectF(inserted.x, inserted.y,
+                    inserted.x + inserted.width, inserted.y + inserted.height);
+        }
+        updateTextBoxOverlays(canvasView.getTextBoxes());
+        // Queue the note write before the durable result receipt. If the process
+        // stops between them, the frozen pre-write source digest still prevents
+        // a document that was saved from accepting this answer a second time.
+        saveDocument(false);
+        recordCompletedAiEdit(record, entry.executorLabel, true);
+        aiStatusView.setText(insertionFailure == null
+                ? "回答已写入笔记，可从结果卡撤销"
+                : "回答部分写入后显示异常，可从结果卡安全撤销");
+        button.setEnabled(false);
+    }
+
+    private void appendAiBoundary(String message) {
+        if (message == null || message.trim().isEmpty()) return;
+        addAiNotice("上下文边界 · " + message);
+    }
+
+    private AiConversationStore.Binding currentAiBinding(AiConfigStore.Profile profile,
+                                                          AiVaultSnapshot vault) {
+        String material = vault == null ? "" : vault.digest();
+        return new AiConversationStore.Binding(canvasView == null ? ""
+                : canvasView.aiConversationFingerprint(), aiPdfDigest,
+                profile == null ? "" : profile.id, profile == null ? 0 : profile.revision,
+                aiGrantedPermission.name(), material);
+    }
+
+    private void initializeAiConversationForSelection(AiConfigStore.Profile profile) {
+        if (currentNoteId == null || aiSelectionSnapshot == null) return;
+        if (!aiPdfDigestAvailable) {
+            aiStatusView.setText("PDF 原文无法校验，未建立可发送上下文");
+            return;
+        }
+        AiVaultSnapshot vault = aiReadScope == null ? null : aiReadScope.vaultSnapshot();
+        AiConversationStore.Binding binding = currentAiBinding(profile, vault);
+        List<AiConversationStore.VisibleEntry> visible = new ArrayList<>(aiVisibleTimeline);
+        AiConversationStore.Selection selection =
+                AiConversationStore.Selection.fromCanvas(aiSelectionSnapshot);
+        if (aiConversationSnapshot != null) {
+            aiConversationSnapshot = aiConversationSnapshot.next(visible,
+                    new ArrayList<>(), selection, vault, binding, null, false);
+            persistAiConversationSnapshot(aiConversationSnapshot);
+            return;
+        }
+        String noteId = currentNoteId;
+        int loadOperation = ++aiConversationLoadSerial;
+        aiConversationLoading = true;
+        updateAiInteractionEnabled();
+        storageExecutor.execute(() -> {
+            try {
+                AiConversationStore.Snapshot created = aiConversationStore.create(noteId,
+                        visible, new ArrayList<>(), selection, vault, binding, null, false);
+                runOnUiThread(() -> {
+                    if (loadOperation != aiConversationLoadSerial
+                            || !noteId.equals(currentNoteId)) return;
+                    aiConversationSnapshot = created;
+                    aiConversationLoading = false;
+                    updateAiInteractionEnabled();
+                    setActionEnabled(aiButton, true);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (loadOperation != aiConversationLoadSerial
+                            || !noteId.equals(currentNoteId)) return;
+                    aiConversationLoading = false;
+                    updateAiInteractionEnabled();
+                    aiStatusView.setText("对话未保存：" + safeError(error));
+                });
+            }
+        });
+    }
+
+    private void refreshAiConversationBinding() {
+        if (aiConversationSnapshot == null || canvasView == null) return;
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        AiVaultSnapshot vault = aiReadScope == null ? null : aiReadScope.vaultSnapshot();
+        aiConversationSnapshot = aiConversationSnapshot.next(aiVisibleTimeline,
+                aiMessages, AiConversationStore.Selection.fromCanvas(aiSelectionSnapshot),
+                vault, currentAiBinding(profile, vault), aiSessionTranscript,
+                aiUploadConfirmed);
+        persistAiConversationSnapshot(aiConversationSnapshot);
+    }
+
+    private void refreshAiRecipientBindingPreservingSource() {
+        if (aiConversationSnapshot == null) return;
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        AiVaultSnapshot vault = aiReadScope == null ? null : aiReadScope.vaultSnapshot();
+        AiConversationStore.Binding previous = aiConversationSnapshot.binding;
+        AiConversationStore.Binding binding = new AiConversationStore.Binding(
+                previous.semanticDigest, previous.pdfDigest,
+                profile == null ? "" : profile.id, profile == null ? 0 : profile.revision,
+                aiGrantedPermission.name(), vault == null ? "" : vault.digest());
+        aiConversationSnapshot = aiConversationSnapshot.next(aiVisibleTimeline, aiMessages,
+                AiConversationStore.Selection.fromCanvas(aiSelectionSnapshot), vault, binding,
+                aiSessionTranscript, false);
+        persistAiConversationSnapshot(aiConversationSnapshot);
+    }
+
+    private void persistAiConversation() {
+        if (renderingAiTimeline || aiConversationSnapshot == null || canvasView == null) return;
+        AiVaultSnapshot vault = aiReadScope == null ? null : aiReadScope.vaultSnapshot();
+        aiConversationSnapshot = aiConversationSnapshot.next(aiVisibleTimeline,
+                aiMessages, AiConversationStore.Selection.fromCanvas(aiSelectionSnapshot),
+                vault, aiConversationSnapshot.binding, aiSessionTranscript,
+                aiUploadConfirmed);
+        persistAiConversationSnapshot(aiConversationSnapshot);
+    }
+
+    private void persistAiConversationSnapshot(AiConversationStore.Snapshot value) {
+        storageExecutor.execute(() -> {
+            try {
+                aiConversationStore.save(value);
+                runOnUiThread(() -> {
+                    if (aiConversationSnapshot != null
+                            && aiConversationSnapshot.conversationId.equals(value.conversationId)
+                            && aiConversationSnapshot.revision >= value.revision) {
+                        aiConversationSaveFailureShown = false;
+                    }
+                });
+            }
+            catch (Exception error) {
+                try { aiConversationStore.preserveUnsaved(value); }
+                catch (Exception ignored) { }
+                runOnUiThread(() -> {
+                if (aiConversationSnapshot != null
+                        && aiConversationSnapshot.conversationId.equals(value.conversationId)
+                        && aiConversationSnapshot.revision == value.revision
+                        && aiStatusView != null) {
+                    aiStatusView.setText("对话未保存：" + safeError(error));
+                    if (!aiConversationSaveFailureShown) {
+                        aiConversationSaveFailureShown = true;
+                        new AlertDialog.Builder(this).setTitle("AI 对话未能保存")
+                                .setMessage("当前卡片仍保留在内存中，磁盘上的上一份记录没有被覆盖。"
+                                        + "可先导出恢复文件；空间不足时导出也可能失败。")
+                                .setNegativeButton("继续查看", null)
+                                .setPositiveButton("导出当前未保存对话", (dialog, which) ->
+                                        launchAiConversationRecoveryExport(value))
+                                .show();
+                    }
+                }
+            }); }
+        });
+    }
+
+    private boolean canContinueAiContext() {
+        return aiPdfDigestAvailable && aiConversationSnapshot != null
+                && aiSelectionSnapshot != null && canvasView != null
+                && aiConversationSnapshot.binding.semanticDigest.equals(
+                        canvasView.aiConversationFingerprint())
+                && aiConversationSnapshot.binding.pdfDigest.equals(aiPdfDigest);
+    }
+
+    private void advanceAiConversationBaseline() {
+        if (aiConversationSnapshot == null || canvasView == null) return;
+        refreshAiConversationBinding();
+    }
+
+    private String executorLabel(AiConfigStore.Profile profile, boolean transcription) {
+        if (profile == null) return "";
+        String model = profile.split
+                ? (transcription ? profile.transcribeModel : profile.answerModel)
+                : profile.directModel;
+        return (transcription ? "转写模型" : "回答模型") + " · "
+                + profile.name + " · " + model;
+    }
+
+    // Package-visible hooks exercise the production state/store paths without a paid request.
+    void startAiConversationForTest(NoteCanvasView.AiSelectionSnapshot snapshot) {
+        clearAiRequestState();
+        releaseAiSelectionSnapshot();
+        aiSessionSerial += 1;
+        aiSelectionSnapshot = snapshot;
+        aiResultAnchorBounds = new RectF(snapshot.sourceBounds);
+        aiSelectionPreview.setImageBitmap(snapshot.bitmap);
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        aiReadScope = AiReadScope.selectionOnly(currentNoteId, aiSessionSerial,
+                aiProfileIdentity(profile));
+        aiMessages.clear();
+        aiSessionTranscript = null;
+        aiUploadConfirmed = false;
+        addAiNotice("测试夹具已通过生产会话初始化路径载入圈选。");
+        initializeAiConversationForSelection(profile);
+        showAiCard();
+    }
+
+    void addCompletedAiTurnForTest(String user, String assistant, String executor,
+                                   boolean validToolCall) {
+        recordCompletedAiTurn(user, assistant, executor, validToolCall);
+    }
+
+    void addCompletedAiEditForTest(NoteCanvasView.AiEditRecord record, String executor) {
+        recordCompletedAiEdit(record, executor, true);
+    }
+
+    boolean addAdoptableAnswerForTest(String answer, String executor) {
+        commitAssistantMessage(null, answer, answer, executor);
+        int index = registerAdoptableAnswer(answer, aiGrantedPermission, true);
+        if (index < 0) return false;
+        renderAiTimeline();
+        return true;
+    }
+
+    private void recordCompletedAiEdit(NoteCanvasView.AiEditRecord record, String executor,
+                                       boolean render) {
+        if (record == null || !record.hasChanges()) return;
+        String receipt = safeAiEditReceipt(record);
+        String digest = "";
+        try { digest = new JSONObject(receipt).optString("digest"); }
+        catch (Exception ignored) { }
+        aiVisibleTimeline.add(new AiConversationStore.VisibleEntry("result", "assistant",
+                "本轮已写入 " + record.changedFlowCount() + " 处文字修改",
+                executor, false, record.changedFlowIds(), digest, receipt));
+        persistAiConversation();
+        if (render) renderAiTimeline();
+    }
+
+    private String safeAiEditReceipt(NoteCanvasView.AiEditRecord record) {
+        try { return canvasView.serializeAiEditRecord(record).toString(); }
+        catch (Exception ignored) { return ""; }
+    }
+
+    private void recordCompletedAiTurn(String user, String assistant, String executor,
+                                       boolean validToolCall) {
+        OpenAiCompatibleClient.Message userMessage =
+                new OpenAiCompatibleClient.Message("user", user);
+        aiMessages.add(userMessage);
+        addAiMessageBubble("user", user, false);
+        commitAssistantMessage(null, assistant, assistant, executor);
+        if (validToolCall) {
+            recordToolEvidenceForTest(new OpenAiCompatibleClient.Completion("", "",
+                    java.util.Collections.singletonList(new OpenAiCompatibleClient.ToolCall(
+                            "test-read-page-map", "read_page_map", new JSONObject())), true));
+        }
+    }
+
+    AiConversationStore.Snapshot conversationForTest() { return aiConversationSnapshot; }
+
+    List<OpenAiCompatibleClient.Message> nextWireHistoryForTest() {
+        return new ArrayList<>(aiMessages);
+    }
+
+    void collapseAiCardForTest() { collapseAiCard(false); }
+
+    void clearAiConversationForTest() { clearAiConversationExplicitly(); }
+
+    boolean aiConversationLoadingForTest() { return aiConversationLoading; }
+
+    void awaitAiConversationStorageForTest() {
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        storageExecutor.execute(done::countDown);
+        try { done.await(10, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    }
+
+    void reloadAiConversationForTest() {
+        String noteId = currentNoteId;
+        aiConversationLoading = true;
+        storageExecutor.execute(() -> {
+            AiConversationStore.Snapshot restored = null;
+            String error = null;
+            try { restored = aiConversationStore.load(noteId); }
+            catch (Exception failure) { error = safeError(failure); }
+            AiConversationStore.Snapshot value = restored;
+            String failureMessage = error;
+            runOnUiThread(() -> {
+                if (noteId.equals(currentNoteId)) {
+                    applyRestoredAiConversation(value, failureMessage);
+                }
+            });
+        });
+    }
+
+    void rotateAiContextForTest(String reason) {
+        rotateAiWireContextPreservingMaterials();
+        appendAiBoundary(reason);
+    }
+
+    void advanceAiBaselineForTest() { advanceAiConversationBaseline(); }
+
+    boolean canContinueAiWritesForTest() { return canContinueAiContext(); }
+
+    AiConfigStore.ToolCapability capabilityForTest() {
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        return profile == null ? AiConfigStore.ToolCapability.UNKNOWN : profile.toolCapability;
     }
 
     private void destroyMathViews(View view) {
@@ -3159,7 +4460,16 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void requestAiMessage(String prompt) {
-        if (aiBusy || aiSelectionSnapshot == null || prompt.trim().isEmpty()) {
+        if (aiBusy || aiMaterialLoading || aiConversationLoading
+                || aiSelectionSnapshot == null || prompt.trim().isEmpty()) {
+            return;
+        }
+        if (!canContinueAiContext()) {
+            rotateAiWireContextPreservingMaterials();
+            releaseAiSelectionSnapshot();
+            aiReadScope = null;
+            aiStatusView.setText("笔记内容已变化 · 请重新圈选后发送");
+            appendAiBoundary("笔记内容或 PDF 原文已变化；旧发送上下文已隔离。");
             return;
         }
         final AiConfigStore.Profile profile = aiConfigStore.activeProfile();
@@ -3184,12 +4494,18 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         } else {
             target = OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.directEndpoint);
         }
+        List<String> materialTitles = aiReadScope == null
+                ? java.util.Collections.emptyList() : aiReadScope.vaultTitles();
+        String materials = materialTitles.isEmpty()
+                ? "额外材料：无（不读取知识库）"
+                : "额外材料：" + materialTitles.size() + " 本已冻结（"
+                        + joinChinese(materialTitles) + "）";
         new AlertDialog.Builder(this)
                 .setTitle("确认发送圈选内容？")
                 .setMessage(String.format(Locale.CHINA,
-                        "将卡片中的 %d × %d PNG（%.1f KB）和本次对话发送至：\n\n%s\n\n只发送圈选遮罩内的笔记，不发送整页。此确认在当前对话内有效。",
+                        "将卡片中的 %d × %d PNG（%.1f KB）、本次对话和以下明确材料发送至：\n\n%s\n\n%s\n\n布局地图不含文字正文；不发送整页或未选的知识库笔记。此确认在当前对话内有效。",
                         aiSelectionSnapshot.bitmap.getWidth(), aiSelectionSnapshot.bitmap.getHeight(),
-                        aiSelectionSnapshot.pngBytes.length / 1024f, target))
+                        aiSelectionSnapshot.pngBytes.length / 1024f, target, materials))
                 .setNegativeButton("取消", null)
                 .setPositiveButton("确认发送", (dialog, which) -> {
                     aiUploadConfirmed = true;
@@ -3199,340 +4515,785 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void executeAiMessage(AiConfigStore.Profile profile, String prompt) {
-        if (aiBusy || aiSelectionSnapshot == null) {
+        if (aiBusy || aiSelectionSnapshot == null || aiReadScope == null) {
             return;
         }
+        if (!aiTurnFitsPersistenceBudget(prompt)) return;
+        final AiConfigStore.Config directConfig;
+        final AiConfigStore.Config transcribeConfig;
+        final AiConfigStore.Config answerConfig;
+        try {
+            directConfig = profile.split ? null : aiConfigStore.directConfig(profile);
+            transcribeConfig = profile.split ? aiConfigStore.transcribeConfig(profile) : null;
+            answerConfig = profile.split ? aiConfigStore.answerConfig(profile) : null;
+        } catch (Exception error) {
+            addAiMessageBubble("assistant", "无法读取当前 AI 配置：" + safeError(error), true);
+            aiStatusView.setText("AI 配置不可用");
+            return;
+        }
+
+        clearRetryableAiRequest();
         aiInputView.setText("");
         OpenAiCompatibleClient.Message userMessage =
                 new OpenAiCompatibleClient.Message("user", prompt.trim());
         aiMessages.add(userMessage);
         addAiMessageBubble("user", userMessage.content, false);
-        setAiBusy(true);
 
         int session = aiSessionSerial;
-        byte[] pngBytes = aiSelectionSnapshot.pngBytes;
-        // Layout travels with the request so the model does not have to spend a
-        // round trip asking where it is; every exchange is a full non-streaming
-        // request under BYOK.
+        byte[] pngBytes = aiSelectionSnapshot.pngBytes.clone();
+        final AiReadScope requestScope = aiReadScope;
+        final NoteToolRegistry requestTools = requestScope.createToolRegistry();
         NoteToolContext toolContext = canvasView.createToolContext(
                 aiSelectionSnapshot.sourceBounds);
         JSONObject pageMap = toolContext.readPageMap(
                 Math.max(0, toolContext.selectionPageIndex()), true);
-        JSONArray toolDescriptions;
+        JSONArray offeredTools;
         try {
-            toolDescriptions = aiToolRegistry.describe();
+            offeredTools = requestTools.describe();
         } catch (JSONException schemaFailure) {
-            toolDescriptions = null;
+            offeredTools = null;
         }
-        JSONArray offeredTools = toolDescriptions;
-
-        if (profile.split) {
-            startTranscriptionLeg(profile, session, pngBytes, toolContext, pageMap,
-                    offeredTools);
-            return;
-        }
-
-        aiStatusView.setText("正在安全连接模型…");
-        aiExecutor.execute(() -> {
-            try {
-                AiConfigStore.Config config = aiConfigStore.directConfig(profile);
-                OpenAiCompatibleClient.Completion completion =
-                        OpenAiCompatibleClient.completeWithTools(config, pngBytes,
-                                new ArrayList<>(aiMessages), offeredTools, pageMap);
-                runOnUiThread(() -> {
-                    if (session != aiSessionSerial || aiSelectionSnapshot == null) {
-                        return;
-                    }
-                    handleAiCompletion(config, completion, session, pngBytes, toolContext,
-                            pageMap);
-                });
-            } catch (Exception error) {
-                showAiRequestFailure(session, error);
-            }
-        });
+        AiPendingRequest request = new AiPendingRequest(++aiRequestSerial, session,
+                currentNoteId, profile.id, profile.revision,
+                profile.split ? executorLabel(profile, true) : "",
+                executorLabel(profile, false), documentRevision, profile.split, pngBytes,
+                directConfig, transcribeConfig, answerConfig,
+                toolContext, pageMap, offeredTools, requestTools, aiGrantedPermission,
+                new ArrayList<>(aiMessages), aiSessionTranscript,
+                aiReviewTranscriptCheck != null && aiReviewTranscriptCheck.isChecked());
+        startAiAttempt(request, false);
     }
 
-    /**
-     * First leg of the split route: read the handwriting before reasoning about
-     * it. The transcript is shown in the card so the user can catch recognition
-     * errors, then kept for the whole session — follow-ups reason over text and
-     * never re-send the image.
-     */
-    private void startTranscriptionLeg(AiConfigStore.Profile profile, int session,
-                                       byte[] pngBytes, NoteToolContext toolContext,
-                                       JSONObject pageMap, JSONArray offeredTools) {
-        if (aiSessionTranscript != null) {
-            startAnswerLeg(profile, session, toolContext, pageMap, offeredTools);
+    private boolean aiTurnFitsPersistenceBudget(String prompt) {
+        if (aiConversationSnapshot == null) return false;
+        if (aiVisibleTimeline.size() > AiConversationStore.MAX_TIMELINE_ENTRIES - 4
+                || aiMessages.size() > AiConversationStore.MAX_WIRE_MESSAGES - 16) {
+            aiStatusView.setText("本次对话已达容量上限 · 请明确清空后开始新上下文");
+            return false;
+        }
+        try {
+            List<AiConversationStore.VisibleEntry> visible =
+                    new ArrayList<>(aiVisibleTimeline);
+            visible.add(new AiConversationStore.VisibleEntry(
+                    "message", "user", prompt.trim(), "", false));
+            List<OpenAiCompatibleClient.Message> wire = new ArrayList<>(aiMessages);
+            wire.add(new OpenAiCompatibleClient.Message("user", prompt.trim()));
+            AiVaultSnapshot vault = aiReadScope.vaultSnapshot();
+            String encoded = aiConversationSnapshot.next(visible, wire,
+                    AiConversationStore.Selection.fromCanvas(aiSelectionSnapshot), vault,
+                    aiConversationSnapshot.binding, aiSessionTranscript,
+                    aiUploadConfirmed).toJson().toString();
+            if (encoded.getBytes(StandardCharsets.UTF_8).length
+                    > AiConversationStore.MAX_FILE_BYTES) {
+                throw new IllegalStateException("AI 会话超过 8 MiB");
+            }
+            return true;
+        } catch (Exception tooLarge) {
+            aiStatusView.setText("本次内容超过会话保存上限，未发送；请清空后开始新上下文");
+            return false;
+        }
+    }
+
+    /** Starts or explicitly retries one frozen user turn without appending it again. */
+    private void startAiAttempt(AiPendingRequest request, boolean retry) {
+        if (request == null || request.session != aiSessionSerial ||
+                aiSelectionSnapshot == null || request.toolsStarted) {
             return;
         }
+        if (retry) {
+            addAiNotice("正在使用原请求、原材料范围和原接收地址重试；不会重复添加提问。");
+        }
+        retryableAiRequest = null;
+        activeAiRequest = request;
+        request.cancellation = new OpenAiCompatibleClient.Cancellation();
+        updateAiRetryButton();
+        setAiBusy(true);
+        if (request.split) {
+            switch (splitResumeStep(request.transcript, request.transcriptAccepted,
+                    request.reviewTranscript)) {
+                case TRANSCRIBE:
+                    startTranscriptionLeg(request, request.cancellation);
+                    break;
+                case REVIEW:
+                    showTranscriptReview(request, request.cancellation, request.transcript);
+                    break;
+                case ANSWER:
+                    startAnswerLeg(request, request.cancellation);
+                    break;
+            }
+        } else {
+            aiStatusView.setText("正在安全连接模型…");
+            startCompletionRequest(request, request.directConfig, request.pngBytes,
+                    request.pageMap, request.offeredTools, 0, request.cancellation);
+        }
+    }
+
+    /** First split leg. Its output is reused by correction and answer retries. */
+    private void startTranscriptionLeg(AiPendingRequest request,
+                                       OpenAiCompatibleClient.Cancellation cancellation) {
+        if (!ensureAiRecipientCurrent(request)) return;
         aiStatusView.setText("正在转写手写内容…");
         aiExecutor.execute(() -> {
             try {
-                AiConfigStore.Config transcriber = aiConfigStore.transcribeConfig(profile);
-                String transcript = OpenAiCompatibleClient.transcribe(transcriber, pngBytes);
+                if (!aiRecipientMatchesCurrent(request)) {
+                    runOnUiThread(() -> {
+                        if (acceptsAiCallback(request, cancellation)) {
+                            ensureAiRecipientCurrent(request);
+                        }
+                    });
+                    return;
+                }
+                String transcript = OpenAiCompatibleClient.transcribe(
+                        request.transcribeConfig, request.pngBytes, cancellation);
                 runOnUiThread(() -> {
-                    if (session != aiSessionSerial || aiSelectionSnapshot == null) {
-                        return;
+                    if (!acceptsAiCallback(request, cancellation)) return;
+                    request.transcript = transcript;
+                    if (request.reviewTranscript) {
+                        showTranscriptReview(request, cancellation, transcript);
+                    } else {
+                        acceptTranscriptAndAnswer(request, cancellation, transcript, false);
                     }
-                    aiSessionTranscript = transcript;
-                    addAiNotice("两段式 · 转写完成，请核对识别结果：");
-                    addAiMessageBubble("assistant", "【手写转写】\n" + transcript, false);
-                    foldTranscriptIntoConversation();
-                    startAnswerLeg(profile, session, toolContext, pageMap, offeredTools);
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> {
-                    if (session != aiSessionSerial || aiSelectionSnapshot == null) {
-                        return;
-                    }
-                    rollbackLastUserTurn();
-                    showAiRequestFailure(session, error);
-                    addAiNotice("转写失败，本次未消耗回答模型调用。");
-                });
+                failAiRequest(request, cancellation, error,
+                        "转写失败，本次未消耗回答模型调用。");
             }
         });
     }
 
-    /** The answer leg reasons over the transcript as plain text, with tools. */
-    private void startAnswerLeg(AiConfigStore.Profile profile, int session,
-                                NoteToolContext toolContext, JSONObject pageMap,
-                                JSONArray offeredTools) {
+    /** Optional one-time local correction; confirming does not call vision again. */
+    private void showTranscriptReview(AiPendingRequest request,
+                                      OpenAiCompatibleClient.Cancellation cancellation,
+                                      String transcript) {
+        if (!acceptsAiCallback(request, cancellation)) return;
+        AlertDialog dialog = createAiTranscriptReviewDialog(transcript, corrected -> {
+            aiTranscriptReviewDialog = null;
+            acceptTranscriptAndAnswer(request, cancellation, corrected, true);
+        }, () -> {
+            aiTranscriptReviewDialog = null;
+            cancelActiveAiRequest(true);
+        });
+        aiTranscriptReviewDialog = dialog;
+        aiStatusView.setText("转写完成 · 等待本地校对");
+        dialog.show();
+    }
+
+    /** Package-visible factory for a real UI regression without making a model call. */
+    AlertDialog createAiTranscriptReviewDialog(String transcript,
+                                               Consumer<String> onConfirm,
+                                               Runnable onCancel) {
+        EditText editor = new EditText(this);
+        editor.setText(transcript);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setMinLines(8);
+        editor.setMaxLines(16);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        editor.setContentDescription("可编辑的手写转写文本");
+        AtomicBoolean resolved = new AtomicBoolean();
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("校对手写转写")
+                .setMessage("修改后会直接交给回答模型，不会重新识别图片。")
+                .setView(editor)
+                .setNegativeButton("取消本次", null)
+                .setPositiveButton("使用校对文本并继续", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
+                if (resolved.compareAndSet(false, true)) onCancel.run();
+                dialog.dismiss();
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String corrected = editor.getText().toString().trim();
+                if (corrected.isEmpty()) {
+                    editor.setError("转写不能为空");
+                    return;
+                }
+                if (resolved.compareAndSet(false, true)) onConfirm.accept(corrected);
+                dialog.dismiss();
+            });
+        });
+        dialog.setOnCancelListener(ignored -> {
+            if (resolved.compareAndSet(false, true)) onCancel.run();
+        });
+        return dialog;
+    }
+
+    private void acceptTranscriptAndAnswer(AiPendingRequest request,
+                                           OpenAiCompatibleClient.Cancellation cancellation,
+                                           String transcript, boolean corrected) {
+        if (!acceptsAiCallback(request, cancellation)) return;
+        request.transcript = transcript;
+        request.transcriptAccepted = true;
+        aiSessionTranscript = transcript;
+        if (!request.transcriptFolded) {
+            addAiNotice(corrected ? "已采用校对后的转写，正在交给回答模型。"
+                    : "两段式 · 转写完成，已直接交给回答模型：");
+            addAiMessageBubble("assistant", "【手写转写】\n" + transcript, false,
+                    request.transcriptionExecutorLabel);
+            foldTranscriptIntoConversation(request, transcript);
+            request.transcriptFolded = true;
+            persistAiConversation();
+        }
+        startAnswerLeg(request, cancellation);
+    }
+
+    /** The answer leg reasons over the frozen transcript as plain text. */
+    private void startAnswerLeg(AiPendingRequest request,
+                                OpenAiCompatibleClient.Cancellation cancellation) {
         aiStatusView.setText("正在安全连接回答模型…");
-        List<OpenAiCompatibleClient.Message> requestMessages = new ArrayList<>(aiMessages);
+        startCompletionRequest(request, request.answerConfig, null, request.pageMap,
+                request.offeredTools, 0, cancellation);
+    }
+
+    private void startCompletionRequest(AiPendingRequest request,
+                                        AiConfigStore.Config config, byte[] pngBytes,
+                                        JSONObject pageMap, JSONArray offeredTools, int round,
+                                        OpenAiCompatibleClient.Cancellation cancellation) {
+        if (!ensureAiRecipientCurrent(request)) return;
+        List<OpenAiCompatibleClient.Message> wireMessages =
+                new ArrayList<>(request.messages);
         aiExecutor.execute(() -> {
             try {
-                AiConfigStore.Config config = aiConfigStore.answerConfig(profile);
+                if (!aiRecipientMatchesCurrent(request)) {
+                    runOnUiThread(() -> {
+                        if (acceptsAiCallback(request, cancellation)) {
+                            ensureAiRecipientCurrent(request);
+                        }
+                    });
+                    return;
+                }
                 OpenAiCompatibleClient.Completion completion =
-                        OpenAiCompatibleClient.completeWithTools(config, null,
-                                requestMessages, offeredTools, pageMap);
+                        OpenAiCompatibleClient.completeWithTools(config, pngBytes,
+                                wireMessages, offeredTools, pageMap, cancellation);
                 runOnUiThread(() -> {
-                    if (session != aiSessionSerial) {
-                        return;
-                    }
-                    handleAiCompletion(config, completion, session, null, toolContext,
-                            pageMap);
+                    if (!acceptsAiCallback(request, cancellation)) return;
+                    handleAiCompletion(request, config, pngBytes, completion, round,
+                            pageMap, cancellation);
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> {
-                    if (session != aiSessionSerial) {
-                        return;
-                    }
-                    showAiRequestFailure(session, error);
-                });
+                failAiRequest(request, cancellation, error, null);
             }
         });
     }
 
-    /**
-     * Replaces the pending user turn's wire content with prompt + transcript.
-     * The bubble keeps showing what the user typed; only the message sent to
-     * the answer model carries the transcription.
-     */
-    private void foldTranscriptIntoConversation() {
-        if (aiMessages.isEmpty()) {
-            return;
-        }
-        int lastIndex = aiMessages.size() - 1;
-        OpenAiCompatibleClient.Message last = aiMessages.get(lastIndex);
-        if (!"user".equals(last.role)) {
-            return;
-        }
-        aiMessages.set(lastIndex, new OpenAiCompatibleClient.Message("user",
-                last.content + "\n\n【圈选手写内容的文字转写】\n" + aiSessionTranscript));
+    /** Last gate before a network leg. Includes credentials without persisting or displaying them. */
+    private boolean ensureAiRecipientCurrent(AiPendingRequest request) {
+        if (request != null && aiRecipientMatchesCurrent(request)) return true;
+        rotateAiWireContextPreservingMaterials();
+        aiStatusView.setText("接收模型已变化 · 本次未发送");
+        addAiNotice("AI 配置或凭据已变化。旧对话不会发送给新的接收模型，请重新发送。");
+        return false;
     }
 
-    /** Removes an unanswered user turn so a retry does not duplicate it. */
-    private void rollbackLastUserTurn() {
-        if (!aiMessages.isEmpty()
-                && "user".equals(aiMessages.get(aiMessages.size() - 1).role)) {
-            aiMessages.remove(aiMessages.size() - 1);
+    private boolean aiRecipientMatchesCurrent(AiPendingRequest request) {
+        AiConfigStore.Profile current = aiConfigStore.activeProfile();
+        if (current == null || !java.util.Objects.equals(
+                request.recipientProfileId, current.id)
+                || request.recipientProfileRevision != current.revision
+                || request.split != current.split) {
+            return false;
         }
-        if (aiConversationView.getChildCount() > 0) {
-            aiConversationView.removeViewAt(aiConversationView.getChildCount() - 1);
+        try {
+            if (request.split) {
+                return sameAiConfig(request.transcribeConfig,
+                        aiConfigStore.transcribeConfig(current))
+                        && sameAiConfig(request.answerConfig,
+                        aiConfigStore.answerConfig(current));
+            }
+            return sameAiConfig(request.directConfig, aiConfigStore.directConfig(current));
+        } catch (Exception unreadable) {
+            return false;
         }
     }
 
-    private void showAiRequestFailure(int session, Exception error) {
-        String message = error.getMessage() == null ? "未知错误" : error.getMessage();
-        runOnUiThread(() -> {
-            if (session != aiSessionSerial || aiSelectionSnapshot == null) {
+    static boolean sameAiConfig(AiConfigStore.Config left, AiConfigStore.Config right) {
+        if (left == right) return true;
+        return left != null && right != null
+                && java.util.Objects.equals(left.endpoint, right.endpoint)
+                && java.util.Objects.equals(left.model, right.model)
+                && java.util.Objects.equals(left.apiKey, right.apiKey);
+    }
+
+    /** Adds the transcript to the frozen wire turn and live history exactly once. */
+    private void foldTranscriptIntoConversation(AiPendingRequest request, String transcript) {
+        replaceLastUserTurn(request.messages, transcript);
+        replaceLastUserTurn(aiMessages, transcript);
+    }
+
+    static void replaceLastUserTurn(List<OpenAiCompatibleClient.Message> messages,
+                                    String transcript) {
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            OpenAiCompatibleClient.Message message = messages.get(index);
+            if ("user".equals(message.role)) {
+                messages.set(index, new OpenAiCompatibleClient.Message("user",
+                        message.content + "\n\n【圈选手写内容的文字转写】\n" + transcript));
                 return;
             }
-            addAiMessageBubble("assistant", "请求失败：" + message, true);
-            aiStatusView.setText("请求失败 · 可检查配置后重试");
+        }
+    }
+
+    static SplitResumeStep splitResumeStep(String transcript, boolean accepted,
+                                           boolean reviewRequested) {
+        if (transcript == null) return SplitResumeStep.TRANSCRIBE;
+        if (!accepted && reviewRequested) return SplitResumeStep.REVIEW;
+        return SplitResumeStep.ANSWER;
+    }
+
+    private boolean acceptsAiCallback(AiPendingRequest request,
+                                      OpenAiCompatibleClient.Cancellation cancellation) {
+        return activeAiRequest == request && request.cancellation == cancellation &&
+                !cancellation.isCancelled() && request.session == aiSessionSerial &&
+                aiSelectionSnapshot != null;
+    }
+
+    private void failAiRequest(AiPendingRequest request,
+                               OpenAiCompatibleClient.Cancellation cancellation,
+                               Exception error, String extraNotice) {
+        runOnUiThread(() -> {
+            if (!acceptsAiCallback(request, cancellation)) return;
+            activeAiRequest = null;
+            boolean cancelled = error instanceof OpenAiCompatibleClient.RequestCancelledException
+                    || cancellation.isCancelled();
+            if (error instanceof OpenAiCompatibleClient.ToolParameterRejectedException) {
+                aiConfigStore.recordToolCapability(request.recipientProfileId,
+                        request.recipientProfileRevision,
+                        AiConfigStore.ToolCapability.EXPLICITLY_REJECTED);
+            }
+            retryableAiRequest = request.canRetry() ? request : null;
             setAiBusy(false);
+            if (cancelled) {
+                aiStatusView.setText("已在本机取消 · 服务商可能仍已计费");
+                addAiNotice("已停止等待并断开本地请求；已发送到服务商的内容或计费无法撤回。");
+            } else if (request.toolsStarted) {
+                aiStatusView.setText("工具结果已保留 · 后续回复失败");
+                addAiNotice("工具结果已保留，但后续回复失败：" + safeError(error)
+                        + "。为避免重复执行，本次不能重放；可继续提问。");
+            } else {
+                String failedExecutor = request.split && request.transcript == null
+                        ? request.transcriptionExecutorLabel : request.answerExecutorLabel;
+                addAiMessageBubble("assistant", "请求失败：" + safeError(error), true,
+                        failedExecutor);
+                aiStatusView.setText("请求失败 · 可用原快照重试");
+                if (extraNotice != null) addAiNotice(extraNotice);
+            }
+            updateAiRetryButton();
         });
     }
 
-    /**
-     * Routes a completion: prose to the card, tool calls to the document.
-     *
-     * <p>This split is what stops raw model output becoming note content. Earlier
-     * versions pasted the entire answer onto the page, so acknowledgements and
-     * "what I think you circled" commentary became permanent. Now only an explicit
-     * {@code write_text} call reaches a page, which makes "does this belong in the
-     * note" a decision the model makes rather than a side effect of replying.
-     */
-    private void handleAiCompletion(AiConfigStore.Config config,
-                                    OpenAiCompatibleClient.Completion completion,
-                                    int session, byte[] pngBytes,
-                                    NoteToolContext toolContext, JSONObject pageMap) {
-        if (!completion.toolCalls.isEmpty()) {
-            aiMessages.add(new OpenAiCompatibleClient.Message("assistant",
-                    completion.content, completion.toolCalls, null));
-            // History keeps the raw text (reasoning echo-back); the bubble shows
-            // only the visible part.
-            if (!completion.displayContent.isEmpty()) {
-                addAiMessageBubble("assistant", completion.displayContent, false);
-            }
-            aiToolsHonoured = true;
-            runAiToolCalls(config, completion, session, pngBytes, toolContext, 1, pageMap);
+    private void retryAiRequest() {
+        if (aiBusy || retryableAiRequest == null) return;
+        AiPendingRequest request = retryableAiRequest;
+        if (!mayRetryAiRequest(request.toolsStarted, request.session, aiSessionSerial,
+                aiSelectionSnapshot != null)) {
+            clearRetryableAiRequest();
+            aiStatusView.setText("原请求上下文已变化，请重新发送");
             return;
         }
-        aiMessages.add(new OpenAiCompatibleClient.Message("assistant", completion.content));
-        setAiBusy(false);
-        addAiMessageBubble("assistant", completion.displayContent, false);
-        if (aiOutputInline && !aiToolsHonoured) {
-            // A BYOK endpoint may ignore the tools field completely. The user has
-            // explicitly allowed page writes, so fall back to the pre-tools
-            // behaviour and say plainly that the model did not choose what to keep.
-            presentAiAnswer(completion.displayContent);
-            addAiNotice("当前模型没有使用笔记工具，已按旧方式把整段回答写入页面。"
-                    + "若希望模型自行判断哪些内容值得留在笔记里，"
-                    + "请改用支持 function calling 的模型。");
+        if (!matchesAiDocument(request)) {
+            clearRetryableAiRequest();
+            aiStatusView.setText("笔记已变化 · 原请求不能安全重试");
+            addAiNotice("失败后笔记内容已变化。为避免旧范围或旧位置覆盖新内容，"
+                    + "请按当前页面重新发送。");
             return;
         }
-        aiStatusView.setText("回答完成 · 已显示在卡片 · 可继续追问");
+        startAiAttempt(request, true);
     }
 
-    /**
-     * Executes one round of tool calls, then asks the model to summarise.
-     *
-     * <p>Single round on purpose: requests are non-streaming with no cancel, so a
-     * model that loops costs the user real money per iteration. Everything the
-     * tools did is folded into one undo entry, so a single undo reverses the whole
-     * AI action rather than peeling it back one write at a time.
-     */
-    /**
-     * Runs tool calls and lets the model continue until it produces prose.
-     *
-     * <p>Tools stay available on every round. The natural workflow is to read the
-     * page first and only then decide where to write, so offering tools just once
-     * meant {@code read_page_map} consumed the only opportunity and
-     * {@code write_text} could never be reached — the model was not disobeying,
-     * it had nothing left to call with.
-     *
-     * <p>Cost is bounded by {@link #MAX_AI_TOOL_ROUNDS} instead. Requests are
-     * non-streaming with no cancel, so the ceiling is what protects the user's
-     * bill; withholding tools was the wrong lever.
-     *
-     * <p>Every write across every round folds into one undo entry, so a single
-     * undo reverses the whole AI action.
-     */
-    private void runAiToolCalls(AiConfigStore.Config config,
-                                OpenAiCompatibleClient.Completion completion,
-                                int session, byte[] pngBytes,
-                                NoteToolContext toolContext, int round,
-                                JSONObject pageMap) {
+    static boolean mayRetryAiRequest(boolean toolsStarted, int requestSession,
+                                     int currentSession, boolean hasSelection) {
+        return !toolsStarted && requestSession == currentSession && hasSelection;
+    }
+
+    private void cancelActiveAiRequest(boolean userVisible) {
+        AiPendingRequest request = activeAiRequest;
+        if (request == null) return;
+        activeAiRequest = null;
+        OpenAiCompatibleClient.Cancellation cancellation = request.cancellation;
+        if (cancellation != null) cancellation.cancel();
+        if (aiTranscriptReviewDialog != null) {
+            AlertDialog dialog = aiTranscriptReviewDialog;
+            aiTranscriptReviewDialog = null;
+            if (dialog.isShowing()) dialog.dismiss();
+        }
+        retryableAiRequest = request.canRetry() ? request : null;
+        setAiBusy(false);
+        if (userVisible) {
+            if (request.toolsStarted) {
+                aiStatusView.setText("已停止后续请求 · 工具结果已保留");
+                addAiNotice("已停止后续模型请求；本轮工具结果已保留且不会自动重放。"
+                        + "其中若有笔记修改，可用撤销恢复。");
+            } else {
+                aiStatusView.setText("已在本机取消 · 服务商可能仍已计费");
+                addAiNotice("已停止等待并断开本地请求；已发送到服务商的内容或计费无法撤回。");
+            }
+        }
+        updateAiRetryButton();
+    }
+
+    private void clearRetryableAiRequest() {
+        retryableAiRequest = null;
+        updateAiRetryButton();
+    }
+
+    private void clearAiRequestState() {
+        cancelActiveAiRequest(false);
+        retryableAiRequest = null;
+        if (aiTranscriptReviewDialog != null) {
+            AlertDialog dialog = aiTranscriptReviewDialog;
+            aiTranscriptReviewDialog = null;
+            if (dialog.isShowing()) dialog.dismiss();
+        }
+        updateAiRetryButton();
+    }
+
+    private void updateAiRetryButton() {
+        if (aiRetryButton != null) {
+            aiRetryButton.setVisibility(!aiBusy && retryableAiRequest != null &&
+                    retryableAiRequest.canRetry() ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /** Routes prose to the card and explicitly requested tools to the document. */
+    private void handleAiCompletion(AiPendingRequest request,
+                                    AiConfigStore.Config config, byte[] pngBytes,
+                                    OpenAiCompatibleClient.Completion completion, int round,
+                                    JSONObject pageMap,
+                                    OpenAiCompatibleClient.Cancellation cancellation) {
+        if (!completion.toolCalls.isEmpty()) {
+            if (!completion.displayContent.isEmpty()) {
+                addAiMessageBubble("assistant", completion.displayContent, false,
+                        request.answerExecutorLabel);
+            }
+            request.toolsHonoured = true;
+            aiToolsHonoured = true;
+            recordToolCapabilityEvidence(request.recipientProfileId,
+                    request.recipientProfileRevision, completion, request.tools);
+            if (!matchesAiDocument(request)) {
+                // Do not retain an assistant tool-call turn without matching
+                // tool results; that would make the next provider request an
+                // invalid conversation. Preserve any prose as an ordinary turn.
+                if (!completion.content.isEmpty()) {
+                    appendAiHistory(request, new OpenAiCompatibleClient.Message(
+                            "assistant", completion.content));
+                }
+                request.toolsStarted = true;
+                activeAiRequest = null;
+                retryableAiRequest = null;
+                setAiBusy(false);
+                addAiNotice("请求期间笔记内容已变化，为避免把旧布局操作写到错误位置，"
+                        + "本次工具调用未执行；回答文字仍保留在卡片中。请重新发送。");
+                aiStatusView.setText("笔记已变化 · 未执行旧请求操作");
+                return;
+            }
+            appendAiHistory(request, new OpenAiCompatibleClient.Message("assistant",
+                    completion.content, completion.toolCalls, null));
+            runAiToolCalls(request, config, pngBytes, completion, round + 1,
+                    pageMap, cancellation);
+            return;
+        }
+        commitAssistantMessage(request, completion.content, completion.displayContent,
+                request.answerExecutorLabel);
+        activeAiRequest = null;
+        retryableAiRequest = null;
+        setAiBusy(false);
+        boolean sameDocument = matchesAiDocument(request);
+        boolean wantsLegacyFallback = request.permission != NoteTool.Permission.READ_ONLY &&
+                !request.toolsHonoured;
+        if (wantsLegacyFallback) {
+            addLegacyWriteOffer(request, completion.displayContent, sameDocument);
+            return;
+        }
+        aiStatusView.setText(round > 0 ? "操作完成 · 可继续追问"
+                : "回答完成 · 已显示在卡片 · 可继续追问");
+    }
+
+    static boolean mayApplyLegacyFallback(NoteTool.Permission frozenPermission,
+                                          boolean toolsHonoured,
+                                          boolean sameDocument) {
+        return frozenPermission != NoteTool.Permission.READ_ONLY && !toolsHonoured &&
+                sameDocument;
+    }
+
+    private void addLegacyWriteOffer(AiPendingRequest request, String answer,
+                                     boolean sameDocument) {
+        int answerIndex = registerAdoptableAnswer(answer, request.permission, sameDocument);
+        addAiNotice("模型返回了普通文字；这不能证明它不支持工具。回答未自动写入笔记。若需要，可明确选择写入。");
+        if (answerIndex >= 0) {
+            addAnswerAdoptionAction(aiVisibleTimeline.get(answerIndex), answerIndex,
+                    canvasView.aiConversationFingerprint());
+            aiStatusView.setText("回答完成 · 可明确选择写入笔记");
+        } else {
+            aiStatusView.setText("回答完成 · 当前来源或权限不允许写入");
+        }
+    }
+
+    private int registerAdoptableAnswer(String answer, NoteTool.Permission permission,
+                                        boolean sameDocument) {
+        if (sameDocument && permission != NoteTool.Permission.READ_ONLY
+                && aiPdfDigestAvailable && canvasView != null && aiResultAnchorBounds != null) {
+            for (int index = aiVisibleTimeline.size() - 1; index >= 0; index--) {
+                AiConversationStore.VisibleEntry candidate = aiVisibleTimeline.get(index);
+                if ("message".equals(candidate.kind) && "assistant".equals(candidate.role)
+                        && answer.equals(candidate.text) && candidate.adoptionId.isEmpty()) {
+                    AiConversationStore.VisibleEntry adoptable = candidate.withAdoption(
+                            UUID.randomUUID().toString(), canvasView.aiConversationFingerprint(),
+                            aiPdfDigest, permission.name(), aiResultAnchorBounds);
+                    aiVisibleTimeline.set(index, adoptable);
+                    persistAiConversation();
+                    return index;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private void appendAiHistory(AiPendingRequest request,
+                                 OpenAiCompatibleClient.Message message) {
+        request.messages.add(message);
+        aiMessages.add(message);
+        persistAiConversation();
+    }
+
+    private boolean finishAiMutation(NoteCanvasView.AiEditRecord record,
+                                     NoteCanvasView.AiEditSnapshot before) {
+        boolean changed = canvasView.recordAiEditDelta(record, before);
+        canvasView.endAiUndoTransaction(record.ownerId, changed);
+        if (changed) advanceAiConversationBaseline();
+        return changed;
+    }
+
+    private boolean recordToolCapabilityEvidence(String profileId, long profileRevision,
+                                                 OpenAiCompatibleClient.Completion completion,
+                                                 NoteToolRegistry registry) {
+        if (completion == null || registry == null) return false;
+        for (OpenAiCompatibleClient.ToolCall call : completion.toolCalls) {
+            if (call != null && call.id != null && !call.id.trim().isEmpty()
+                    && call.id.length() <= 256 && registry.find(call.name) != null) {
+                return aiConfigStore.recordToolCapability(profileId, profileRevision,
+                        AiConfigStore.ToolCapability.CONFIRMED);
+            }
+        }
+        return false;
+    }
+
+    boolean recordToolEvidenceForTest(OpenAiCompatibleClient.Completion completion) {
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        NoteToolRegistry registry = aiReadScope == null
+                ? NoteTools.createDefault() : aiReadScope.createToolRegistry();
+        return profile != null && recordToolCapabilityEvidence(profile.id,
+                profile.revision, completion, registry);
+    }
+
+    NoteTool.Result applyAiToolForTest(String name, JSONObject arguments,
+                                       NoteCanvasView.AiEditRecord record) {
+        NoteCanvasView.AiEditSnapshot before = canvasView.captureAiEditSnapshot();
+        canvasView.beginAiUndoTransaction(record.ownerId);
+        NoteTool.Result result;
+        try {
+            NoteToolRegistry registry = aiReadScope == null
+                    ? NoteTools.createDefault() : aiReadScope.createToolRegistry();
+            result = registry.invoke(name, arguments,
+                    canvasView.createToolContext(aiSelectionSnapshot == null
+                            ? new RectF() : aiSelectionSnapshot.sourceBounds),
+                    aiGrantedPermission);
+        } finally {
+            finishAiMutation(record, before);
+        }
+        return result;
+    }
+
+    private void commitAssistantMessage(AiPendingRequest request, String wireContent,
+                                        String displayContent, String executor) {
+        OpenAiCompatibleClient.Message message =
+                new OpenAiCompatibleClient.Message("assistant", wireContent);
+        if (request == null) {
+            aiMessages.add(message);
+            persistAiConversation();
+        } else {
+            appendAiHistory(request, message);
+        }
+        addAiMessageBubble("assistant", displayContent, false, executor);
+    }
+
+    private boolean matchesAiDocument(AiPendingRequest request) {
+        return sameAiDocument(request.noteId, currentNoteId,
+                request.expectedDocumentRevision, documentRevision);
+    }
+
+    static boolean sameAiDocument(String expectedId, String currentId,
+                                  long expectedRevision, long currentRevision) {
+        return java.util.Objects.equals(expectedId, currentId) &&
+                expectedRevision == currentRevision;
+    }
+
+    /** Executes tools once, then continues with the same cancellable request chain. */
+    private void runAiToolCalls(AiPendingRequest request,
+                                AiConfigStore.Config config, byte[] pngBytes,
+                                OpenAiCompatibleClient.Completion completion, int round,
+                                JSONObject pageMap,
+                                OpenAiCompatibleClient.Cancellation cancellation) {
+        request.toolsStarted = true;
+        retryableAiRequest = null;
+        updateAiRetryButton();
         aiStatusView.setText(String.format(Locale.CHINA, "正在执行 %d 个笔记操作…",
                 completion.toolCalls.size()));
-        boolean mutated = false;
-        canvasView.beginUndoTransaction();
+        if (canvasView.isUserInteractionActive()) {
+            for (OpenAiCompatibleClient.ToolCall call : completion.toolCalls) {
+                CachedToolResult cached = request.toolReplay.find(call);
+                String payload;
+                if (cached != null && cached.matches(call)) {
+                    // This call already ran before the pointer became active.
+                    // Replaying its original result is required for protocol
+                    // consistency and must never imply that it is safe to rerun.
+                    payload = cached.payload;
+                } else if (cached != null) {
+                    payload = toolErrorPayload(
+                            "同一 tool_call_id 的工具或参数发生变化，未重复执行");
+                } else {
+                    NoteTool.Result rejected = NoteTool.Result.error(
+                            "用户正在书写或拖动，本批工具未执行");
+                    request.toolReplay.record(call, rejected);
+                    payload = rejected.payload.toString();
+                }
+                appendAiHistory(request, OpenAiCompatibleClient.Message.toolResult(
+                        call.id, payload));
+            }
+            addAiNotice("你正在书写或拖动：新笔记操作未执行，已完成的调用仍回放原结果。");
+            startCompletionRequest(request, config, pngBytes, pageMap,
+                    round < MAX_AI_TOOL_ROUNDS ? request.offeredTools : null,
+                    round, cancellation);
+            return;
+        }
+        NoteCanvasView.AiEditSnapshot before = canvasView.captureAiEditSnapshot();
+        boolean mutated;
+        canvasView.beginAiUndoTransaction(request.edits.ownerId);
         try {
             for (OpenAiCompatibleClient.ToolCall call : completion.toolCalls) {
-                if (!aiExecutedToolCallIds.add(call.id)) {
-                    // Same id twice means a retried request, not a second intent.
+                CachedToolResult cached = request.toolReplay.find(call);
+                if (cached != null) {
+                    String payload;
+                    String summary;
+                    boolean ok;
+                    if (cached.matches(call)) {
+                        payload = cached.payload;
+                        summary = "已复用先前结果：" + cached.summary;
+                        ok = cached.ok;
+                    } else {
+                        payload = toolErrorPayload(
+                                "同一 tool_call_id 的工具或参数发生变化，未重复执行");
+                        summary = "调用编号重复但内容不同，已拒绝执行";
+                        ok = false;
+                    }
+                    appendAiHistory(request,
+                            OpenAiCompatibleClient.Message.toolResult(call.id, payload));
+                    addAiNotice((ok ? "已执行 " : "未执行 ") + call.name + "：" + summary);
                     continue;
                 }
-                NoteTool.Result result = aiToolRegistry.invoke(call.name, call.arguments,
-                        toolContext, aiGrantedPermission);
-                mutated = mutated || result.mutatedDocument;
-                aiMessages.add(OpenAiCompatibleClient.Message.toolResult(call.id,
+                request.executedToolCallIds.add(call.id);
+                aiExecutedToolCallIds.add(request.id + "\u0000" + call.id);
+                NoteTool.Result result = request.tools.invoke(call.name, call.arguments,
+                        request.toolContext, request.permission);
+                request.toolReplay.record(call, result);
+                appendAiHistory(request, OpenAiCompatibleClient.Message.toolResult(call.id,
                         result.payload.toString()));
                 addAiNotice((result.ok ? "已执行 " : "未执行 ") + call.name
                         + "：" + result.summary);
             }
         } finally {
-            canvasView.endUndoTransaction();
+            mutated = finishAiMutation(request.edits, before);
         }
         if (mutated) {
             updateTextBoxOverlays(canvasView.getTextBoxes());
+            ensureAiEditCard(request);
+            // These changes belong to this same frozen request. Later tool rounds
+            // may use the refreshed layout, but unrelated user edits still fail
+            // the revision guard above.
+            request.expectedDocumentRevision = documentRevision;
         }
 
         boolean allowMoreTools = round < MAX_AI_TOOL_ROUNDS;
         JSONArray nextTools = null;
         if (allowMoreTools) {
             try {
-                nextTools = aiToolRegistry.describe();
-            } catch (JSONException schemaFailure) {
+                nextTools = request.tools.describe();
+            } catch (JSONException ignored) {
                 nextTools = null;
             }
         } else {
             addAiNotice("已达到本次任务的操作轮次上限，接下来只做总结。");
         }
-        JSONArray offered = nextTools;
-        // The page changed, so later rounds must plan against the new layout
-        // rather than the map captured before any writes happened.
         JSONObject refreshedMap = mutated && allowMoreTools
-                ? toolContext.readPageMap(Math.max(0, toolContext.selectionPageIndex()), true)
+                ? request.toolContext.readPageMap(
+                        Math.max(0, request.toolContext.selectionPageIndex()), true)
                 : pageMap;
+        startCompletionRequest(request, config, pngBytes, refreshedMap, nextTools,
+                round, cancellation);
+    }
 
-        List<OpenAiCompatibleClient.Message> followUp = new ArrayList<>(aiMessages);
-        aiExecutor.execute(() -> {
-            try {
-                OpenAiCompatibleClient.Completion next =
-                        OpenAiCompatibleClient.completeWithTools(config, pngBytes,
-                                followUp, offered, refreshedMap);
-                runOnUiThread(() -> {
-                    if (session != aiSessionSerial) {
-                        return;
-                    }
-                    if (!next.toolCalls.isEmpty()) {
-                        // The model wants to act again, e.g. write after reading.
-                        aiMessages.add(new OpenAiCompatibleClient.Message("assistant",
-                                next.content, next.toolCalls, null));
-                        if (!next.content.isEmpty()) {
-                            addAiMessageBubble("assistant", next.content, false);
-                        }
-                        runAiToolCalls(config, next, session, pngBytes, toolContext,
-                                round + 1, refreshedMap);
-                        return;
-                    }
-                    aiMessages.add(new OpenAiCompatibleClient.Message("assistant",
-                            next.content));
-                    setAiBusy(false);
-                    if (!next.content.isEmpty()) {
-                        addAiMessageBubble("assistant", next.content, false);
-                    }
-                    aiStatusView.setText("操作完成 · 可继续追问");
-                });
-            } catch (Exception error) {
-                String message = error.getMessage() == null ? "未知错误" : error.getMessage();
-                runOnUiThread(() -> {
-                    if (session != aiSessionSerial) {
-                        return;
-                    }
-                    setAiBusy(false);
-                    // The writes already happened and are undoable; only the
-                    // closing remark is missing, so say so instead of implying
-                    // nothing occurred.
-                    addAiNotice("笔记操作已完成，但收尾回复失败：" + message);
-                    aiStatusView.setText("操作已完成 · 收尾回复失败");
-                });
-            }
-        });
+    static String toolCallSignature(OpenAiCompatibleClient.ToolCall call) {
+        return (call == null ? "" : call.name) + "\u0000"
+                + (call == null || call.arguments == null ? "{}" : call.arguments.toString());
+    }
+
+    private static String toolErrorPayload(String message) {
+        try {
+            return new JSONObject().put("error", message).toString();
+        } catch (JSONException ignored) {
+            return "{\"error\":\"tool call rejected\"}";
+        }
     }
 
     private void setAiBusy(boolean busy) {
         aiBusy = busy;
-        if (aiSendButton != null) {
-            aiSendButton.setEnabled(!busy);
-            aiSendButton.setText(busy ? "等待…" : "发送");
-            aiExplainButton.setEnabled(!busy);
-            aiMarkdownButton.setEnabled(!busy);
-            aiDiagramButton.setEnabled(!busy);
-        }
+        updateAiInteractionEnabled();
         updateAiCardTitle();
+        updateAiRetryButton();
+        refreshAiEditCards();
+    }
+
+    private void setAiMaterialLoading(boolean loading) {
+        aiMaterialLoading = loading;
+        updateAiInteractionEnabled();
+        updateAiCardTitle();
+    }
+
+    private void updateAiInteractionEnabled() {
+        boolean enabled = !aiBusy && !aiMaterialLoading && !aiConversationLoading;
+        if (aiSendButton != null) {
+            // The primary action becomes a real local cancel while a request is
+            // active. It stays usable even though all request-shaping controls
+            // are frozen until this turn ends.
+            aiSendButton.setEnabled(!aiMaterialLoading);
+            aiSendButton.setText(aiBusy ? "取消" : "发送");
+            aiExplainButton.setEnabled(enabled);
+            aiMarkdownButton.setEnabled(enabled);
+            aiDiagramButton.setEnabled(enabled);
+        }
+        if (aiInputView != null) aiInputView.setEnabled(enabled);
+        if (aiReviewTranscriptCheck != null) aiReviewTranscriptCheck.setEnabled(enabled);
+        if (aiInlineOutputButton != null) aiInlineOutputButton.setEnabled(enabled);
+        if (aiCardOutputButton != null) aiCardOutputButton.setEnabled(enabled);
+        if (aiSettingsButton != null) {
+            aiSettingsButton.setEnabled(enabled);
+        }
+        if (aiMaterialsButton != null) {
+            aiMaterialsButton.setEnabled(enabled);
+        }
+        if (aiMaterialsPreviewButton != null) {
+            aiMaterialsPreviewButton.setEnabled(enabled && aiReadScope != null
+                    && aiReadScope.hasVaultNotes());
+        }
+    }
+
+    private static String joinChinese(List<String> values) {
+        StringBuilder result = new StringBuilder();
+        for (String value : values) {
+            if (result.length() > 0) {
+                result.append("、");
+            }
+            result.append(value);
+        }
+        return result.toString();
     }
 
     /**
@@ -3542,6 +5303,10 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
      * split transcribe+answer route are both just profiles here.
      */
     private void showAiManagerDialog(Runnable afterSave) {
+        if (aiBusy || aiMaterialLoading) {
+            Toast.makeText(this, "请等待当前回答完成", Toast.LENGTH_SHORT).show();
+            return;
+        }
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(8), dp(22), 0);
@@ -3621,15 +5386,21 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         TextView nameView = text((isActive ? "● " : "") + profile.name, 14, Color.rgb(23, 33, 43));
         nameView.setTypeface(Typeface.DEFAULT_BOLD);
         info.addView(nameView);
-        info.addView(text(profile.summary(), 12, Color.rgb(91, 103, 113)));
+        String capability;
+        switch (profile.toolCapability) {
+            case CONFIRMED: capability = "工具能力：已由真实调用确认"; break;
+            case EXPLICITLY_REJECTED: capability = "工具能力：服务端明确拒绝工具参数"; break;
+            default: capability = "工具能力：尚未确认";
+        }
+        info.addView(text(profile.summary() + " · " + capability,
+                12, Color.rgb(91, 103, 113)));
         row.addView(info);
 
         row.setOnClickListener(view -> {
             if (isActive) {
                 return;
             }
-            aiConfigStore.setActiveProfileId(profile.id);
-            aiUploadConfirmed = false;
+            if (!activateAiProfile(profile)) return;
             Toast.makeText(this, "已切换到：" + profile.name, Toast.LENGTH_SHORT).show();
             onChanged.run();
         });
@@ -3650,7 +5421,7 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 .setMessage("将删除“" + profile.name + "”。已保存的 Key 会一并清除。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (ignored, which) -> {
-                    aiConfigStore.deleteProfile(profile.id);
+                    if (!deleteAiProfile(profile)) return;
                     onChanged.run();
                 })
                 .show());
@@ -3858,11 +5629,10 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                             saved.answerEndpoint = answerEndpoint;
                             saved.answerModel = answerModel;
                         }
-                        aiConfigStore.saveProfile(saved, directKey, transcribeKey, answerKey);
-                        if (creating || saved.id.equals(aiConfigStore.activeProfileId())) {
-                            aiConfigStore.setActiveProfileId(saved.id);
-                        }
-                        aiUploadConfirmed = false;
+                        boolean changesActive = creating
+                                || saved.id.equals(aiConfigStore.activeProfileId());
+                        if (!saveAiProfile(saved, directKey, transcribeKey, answerKey,
+                                changesActive)) return;
                         aiStatusView.setText(R.string.ai_config_saved);
                         dialog.dismiss();
                         if (afterSave != null) {
@@ -3905,24 +5675,6 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
 
     // ===================== 知识库：手写 → 格式笔记 =====================
 
-    /**
-     * Digitization contract with the vision model: human-beautiful and
-     * machine-readable Markdown, formulas as LaTeX, hand-drawn arrows and
-     * flowcharts as inline arrow chains or Mermaid blocks.
-     */
-    private static final String DIGITIZE_SYSTEM_PROMPT =
-            "你是手写笔记数字化器。把图片中的手写内容忠实转写为 Markdown 文本，"
-                    + "要求人读美观、机器可读：\n"
-                    + "- 文字用 Markdown：标题、列表、段落按原有结构与空间顺序；\n"
-                    + "- 数学公式用标准 LaTeX：行间公式放在 \\[ 与 \\] 之间，"
-                    + "行内公式放在 \\( 与 \\) 之间；\n"
-                    + "- 手绘的箭头、推导链和流程图转为文本图形：简单关系写成一行"
-                    + "「A → B → C」；多分支或循环流程用 mermaid 代码块（以 ```mermaid 开头，"
-                    + "flowchart TD 语法），节点文字保持原文；\n"
-                    + "- 无法辨认的字符用【无法辨认】标注，不要臆测；\n"
-                    + "- 复杂插图无法用上述方式表达时，用一句以【图形】开头的文字概括；\n"
-                    + "- 不要回答、讲解或补充图片之外的内容，只输出转写结果。";
-
     /** Opens the note and waits for its async restore before digitizing. */
     private void openNoteThenDigitize(NoteStore.Entry entry) {
         openNote(entry);
@@ -3942,170 +5694,67 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void startDigitizationForCurrentNote() {
-        if (digitizing || !editorVisible || currentNoteId == null) {
-            return;
-        }
+        if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
+        commitInlineTextEditorExcept(null);
+        if (digitizationController == null) digitizationController = new DigitizationController(this, vaultStore,
+                () -> showAiManagerDialog(null));
         AiConfigStore.Profile profile = aiConfigStore.activeProfile();
-        if (profile == null || !profile.structurallyComplete()) {
-            Toast.makeText(this, "请先配置 AI", Toast.LENGTH_SHORT).show();
-            showAiManagerDialog(null);
-            return;
-        }
-        int total = canvasView.getPageCount();
-        if (total <= 0) {
-            Toast.makeText(this, "当前笔记没有页面", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String target = profile.split
-                ? OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.transcribeEndpoint)
-                : OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.directEndpoint);
-        String model = profile.split ? profile.transcribeModel : profile.directModel;
-
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(24), dp(10), dp(24), dp(4));
-        TextView intro = text(String.format(Locale.CHINA,
-                "将把《%s》共 %d 页逐页转写为 Markdown（公式 LaTeX、流程图 Mermaid），"
-                        + "合并为一篇 Obsidian 兼容的格式笔记存入知识库。"
-                        + "之后可以在书架阅读、导出，圈选提问时 AI 也会检索它。",
-                currentNoteTitle, total), 13, INK_COLOR);
-        body.addView(intro);
-        TextView privacy = text("⚠ 上传范围变化：数字化会发送整页手写内容，"
-                + "而不只是圈选区域。", 12, AMBER_TEXT);
-        GradientDrawable privacyBackground = new GradientDrawable();
-        privacyBackground.setColor(AMBER_TINT);
-        privacyBackground.setCornerRadius(dp(10));
-        privacy.setBackground(privacyBackground);
-        privacy.setPadding(dp(12), dp(8), dp(12), dp(8));
-        LinearLayout.LayoutParams privacyParams = matchWrap();
-        privacyParams.setMargins(0, dp(12), 0, 0);
-        body.addView(privacy, privacyParams);
-        TextView meta = text(String.format(Locale.CHINA,
-                "模型：%s\n目标：%s", model, target), 11, FAINT_TEXT);
-        meta.setPadding(0, dp(12), 0, 0);
-        body.addView(meta);
-
-        new AlertDialog.Builder(this)
-                .setTitle("转为格式笔记？")
-                .setView(body)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("开始转换", (dialog, which) -> runDigitization(profile, total))
-                .show();
-    }
-
-    private void runDigitization(AiConfigStore.Profile profile, int total) {
-        digitizing = true;
-        final String noteId = currentNoteId;
-        final String title = currentNoteTitle;
-        final AlertDialog progress = new AlertDialog.Builder(this)
-                .setTitle("正在转换为格式笔记")
-                .setMessage("准备中…")
-                .setCancelable(false)
-                .create();
-        progress.show();
-        final List<String> sections = new ArrayList<>();
-        for (int index = 0; index < total; index++) {
-            sections.add("");
-        }
-        final List<TextFlow> flows = canvasView.getTextFlows();
-        digitizePage(profile, noteId, title, total, 0, sections, flows, progress);
-    }
-
-    /** Renders one page on the UI thread, transcribes on the executor, then recurses. */
-    private void digitizePage(AiConfigStore.Profile profile, String noteId, String title,
-                              int total, int index, List<String> sections,
-                              List<TextFlow> flows, AlertDialog progress) {
-        if (!editorVisible || !noteId.equals(currentNoteId) || !digitizing) {
-            digitizing = false;
-            progress.dismiss();
-            return;
-        }
-        if (index >= total) {
-            finishDigitization(noteId, title, total, sections, progress);
-            return;
-        }
-        byte[] png = canvasView.renderPagePng(index, 1600);
-        if (png == null) {
-            digitizePage(profile, noteId, title, total, index + 1, sections, flows, progress);
-            return;
-        }
-        progress.setMessage(String.format(Locale.CHINA, "正在数字化 第 %d/%d 页…",
-                index + 1, total));
-        digitizeExecutor.execute(() -> {
-            try {
-                AiConfigStore.Config config = profile.split
-                        ? aiConfigStore.transcribeConfig(profile)
-                        : aiConfigStore.directConfig(profile);
-                String transcript = OpenAiCompatibleClient.transcribeWithPrompt(
-                        config, png, DIGITIZE_SYSTEM_PROMPT);
-                runOnUiThread(() -> {
-                    if (!editorVisible || !noteId.equals(currentNoteId) || !digitizing) {
-                        return;
-                    }
-                    sections.set(index, mergePageContent(transcript, flows, index));
-                    digitizePage(profile, noteId, title, total, index + 1, sections,
-                            flows, progress);
-                });
-            } catch (Exception error) {
-                runOnUiThread(() -> {
-                    digitizing = false;
-                    progress.dismiss();
-                    Toast.makeText(this, "转换失败（第 " + (index + 1) + " 页）："
-                            + safeError(error), Toast.LENGTH_LONG).show();
-                });
+        AiConfigStore.Config config = null;
+        try {
+            if (profile != null && profile.structurallyComplete()) {
+                config = profile.split ? aiConfigStore.transcribeConfig(profile) : aiConfigStore.directConfig(profile);
             }
-        });
-    }
-
-    /** Existing text flows are already the target format; embed them verbatim. */
-    private String mergePageContent(String transcript, List<TextFlow> flows, int pageIndex) {
-        StringBuilder merged = new StringBuilder();
-        for (TextFlow flow : flows) {
-            if (flow.anchorPageIndex != pageIndex) {
-                continue;
-            }
-            String embedded = VaultStore.embedTextFlow(flow);
-            if (!embedded.isEmpty()) {
-                merged.append(embedded).append("\n\n");
+        } catch (Exception error) {
+            Toast.makeText(this, "模型凭据无法读取，可先查看已保存的整理稿", Toast.LENGTH_LONG).show();
+        }
+        long sourceUpdatedAt = System.currentTimeMillis();
+        if (documentRevision == lastSavedRevision) {
+            for (NoteStore.Entry entry : lastShelfEntries) {
+                if (currentNoteId.equals(entry.id)) { sourceUpdatedAt = entry.updatedAt; break; }
             }
         }
-        if (transcript != null && !transcript.trim().isEmpty()) {
-            merged.append(transcript.trim());
-        }
-        return merged.toString().trim();
-    }
-
-    private void finishDigitization(String noteId, String title, int total,
-                                    List<String> sections, AlertDialog progress) {
-        progress.setMessage("正在保存…");
-        digitizeExecutor.execute(() -> {
-            try {
-                long sourceModified = 0L;
-                for (NoteStore.Entry entry : NoteStore.list(this)) {
-                    if (entry.id.equals(noteId)) {
-                        sourceModified = entry.updatedAt;
-                        break;
-                    }
-                }
-                vaultStore.write(noteId, title, total, sourceModified, sections);
-                runOnUiThread(() -> {
-                    digitizing = false;
-                    progress.dismiss();
-                    Toast.makeText(this, "已生成格式笔记《" + title + "》，"
-                            + "可在书架“知识库”中查看", Toast.LENGTH_LONG).show();
-                });
-            } catch (Exception error) {
-                runOnUiThread(() -> {
-                    digitizing = false;
-                    progress.dismiss();
-                    Toast.makeText(this, "保存格式笔记失败：" + safeError(error),
-                            Toast.LENGTH_LONG).show();
-                });
-            }
-        });
+        digitizationController.open(canvasView, currentNoteId, currentNoteTitle,
+                profile == null ? "" : profile.id, config, sourceUpdatedAt);
     }
 
     // ===================== 知识库：阅读与导出 =====================
+
+    private void showLocalSource(String title, String sourceValue) {
+        TextView source = text(sourceValue == null ? "" : sourceValue, 13, INK_COLOR);
+        source.setTypeface(Typeface.MONOSPACE);
+        source.setTextIsSelectable(true);
+        source.setPadding(dp(16), dp(12), dp(16), dp(12));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(source, matchWrap());
+        new AlertDialog.Builder(this).setTitle(title).setView(scroll)
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("复制", (dialog, which) ->
+                        copyLocalSource(title, sourceValue)).show();
+    }
+
+    private void copyLocalSource(String label, String source) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText(label,
+                    source == null ? "" : source));
+            Toast.makeText(this, "源码已复制", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void editLocalDisplaySource(String title, String source, Consumer<String> onApply,
+                                        String explanation) {
+        EditText editor = new EditText(this);
+        editor.setText(source == null ? "" : source);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setTypeface(Typeface.MONOSPACE);
+        editor.setMinLines(10);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        editor.setFilters(new InputFilter[]{new InputFilter.LengthFilter(500_000)});
+        new AlertDialog.Builder(this).setTitle(title).setMessage(explanation).setView(editor)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存并重新显示", (dialog, which) ->
+                        onApply.accept(editor.getText().toString())).show();
+    }
 
     private void showVaultReader(String fileName) {
         storageExecutor.execute(() -> {
@@ -4120,18 +5769,111 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void presentVaultReader(String fileName, String markdown) {
+        String[] currentSource = new String[]{markdown};
+        AtomicBoolean readerClosed = new AtomicBoolean(false);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.WHITE);
-        CompiledTextWebView webView = new CompiledTextWebView(this,
-                NoteTextBox.Format.MARKDOWN, "");
-        webView.renderDocument(markdown);
+        CompiledTextWebView webView = new CompiledTextWebView(this);
+        CompiledTextWebView[] webHolder = new CompiledTextWebView[]{webView};
         scroll.addView(webView, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        new AlertDialog.Builder(this)
+        body.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout recovery = new LinearLayout(this);
+        recovery.setOrientation(LinearLayout.VERTICAL);
+        recovery.setPadding(dp(12), dp(8), dp(12), dp(8));
+        recovery.setVisibility(View.GONE);
+        recovery.setContentDescription("格式笔记显示失败");
+        TextView status = text("显示失败", 12, Color.rgb(143, 47, 43));
+        recovery.addView(status, matchWrap());
+        LinearLayout actions = new LinearLayout(this);
+        Button viewSource = pillButton("查看源码", BUTTON_QUIET);
+        Button copySource = pillButton("复制", BUTTON_QUIET);
+        Button editSource = pillButton("编辑", BUTTON_QUIET);
+        Button retry = pillButton("重新显示", BUTTON_TONAL);
+        actions.addView(viewSource, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        actions.addView(copySource, new LinearLayout.LayoutParams(0, dp(40), .7f));
+        actions.addView(editSource, new LinearLayout.LayoutParams(0, dp(40), .7f));
+        actions.addView(retry, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        recovery.addView(actions, matchWrap());
+        body.addView(recovery, matchWrap());
+        viewSource.setOnClickListener(view -> showLocalSource(
+                "格式笔记源码", currentSource[0]));
+        copySource.setOnClickListener(view -> copyLocalSource(
+                "PadNote 格式笔记源码", currentSource[0]));
+        editSource.setOnClickListener(view -> editLocalDisplaySource(
+                "编辑格式笔记源码", currentSource[0], edited -> {
+                    status.setText("正在保存源码…");
+                    storageExecutor.execute(() -> {
+                        try {
+                            vaultStore.replaceRaw(fileName, edited);
+                            runOnUiThread(() -> {
+                                if (readerClosed.get()) return;
+                                currentSource[0] = edited;
+                                recovery.setVisibility(View.GONE);
+                                webHolder[0].renderDocument(edited);
+                            });
+                        } catch (Exception error) {
+                            runOnUiThread(() -> {
+                                if (readerClosed.get()) return;
+                                status.setText("源码保存失败 · 原文件未改动");
+                                Toast.makeText(this, "源码保存失败：" + safeError(error),
+                                        Toast.LENGTH_LONG).show();
+                            });
+                        }
+                    });
+                }, "修改会保存到这份格式笔记；不会请求模型。"));
+        retry.setOnClickListener(view -> {
+            retry.setEnabled(false);
+            status.setText("正在重新显示…");
+            webHolder[0].renderDocument(currentSource[0]);
+        });
+        configureVaultRenderRecovery(webView, webHolder, scroll, recovery, status, retry,
+                readerClosed);
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(fileName)
-                .setView(scroll)
+                .setView(body)
                 .setPositiveButton("关闭", null)
-                .show();
+                .create();
+        dialog.setOnDismissListener(ignored -> {
+            readerClosed.set(true);
+            webHolder[0].destroy();
+        });
+        dialog.show();
+        webView.renderDocument(markdown);
+    }
+
+    private void configureVaultRenderRecovery(CompiledTextWebView view,
+                                               CompiledTextWebView[] holder,
+                                               ScrollView scroll, LinearLayout recovery,
+                                               TextView status, Button retry,
+                                               AtomicBoolean readerClosed) {
+        view.setRenderStateListener(state -> {
+            if (holder[0] != view) return;
+            retry.setEnabled(true);
+            if (state.isReady()) {
+                recovery.setVisibility(View.GONE);
+                return;
+            }
+            status.setText("显示失败 · " + state.message);
+            recovery.setVisibility(View.VISIBLE);
+            if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
+                scroll.post(() -> {
+                    if (readerClosed.get() || holder[0] != view
+                            || scroll.getParent() == null) return;
+                    scroll.removeView(view);
+                    CompiledTextWebView replacement = new CompiledTextWebView(this);
+                    holder[0] = replacement;
+                    scroll.addView(replacement, new ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                    configureVaultRenderRecovery(replacement, holder, scroll,
+                            recovery, status, retry, readerClosed);
+                });
+            }
+        });
     }
 
     private void launchExportVaultFile(VaultStore.VaultNote note) {
@@ -4203,8 +5945,16 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         }
         commitInlineTextEditorExcept(null);
         handler.removeCallbacks(delayedSave);
+        if (!restoreCompleted) {
+            showBookshelf();
+            return;
+        }
+        if (documentRevision == lastSavedRevision && !saveInFlight) {
+            showBookshelf();
+            return;
+        }
+        pendingLeaveAfterSave = true;
         saveDocument(false);
-        showBookshelf();
     }
 
     private void launchImportNote() {
@@ -4273,6 +6023,17 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (digitizationController != null && digitizationController.activityResult(requestCode, resultCode, data)) return;
+        IntentResult scan = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
+        if (scan != null) {
+            if (scan.getContents() != null) {
+                new AgentConnectionDialogs(this, agentConnectionStore, aiExecutor,
+                        this::refreshBookshelf, this::launchAgentPairingQr,
+                        this::launchCreateAgentArtifactDocument)
+                        .showPairingPayload(scan.getContents());
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (requestCode == REQUEST_EXPORT_NOTE) {
                 pendingExportJson = null;
@@ -4281,6 +6042,12 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
                 pendingExportVaultFile = null;
             } else if (requestCode == REQUEST_EXPORT_VIDEO_TASK) {
                 clearPendingVideoTask();
+            } else if (requestCode == REQUEST_EXPORT_AGENT_ARTIFACT) {
+                clearPendingAgentArtifact();
+            } else if (requestCode == REQUEST_EXPORT_RECOVERY) {
+                pendingRecoveryFile = null;
+                pendingAiConversationRecoverySnapshot = null;
+                pendingRecoveryName = null;
             }
             return;
         }
@@ -4294,11 +6061,95 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
             exportPdfToUri(data.getData());
         } else if (requestCode == REQUEST_EXPORT_VIDEO_TASK) {
             exportVideoTaskToUri(data.getData());
+        } else if (requestCode == REQUEST_EXPORT_AGENT_ARTIFACT) {
+            exportAgentArtifactToUri(data.getData());
+        } else if (requestCode == REQUEST_EXPORT_RECOVERY) {
+            exportRecoveryToUri(data.getData());
         } else if (requestCode == REQUEST_IMPORT_COVER) {
             handleImportedCover(data.getData());
         } else if (requestCode == REQUEST_IMPORT_IMAGE) {
             handleImportedImage(data.getData());
         }
+    }
+
+    private void exportRecoveryToUri(android.net.Uri uri) {
+        File source = pendingRecoveryFile;
+        AiConversationStore.Snapshot conversation = pendingAiConversationRecoverySnapshot;
+        pendingRecoveryFile = null;
+        pendingAiConversationRecoverySnapshot = null;
+        pendingRecoveryName = null;
+        storageExecutor.execute(() -> {
+            try {
+                if (conversation == null && (source == null || !source.isFile())) {
+                    throw new IllegalStateException("恢复文件已不存在");
+                }
+                try (OutputStream output = getContentResolver().openOutputStream(uri, "w")) {
+                    if (output == null) throw new IllegalStateException("无法写入目标文件");
+                    if (conversation != null) {
+                        output.write(conversation.toRecoveryJson().toString()
+                                .getBytes(StandardCharsets.UTF_8));
+                    } else {
+                        try (InputStream input = new FileInputStream(source)) {
+                            byte[] buffer = new byte[8192];
+                            int read;
+                            while ((read = input.read(buffer)) >= 0) {
+                                output.write(buffer, 0, read);
+                            }
+                        }
+                    }
+                    output.flush();
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "恢复文件已导出", Toast.LENGTH_SHORT).show());
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "恢复文件导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void exportAgentArtifactToUri(android.net.Uri uri) {
+        String taskId = pendingAgentArtifactTaskId;
+        String artifactId = pendingAgentArtifactId;
+        clearPendingAgentArtifact();
+        aiExecutor.execute(() -> {
+            File temporary = null;
+            boolean saved = false;
+            try {
+                AgentTaskStore.Task task = new AgentTaskStore(this).get(taskId);
+                if (task == null) throw new IllegalStateException("任务记录不存在");
+                AgentTaskStore.Artifact found = null;
+                for (AgentTaskStore.Artifact candidate : task.artifacts) {
+                    if (candidate.id.equals(artifactId)) { found = candidate; break; }
+                }
+                if (found == null) throw new IllegalStateException("产物已不在当前任务清单中");
+                AgentTaskStore.Artifact artifact = found;
+                AgentConnectionStore.Config connection = agentConnectionStore.get(task.connectionId);
+                temporary = new AgentArtifactDownloader().download(task, connection, artifact,
+                        new File(getCacheDir(), "agent-artifacts"));
+                try (InputStream input = new FileInputStream(temporary);
+                     OutputStream output = getContentResolver().openOutputStream(uri)) {
+                    if (output == null) throw new IllegalStateException("无法打开所选位置");
+                    byte[] buffer = new byte[64 * 1024]; int count;
+                    while ((count = input.read(buffer)) >= 0) if (count > 0) output.write(buffer, 0, count);
+                    output.flush();
+                }
+                saved = true;
+                runOnUiThread(() -> Toast.makeText(this, "产物已校验并保存", Toast.LENGTH_LONG).show());
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this, "保存产物失败：" + safeError(error),
+                        Toast.LENGTH_LONG).show());
+            } finally {
+                if (temporary != null) temporary.delete();
+                if (!saved) try { getContentResolver().delete(uri, null, null); }
+                catch (Exception ignored) { }
+            }
+        });
+    }
+
+    private void clearPendingAgentArtifact() {
+        pendingAgentArtifactTaskId = null;
+        pendingAgentArtifactId = null;
     }
 
     private void exportVideoTaskToUri(android.net.Uri uri) {
@@ -4346,14 +6197,23 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
     }
 
     private void exportPdfToUri(android.net.Uri uri) {
-        final NoteCanvasView.PdfExportSnapshot snapshot;
+        NoteCanvasView.PdfExportSnapshot preparedSnapshot = null;
         try {
-            snapshot = canvasView.createPdfExportSnapshot();
+            preparedSnapshot = canvasView.createPdfExportSnapshot();
+            PdfNoteIO.chooseRasterLongEdge(preparedSnapshot.getPageCount(),
+                    preparedSnapshot.getPageWidth(), preparedSnapshot.getPageHeight());
         } catch (Exception error) {
+            if (preparedSnapshot != null) preparedSnapshot.close();
             Toast.makeText(this, "PDF 导出失败：" + safeError(error), Toast.LENGTH_LONG).show();
             return;
         }
+        final NoteCanvasView.PdfExportSnapshot snapshot = preparedSnapshot;
         activePdfExportSnapshot = snapshot;
+        AtomicBoolean cancellation = new AtomicBoolean(false);
+        AtomicBoolean taskStarted = new AtomicBoolean(false);
+        AtomicBoolean uiFinished = new AtomicBoolean(false);
+        AtomicBoolean committed = new AtomicBoolean(false);
+        activePdfExportCancelled = cancellation;
         FrameLayout renderHost = new FrameLayout(this);
         renderHost.setVisibility(View.VISIBLE);
         renderHost.setAlpha(0.01f);
@@ -4365,33 +6225,66 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
         AlertDialog progressDialog = new AlertDialog.Builder(this)
                 .setTitle("正在导出 PDF")
                 .setMessage("准备页面…")
+                .setNegativeButton("取消", null)
                 .setCancelable(false)
                 .create();
+        progressDialog.setOnShowListener(ignored -> progressDialog
+                .getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
+                    synchronized (cancellation) {
+                        if (committed.get() || cancellation.get()) return;
+                        cancellation.set(true);
+                    }
+                    progressDialog.setMessage("正在取消并清理临时文件…");
+                    progressDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+                    snapshot.close();
+                    Future<?> future = activePdfExportFuture;
+                    if (future != null && future.cancel(true) && !taskStarted.get()) {
+                        finishPdfExportUi(snapshot, renderHost, progressDialog, uiFinished,
+                                false, true, null);
+                    }
+                }));
         progressDialog.show();
         activePdfExportDialog = progressDialog;
         Handler exportMainHandler = new Handler(Looper.getMainLooper());
         Runnable exportTask = () -> {
+            taskStarted.set(true);
             File temporary = null;
             Exception failure = null;
             boolean success = false;
+            boolean destinationTouched = false;
             try {
+                if (cancellation.get()) throw new PdfNoteIO.ExportCancelledException();
                 temporary = File.createTempFile("flattened-export-", ".pdf", getCacheDir());
                 try (OutputStream tempOutput = new FileOutputStream(temporary)) {
                     PdfNoteIO.exportFlattenedPdf(snapshot, renderHost, tempOutput,
                             exportMainHandler, (complete, total) -> {
-                                if (progressDialog.isShowing()) {
+                                if (!cancellation.get() && progressDialog.isShowing()) {
                                     progressDialog.setMessage("正在渲染第 " + complete + " / " + total + " 页");
                                 }
-                            });
+                            }, cancellation::get);
                 }
-                // Open the user-selected destination only after the complete PDF
-                // exists locally. Success is reported after this stream flushes
-                // and closes, never after a partial render.
-                try (InputStream input = new FileInputStream(temporary);
-                     OutputStream output = getContentResolver().openOutputStream(uri)) {
+                if (cancellation.get()) throw new PdfNoteIO.ExportCancelledException();
+                // The destination is opened only after the complete local PDF exists.
+                // If copying fails or is cancelled, best-effort delete prevents a
+                // partial file from looking like a successful export.
+                try (OutputStream output = getContentResolver().openOutputStream(uri)) {
                     if (output == null) throw new IllegalStateException("无法打开所选位置");
-                    PdfNoteIO.copy(input, output, Long.MAX_VALUE);
-                    output.flush();
+                    destinationTouched = true;
+                    try (InputStream input = new FileInputStream(temporary)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        int count;
+                        while ((count = input.read(buffer)) >= 0) {
+                            if (cancellation.get() || Thread.currentThread().isInterrupted()) {
+                                throw new PdfNoteIO.ExportCancelledException();
+                            }
+                            if (count > 0) output.write(buffer, 0, count);
+                        }
+                        output.flush();
+                    }
+                }
+                synchronized (cancellation) {
+                    if (cancellation.get()) throw new PdfNoteIO.ExportCancelledException();
+                    committed.set(true);
                 }
                 success = true;
             } catch (Exception error) {
@@ -4401,38 +6294,47 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
             } finally {
                 snapshot.close();
                 if (temporary != null && !temporary.delete()) temporary.deleteOnExit();
+                boolean cancelled = cancellation.get() ||
+                        failure instanceof PdfNoteIO.ExportCancelledException;
+                if (!success && destinationTouched) {
+                    try { getContentResolver().delete(uri, null, null); }
+                    catch (Exception ignored) { }
+                }
                 boolean completed = success;
                 Exception result = failure == null
-                        ? new java.io.IOException("PDF 导出未完成") : failure;
-                exportMainHandler.post(() -> {
-                    if (activePdfExportSnapshot == snapshot) {
-                        activePdfExportSnapshot = null;
-                    }
-                    if (activePdfExportHost == renderHost) activePdfExportHost = null;
-                    if (activePdfExportDialog == progressDialog) activePdfExportDialog = null;
-                    if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
-                    if (progressDialog.isShowing()) progressDialog.dismiss();
-                    if (isFinishing() || isDestroyed()) return;
-                    Toast.makeText(this, completed ? "已导出标准 PDF" :
-                                    "PDF 导出失败：" + safeError(result),
-                            completed ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
-                });
+                        ? new java.io.IOException(cancelled ? "PDF 导出已取消" : "PDF 导出未完成")
+                        : failure;
+                exportMainHandler.post(() -> finishPdfExportUi(snapshot, renderHost,
+                        progressDialog, uiFinished, completed, cancelled, result));
             }
         };
         try {
-            storageExecutor.execute(exportTask);
+            activePdfExportFuture = storageExecutor.submit(exportTask);
         } catch (java.util.concurrent.RejectedExecutionException rejected) {
-            if (activePdfExportSnapshot == snapshot) activePdfExportSnapshot = null;
-            if (activePdfExportHost == renderHost) activePdfExportHost = null;
-            if (activePdfExportDialog == progressDialog) activePdfExportDialog = null;
+            cancellation.set(true);
             snapshot.close();
-            if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
-            if (progressDialog.isShowing()) progressDialog.dismiss();
-            if (!isFinishing() && !isDestroyed()) {
-                Toast.makeText(this, "PDF 导出失败：导出任务无法启动",
-                        Toast.LENGTH_LONG).show();
-            }
+            finishPdfExportUi(snapshot, renderHost, progressDialog, uiFinished,
+                    false, false, new java.io.IOException("导出任务无法启动", rejected));
         }
+    }
+
+    private void finishPdfExportUi(NoteCanvasView.PdfExportSnapshot snapshot,
+                                   FrameLayout renderHost, AlertDialog progressDialog,
+                                   AtomicBoolean uiFinished, boolean success,
+                                   boolean cancelled, Exception failure) {
+        if (!uiFinished.compareAndSet(false, true)) return;
+        if (activePdfExportSnapshot == snapshot) activePdfExportSnapshot = null;
+        if (activePdfExportHost == renderHost) activePdfExportHost = null;
+        if (activePdfExportDialog == progressDialog) activePdfExportDialog = null;
+        activePdfExportFuture = null;
+        activePdfExportCancelled = null;
+        if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
+        if (progressDialog.isShowing()) progressDialog.dismiss();
+        if (isFinishing() || isDestroyed()) return;
+        String message = success ? "已导出标准 PDF" : cancelled ? "已取消 PDF 导出"
+                : "PDF 导出失败：" + safeError(failure == null
+                ? new java.io.IOException("PDF 导出未完成") : failure);
+        Toast.makeText(this, message, success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
     }
 
     private void handleImportedImage(android.net.Uri uri) {
@@ -4581,80 +6483,300 @@ public final class MainActivity extends Activity implements NoteCanvasView.Liste
 
     private void restoreDocument() {
         String noteId = currentNoteId;
+        aiConversationLoading = true;
         storageExecutor.execute(() -> {
             JSONObject restoredDocument = null;
             String restoreError = null;
+            AiConversationStore.Snapshot restoredConversation = null;
+            String conversationError = null;
+            String pdfDigest = "";
             try {
                 restoredDocument = NoteStore.load(this, noteId);
             } catch (Exception error) {
-                restoreError = "本地笔记读取失败";
+                restoreError = "本地笔记读取失败：" + safeError(error);
+            }
+            if (restoredDocument != null && restoredDocument.optInt("pdfPageCount", 0) > 0) {
+                try {
+                    File pdf = NoteStore.pdfFile(this, noteId);
+                    if (!pdf.isFile()) throw new java.io.IOException("PDF 原文缺失");
+                    pdfDigest = DigitizationStore.sha256File(pdf, PdfNoteIO.MAX_PDF_BYTES);
+                } catch (Exception error) {
+                    pdfDigest = "!unavailable:" + safeError(error);
+                }
+            }
+            try {
+                restoredConversation = aiConversationStore.load(noteId);
+            } catch (Exception error) {
+                conversationError = safeError(error);
             }
             JSONObject document = restoredDocument;
             String errorMessage = restoreError;
+            AiConversationStore.Snapshot conversation = restoredConversation;
+            String conversationLoadError = conversationError;
+            String restoredPdfDigest = pdfDigest;
             runOnUiThread(() -> {
-                if (!editorVisible || !noteId.equals(currentNoteId)) {
+                if (!editorVisible || !noteId.equals(currentNoteId)) return;
+                if (document == null) {
+                    showRestoreFailure(errorMessage == null ? "本地笔记读取失败" : errorMessage);
                     return;
                 }
                 try {
-                    if (document != null) {
-                        canvasView.loadJsonDocument(document);
-                        saveStatusView.setText("已恢复本地笔记");
-                    } else if (errorMessage != null) {
-                        saveStatusView.setText(errorMessage);
-                    }
-                } catch (Exception error) {
-                    saveStatusView.setText("笔记格式不兼容");
-                } finally {
-                    // Applied after the load so it is not overwritten by the
-                    // document's own (absent) style; only ever set for new notes.
+                    canvasView.loadJsonDocument(document);
+                    restoreCompleted = true;
+                    canvasView.setEnabled(true);
+                    lastSavedRevision = documentRevision;
+                    aiPdfDigest = restoredPdfDigest;
+                    aiPdfDigestAvailable = !restoredPdfDigest.startsWith("!unavailable:");
+                    applyRestoredAiConversation(conversation, conversationLoadError);
+                    saveStatusView.setText("已恢复本地笔记");
+                    // Applied only after a successful load. A failed load never turns
+                    // into an editable blank document that could overwrite the source.
                     if (pendingPageStyle != null) {
                         canvasView.applyPageStyleForNewNote(pendingPageStyle);
                         saveStatusView.setText(pendingPageStyle.describe());
                         pendingPageStyle = null;
                     }
-                    restoreCompleted = true;
-                    canvasView.setEnabled(true);
+                } catch (Exception error) {
+                    showRestoreFailure("笔记内容校验失败：" + safeError(error));
                 }
             });
         });
     }
 
+    private void applyRestoredAiConversation(AiConversationStore.Snapshot restored,
+                                             String loadError) {
+        aiConversationLoading = false;
+        aiConversationSaveFailureShown = false;
+        aiConversationSnapshot = restored;
+        aiVisibleTimeline.clear();
+        aiMessages.clear();
+        aiReadScope = null;
+        aiSessionTranscript = null;
+        aiUploadConfirmed = false;
+        releaseAiSelectionSnapshot();
+        if (restored == null) {
+            clearAiConversationViews();
+            if (loadError != null && aiStatusView != null) {
+                aiStatusView.setText("AI 对话损坏，原文件已保留：" + loadError);
+                new AlertDialog.Builder(this).setTitle("AI 对话无法安全恢复")
+                        .setMessage("笔记仍可正常编辑。损坏或超限的会话文件没有被覆盖，"
+                                + "可先导出原文件再明确清空。")
+                        .setNegativeButton("保留", null)
+                        .setNeutralButton("清空损坏对话", (dialog, which) ->
+                                clearAiConversationExplicitly())
+                        .setPositiveButton("导出原文件", (dialog, which) ->
+                                launchAiConversationRecoveryExport(currentNoteId))
+                        .show();
+            }
+            updateAiInteractionEnabled();
+            return;
+        }
+        aiVisibleTimeline.addAll(restored.visibleTimeline);
+        AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        String currentSemantic = canvasView.aiConversationFingerprint();
+        boolean sourceMatches = restored.binding.semanticDigest.equals(currentSemantic)
+                && restored.binding.pdfDigest.equals(aiPdfDigest);
+        boolean recipientMatches = profile != null
+                && restored.binding.profileId.equals(profile.id)
+                && restored.binding.profileRevision == profile.revision;
+        boolean permissionMatches = restored.binding.permission.equals(
+                aiGrantedPermission.name());
+        String restoredMaterialDigest = restored.vault == null ? "" : restored.vault.digest();
+        boolean materialMatches = restored.binding.materialDigest.equals(restoredMaterialDigest);
+        boolean wireValid = sourceMatches && recipientMatches && permissionMatches
+                && materialMatches && restored.selection != null;
+        try {
+            if (restored.selection != null && sourceMatches) {
+                aiSelectionSnapshot = restored.selection.toCanvas();
+                aiResultAnchorBounds = new RectF(aiSelectionSnapshot.sourceBounds);
+                aiSelectionPreview.setImageBitmap(aiSelectionSnapshot.bitmap);
+                aiReadScope = AiReadScope.selectionOnly(currentNoteId, ++aiSessionSerial,
+                        aiProfileIdentity(profile)).withVault(restored.vault);
+            }
+        } catch (Exception invalidSelection) {
+            wireValid = false;
+            aiSelectionSnapshot = null;
+        }
+        if (wireValid) {
+            aiMessages.addAll(restored.wireHistory);
+            aiSessionTranscript = restored.transcript;
+            aiUploadConfirmed = restored.uploadConfirmed;
+            aiStatusView.setText("已恢复本笔记的 AI 对话 · 可继续追问");
+        } else {
+            aiMessages.clear();
+            aiSessionTranscript = null;
+            aiUploadConfirmed = false;
+            String reason = !sourceMatches
+                    ? "笔记或 PDF 原文已变化，请重新圈选；旧聊天未发送。"
+                    : !recipientMatches ? "接收模型配置已变化；旧聊天未发送。"
+                    : !permissionMatches ? "写入权限已变化；旧聊天未发送。"
+                    : !materialMatches ? "冻结材料校验失败；旧聊天未发送。"
+                    : "冻结圈选无法恢复，请重新圈选。";
+            aiVisibleTimeline.add(new AiConversationStore.VisibleEntry(
+                    "notice", "assistant", "上下文边界 · " + reason, "", false));
+            AiVaultSnapshot retained = restored.vault;
+            AiConversationStore.Binding newBinding = currentAiBinding(profile, retained);
+            aiConversationSnapshot = restored.next(aiVisibleTimeline, aiMessages,
+                    sourceMatches ? restored.selection : null, retained, newBinding,
+                    null, false);
+            persistAiConversationSnapshot(aiConversationSnapshot);
+            aiStatusView.setText(reason);
+        }
+        renderAiTimeline();
+        updateAiMaterialsUi();
+        updateAiInteractionEnabled();
+        setActionEnabled(aiButton, true);
+    }
+
+    private void launchAiConversationRecoveryExport(String noteId) {
+        try {
+            File recovery = aiConversationStore.recoveryFile(noteId);
+            if (recovery == null) {
+                Toast.makeText(this, "没有可导出的 AI 会话原文件", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            pendingRecoveryFile = recovery;
+            pendingAiConversationRecoverySnapshot = null;
+            pendingRecoveryName = noteId + "-ai-conversation-recovery.json";
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/json");
+            intent.putExtra(Intent.EXTRA_TITLE, pendingRecoveryName);
+            startActivityForResult(intent, REQUEST_EXPORT_RECOVERY);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法准备 AI 会话导出：" + safeError(error),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void launchAiConversationRecoveryExport(AiConversationStore.Snapshot snapshot) {
+        if (snapshot == null) return;
+        pendingRecoveryFile = null;
+        pendingAiConversationRecoverySnapshot = snapshot;
+        pendingRecoveryName = snapshot.noteId + "-ai-conversation-unsaved.json";
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, pendingRecoveryName);
+        startActivityForResult(intent, REQUEST_EXPORT_RECOVERY);
+    }
+
+    private void showRestoreFailure(String message) {
+        restoreCompleted = false;
+        if (canvasView != null) canvasView.setEnabled(false);
+        if (saveStatusView != null) saveStatusView.setText("读取失败 · 原文件未改动");
+        new AlertDialog.Builder(this)
+                .setTitle("无法安全打开这本笔记")
+                .setMessage(message + "\n\nPadNote 已停止编辑和自动保存。原文件及可用备份仍保留，"
+                        + "可返回书架从“需要恢复”导出。").setCancelable(false)
+                .setPositiveButton("返回书架", (dialog, which) -> showBookshelf())
+                .show();
+    }
+
     private void saveDocument(boolean showToast) {
-        if (!editorVisible || !restoreCompleted || currentNoteId == null) {
+        if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
+        pendingSaveToast |= showToast;
+        if (saveInFlight) {
+            saveQueued = true;
             return;
         }
         final String json;
         final String noteId = currentNoteId;
         final String noteTitle = currentNoteTitle;
+        final long savingRevision = documentRevision;
         try {
             json = canvasView.toJsonDocument(noteId, noteTitle).toString();
+            pendingUnsavedJson = json;
         } catch (Exception error) {
-            saveStatusView.setText("生成笔记数据失败");
+            saveStatusView.setText("生成未保存副本失败：" + safeError(error));
+            pendingLeaveAfterSave = false;
+            if (showToast) Toast.makeText(this, "无法生成保存数据", Toast.LENGTH_LONG).show();
             return;
         }
+        saveInFlight = true;
+        saveQueued = false;
         saveStatusView.setText("正在保存…");
         storageExecutor.execute(() -> {
             try {
                 NoteStore.save(this, noteId, noteTitle, json);
-                runOnUiThread(() -> {
-                    if (editorVisible && noteId.equals(currentNoteId)) {
-                        saveStatusView.setText("已保存到本机");
-                    }
-                    if (showToast) {
-                        Toast.makeText(this, "已保存到本机", Toast.LENGTH_SHORT).show();
-                    }
-                });
+                runOnUiThread(() -> onSaveSucceeded(noteId, savingRevision));
             } catch (Exception error) {
-                runOnUiThread(() -> {
-                    if (editorVisible && noteId.equals(currentNoteId)) {
-                        saveStatusView.setText("本地保存失败");
-                    }
-                    if (showToast) {
-                        Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show();
-                    }
-                });
+                String message = safeError(error);
+                runOnUiThread(() -> onSaveFailed(noteId, message));
             }
         });
+    }
+
+    private void onSaveSucceeded(String noteId, long savedRevision) {
+        if (!noteId.equals(currentNoteId)) return;
+        saveInFlight = false;
+        lastSavedRevision = Math.max(lastSavedRevision, savedRevision);
+        if (savedRevision == documentRevision) {
+            pendingUnsavedJson = null;
+            saveStatusView.setText("已保存到本机 · 可重新打开");
+            if (pendingSaveToast) {
+                Toast.makeText(this, "已保存到本机", Toast.LENGTH_SHORT).show();
+                pendingSaveToast = false;
+            }
+            if (pendingLeaveAfterSave) {
+                showBookshelf();
+                return;
+            }
+        }
+        if (saveQueued || savedRevision < documentRevision) {
+            saveQueued = false;
+            saveDocument(false);
+        }
+    }
+
+    private void onSaveFailed(String noteId, String message) {
+        if (!noteId.equals(currentNoteId)) return;
+        saveInFlight = false;
+        saveQueued = false;
+        saveStatusView.setText("保存失败 · 未保存修改仍可重试或导出");
+        boolean needsDialog = pendingLeaveAfterSave || pendingSaveToast;
+        pendingLeaveAfterSave = false;
+        pendingSaveToast = false;
+        if (needsDialog) showSaveFailure(message);
+    }
+
+    private void showSaveFailure(String message) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("修改尚未保存")
+                .setMessage(message + "\n\n仍停留在当前笔记。请重试，或把内存中的未保存副本导出。")
+                .setNegativeButton("继续编辑", null)
+                .setNeutralButton("导出副本", null)
+                .setPositiveButton("重试保存", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                dialog.dismiss();
+                saveDocument(true);
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                try {
+                    commitInlineTextEditorExcept(null);
+                    pendingUnsavedJson = captureRecoveryExportJson(canvasView,
+                            currentNoteId, currentNoteTitle);
+                } catch (Exception error) {
+                    Toast.makeText(this, "生成当前未保存副本失败：" + safeError(error),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                pendingExportJson = pendingUnsavedJson;
+                pendingExportNoteId = null;
+                launchCreateExportDocument((currentNoteTitle == null ? "PadNote" : currentNoteTitle)
+                        + "-未保存副本");
+            });
+        });
+        dialog.show();
+    }
+
+    /** Always snapshots the live canvas; an older failed-save payload may be stale. */
+    static String captureRecoveryExportJson(NoteCanvasView canvas, String noteId,
+                                            String noteTitle) throws Exception {
+        if (canvas == null || noteId == null) throw new IllegalStateException("当前笔记不可用");
+        return canvas.toJsonDocument(noteId, noteTitle).toString();
     }
 
     private LinearLayout.LayoutParams matchWrap() {

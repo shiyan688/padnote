@@ -2,74 +2,147 @@ package com.padnote.android;
 
 import org.json.JSONObject;
 
-import java.io.InputStream;
+import java.net.URI;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
-import javax.net.ssl.HttpsURLConnection;
-
-/** Read-only health check. Task submission is intentionally a later capability. */
+/** Read-only capability probe for direct Hermes and paired Bridge profiles. */
 final class AgentConnectionClient {
-    private AgentConnectionClient() {
+    static final class ProbeResult {
+        final String message;
+        final String bridgeId;
+        final String instanceId;
+        final List<String> capabilities;
+
+        ProbeResult(String message, String instanceId, List<String> capabilities) {
+            this(message, "", instanceId, capabilities);
+        }
+
+        ProbeResult(String message, String bridgeId, String instanceId,
+                    List<String> capabilities) {
+            this.message = message == null ? "已验证" : message;
+            this.bridgeId = bridgeId == null ? "" : bridgeId;
+            this.instanceId = instanceId == null ? "" : instanceId;
+            this.capabilities = Collections.unmodifiableList(new ArrayList<>(
+                    capabilities == null ? Collections.emptyList() : capabilities));
+        }
     }
+
+    private static final int MAX_RESPONSE = 512 * 1024;
+    private static final String[] DIRECT_REQUIRED = {
+            "run_submission", "run_status", "run_stop", "run_approval_response"
+    };
+    private final AgentHttpTransport transport;
+
+    private AgentConnectionClient() { this(AgentHttpTransport.production()); }
+    AgentConnectionClient(AgentHttpTransport transport) { this.transport = transport; }
 
     static String probe(AgentConnectionStore.Config config) throws Exception {
-        if (config.kind == AgentConnectionStore.Kind.OPENCLAW) {
-            throw new IllegalStateException("OpenClaw 连接需要 Gateway WebSocket Bridge，当前版本暂未开启");
+        return new AgentConnectionClient().probeDetails(config).message;
+    }
+
+    static ProbeResult probeResult(AgentConnectionStore.Config config) throws Exception {
+        return new AgentConnectionClient().probeDetails(config);
+    }
+
+    ProbeResult probeDetails(AgentConnectionStore.Config config) throws Exception {
+        if (config == null || !config.complete()) {
+            throw new IllegalArgumentException("请填写 Agent 地址和连接令牌");
         }
-        URL url = new URL(withCapabilitiesPath(config.endpoint));
-        if (!"https".equalsIgnoreCase(url.getProtocol())) {
-            throw new IllegalArgumentException("Agent 地址必须使用 HTTPS");
+        String root = normalizeEndpoint(config.endpoint);
+        URL url;
+        if (config.transport == AgentConnectionStore.Transport.BRIDGE) {
+            if (config.instanceId.isEmpty()) throw new IllegalArgumentException("连接缺少 Agent 实例标识");
+            url = new URL(root + "/padnote/v1/agents/" + path(config.instanceId) +
+                    "/capabilities");
+        } else {
+            if (config.kind == AgentConnectionStore.Kind.OPENCLAW) {
+                throw new IllegalStateException("OpenClaw 需要通过电脑连接助手配对");
+            }
+            url = new URL(root.endsWith("/v1/capabilities")
+                    ? root : root + "/v1/capabilities");
         }
-        HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
-        connection.setConnectTimeout(8000);
-        connection.setReadTimeout(12000);
-        connection.setInstanceFollowRedirects(false);
-        connection.setRequestMethod("GET");
-        connection.setRequestProperty("Authorization", "Bearer " + config.token);
-        connection.setRequestProperty("Accept", "application/json");
+        AgentHttpTransport.Response response = transport.execute(new AgentHttpTransport.Request(
+                "GET", url, config.token, Collections.emptyMap(), null, MAX_RESPONSE));
+        rejectRedirect(response);
+        if (response.status < 200 || response.status >= 300) {
+            throw new IllegalStateException("Agent 健康检查失败（HTTP " + response.status + "）");
+        }
+        JSONObject object = new JSONObject(response.utf8());
+        JSONObject features = object.optJSONObject("features");
+        if (features == null) throw new IllegalStateException("Agent capabilities 缺少 features");
+        List<String> enabled = enabledFeatures(features);
+        if (config.transport == AgentConnectionStore.Transport.BRIDGE) {
+            if (!"padnote.agent.capabilities".equals(object.optString("object")) ||
+                    object.optInt("protocol_version", 0) != 1) {
+                throw new IllegalStateException("响应不是 PadNote Bridge capabilities");
+            }
+            String instanceId = object.optString("instance_id", "");
+            String bridgeId = object.optString("bridge_id", "");
+            String expectedKind = config.kind == AgentConnectionStore.Kind.HERMES
+                    ? "hermes" : "openclaw";
+            if (!config.instanceId.equals(instanceId) ||
+                    (!config.bridgeId.isEmpty() && !config.bridgeId.equals(bridgeId)) ||
+                    !expectedKind.equals(object.optString("kind", ""))) {
+                throw new IllegalStateException("电脑或 Agent 实例与已配对连接不匹配");
+            }
+            return new ProbeResult("连接助手已验证", bridgeId, instanceId, enabled);
+        }
+        if (!"hermes.api_server.capabilities".equals(object.optString("object")) ||
+                !"hermes-agent".equals(object.optString("platform"))) {
+            throw new IllegalStateException("响应不是 Hermes Agent capabilities");
+        }
+        for (String required : DIRECT_REQUIRED) {
+            if (!features.optBoolean(required, false)) {
+                throw new IllegalStateException("Hermes 缺少能力：" + required);
+            }
+        }
+        return new ProbeResult("Hermes 已验证", object.optString("instance_id", ""), enabled);
+    }
+
+    static String normalizeEndpoint(String endpoint) {
         try {
-            int status = connection.getResponseCode();
-            InputStream stream = status >= 200 && status < 300
-                    ? connection.getInputStream() : connection.getErrorStream();
-            String response = stream == null ? "" : readLimited(stream);
-            if (status < 200 || status >= 300) {
-                throw new IllegalStateException("Hermes 健康检查失败（HTTP " + status + "）");
+            String normalized = endpoint == null ? "" : endpoint.trim();
+            while (normalized.endsWith("/")) normalized = normalized.substring(0,
+                    normalized.length() - 1);
+            URI uri = new URI(normalized);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null ||
+                    uri.getHost().isEmpty() || uri.getRawUserInfo() != null ||
+                    uri.getRawQuery() != null || uri.getRawFragment() != null) {
+                throw new IllegalArgumentException("Agent 地址必须是无账号、查询或片段的 HTTPS 地址");
             }
-            JSONObject capabilities = new JSONObject(response);
-            if (!"hermes.api_server.capabilities".equals(capabilities.optString("object"))
-                    || !"hermes-agent".equals(capabilities.optString("platform"))) {
-                throw new IllegalStateException("响应不是 Hermes Agent capabilities");
-            }
-            JSONObject features = capabilities.optJSONObject("features");
-            String[] required = {"run_submission", "run_status", "run_events_sse",
-                    "run_stop", "run_approval_response"};
-            if (features == null) throw new IllegalStateException("Hermes capabilities 缺少 features");
-            for (String feature : required) {
-                if (!features.optBoolean(feature, false)) {
-                    throw new IllegalStateException("Hermes 缺少能力：" + feature);
-                }
-            }
-            return "Hermes 已连接";
-        } finally {
-            connection.disconnect();
+            return normalized;
+        } catch (IllegalArgumentException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IllegalArgumentException("Agent 地址格式无效", error);
         }
     }
 
-    private static String withCapabilitiesPath(String endpoint) {
-        String normalized = endpoint.trim();
-        while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
-        return normalized.endsWith("/v1/capabilities") ? normalized : normalized + "/v1/capabilities";
+    static void rejectRedirect(AgentHttpTransport.Response response) {
+        if (response.status >= 300 && response.status < 400 ||
+                response.finalUrl == null || !response.requestedUrl.equals(response.finalUrl)) {
+            throw new IllegalStateException("Agent 请求不允许重定向");
+        }
     }
 
-    private static String readLimited(InputStream stream) throws Exception {
-        byte[] buffer = new byte[8192];
-        StringBuilder result = new StringBuilder();
-        int read;
-        while ((read = stream.read(buffer)) >= 0) {
-            result.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
-            if (result.length() > 512 * 1024) throw new IllegalStateException("Agent 响应过大");
+    private static List<String> enabledFeatures(JSONObject features) {
+        List<String> result = new ArrayList<>();
+        for (java.util.Iterator<String> keys = features.keys(); keys.hasNext();) {
+            String key = keys.next();
+            if (features.optBoolean(key, false)) result.add(key);
         }
-        return result.toString();
+        Collections.sort(result);
+        return result;
+    }
+
+    static String path(String value) throws Exception {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20");
     }
 }

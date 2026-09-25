@@ -6,6 +6,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URL;
@@ -14,10 +15,81 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.HttpsURLConnection;
 
 final class OpenAiCompatibleClient {
+
+    /** One request-chain cancellation handle; safe to call from the UI thread. */
+    static final class Cancellation {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private HttpsURLConnection activeConnection;
+        private Thread activeThread;
+
+        void cancel() {
+            HttpsURLConnection connection;
+            synchronized (this) {
+                if (!cancelled.compareAndSet(false, true)) return;
+                connection = activeConnection;
+                // Interrupt while holding the same lock used by unbind. The
+                // worker therefore either clears this token's interrupt before
+                // returning to its pool, or has already unbound and is not
+                // interrupted at all; a late cancel cannot poison a later task.
+                if (activeThread != null) activeThread.interrupt();
+            }
+            if (connection != null) {
+                // Some providers block in native/TLS cleanup. Keep cancel()
+                // instant for the UI while still forcing the socket closed.
+                Thread disconnect = new Thread(connection::disconnect,
+                        "padnote-ai-disconnect");
+                disconnect.setDaemon(true);
+                disconnect.start();
+            }
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        void throwIfCancelled() throws RequestCancelledException {
+            if (cancelled.get()) throw new RequestCancelledException();
+        }
+
+        synchronized void bind(HttpsURLConnection connection)
+                throws RequestCancelledException {
+            throwIfCancelled();
+            activeConnection = connection;
+            activeThread = Thread.currentThread();
+            if (cancelled.get()) {
+                activeConnection = null;
+                activeThread = null;
+                connection.disconnect();
+                throw new RequestCancelledException();
+            }
+        }
+
+        synchronized void unbind(HttpsURLConnection connection) {
+            if (activeConnection == connection) activeConnection = null;
+            if (activeThread == Thread.currentThread()) activeThread = null;
+            // Executor threads are reused. Clear only the interrupt associated
+            // with this cancelled handle so it cannot poison the next request.
+            if (cancelled.get()) Thread.interrupted();
+        }
+    }
+
+    static final class RequestCancelledException extends IOException {
+        RequestCancelledException() { super("请求已在本机取消"); }
+
+        RequestCancelledException(Throwable cause) {
+            super("请求已在本机取消", cause);
+        }
+    }
+
+    /** Provider explicitly rejected the standard tools/function-calling request fields. */
+    static final class ToolParameterRejectedException extends IOException {
+        ToolParameterRejectedException(String message) { super(message); }
+    }
 
     /**
      * One turn of conversation.
@@ -131,13 +203,22 @@ final class OpenAiCompatibleClient {
                                         List<Message> conversation,
                                         JSONArray toolDescriptions,
                                         JSONObject pageMapContext) throws Exception {
+        return completeWithTools(config, selectionPng, conversation, toolDescriptions,
+                pageMapContext, new Cancellation());
+    }
+
+    static Completion completeWithTools(AiConfigStore.Config config, byte[] selectionPng,
+                                        List<Message> conversation,
+                                        JSONArray toolDescriptions,
+                                        JSONObject pageMapContext,
+                                        Cancellation cancellation) throws Exception {
         URL url = new URL(resolveChatCompletionsUrl(config.endpoint));
         if (!"https".equalsIgnoreCase(url.getProtocol())) {
             throw new IllegalArgumentException("API 地址必须使用 HTTPS");
         }
         JSONObject request = buildRequest(config.model, selectionPng, conversation,
                 toolDescriptions, pageMapContext);
-        return post(config, url, request);
+        return post(config, url, request, cancellation);
     }
 
     /**
@@ -147,56 +228,95 @@ final class OpenAiCompatibleClient {
      * leg then reasons over the transcript instead of the pixels.
      */
     static String transcribe(AiConfigStore.Config config, byte[] selectionPng) throws Exception {
+        return transcribe(config, selectionPng, new Cancellation());
+    }
+
+    static String transcribe(AiConfigStore.Config config, byte[] selectionPng,
+                             Cancellation cancellation) throws Exception {
         return transcribeWithPrompt(config, selectionPng,
                 "你是手写笔记转写器。把图片中的手写内容原样转写为 Markdown 文本："
                         + "数学公式用标准 LaTeX，行间公式放在 \\[ 与 \\] 之间，"
                         + "行内公式放在 \\( 与 \\) 之间；"
                         + "保留原有的标题、列表、段落和空间顺序；"
                         + "不要回答、讲解或补充图片里的内容，只输出转写结果；"
-                        + "无法辨认的字符用【无法辨认】标注，不要臆测。");
+                        + "无法辨认的字符用【无法辨认】标注，不要臆测。", cancellation);
     }
 
     /** Same call with a caller-supplied contract; used by vault digitization. */
     static String transcribeWithPrompt(AiConfigStore.Config config, byte[] selectionPng,
                                        String systemPrompt) throws Exception {
+        return transcribeWithPrompt(config, selectionPng, systemPrompt, new Cancellation());
+    }
+
+    static String transcribeWithPrompt(AiConfigStore.Config config, byte[] selectionPng,
+                                       String systemPrompt, Cancellation cancellation)
+            throws Exception {
         URL url = new URL(resolveChatCompletionsUrl(config.endpoint));
         if (!"https".equalsIgnoreCase(url.getProtocol())) {
             throw new IllegalArgumentException("API 地址必须使用 HTTPS");
         }
         return post(config, url,
-                buildTranscribeRequest(config.model, selectionPng, systemPrompt)).displayContent;
+                buildTranscribeRequest(config.model, selectionPng, systemPrompt),
+                cancellation).displayContent;
     }
 
-    private static Completion post(AiConfigStore.Config config, URL url,
-                                   JSONObject request) throws Exception {
+    static Completion post(AiConfigStore.Config config, URL url,
+                           JSONObject request, Cancellation cancellation) throws Exception {
         byte[] requestBytes = request.toString().getBytes(StandardCharsets.UTF_8);
+        Cancellation active = cancellation == null ? new Cancellation() : cancellation;
+        active.throwIfCancelled();
         HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
-        connection.setConnectTimeout(20_000);
-        connection.setReadTimeout(90_000);
-        connection.setInstanceFollowRedirects(false);
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Authorization", "Bearer " + config.apiKey);
-        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "PadNote-Android/0.16");
-        connection.setDoOutput(true);
-        connection.setFixedLengthStreamingMode(requestBytes.length);
-
         try {
+            active.bind(connection);
+            connection.setConnectTimeout(20_000);
+            connection.setReadTimeout(90_000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Authorization", "Bearer " + config.apiKey);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("User-Agent", "PadNote-Android/0.18");
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(requestBytes.length);
+            active.throwIfCancelled();
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(requestBytes);
             }
+            active.throwIfCancelled();
             int status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 300
                     ? connection.getInputStream() : connection.getErrorStream();
-            String responseText = stream == null ? "" : readLimited(stream);
+            String responseText;
+            try (InputStream response = stream) {
+                responseText = response == null ? "" : readLimited(response);
+            }
+            active.throwIfCancelled();
             if (status < 200 || status >= 300) {
-                throw new IllegalStateException(providerError(status, responseText));
+                String providerMessage = providerError(status, responseText);
+                if (request.has("tools") && explicitlyRejectsTools(status, responseText)) {
+                    throw new ToolParameterRejectedException(providerMessage);
+                }
+                throw new IllegalStateException(providerMessage);
             }
             return extractCompletion(new JSONObject(responseText));
+        } catch (Exception error) {
+            if (active.isCancelled()) throw new RequestCancelledException(error);
+            throw error;
         } finally {
+            active.unbind(connection);
             connection.disconnect();
         }
+    }
+
+    static boolean explicitlyRejectsTools(int status, String responseText) {
+        if (status < 400 || status >= 500) return false;
+        String value = responseText == null ? "" : responseText.toLowerCase(java.util.Locale.ROOT);
+        boolean mentionsField = value.contains("tool_choice") || value.contains("tools")
+                || value.contains("function calling") || value.contains("function_call");
+        boolean rejects = value.contains("unsupported") || value.contains("not support")
+                || value.contains("unknown parameter") || value.contains("unrecognized")
+                || value.contains("不支持") || value.contains("未知参数");
+        return mentionsField && rejects;
     }
 
     static String resolveChatCompletionsUrl(String endpoint) {
@@ -210,15 +330,18 @@ final class OpenAiCompatibleClient {
         return normalized + "/chat/completions";
     }
 
-    private static JSONObject buildRequest(String model, byte[] selectionPng,
-                                           List<Message> conversation,
-                                           JSONArray toolDescriptions,
-                                           JSONObject pageMapContext) throws Exception {
+    static JSONObject buildRequest(String model, byte[] selectionPng,
+                                   List<Message> conversation,
+                                   JSONArray toolDescriptions,
+                                   JSONObject pageMapContext) throws Exception {
         boolean toolsOffered = toolDescriptions != null && toolDescriptions.length() > 0;
+        boolean vaultToolsOffered = hasTool(toolDescriptions, "search_vault")
+                && hasTool(toolDescriptions, "read_vault_note");
         JSONArray messages = new JSONArray();
         JSONObject system = new JSONObject();
         system.put("role", "system");
-        system.put("content", toolsOffered ? toolSystemPrompt() : plainSystemPrompt());
+        system.put("content", toolsOffered
+                ? toolSystemPrompt(vaultToolsOffered) : plainSystemPrompt());
         messages.put(system);
 
         if (pageMapContext != null) {
@@ -335,8 +458,8 @@ final class OpenAiCompatibleClient {
      * page, which makes "what deserves to be in the note" a judgement the model
      * makes deliberately.
      */
-    private static String toolSystemPrompt() {
-        return "你是 PadNote 的笔记助手，工作在一个平板手写笔记应用里。用中文回答。\n\n"
+    private static String toolSystemPrompt(boolean vaultToolsOffered) {
+        String prompt = "你是 PadNote 的笔记助手，工作在一个平板手写笔记应用里。用中文回答。\n\n"
                 + "【最重要的规则】你的回复文字只会显示在对话卡片里，不会写进笔记。"
                 + "只有调用 write_text 或 draw_diagram 工具，内容才会出现在笔记页面上。"
                 + "所以请自己判断哪些内容值得留在笔记里：\n"
@@ -359,15 +482,28 @@ final class OpenAiCompatibleClient {
                 + "标签简短；不支持任意 JavaScript、Python 或外部图片。先看 page map，"
                 + "优先选择原文下方空白区域；侧边足够宽时可用 position=right/left。"
                 + "图表整体放置，当前页底放不下会移到下一页。不要遮盖已有手写，"
-                + "也不要用图表重复已经足够清楚的一句话。\n\n"
-                + "【知识库】应用内有一个知识库：用户的手写笔记被数字化成 "
-                + "Obsidian 兼容的 Markdown 格式笔记（公式为 LaTeX、流程图为 Mermaid）。"
-                + "当问题涉及用户以往的笔记、需要跨笔记对照，"
-                + "或你判断知识库里可能有相关材料时，先用 search_vault 检索，"
-                + "再用 read_vault_note 读取命中的笔记，引用时注明出处。"
-                + "不要把知识库笔记整本抄进页面；写入页面的仍只应是当前任务值得留存的内容。\n\n"
+                + "也不要用图表重复已经足够清楚的一句话。\n\n";
+        if (vaultToolsOffered) {
+            prompt += "【已授权知识库材料】用户为本次对话明确选择了少量格式笔记。"
+                    + "search_vault 和 read_vault_note 只能访问这份冻结快照。"
+                    + "需要引用时先检索再读取并注明出处；不要整本抄入页面。\n\n";
+        }
+        return prompt
                 + "【数学】公式用标准 LaTeX：行间放在 \\[ 与 \\] 之间，"
                 + "行内放在 \\( 与 \\) 之间。无法辨认的字符要明确说明，不要臆测。";
+    }
+
+    private static boolean hasTool(JSONArray descriptions, String name) {
+        if (descriptions == null) {
+            return false;
+        }
+        for (int index = 0; index < descriptions.length(); index++) {
+            JSONObject item = descriptions.optJSONObject(index);
+            if (item != null && name.equals(item.optString("name"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static JSONArray encodeToolCalls(List<ToolCall> toolCalls) throws Exception {

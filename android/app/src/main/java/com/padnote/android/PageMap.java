@@ -128,7 +128,6 @@ final class PageMap {
                 continue;
             }
             seenFlows.add(fragment.flowId);
-            TextFlow flow = findFlow(flows, fragment.flowId);
             JSONObject entry = new JSONObject();
             entry.put("flowId", fragment.flowId);
             entry.put("bands", bandRangeOf(fragmentBounds(fragment), pageIndex,
@@ -138,12 +137,6 @@ final class PageMap {
             entry.put("format", fragment.format.storageValue());
             entry.put("fontSizeSp", Math.round(fragment.fontSizeSp));
             entry.put("lineHeight", round1(fragment.lineHeight));
-            if (flow != null) {
-                // Full source, because it is plain text the model can read and
-                // rewrite directly. This is the part of a note the model truly
-                // understands without recognition.
-                entry.put("source", flow.source);
-            }
             textArray.put(entry);
         }
         page.put("textFlows", textArray);
@@ -386,15 +379,6 @@ final class PageMap {
             }
         }
         return free;
-    }
-
-    private static TextFlow findFlow(List<TextFlow> flows, String flowId) {
-        for (TextFlow flow : flows) {
-            if (flow.id.equals(flowId)) {
-                return flow;
-            }
-        }
-        return null;
     }
 
     private static float round1(float value) {

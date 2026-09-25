@@ -24,6 +24,9 @@ import java.util.zip.ZipOutputStream;
 /** Streaming PDF / portable notebook import; never embeds binary PDF in JSON. */
 final class PdfNoteIO {
     static final long MAX_PDF_BYTES = 100L * 1024 * 1024;
+    static final long MAX_FLATTENED_RASTER_PIXELS = 220_000_000L;
+    static final int PREFERRED_EXPORT_LONG_EDGE = 1800;
+    static final int MIN_EXPORT_LONG_EDGE = 720;
 
     static void copy(InputStream input, OutputStream output, long limit) throws IOException {
         byte[] buffer = new byte[32768];
@@ -120,6 +123,73 @@ final class PdfNoteIO {
         void onPageRendered(int completedPages, int totalPages);
     }
 
+    interface ExportCancellation {
+        boolean isCancelled();
+    }
+
+    static final class ExportCancelledException extends IOException {
+        ExportCancelledException() { super("PDF 导出已取消"); }
+    }
+
+    /** Android's native PDF writer may return after its Java stream threw. */
+    private static final class FailureTrackingOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final ExportCancellation cancellation;
+        private IOException failure;
+
+        FailureTrackingOutputStream(OutputStream delegate, ExportCancellation cancellation) {
+            this.delegate = delegate;
+            this.cancellation = cancellation;
+        }
+
+        @Override public void write(int value) throws IOException {
+            try {
+                requireActive();
+                delegate.write(value);
+                requireActive();
+            } catch (IOException error) {
+                remember(error);
+                throw error;
+            }
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+            try {
+                requireActive();
+                delegate.write(bytes, offset, length);
+                requireActive();
+            } catch (IOException error) {
+                remember(error);
+                throw error;
+            }
+        }
+
+        @Override public void flush() throws IOException {
+            try {
+                requireActive();
+                delegate.flush();
+                requireActive();
+            } catch (IOException error) {
+                remember(error);
+                throw error;
+            }
+        }
+
+        private void remember(IOException error) {
+            if (failure == null) failure = error;
+        }
+
+        private void requireActive() throws ExportCancelledException {
+            if (cancellation.isCancelled() || Thread.currentThread().isInterrupted()) {
+                throw new ExportCancelledException();
+            }
+        }
+
+        void throwIfFailed() throws IOException {
+            if (failure != null) throw failure;
+        }
+    }
+
     /**
      * Creates a flattened PDF from a frozen document snapshot.
      *
@@ -131,18 +201,34 @@ final class PdfNoteIO {
                                    FrameLayout attachedRenderHost, OutputStream output,
                                    Handler mainHandler, ProgressListener progress)
             throws Exception {
+        exportFlattenedPdf(snapshot, attachedRenderHost, output, mainHandler, progress,
+                () -> false);
+    }
+
+    static void exportFlattenedPdf(NoteCanvasView.PdfExportSnapshot snapshot,
+                                   FrameLayout attachedRenderHost, OutputStream output,
+                                   Handler mainHandler, ProgressListener progress,
+                                   ExportCancellation cancellation)
+            throws Exception {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             throw new IllegalStateException("PDF 文件写入不能在主线程执行");
         }
         if (snapshot == null || attachedRenderHost == null || output == null ||
-                mainHandler == null) {
+                mainHandler == null || cancellation == null) {
             throw new IllegalArgumentException("PDF 导出参数不完整");
         }
         PdfDocument pdf = new PdfDocument();
         try {
             int pages = snapshot.getPageCount();
+            int outputLongEdge = chooseRasterLongEdge(pages, snapshot.getPageWidth(),
+                    snapshot.getPageHeight());
             for (int page = 0; page < pages; page++) {
-                Bitmap bitmap = snapshot.renderBasePage(page, 1800);
+                throwIfCancelled(cancellation);
+                Bitmap bitmap = snapshot.renderBasePage(page, outputLongEdge);
+                if (cancellation.isCancelled() || Thread.currentThread().isInterrupted()) {
+                    bitmap.recycle();
+                    throw new ExportCancelledException();
+                }
                 AtomicReference<Bitmap> rendered = new AtomicReference<>();
                 AtomicReference<Exception> failure = new AtomicReference<>();
                 AtomicBoolean accepting = new AtomicBoolean(true);
@@ -193,6 +279,14 @@ final class PdfNoteIO {
                     // the snapshot invalidates it before that callback can draw.
                     throw new IOException("第 " + (page + 1) + " 页文字渲染超时");
                 }
+                try {
+                    throwIfCancelled(cancellation);
+                } catch (ExportCancelledException cancelled) {
+                    Bitmap completed = rendered.get();
+                    if (completed != null && !completed.isRecycled()) completed.recycle();
+                    else if (!bitmap.isRecycled()) bitmap.recycle();
+                    throw cancelled;
+                }
                 if (failure.get() != null) {
                     bitmap.recycle();
                     throw failure.get();
@@ -216,11 +310,39 @@ final class PdfNoteIO {
                     mainHandler.post(() -> progress.onPageRendered(complete, pages));
                 }
             }
-            pdf.writeTo(output);
-            output.flush();
+            throwIfCancelled(cancellation);
+            FailureTrackingOutputStream checkedOutput =
+                    new FailureTrackingOutputStream(output, cancellation);
+            pdf.writeTo(checkedOutput);
+            checkedOutput.throwIfFailed();
+            checkedOutput.flush();
+            checkedOutput.throwIfFailed();
         } finally {
             pdf.close();
             snapshot.close();
+        }
+    }
+
+    static int chooseRasterLongEdge(int pages, float pageWidth, float pageHeight)
+            throws IOException {
+        if (pages < 1 || pageWidth <= 0f || pageHeight <= 0f ||
+                !Float.isFinite(pageWidth) || !Float.isFinite(pageHeight)) {
+            throw new IOException("PDF 页面尺寸无效");
+        }
+        double ratio = Math.min(pageWidth, pageHeight) / Math.max(pageWidth, pageHeight);
+        double allowedPerPage = MAX_FLATTENED_RASTER_PIXELS / (double) pages;
+        int allowedEdge = (int) Math.floor(Math.sqrt(allowedPerPage / ratio));
+        int chosen = Math.min(PREFERRED_EXPORT_LONG_EDGE, allowedEdge);
+        if (chosen < MIN_EXPORT_LONG_EDGE) {
+            throw new IOException("笔记页数与页面尺寸超过 PDF 导出内存预算，请分册导出");
+        }
+        return chosen;
+    }
+
+    private static void throwIfCancelled(ExportCancellation cancellation)
+            throws ExportCancelledException {
+        if (cancellation.isCancelled() || Thread.currentThread().isInterrupted()) {
+            throw new ExportCancelledException();
         }
     }
 }

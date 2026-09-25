@@ -36,6 +36,15 @@ final class NoteTools {
         List<VaultStore.VaultNote> list();
 
         String read(String fileName) throws Exception;
+
+        /** Reads with a byte budget; persistent stores reject before allocation. */
+        default String readBounded(String fileName, int maximumBytes) throws Exception {
+            String value = read(fileName);
+            if (value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maximumBytes) {
+                throw new IllegalArgumentException("格式笔记超出单项材料上限");
+            }
+            return value;
+        }
     }
 
     private NoteTools() {
@@ -54,7 +63,7 @@ final class NoteTools {
      * @param vault read-only access to digitized notes; may expose an empty
      *              library, which the readers report as such instead of failing
      */
-    static NoteToolRegistry createDefault(VaultReader vault) {
+    static NoteToolRegistry createDefault(AiVaultSnapshot vault) {
         NoteToolRegistry registry = new NoteToolRegistry();
         registerCore(registry);
         if (vault != null) {
@@ -116,7 +125,7 @@ final class NoteTools {
         }
     }
 
-    /** Reads document structure: occupancy, free capacity, ink clusters, sources. */
+    /** Reads document structure without note text or image content. */
     private static final class ReadPageMap implements NoteTool {
         @Override
         public String name() {
@@ -126,7 +135,7 @@ final class NoteTools {
         @Override
         public String description() {
             return "读取笔记结构：每页的占用与空白区域（空白以可容纳行数和中文字符数表示）、"
-                    + "手写笔迹的位置聚类（不含文字识别）、已有文字流的完整源码，以及当前选区所在位置。"
+                    + "手写笔迹的位置聚类（不含文字识别）、已有文字流的格式和尺寸，以及当前选区所在位置。"
                     + "规划写入位置前先调用它。位置一律用 band 表示，不要使用像素坐标。";
         }
 
@@ -281,6 +290,9 @@ final class NoteTools {
                     optionalFloat(arguments, "widthDp"));
             if (report == null) {
                 return Result.error("找不到文字流：" + flowId);
+            }
+            if (report.optBoolean("unchanged", false)) {
+                return Result.ok(report, flowId + " 的排版已是指定值");
             }
             return Result.mutated(report, "已调整 " + flowId + " 的排版");
         }

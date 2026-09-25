@@ -10,8 +10,8 @@ android {
         applicationId 'com.padnote.android'
         minSdk 24
         targetSdk 35
-        versionCode 45
-        versionName '0.18.0-beta.6'
+        versionCode 46
+        versionName '0.18.0-beta.7'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
@@ -44,6 +44,9 @@ android {
 }
 
 dependencies {
+    // Embedded QR capture avoids requiring a separate scanner app for pairing.
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    implementation 'com.google.zxing:core:3.5.3'
     // Real org.json for unit tests: the one bundled in android.jar is a stub that
     // throws, so tool schemas and registry behaviour could not be exercised on the
     // JVM without it. Pinned deliberately rather than left as a range.

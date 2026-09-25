@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Original PDF stays on disk; only three visible-page bitmaps are retained. */
 final class PdfBackground {
@@ -38,6 +39,7 @@ final class PdfBackground {
     private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF destination = new RectF();
     private volatile boolean closed;
+    private final AtomicBoolean closeRequested = new AtomicBoolean();
 
     PdfBackground(File file, View owner) throws IOException {
         sourceFile = file;
@@ -67,8 +69,8 @@ final class PdfBackground {
         }
     }
 
-    void draw(Canvas canvas, int index, RectF box, boolean immediate) {
-        if (closed || !hasPage(index)) return;
+    synchronized void draw(Canvas canvas, int index, RectF box, boolean immediate) {
+        if (closeRequested.get() || closed || !hasPage(index)) return;
         Bitmap bitmap = pages.get(index);
         if (bitmap == null && immediate) {
             bitmap = render(index);
@@ -91,16 +93,25 @@ final class PdfBackground {
                     if (closed) return;
                     Bitmap result = render(index);
                     owner.post(() -> {
-                        pending.remove(index);
-                        if (!closed) { pages.put(index, result); owner.invalidate(); }
+                        synchronized (PdfBackground.this) {
+                            pending.remove(index);
+                            if (!closed && !closeRequested.get()) {
+                                pages.put(index, result);
+                                owner.invalidate();
+                            } else if (!result.isRecycled()) {
+                                result.recycle();
+                            }
+                        }
                     });
                 } catch (RuntimeException error) {
                     owner.post(() -> {
-                        pending.remove(index);
-                        if (!closed) {
-                            failed.add(index);
-                            Toast.makeText(owner.getContext(), "PDF 第 " + (index + 1)
-                                    + " 页渲染失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+                        synchronized (PdfBackground.this) {
+                            pending.remove(index);
+                            if (!closed && !closeRequested.get()) {
+                                failed.add(index);
+                                Toast.makeText(owner.getContext(), "PDF 第 " + (index + 1)
+                                        + " 页渲染失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+                            }
                         }
                     });
                 }
@@ -109,9 +120,17 @@ final class PdfBackground {
     }
 
     void close() {
-        closed = true;
-        pages.evictAll();
-        worker.execute(() -> { synchronized (this) { renderer.close(); } });
+        if (!closeRequested.compareAndSet(false, true)) return;
+        // Closing never waits on the main thread. The worker acquires the same
+        // monitor as draw(), so an in-progress export draw finishes before its
+        // bitmap cache and renderer are released.
+        worker.execute(() -> {
+            synchronized (this) {
+                closed = true;
+                pages.evictAll();
+                renderer.close();
+            }
+        });
         worker.shutdown();
     }
 }
