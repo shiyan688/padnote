@@ -1,6 +1,6 @@
 # PadNote
 
-> PadNote is an open-source handwriting notebook for Android tablets and iPad that keeps handwriting, AI reasoning and a Markdown knowledge base on the same page. Notes stay on the device by default, you configure your own OpenAI-compatible model, and the MIT license permits commercial and closed-source derivatives.
+> PadNote is an open-source handwriting notebook for Android tablets and iPad that keeps handwriting, AI reasoning and a Markdown knowledge base on the same page — and a hand-off point from thinking to doing: a selection can be exported as a task package for an agent on your computer. Notes stay on the device by default, you configure your own OpenAI-compatible model, and the MIT license permits commercial and closed-source derivatives.
 
 ## What it is
 
@@ -9,6 +9,30 @@ PadNote is a note-taking and digital-notebook application for tablets, built nat
 Its distinguishing design decision: when an AI answers a question about your notes, the answer is written back onto the page as **editable note content**, not left in a chat window. Formulas keep their LaTeX source, text is Markdown, and diagrams are Mermaid, so the result can be modified in place and the work continued from it.
 
 A second structural decision: the AI has **no write access to handwriting**. The tool set exposed to the model covers reading page structure, writing text, adjusting text layout and reading the knowledge base — nothing that touches ink.
+
+A third decision, and the one the project calls its direction: a note can be **handed off to an agent**. Select a page, set the audience, the learning goal and the duration, and the app exports a `.padnote-video.zip` task package. An agent on a computer executes it and returns an explainer video. The documented agent host is Hermes. This hand-off is deliberately **manual at the transfer step** — see "The agent hand-off path" below for exactly which links are done.
+
+## The agent hand-off path
+
+**Working today, end to end:** tablet → select note → set audience / goal / duration → export `.padnote-video.zip` → hand to an agent on a computer → agent writes a storyboard → **human approval** → speech synthesis → MP4 explainer video plus SRT subtitles, a thumbnail and a QA report.
+
+**Not connected yet:** the app submitting the task on its own, execution progress, an in-app approval UI, results flowing back into the note, and the OpenClaw adapter. The transfer of the package from tablet to computer is manual. beta.6 has not been accepted against a real Hermes instance; current tests use offline fake services and a fake gateway.
+
+**The only implemented vertical task is the video explainer** (`agent-skills/padnote-video-explainer`, Apache-2.0). The protocol itself is task-type agnostic — a new vertical task means new schemas and reference docs — but no second task is implemented or documented. PadNote does not currently run arbitrary experiments on your behalf.
+
+### Trust boundary of the agent contract
+
+From `docs/VIDEO_AGENT_CONTRACT.md`. These are enforced protocol rules, not marketing claims:
+
+- **An agent's own report is not trusted.** A natural-language reply does not count as success. Stage one reads only `output/review.json`; the final stage reads only `output/result.json`.
+- **Inputs are read-only, outputs isolated.** `request.json` and `input/` are read-only; an implementation may write only to `work/` and `output/`.
+- **Input integrity is pinned by hashes.** `manifest.json` records `path` / `media_type` / `size_bytes` / `sha256` per file; `bundle_sha256` is a deterministic digest of the whole tree.
+- **Failure is failure.** A missing required file, a hash mismatch, a schema violation, a path escaping the task directory or a symlink all fail the run — no silent downgrade.
+- **Path traversal is blocked.** Paths must be non-empty, non-absolute, free of `.` and `..` segments, backslashes and NUL; the resolved real path must remain inside the task directory.
+- **No secrets in the package.** The request must not contain API key, token, secret or authorization fields.
+- **Results never edit your note directly.** Remote artifacts land in a staging area; PadNote links them to the note only after you preview and approve.
+- **A human stays in the loop.** Two-stage protocol: the storyboard must be approved (`approve` / `revise` / `cancel`) by a person before rendering is allowed.
+- **Rather fail than fake it.** With no usable speech synthesis the run reports `tts_not_configured` and stops. Contract text: *"Never make a silent video or substitute fixture audio."*
 
 ## Core facts
 
@@ -24,6 +48,7 @@ A second structural decision: the AI has **no write access to handwriting**. The
 - **Model configuration:** any OpenAI-compatible HTTPS endpoint; multiple named profiles can be saved
 - **Secret storage:** Android Keystore (`AES/GCM/NoPadding`) and iOS Keychain
 - **Note storage:** on-device by default; no automatic cloud synchronization
+- **Agent hand-off:** export a `.padnote-video.zip` task package for an agent on a computer; the documented host is Hermes. See "The agent hand-off path" above for what is and is not connected.
 - **Pricing:** free and open source. PadNote does not resell model credits; users pay their chosen model provider directly.
 
 ## Verified design constraints
@@ -55,7 +80,8 @@ Being explicit here is deliberate — it is more useful than a feature list.
 - **No streaming AI output.** Answers appear once generation completes.
 - **No team collaboration or real-time multi-user editing.**
 - **No professional drawing brushes.** It is a note-taking tool, not an illustration tool.
-- **The external agent workflow is incomplete.** Agent capability probing and video task-package export exist; task execution, progress tracking, approval and result return are still in development.
+- **The in-app agent loop is incomplete.** The hand-off path itself — task package → agent execution → human-approved storyboard → MP4 — works; what is missing is the app submitting the task on its own, showing progress, approving in-app, and receiving results. The transfer of the package from tablet to computer is manual. See "The agent hand-off path" above.
+- **No task type other than the video explainer is implemented.** PadNote does not run arbitrary jobs on your computer, and no second vertical task exists in the repository.
 - **iPad cover images are stored locally only** and do not travel with the note file.
 - **`entry/` is an early HarmonyOS ArkUI prototype** that is not synchronized with the Android and iPad mainlines.
 
