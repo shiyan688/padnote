@@ -4,6 +4,7 @@ import {
   assertExistingFileInside,
   readJson,
   requireCliTaskRoot,
+  sha256Bytes,
   unique,
   validateSchema,
   verifyFileRecord,
@@ -20,6 +21,14 @@ export interface WavInfo {
   sampleRate: number;
   byteRate: number;
   bitsPerSample: number;
+}
+
+export interface AudioInputBinding extends JsonObject {
+  task_id: string;
+  revision: number;
+  request_sha256: string;
+  lesson_ir_sha256: string;
+  voice_sha256: string;
 }
 
 export async function parseWav(path: string): Promise<WavInfo> {
@@ -67,13 +76,21 @@ export async function parseWav(path: string): Promise<WavInfo> {
   };
 }
 
-export async function validateAudio(taskRoot: string, manifestPath?: string): Promise<JsonObject> {
-  const ir = await validateIr(taskRoot);
+export async function validateAudio(
+  taskRoot: string,
+  manifestPath?: string,
+  expectedBinding?: AudioInputBinding,
+  irPath?: string,
+): Promise<JsonObject> {
+  const ir = await validateIr(taskRoot, irPath);
   const absolute = resolve(manifestPath ?? resolve(taskRoot, 'work/audio-manifest.json'));
   const relativePath = relative(taskRoot, absolute).split(sep).join('/');
   const file = await assertExistingFileInside(taskRoot, relativePath);
   const manifest = await readJson(file);
   await validateSchema('audio-manifest', manifest);
+  if (expectedBinding && JSON.stringify(manifest.input_binding) !== JSON.stringify(expectedBinding)) {
+    throw new Error('audio manifest input binding does not match the approved revision and voice');
+  }
   const clips = manifest.clips as JsonObject[];
   unique(clips.map(clip => clip.scene_id), 'audio scene_id');
   unique(clips.map(clip => clip.path), 'audio path');
@@ -82,6 +99,13 @@ export async function validateAudio(taskRoot: string, manifestPath?: string): Pr
     throw new Error('audio clips must match Lesson IR scenes in order');
   }
   for (const clip of clips) {
+    if (expectedBinding) {
+      const scene = (ir.scenes as JsonObject[]).find(value => value.id === clip.scene_id)!;
+      const expectedInput = audioSceneInputDigest(expectedBinding, scene);
+      if (clip.input_sha256 !== expectedInput || clip.provider_idempotency_key !== expectedInput) {
+        throw new Error(`audio clip input binding mismatch for ${clip.scene_id}`);
+      }
+    }
     const path = await verifyFileRecord(taskRoot, 'task', clip);
     const wav = await parseWav(path);
     if (wav.durationMs !== clip.duration_ms) {
@@ -89,6 +113,10 @@ export async function validateAudio(taskRoot: string, manifestPath?: string): Pr
     }
   }
   return manifest;
+}
+
+export function audioSceneInputDigest(binding: AudioInputBinding, scene: JsonObject): string {
+  return sha256Bytes(JSON.stringify({binding, scene_id: scene.id, narration: scene.narration}));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

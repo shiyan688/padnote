@@ -18,6 +18,7 @@ import {validateRequest} from '../scripts/validate-request.js';
 import {validateResult} from '../scripts/validate-result.js';
 import {assertOfflineStoryboard, validateReview} from '../scripts/validate-review.js';
 import {indexAgentAudio} from '../scripts/index-agent-audio.js';
+import {grantApproval} from '../scripts/task-worker.js';
 import {validateSchema} from '../scripts/lib.js';
 
 const require = createRequire(import.meta.url);
@@ -85,10 +86,31 @@ test('agent audio index derives a validated manifest from scene WAV files', asyn
     await writeFixtureWav(resolve(root, `work/audio/${scene.id}.wav`), 1250);
   }
 
+  await assert.rejects(indexAgentAudio(root), /persisted storyboard approval is required/);
+  await writeFile(resolve(root, 'output/storyboard.html'), '<!doctype html><p>offline</p>');
+  const artifacts: JsonObject[] = [{role: 'storyboard', ...await fileDescriptor(
+    resolve(root, 'output/storyboard.html'), 'storyboard.html', 'text/html')}];
+  for (const scene of ir.scenes as JsonObject[]) {
+    const name = `storyboard-${scene.id}.png`;
+    await writeFile(resolve(root, 'output', name), Buffer.from(`PNG-${scene.id}`));
+    artifacts.push({role: 'storyboard', ...await fileDescriptor(
+      resolve(root, 'output', name), name, 'image/png')});
+  }
+  const request = JSON.parse(await readFile(resolve(root, 'request.json'), 'utf8')) as JsonObject;
+  await atomicWriteJson(resolve(root, 'output/review.json'), {
+    schema_version: '1.0', task_id: request.task_id,
+    status: 'awaiting_storyboard_review', lesson_ir_revision: 1,
+    lesson_ir: await fileDescriptor(resolve(root, 'output/lesson.ir.json'),
+      'lesson.ir.json', 'application/json'),
+    artifacts,
+  });
+  await grantApproval(root, 1);
+
   const manifest = await indexAgentAudio(root);
 
   assert.deepEqual((manifest.clips as JsonObject[]).map(clip => clip.scene_id), (ir.scenes as JsonObject[]).map(scene => scene.id));
   assert.ok((manifest.clips as JsonObject[]).every(clip => clip.duration_ms === 1250 && clip.fixture === undefined));
+  assert.ok(manifest.input_binding);
 });
 
 test('review, audio, render and result validators accept a complete audited workspace', async () => {

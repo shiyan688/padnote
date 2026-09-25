@@ -19,6 +19,15 @@ export async function validateIr(taskRoot: string, irPath?: string): Promise<Jso
   const relativePath = relative(taskRoot, requestedPath).split(sep).join('/');
   const file = await assertExistingFileInside(taskRoot, relativePath);
   const ir = await readJson(file);
+  return validateIrObject(taskRoot, ir, request);
+}
+
+/** Validates the exact already-read IR and request objects without reopening them. */
+export async function validateIrObject(
+  taskRoot: string,
+  ir: JsonObject,
+  request: JsonObject,
+): Promise<JsonObject> {
   await validateSchema('lesson-ir', ir);
 
   if (

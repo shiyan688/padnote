@@ -16,7 +16,7 @@ import {
   skillRoot,
   type JsonObject,
 } from './lib.js';
-import {validateAudio} from './validate-audio.js';
+import {validateAudio, type AudioInputBinding} from './validate-audio.js';
 import {validateIr} from './validate-ir.js';
 import {validateRenderManifest} from './validate-render.js';
 import {validateRequest} from './validate-request.js';
@@ -43,6 +43,9 @@ interface RenderOptions {
   approval: 'approve' | 'revise' | 'cancel';
   revision?: number;
   allowFixtureAudio: boolean;
+  lessonIrPath?: string;
+  expectedLessonIrSha256?: string;
+  audioBinding?: AudioInputBinding;
 }
 
 export async function renderApprovedVideo(taskRoot: string, options: RenderOptions): Promise<JsonObject | undefined> {
@@ -52,8 +55,14 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
   }
   if (options.approval === 'revise') throw new Error('revise requires a new Lesson IR and storyboard review; full rendering was not started');
   const request = await validateRequest(taskRoot);
-  const ir = await validateIr(taskRoot);
+  const ir = await validateIr(taskRoot, options.lessonIrPath);
   const review = await validateReview(taskRoot);
+  if (options.expectedLessonIrSha256) {
+    if (await sha256File(options.lessonIrPath!) !== options.expectedLessonIrSha256
+        || await sha256File(resolve(taskRoot, 'output/lesson.ir.json')) !== options.expectedLessonIrSha256) {
+      throw new Error('render input no longer matches the approved immutable Lesson IR');
+    }
+  }
   if (options.revision !== review.lesson_ir_revision) {
     throw new Error(`approval revision ${options.revision ?? 'missing'} does not match review revision ${review.lesson_ir_revision}`);
   }
@@ -61,7 +70,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
   for (const scene of ir.scenes as JsonObject[]) {
     if (!supportedVisuals.has(scene.visual.type)) throw new Error(`unsupported renderer visual.type: ${scene.visual.type}`);
   }
-  const audio = await validateAudio(taskRoot);
+  const audio = await validateAudio(taskRoot, undefined, options.audioBinding, options.lessonIrPath);
   if ((audio.clips as JsonObject[]).some(clip => clip.fixture === true) && !options.allowFixtureAudio) {
     throw new Error('fixture audio is test-only; pass --allow-fixture-audio explicitly');
   }
@@ -296,6 +305,10 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
     artifacts,
     qa: {status: 'passed', checks: qaChecks},
   };
+  if (options.expectedLessonIrSha256
+      && await sha256File(resolve(taskRoot, 'output/lesson.ir.json')) !== options.expectedLessonIrSha256) {
+    throw new Error('Lesson IR changed while rendering; result publication refused');
+  }
   await atomicWriteJson(resolve(outputDir, 'result.json'), result);
   return validateResult(taskRoot);
 }

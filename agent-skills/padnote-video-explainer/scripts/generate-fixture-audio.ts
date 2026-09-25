@@ -8,7 +8,8 @@ import {
   type JsonObject,
 } from './lib.js';
 import {parseWav} from './validate-audio.js';
-import {validateIr} from './validate-ir.js';
+import {audioSceneInputDigest} from './validate-audio.js';
+import {loadApprovedAudioInput} from './approved-audio.js';
 
 const sampleRate = 24_000;
 
@@ -16,7 +17,8 @@ export async function generateFixtureAudio(taskRoot: string): Promise<JsonObject
   if (process.argv[3] !== '--fixture-audio') {
     throw new Error('fixture audio requires the explicit --fixture-audio flag');
   }
-  const ir = await validateIr(taskRoot);
+  const approved = await loadApprovedAudioInput(taskRoot);
+  const ir = approved.ir;
   const audioDir = resolve(taskRoot, 'work/audio');
   await mkdir(audioDir, {recursive: true});
   const clips: JsonObject[] = [];
@@ -31,10 +33,12 @@ export async function generateFixtureAudio(taskRoot: string): Promise<JsonObject
       scene_id: scene.id,
       ...await fileDescriptor(path, `work/audio/${fileName}`, 'audio/wav'),
       duration_ms: wav.durationMs,
+      input_sha256: audioSceneInputDigest(approved.binding, scene),
+      provider_idempotency_key: audioSceneInputDigest(approved.binding, scene),
       fixture: true,
     });
   }
-  const manifest = {schema_version: '1.0', clips};
+  const manifest = {schema_version: '1.0', input_binding: approved.binding, clips};
   await atomicWriteJson(resolve(taskRoot, 'work/audio-manifest.json'), manifest);
   return manifest;
 }

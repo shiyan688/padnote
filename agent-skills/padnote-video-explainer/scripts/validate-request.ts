@@ -22,6 +22,14 @@ export async function validateRequest(taskRoot: string): Promise<JsonObject> {
 
   const requestPath = await assertExistingFileInside(taskRoot, 'request.json');
   const request = await readJson(requestPath);
+  return validateRequestObject(taskRoot, request);
+}
+
+/** Validates the exact already-read request object without reopening request.json. */
+export async function validateRequestObject(
+  taskRoot: string,
+  request: JsonObject,
+): Promise<JsonObject> {
   await validateSchema('request', request);
   inspectRequestValue(request, '$');
 

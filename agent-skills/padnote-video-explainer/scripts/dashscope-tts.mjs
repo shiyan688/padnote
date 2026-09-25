@@ -2,10 +2,9 @@
 // Provider adapter for PADNOTE_TTS_COMMAND. Credentials are never logged.
 import {mkdir, writeFile, rename} from 'node:fs/promises';
 import {dirname} from 'node:path';
-import {loadEnvFile} from 'node:process';
+import {loadDashScopeEnvironment} from './provider-env.mjs';
 
-if (process.env.PADNOTE_TTS_ENV_FILE) loadEnvFile(process.env.PADNOTE_TTS_ENV_FILE);
-const env = process.env;
+const env = {...await loadDashScopeEnvironment(process.env), ...pickSceneEnvironment(process.env)};
 for (const name of ['DASHSCOPE_API_KEY', 'DASHSCOPE_BASE_URL', 'DASHSCOPE_TTS_MODEL',
   'DASHSCOPE_TTS_VOICE', 'PADNOTE_TTS_TEXT', 'PADNOTE_TTS_OUTPUT']) {
   if (!env[name]) throw new Error(`Missing ${name}`);
@@ -46,3 +45,13 @@ await mkdir(dirname(env.PADNOTE_TTS_OUTPUT), {recursive: true});
 await writeFile(`${env.PADNOTE_TTS_OUTPUT}.partial`, bytes);
 await rename(`${env.PADNOTE_TTS_OUTPUT}.partial`, env.PADNOTE_TTS_OUTPUT);
 console.log(`TTS WAV written (${bytes.length} bytes)`);
+
+function pickSceneEnvironment(host) {
+  const selected = {};
+  for (const name of ['PADNOTE_TTS_SCENE_ID', 'PADNOTE_TTS_TEXT', 'PADNOTE_TTS_LANGUAGE',
+    'PADNOTE_TTS_VOICE_PROFILE', 'PADNOTE_TTS_SPEED', 'PADNOTE_TTS_OUTPUT',
+    'PADNOTE_TTS_IDEMPOTENCY_KEY']) {
+    if (host[name] !== undefined) selected[name] = host[name];
+  }
+  return selected;
+}
