@@ -4,11 +4,18 @@ import { extname, join } from 'node:path';
 
 const projectRoot = new URL('../', import.meta.url).pathname;
 const jsonFiles = [];
+// Check repository inputs, not generated SDKs, private provider configuration,
+// build outputs or simulator state in a developer's working directory.
+const ignoredDirectories = new Set([
+  '.git', '.idea', '.hvigor', '.gradle', '.gradle-user-home', '.toolchain',
+  '.android', 'oh_modules', 'node_modules', '.local-cache', '.local-output', '.runtime',
+  'build', 'build-device', 'DerivedData', 'TestResults', 'dist', '__pycache__'
+]);
 
 function walk(directory) {
   for (const name of readdirSync(directory)) {
     if (directory === join(projectRoot, 'tools/hermes') && name === '.runtime') continue;
-    if (name === '.git' || name === '.idea' || name === '.hvigor' || name === 'oh_modules' || name === 'node_modules' || name === '.local-cache' || name === '.local-output' || name === 'build') {
+    if (ignoredDirectories.has(name) || (directory === projectRoot && name === 'api')) {
       continue;
     }
     const path = join(directory, name);
@@ -72,6 +79,8 @@ const requiredFiles = [
   'android/app/src/main/java/com/padnote/android/CoverStore.java',
   'android/app/src/main/assets/mermaid/LICENSE',
   'android/app/src/main/java/com/padnote/android/VaultStore.java',
+  'android/app/src/main/java/com/padnote/android/DigitizationController.java',
+  'android/app/src/main/java/com/padnote/android/DigitizationStore.java',
   'THIRD_PARTY_NOTICES.md',
   'android/gradle/wrapper/gradle-wrapper.jar',
   'android/app/src/androidTest/java/com/padnote/android/BookshelfSmokeTest.java',
@@ -313,7 +322,7 @@ for (const requiredToken of ['HttpsURLConnection', 'image_url', 'chat/completion
 const noteStoreSource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/NoteStore.java'), 'utf8');
 for (const requiredToken of ['padnote-index.json', 'legacyMigrated', 'importDocument',
-  'writeAtomic', 'MAX_NOTE_BYTES', 'schemaVersion", 6',
+  'writeAtomic', 'MAX_NOTE_BYTES',
   'version < 1 || version > 8', 'textFlows']) {
   if (!noteStoreSource.includes(requiredToken)) {
     throw new Error(`Multi-note store is missing required token: ${requiredToken}`);
@@ -328,13 +337,13 @@ for (const requiredToken of ['ACTION_OPEN_DOCUMENT', 'ACTION_CREATE_DOCUMENT',
   // profile manager + split route session state
   'showAiManagerDialog', 'showProfileEditorDialog', 'aiSessionTranscript',
   'startTranscriptionLeg', 'startAnswerLeg', '两段式',
-  // the registry is built in onCreate so vault readers get the store
-  'NoteTools.createDefault(vaultStore)',
+  // Explicit immutable read authority replaces default access to the full vault.
+  'AiReadScope.selectionOnly', 'replaceAiReadScope',
   // discoverability: onboarding card, vault guide, shared pill-button system
   'pillButton', 'addFirstRunGuideCard', 'showVaultGuideDialog', '三步上手',
   // vault digitization: whole-note Markdown knowledge base
-  'DIGITIZE_SYSTEM_PROMPT', 'renderVaultSection', 'startDigitizationForCurrentNote',
-  'showVaultReader', 'mergePageContent', 'launchExportVaultFile',
+  'digitizationController.open', 'renderVaultSection', 'startDigitizationForCurrentNote',
+  'showVaultReader', 'launchExportVaultFile',
   // taste rules live outside the model: design language doc + press feedback
   'applyPressFeedback',
   // covers: preset library + per-note cover file convention

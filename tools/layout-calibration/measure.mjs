@@ -119,12 +119,16 @@ export function buildHtml(format, source, fontSizeSp, lineHeight = 1.35) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <style>${CSS}</style>
 <style>html,body{margin:0;padding:0;background:transparent;color:#17212b;
-font-family:sans-serif;font-size:${fs}px;line-height:${lh}}
+font-family:system-ui,-apple-system,sans-serif;font-size:${fs}px;line-height:${lh}}
 .content{padding:10px 12px;overflow-wrap:anywhere}.latex-root{text-align:center;
-padding:${mathGap}px 4px;overflow-x:auto}.math-display{display:block;text-align:center;
-overflow-x:auto;margin:${mathGap}px 0}.math-inline{display:inline-block;margin:0 2px}
-h1,h2,h3,h4,h5,h6{margin:${headingTop}px 0 ${blockGap}px;line-height:1.22}p{margin:${blockGap}px 0}
-ul,ol{margin:${blockGap}px 0;padding-left:${listIndent}px}li{margin:0}
+padding:${mathGap}px 4px;overflow:visible}.math-display{display:block;text-align:center;
+overflow:visible;margin:${mathGap}px 0}.math-inline{display:inline-block;margin:0 2px}
+.latex-root .katex-html,.math-display .katex-html{white-space:normal}
+.latex-root .katex-html>.base,.math-display .katex-html>.base{display:inline-block;white-space:nowrap;max-width:100%}
+h1,h2,h3,h4,h5,h6{margin:${headingTop}px 0 ${blockGap}px;line-height:1.2;color:#1f2933}
+h1{font-size:1.55em}h2{font-size:1.32em}h3{font-size:1.16em}h4{font-size:1em}h5,h6{font-size:.92em}
+p{margin:${blockGap}px 0}ul,ol{margin:${blockGap}px 0;padding-left:${listIndent}px}
+li{margin:0 0 ${Math.max(1, Math.floor(blockGap / 2))}px}
 blockquote{margin:${mathGap}px 0;padding:${blockGap}px 10px;
 border-left:3px solid #7894b8;background:#eef3f8}code{font-family:monospace;
 background:#eef0f2;border-radius:4px;padding:1px 4px}pre{white-space:pre-wrap;
@@ -135,6 +139,15 @@ background:#eef0f2;border-radius:7px;padding:8px}.md-link{color:#285ea8}
 document.querySelectorAll('[data-tex]').forEach(function(el){
 katex.render(el.getAttribute('data-tex'),el,{displayMode:el.getAttribute('data-display')==='1',
 throwOnError:false,strict:'ignore',trust:false,output:'htmlAndMathml'});});
+function __padnoteFitMath(){document.querySelectorAll('.latex-root,.math-display').forEach(function(el){
+var k=el.querySelector('.katex');if(!k)return;k.style.fontSize='1em';var available=el.clientWidth;
+var bases=k.querySelectorAll('.katex-html>.base');bases.forEach(function(base){
+base.style.fontSize='1em';var baseWidth=base.scrollWidth;if(baseWidth>available&&available>0){
+base.style.fontSize=(available/baseWidth*.995)+'em';}});
+var r=k.getBoundingClientRect();var availableHeight=Math.max(12,window.innerHeight-el.getBoundingClientRect().top-12);
+var scale=Math.min(1,available/Math.max(1,Math.max(k.scrollWidth,r.width)),availableHeight/Math.max(1,r.height));
+if(scale<1)k.style.fontSize=(scale*.995)+'em';});}
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(__padnoteFitMath);else __padnoteFitMath();
 </script></body></html>`;
 }
 
@@ -150,6 +163,7 @@ export async function measureBlocks(blocks, { format = 'markdown', fontSizeSp = 
     for (const block of blocks) {
       await page.setContent(buildHtml(format, block, fontSizeSp), { waitUntil: 'load' });
       await page.evaluate(() => document.fonts.ready);
+      await page.evaluate(() => __padnoteFitMath());
       const h = await page.evaluate(() => {
         const c = document.querySelector('.content');
         const r = c.getBoundingClientRect();
@@ -162,6 +176,7 @@ export async function measureBlocks(blocks, { format = 'markdown', fontSizeSp = 
     // whole-document height (margins collapse across blocks -> the real truth)
     await page.setContent(buildHtml(format, blocks.join('\n\n'), fontSizeSp), { waitUntil: 'load' });
     await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => __padnoteFitMath());
     const whole = await page.evaluate(() =>
       document.querySelector('.content').getBoundingClientRect().height);
     return { results, whole };

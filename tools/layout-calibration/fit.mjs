@@ -21,7 +21,7 @@ function estimateCurrent(block, widthDp, fontSizeSp) {
 // ---- proposed structural estimator (mirrors the real CSS box model) ----
 // Per type: collapsed top margin + n * lineHeight + intrinsic box extras.
 // Mirrors NoteCanvasView.estimateTextBlockHeight after leading became a
-// per-flow property: gaps scale with (lineHeight - 1), headings keep 1.22.
+// per-flow property: gaps scale with (lineHeight - 1), headings keep 1.2.
 const LINE_HEIGHT = Number(process.env.PADNOTE_LH ?? 1.35);
 function gaps(fs, lh) {
   const blockGap = Math.max(2, Math.round(fs * (lh - 1) * 0.55));
@@ -30,13 +30,13 @@ function gaps(fs, lh) {
 const MODEL = {
   para:     { lh: LINE_HEIGHT, extra: 0 },
   listitem: { lh: LINE_HEIGHT, extra: 0, indentEm: 1.5 },
-  heading:  { lh: 1.22, extra: 0 },
+  heading:  { lh: 1.2, extra: 0 },
   quote:    { lh: LINE_HEIGHT, extra: 'quote' },
   code:     { lh: Math.min(LINE_HEIGHT, 1.35), extra: 16, mono: true },
   math:     { lh: 1.0, extra: 0 },
 };
 
-const HEADING_SCALE = { 1: 2.0, 2: 1.5, 3: 1.17, 4: 1.0, 5: 0.83, 6: 0.67 };
+const HEADING_SCALE = { 1: 1.55, 2: 1.32, 3: 1.16, 4: 1.0, 5: 0.92, 6: 0.92 };
 
 function estimateProposed(block, widthDp, fontSizeSp, prevType) {
   const type = classify(block);

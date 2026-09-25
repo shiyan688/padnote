@@ -18,9 +18,9 @@ function estOld(block) {
 }
 
 const SAFETY = 1.06;
-const LH = { para: 1.55, listitem: 1.55, heading: 1.25, quote: 1.55, code: 1.35 };
+const LH = { para: 1.55, listitem: 1.55, heading: 1.2, quote: 1.55, code: 1.35 };
 const MARG = { para: 5, listitem: 5, heading: 8, quote: 7, code: 5, math: 8 };
-const HS = { 1: 2.0, 2: 1.5, 3: 1.17, 4: 1.0, 5: 0.83, 6: 0.67 };
+const HS = { 1: 1.55, 2: 1.32, 3: 1.16, 4: 1.0, 5: 0.92, 6: 0.92 };
 
 function estNew(block, prev) {
   const type = classify(block);
