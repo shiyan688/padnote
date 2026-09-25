@@ -54,4 +54,14 @@ public class PdfNoteIOTest {
                 new ByteArrayInputStream(out.toByteArray()), "test"));
         assertEquals(0, temporary.getRoot().listFiles().length);
     }
+
+    @Test public void flattenedExportResolutionHonorsTotalPixelBudget() throws Exception {
+        assertEquals(PdfNoteIO.PREFERRED_EXPORT_LONG_EDGE,
+                PdfNoteIO.chooseRasterLongEdge(5, 600, 800));
+        int manyPages = PdfNoteIO.chooseRasterLongEdge(500, 600, 800);
+        assertTrue(manyPages >= PdfNoteIO.MIN_EXPORT_LONG_EDGE);
+        assertTrue(manyPages < PdfNoteIO.PREFERRED_EXPORT_LONG_EDGE);
+        assertThrows(IOException.class,
+                () -> PdfNoteIO.chooseRasterLongEdge(500, 800, 800));
+    }
 }

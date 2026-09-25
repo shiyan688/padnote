@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 6,
+  "id": "fixture-schema-6",
+  "title": "Schema 6 构造回归样例",
+  "updatedAt": 1700000000006,
+  "pageCount": 2,
+  "strokes": [
+    {
+      "id": "stroke-v6",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000006,
+      "points": [
+        {
+          "x": 20,
+          "y": 40,
+          "timestamp": 1700000000006,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 70,
+          "timestamp": 1700000000016,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "pageWidth": 600,
+  "pageHeight": 800,
+  "pageGap": 24,
+  "canvasWidth": 600,
+  "canvasHeight": 800,
+  "viewportScale": 1.1,
+  "viewportZoom": 1.05,
+  "viewportCenterX": 300,
+  "viewportCenterY": 400,
+  "pageStyle": {
+    "paper": "grid",
+    "ratio": "a4",
+    "landscape": true
+  },
+  "textFlows": [
+    {
+      "id": "flow-v6",
+      "format": "latex",
+      "source": "\\frac{6}{2}=3",
+      "fontSizeSp": 20,
+      "lineHeight": 1.4,
+      "width": 450,
+      "anchorPageIndex": 0,
+      "anchorXInPage": 62,
+      "anchorYInPage": 140
+    }
+  ],
+  "textBoxes": []
+}

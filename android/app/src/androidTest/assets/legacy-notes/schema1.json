@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "fixture-schema-1",
+  "title": "Schema 1 构造回归样例",
+  "updatedAt": 1700000000001,
+  "pageCount": 1,
+  "strokes": [
+    {
+      "id": "stroke-v1",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000001,
+      "points": [
+        {
+          "x": 20,
+          "y": 40,
+          "timestamp": 1700000000001,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 70,
+          "timestamp": 1700000000011,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "canvasWidth": 600,
+  "canvasHeight": 800
+}
