@@ -31,7 +31,7 @@ PadNote 的核心思想，是把平板做成个人的思考与学习工作台，
 
 更长远的目标，是做一个更好的平板 Agent 入口。写下任务、画一张草图、圈出需要修改的地方，都可以成为表达意图的方式；Agent 返回结果后，人还可以在结果上批注，继续交流。
 
-手写笔记是这条路线的起点。接下来要逐步连接外部 Agent，让纸面上的想法能够交给它处理，再把结果带回画布。当前已提供 Agent 能力检查和视频任务包导出；任务执行、进度跟踪、审批与结果回传仍在开发路线中。
+手写笔记是这条路线的起点。公开 beta.6 提供 Agent 能力检查和视频任务包导出；源码中的 beta.7 预览版已加入 Hermes 任务提交、进度、审批和文件回传。接下来要完成真实电脑与平板的验收，再让返回结果更自然地融入纸面交流。
 
 ## 模型自己选，笔记留在本地
 
@@ -51,6 +51,8 @@ Android 可以直接下载安装 APK，最低 Android 7.0 / API 24：
 下载后在平板上打开 APK，按系统提示安装。目前是调试签名测试包；beta 与原主线可以同时安装，笔记通过导出、导入迁移。版本信息与 SHA-256 校验文件见 [Release](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.6)。
 
 beta.6 改善了纸面文字、公式和图表排版，并修复 Android PDF 导出遗漏文字的问题。可以导入[排版体验笔记](docs/fixtures/paper-layout-demo.padnote.json)，无需模型配置即可查看效果；PDF 检查步骤见[导出验收](docs/PDF_EXPORT_QA.md)。电脑 Agent 设置页已加入离线连接教程。
+
+源码中的 beta.7 预览版支持多 Agent 连接与[电脑连接助手](desktop/connection-assistant/README.md)：在电脑选择 Hermes，平板扫码配对，发送文字或笔记任务包，再查看任务进度和取回文件。助手运行在自己的电脑上，不需要部署 PadNote 服务器。OpenClaw 目前只做检测与引导，真实 Windows/WSL2 与平板验收仍需完成；具体范围见[连接验收记录](docs/AGENT_CONNECTION_QA.md)。上面的公开下载仍是 beta.6。
 
 iPad 源码已公开，最低 iPadOS 17。安装版稍后提供，目前需要通过 Xcode 自行签名运行，暂无 IPA、App Store 或 TestFlight 入口。
 
@@ -84,7 +86,7 @@ tools/build-android-apk.sh
 - Apple Pencil 的延迟、压感和防误触，以及不同 Android 平板的书写体验，需要继续做真机验证。
 - 模型对手写的识别和工具调用能力各有差异；当前 AI 回答会在生成完成后一次显示。
 - 长文档性能、两端排版与文件往返仍需要更多实际使用反馈。iPad 封面目前只保存在本机，不随笔记文件交换。
-- 外部 Agent 的完整工作流尚未接通，具体设计见 [Agent 对接说明](docs/AGENT_INTEGRATION.md)。
+- beta.7 的 Hermes 任务链路尚待真实设备验收；OpenClaw/Codex 任务适配与视频分镜专用审阅界面仍在后续计划中，见 [Agent 对接说明](docs/AGENT_INTEGRATION.md)。
 
 ## 参与开发
 

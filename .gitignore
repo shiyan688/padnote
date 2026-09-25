@@ -29,6 +29,13 @@ local.properties
 /ios/build-device/
 /ios/TestResults/
 
+# Python bytecode caches, anywhere in the tree
+__pycache__/
+*.py[cod]
+
+# Local computer connection assistant caches and runtime state
+/desktop/connection-assistant/.runtime/
+
 # Maintainer-only material
 /PROJECT_MEMORY.md
 /insight/

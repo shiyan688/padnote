@@ -1,0 +1,132 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main, beta]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Official action commits resolved from their upstream tags on 2026-09-24.
+# These jobs receive no signing, provider, or publishing credentials.
+jobs:
+  source-and-assistant:
+    name: Source and assistant
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: node tools/static-check.mjs
+      - run: bash tools/tests/test-build-android-script.sh
+      - run: bash desktop/connection-assistant/run-tests.sh
+      - run: python3 tools/tests/test_connection_assistant_http.py
+
+  android:
+    name: Android JVM, lint and test compilation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - working-directory: android
+        run: bash gradlew --no-daemon :app:testDebugUnitTest :agent-probe:test :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: android-unit-and-lint
+          path: |
+            android/app/build/reports/
+            android/app/build/test-results/
+            tools/agent-probe/build/test-results/
+          retention-days: 14
+
+  android-native:
+    name: Android API 35 native tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare isolated runner emulator
+        run: |
+          test -e /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | avdmanager create avd --force --name padnote-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_tablet
+      - name: Run native suite
+        run: bash tools/ci/android-native.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: android-native-results
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+            dist/ci/android-emulator.log
+            dist/ci/android-native.log
+          retention-days: 14
+
+  ipad:
+    name: iPad simulator tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Generate project and run tests
+        run: bash tools/ci/ipad.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ipad-simulator-results
+          path: |
+            dist/ci/ipad.log
+            dist/ci/ipad.xcresult
+          retention-days: 14
+
+  video-worker:
+    name: Video worker contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      DISABLE_TELEMETRY: 'true'
+    defaults:
+      run:
+        working-directory: agent-skills/padnote-video-explainer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm ci
+      - run: npm run check
+      - run: npm test

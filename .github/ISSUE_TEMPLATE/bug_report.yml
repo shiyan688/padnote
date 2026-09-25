@@ -1,0 +1,34 @@
+name: 功能或安装问题
+description: 帮助我们复现问题。安全漏洞请使用私密报告。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请移除 API 令牌、配对码、完整配对二维码、私人笔记和电脑用户名。
+        不要附上整个助手状态目录。涉及越权、泄露或远程执行的问题，请先阅读 SECURITY.md。
+  - type: input
+    id: version
+    attributes:
+      label: PadNote 版本与安装来源
+      placeholder: 例如 Android 0.18.0-beta.6，GitHub Release
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 设备、系统与相关 Agent 版本
+      description: 连接问题请注明电脑系统、WSL 发行版、Agent 与助手版本；不要填写地址或密钥。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 操作步骤、预期结果和实际结果
+      description: 尽量用一份新建的示例笔记复现。保存问题请注明失败前后的保存状态。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 可选的脱敏截图或日志
+      description: 只附与故障相关的部分。不要提交真实教材、笔记原件或秘密。

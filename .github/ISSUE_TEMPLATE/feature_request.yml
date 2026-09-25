@@ -1,0 +1,17 @@
+name: 使用体验建议
+description: 描述想完成的事和遇到的阻碍。
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: 你想用 PadNote 完成什么？
+      description: 写下实际场景；不需要先设计解决方案。
+    validations:
+      required: true
+  - type: textarea
+    id: obstacle
+    attributes:
+      label: 现在卡在哪里？
+      description: 可以说明当前怎么绕过，以及哪一步最费时间。
+    validations:
+      required: true
