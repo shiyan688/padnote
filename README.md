@@ -44,7 +44,7 @@ cd padnote
 tools/build-android-apk.sh
 ```
 
-iPad 最低 iPadOS 17。当前 `main` 源码包含完整的原生 iPad 客户端；用 Xcode 打开 `ios/PadNote.xcodeproj` 并选择 PadNote scheme 运行模拟器，真机需自己的 Apple Development Team。目前暂无可直接安装的 IPA、App Store 或 TestFlight 版本。iPad 验证范围与限制见 [iPad 构建说明](ios/README.md)。iPad 源码更新不代表 beta.9 Android APK 内容变化，也不代表两端功能完全一致。
+iPad 最低 iPadOS 17。当前 `main` 源码包含完整的原生 iPad 客户端；用 Xcode 打开 `ios/PadNote.xcodeproj` 并选择 PadNote scheme 运行模拟器，真机需自己的 Apple Development Team。目前暂无可直接安装的 IPA、App Store 或 TestFlight 版本。iPad 源码更新不代表 beta.9 Android APK 内容变化，也不代表两端功能完全一致。已完成 241 项模拟器单元测试和 6 项选定 UI 场景的分批验证，范围见 [iPad 构建说明](ios/README.md)。
 
 ## 参与开发
 

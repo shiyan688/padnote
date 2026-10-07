@@ -868,6 +868,9 @@ final class PadNoteUITests: XCTestCase {
         edit.tap()
         let editor = app.textViews["textSourceEditor"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts["无法完成操作"].waitForExistence(timeout: 1.25),
+                       "opening the source editor must not also trigger the retry-error alert")
+        XCTAssertTrue(editor.exists, "the source editor must remain presented after the edit action settles")
         XCTAssertEqual(editor.value as? String, "\\frac{")
         replaceText(in: editor, with: "x^2+y^2=z^2")
         app.buttons["saveTextButton"].tap()
@@ -1813,19 +1816,21 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
             XCTFail("the exact unique saved-body label must materialize in the opened task detail after bounded scrolling")
             return
         }
+        let expectedBodySnapshot = body.label
         let stable = waitForStableFrame(body)
-        let settledFrame = body.frame
-        let fullyVisible = frameIsContained(settledFrame, in: detailViewport(detail))
+        let bodyStillExists = body.exists
+        let settledFrame = stable && bodyStillExists ? body.frame : .null
+        let fullyVisible = bodyStillExists && frameIsContained(settledFrame, in: detailViewport(detail))
         if !stable || !fullyVisible {
             attach(evidenceName + "-visibility-failure-screen")
             attachText(evidenceName + "-visibility-failure-ax", detail.debugDescription)
         }
         XCTAssertTrue(stable, "detail marker frame should settle after scrolling the detail Form")
         XCTAssertTrue(fullyVisible, "the entire unique task-body marker must be visible inside the detail Form viewport; frame=\(settledFrame) viewport=\(detailViewport(detail))")
-        XCTAssertEqual(body.label, expectedBodyLabel, "the selected task ID must resolve to its own persisted input marker")
+        XCTAssertEqual(expectedBodySnapshot, expectedBodyLabel, "the selected task ID must resolve to its own persisted input marker")
         if stable {
             attachText(evidenceName + "-frame",
-                       "stable=true\nform-type=\(String(describing: detail.elementType))\nform-frame=\(detail.frame.debugDescription)\nbody=\(body.label)\nbody-frame=\(settledFrame.debugDescription)\nvisible-viewport=\(detailViewport(detail).debugDescription)\nfully-contained=\(fullyVisible)")
+                       "stable=true\nform-type=\(String(describing: detail.elementType))\nform-frame=\(detail.frame.debugDescription)\nbody=\(expectedBodySnapshot)\nbody-frame=\(settledFrame.debugDescription)\nvisible-viewport=\(detailViewport(detail).debugDescription)\nfully-contained=\(fullyVisible)")
             attach(evidenceName)
         }
         app.navigationBars["同名的已保存任务"].buttons["完成"].tap()
@@ -1856,17 +1861,19 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
 
     private func assertDetailTextFullyVisible(_ element: XCUIElement, detail: XCUIElement, evidenceName: String) {
         scrollDetailTextIntoViewport(element, detail: detail, evidenceName: evidenceName)
+        let sampledLabel = element.exists ? element.label : "unavailable: lazy accessibility element is not present"
         let stable = waitForStableFrame(element)
-        let frame = element.frame
+        let elementStillExists = element.exists
+        let frame = stable && elementStillExists ? element.frame : .null
         let viewport = detailViewport(detail)
-        let fullyVisible = frameIsContained(frame, in: viewport)
+        let fullyVisible = stable && elementStillExists && frameIsContained(frame, in: viewport)
         if !stable || !fullyVisible {
             attach(evidenceName + "-visibility-failure-screen")
             attachText(evidenceName + "-visibility-failure-ax", detail.debugDescription)
         }
         XCTAssertTrue(stable, "detail text frame should settle before capture")
         XCTAssertTrue(fullyVisible, "the complete saved snapshot text must be visible; frame=\(frame) viewport=\(viewport)")
-        let attachment = XCTAttachment(string: "text=\(element.label)\nframe=\(frame.debugDescription)\nviewport=\(viewport.debugDescription)\nfully-contained=\(fullyVisible)")
+        let attachment = XCTAttachment(string: "text=\(sampledLabel)\nframe=\(frame.debugDescription)\nviewport=\(viewport.debugDescription)\nfully-contained=\(fullyVisible)")
         attachment.name = evidenceName + "-frame-and-label"
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -1909,8 +1916,10 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
                 ? (movesContentUp ? beforeFrame.maxY - viewport.maxY : viewport.minY - beforeFrame.minY)
                 : viewport.height * 0.72
             let usableTravel = max(0, viewport.height - 48)
+            // R8 evidence showed 12pt residual drags left the scroll view at delta-y=0.
+            let minimumRecognizedFingerTravel: CGFloat = 40
             let desiredFingerTravel = existsBefore
-                ? min(usableTravel * 0.88, max(36, overflow / max(contentPerFinger, 0.15) * 0.92))
+                ? min(usableTravel * 0.88, max(minimumRecognizedFingerTravel, overflow / max(contentPerFinger, 0.15) * 0.92))
                 : usableTravel * 0.88
             let startPoint = CGPoint(x: viewport.midX, y: movesContentUp ? viewport.maxY - 24 : viewport.minY + 24)
             let endPoint = CGPoint(x: viewport.midX, y: startPoint.y + (movesContentUp ? -desiredFingerTravel : desiredFingerTravel))
@@ -1927,7 +1936,7 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
                 dx: (endPoint.x - detail.frame.minX) / detail.frame.width,
                 dy: (endPoint.y - detail.frame.minY) / detail.frame.height))
             start.press(forDuration: 0.12, thenDragTo: end)
-            Thread.sleep(forTimeInterval: 0.2)
+            let settledAfterDrag = waitForStableFrame(detail)
             let existsAfter = element.waitForExistence(timeout: 0.35) || element.exists
             var afterFrame = CGRect.null
             var afterFrameText = "missing"
@@ -1942,7 +1951,7 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
                 deltaY = String(describing: delta)
                 let fingerDeltaY = endPoint.y - startPoint.y
                 if abs(fingerDeltaY) > 1, abs(delta) > 2 {
-                    let observed = min(1.25, max(0.15, abs(delta / fingerDeltaY)))
+                    let observed = min(12.0, max(0.15, abs(delta / fingerDeltaY)))
                     contentPerFinger = contentPerFinger * 0.5 + observed * 0.5
                 }
             } else {
@@ -1950,7 +1959,7 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
             }
             let fullyVisible = existsAfter && frameIsContained(afterFrame, in: afterViewport)
             attachText("\(evidenceName)-drag-\(dragIndex + 1)",
-                       "direction=\(movesContentUp ? "up" : "down")\ndrag=\(dragIndex + 1)\nexact-query-exists-before=\(existsBefore)\nexact-query-exists-after=\(existsAfter)\nrequested-overflow=\(overflow)\ncontent-per-finger=\(contentPerFinger)\nstart=\(startPoint.debugDescription)\nend=\(endPoint.debugDescription)\nbefore-frame=\(beforeFrameText)\nbefore-viewport=\(viewport.debugDescription)\nafter-frame=\(afterFrameText)\nafter-viewport=\(afterViewport.debugDescription)\ndelta-y=\(deltaY)\nfully-contained=\(fullyVisible)")
+                       "direction=\(movesContentUp ? "up" : "down")\ndrag=\(dragIndex + 1)\nexact-query-exists-before=\(existsBefore)\nexact-query-exists-after=\(existsAfter)\nrequested-overflow=\(overflow)\nsettled-after-drag=\(settledAfterDrag)\ncontent-per-finger=\(contentPerFinger)\nstart=\(startPoint.debugDescription)\nend=\(endPoint.debugDescription)\nbefore-frame=\(beforeFrameText)\nbefore-viewport=\(viewport.debugDescription)\nafter-frame=\(afterFrameText)\nafter-viewport=\(afterViewport.debugDescription)\ndelta-y=\(deltaY)\nfully-contained=\(fullyVisible)")
             if fullyVisible { return true }
         }
         guard element.exists else { return false }
@@ -1999,17 +2008,19 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
         for _ in 0..<14 {
             let frame = element.frame
             if !frame.isEmpty && frame.minY >= top && frame.maxY <= bottom { return }
-            if frame.isEmpty || frame.midY > bottom { app.swipeUp() }
+            if frame.isEmpty || frame.maxY > bottom { app.swipeUp() }
             else { app.swipeDown() }
             _ = element.waitForExistence(timeout: 2)
         }
     }
 
     private func waitForStableFrame(_ element: XCUIElement) -> Bool {
+        guard element.exists else { return false }
         var previous = element.frame
         var matchingSamples = 0
         for _ in 0..<12 {
             Thread.sleep(forTimeInterval: 0.2)
+            guard element.exists else { return false }
             let current = element.frame
             if !current.isEmpty && abs(current.minY - previous.minY) < 1 && abs(current.height - previous.height) < 1 {
                 matchingSamples += 1

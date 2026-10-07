@@ -27,9 +27,9 @@ struct NoteEditorView: View {
         case editFlow(String)
         case shareMarkdown
     }
-    private struct TextEditorRequest: Identifiable {
-        let id = UUID()
-        let flow: NoteTextFlow?
+    private enum TextManagementRoute {
+        case manager
+        case editor(NoteTextFlow?)
     }
     @EnvironmentObject private var library: NoteLibrary
     @Environment(\.dismiss) private var dismiss
@@ -47,12 +47,11 @@ struct NoteEditorView: View {
     @State private var saveFailure: String?
     @State private var showSaveActions = false
     @State private var error: String?
-    @State private var textEditorRequest: TextEditorRequest?
-    @State private var pendingTextEditorFlowID: String?
+    @State private var textManagementRoute: TextManagementRoute?
+    @State private var textManagerNavigationPath: [String] = []
     @State private var showAI = false
     @State private var aiSource: NoteAISourceSnapshot?
     @State private var showPages = false
-    @State private var showPaperSettings = false
     @State private var showContentOutline = false
     @State private var contentOutlineCopied = false
     @State private var pendingContentOutlineAction: PendingContentOutlineAction?
@@ -117,7 +116,7 @@ struct NoteEditorView: View {
                     }
                     if !compiledRenderer.failures(document: document).isEmpty && !showAI {
                         Button {
-                            showPaperSettings = true
+                            presentTextManager()
                         } label: {
                             Label("有 \(compiledRenderer.failures(document: document).count) 个文字对象未完成排版", systemImage: "exclamationmark.triangle")
                         }
@@ -170,7 +169,7 @@ struct NoteEditorView: View {
                         Button("插入图片", systemImage: "photo") { showImageImport = true }
                         Button("内容大纲", systemImage: "list.bullet.indent") { presentContentOutline() }
                             .accessibilityIdentifier("contentOutlineEntry")
-                        Button("管理文字", systemImage: "text.alignleft") { showPaperSettings = true }
+                        Button("管理文字", systemImage: "text.alignleft") { presentTextManager() }
                         Button("清空当前笔记", systemImage: "trash", role: .destructive) { confirmClear = true }
                             .disabled(document.strokes.isEmpty && document.textFlows.isEmpty && document.images.isEmpty)
                     } label: { Image(systemName: "ellipsis.circle") }
@@ -191,13 +190,7 @@ struct NoteEditorView: View {
             if savePhase != .saved { enqueueDraft(document, revision: editRevision) }
         }
         .interactiveDismissDisabled(savePhase != .saved)
-        .sheet(item: $textEditorRequest) { request in
-            TextFlowEditor(flow: request.flow) { source, format, size in
-                insertText(source, format: format, size: size, replacing: request.flow?.id)
-            }
-        }
         .sheet(isPresented: $showPages) { pageManager }
-        .sheet(isPresented: $showPaperSettings, onDismiss: textManagerDidDismiss) { textManager }
         .sheet(isPresented: $showContentOutline, onDismiss: contentOutlineDidDismiss) { contentOutline }
         .sheet(isPresented: $showDigitize) { DigitizeNoteView(note: document, pdfURL: pdfURL) }
         .sheet(item: $videoSource) { source in
@@ -241,7 +234,7 @@ struct NoteEditorView: View {
             Button("取消", role: .cancel) {}
         } message: { Text("清除笔迹、文字和图片。页面和 PDF 底图保留，可使用撤销恢复。") }
         .confirmationDialog("PDF 中有文字未完成排版", isPresented: $showPDFRenderRecovery, titleVisibility: .visible) {
-            Button("查看并修复源码") { showPaperSettings = true }
+            Button("查看并修复源码") { presentTextManager() }
             Button("取消", role: .cancel) {}
         } message: {
             Text("完整 PDF 尚未生成。请查看失败对象，修复或重试后再导出。笔记源码仍然保留。")
@@ -255,6 +248,26 @@ struct NoteEditorView: View {
             Button("继续编辑", role: .cancel) {}
         } message: {
             Text(saveFailure ?? "保存未完成。请重试或先导出当前副本。")
+        }
+        .sheet(isPresented: Binding(
+            get: { textManagementRoute != nil },
+            set: { if !$0 { textManagementRoute = nil } }
+        )) {
+            Group {
+                switch textManagementRoute {
+                case .manager:
+                    textManager
+                case .editor(let flow):
+                    NavigationStack {
+                        TextFlowEditor(flow: flow) { source, format, size in
+                            insertText(source, format: format, size: size, replacing: flow?.id)
+                            textManagementRoute = nil
+                        }
+                    }
+                case nil:
+                    EmptyView()
+                }
+            }
         }
     }
 
@@ -363,7 +376,7 @@ struct NoteEditorView: View {
     }
 
     private var textManager: some View {
-        NavigationStack {
+        NavigationStack(path: $textManagerNavigationPath) {
             List {
                 if document.textFlows.isEmpty { Text("还没有文字。使用工具栏的文字按钮插入内容。") }
                 ForEach(document.textFlows) { flow in
@@ -375,7 +388,8 @@ struct NoteEditorView: View {
                             Text(flow.source).lineLimit(3).accessibilityIdentifier("textFlowSource")
                             Text("第 \(flow.anchorPageIndex + 1) 页 · \(flow.format)").font(.caption).foregroundStyle(PadTheme.secondary)
                             }
-                        }.accessibilityIdentifier("textFlowEditButton")
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("textFlowEditButton")
                         if let failure = compiledRenderer.failure(documentID: document.id, flow: flow) {
                             Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundStyle(.orange)
@@ -387,7 +401,17 @@ struct NoteEditorView: View {
                     }.swipeActions { Button("删除", role: .destructive) { canvas.performEdit { $0.textFlows.removeAll { $0.id == flow.id } } } }
                 }
             }.navigationTitle("页面文字")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showPaperSettings = false } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { textManagementRoute = nil } } }
+                .navigationDestination(for: String.self) { flowID in
+                    if let flow = document.textFlows.first(where: { $0.id == flowID }) {
+                        TextFlowEditor(flow: flow) { source, format, size in
+                            insertText(source, format: format, size: size, replacing: flow.id)
+                            textManagementRoute = nil
+                        }
+                    } else {
+                        ContentUnavailableView("文字对象不可用", systemImage: "text.alignleft")
+                    }
+                }
         }
     }
 
@@ -482,7 +506,7 @@ struct NoteEditorView: View {
                 return
             }
             canvas.goToPage(latestFlow.anchorPageIndex)
-            textEditorRequest = TextEditorRequest(flow: latestFlow)
+            textManagementRoute = .editor(latestFlow)
         case .shareMarkdown:
             shareContentOutline()
         }
@@ -768,36 +792,37 @@ struct NoteEditorView: View {
         lhs.textFlows == rhs.textFlows && lhs.images == rhs.images && lhs.pageStyle == rhs.pageStyle
     }
 
-    private func editFlow(_ flow: NoteTextFlow) {
-        guard document.textFlows.contains(where: { $0.id == flow.id }) else {
-            error = "这段文字已不存在，无法打开编辑器。"
-            return
-        }
-        pendingTextEditorFlowID = flow.id
-        showPaperSettings = false
+    private func presentTextManager() {
+        textManagerNavigationPath = []
+        textManagementRoute = .manager
     }
 
-    private func textManagerDidDismiss() {
-        guard let flowID = pendingTextEditorFlowID else { return }
-        pendingTextEditorFlowID = nil
-        guard let latestFlow = document.textFlows.first(where: { $0.id == flowID }) else {
+    private func editFlow(_ flow: NoteTextFlow) {
+        guard let latestFlow = document.textFlows.first(where: { $0.id == flow.id }) else {
             error = "这段文字已不存在，无法打开编辑器。"
             return
         }
-        textEditorRequest = TextEditorRequest(flow: latestFlow)
+        // Keep the manager sheet presented and push its editor destination inside the same stack.
+        if textManagerNavigationPath.last != latestFlow.id {
+            textManagerNavigationPath.append(latestFlow.id)
+        }
     }
 
     @ViewBuilder private func renderFailureActions(_ flow: NoteTextFlow) -> some View {
         HStack(spacing: 12) {
-            Button("查看/编辑源码") { editFlow(flow) }.accessibilityIdentifier("renderFailureEditSource")
+            Button("查看/编辑源码") { editFlow(flow) }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("renderFailureEditSource")
             Button("复制源码") { UIPasteboard.general.string = flow.source }
+                .buttonStyle(.borderless)
             Button("重新渲染") {
                 compiledRenderer.retry(documentID: document.id, flow: flow) { result in
                     if case .failure(let failure) = result {
                         self.error = (failure as? CompiledTextRenderFailure)?.localizedDescription ?? "重新排版失败。"
                     }
                 }
-            }.accessibilityIdentifier("renderFailureRetry")
+            }.buttonStyle(.borderless)
+                .accessibilityIdentifier("renderFailureRetry")
         }.font(.caption)
     }
 }
@@ -816,28 +841,26 @@ private struct TextFlowEditor: View {
         self.onSave = onSave
     }
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack {
-                    Picker("格式", selection: $format) { Text("Markdown").tag("markdown"); Text("LaTeX").tag("latex") }.pickerStyle(.segmented)
-                    Stepper("\(Int(size)) pt", value: $size, in: 10...32, step: 1).frame(width: 180)
-                    Toggle("预览", isOn: $preview).toggleStyle(.button)
+        VStack(spacing: 16) {
+            HStack {
+                Picker("格式", selection: $format) { Text("Markdown").tag("markdown"); Text("LaTeX").tag("latex") }.pickerStyle(.segmented)
+                Stepper("\(Int(size)) pt", value: $size, in: 10...32, step: 1).frame(width: 180)
+                Toggle("预览", isOn: $preview).toggleStyle(.button)
+            }
+            if preview { MathTextView(source: source, fontSize: size, format: format) }
+            else {
+                TextEditor(text: $source).font(.system(size: 17, design: .monospaced))
+                    .accessibilityIdentifier("textSourceEditor")
+            }
+        }.padding(24).navigationTitle("页面文字")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("插入") { onSave(source, format, size); dismiss() }
+                        .disabled(source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("saveTextButton")
                 }
-                if preview { MathTextView(source: source, fontSize: size, format: format) }
-                else {
-                    TextEditor(text: $source).font(.system(size: 17, design: .monospaced))
-                        .accessibilityIdentifier("textSourceEditor")
-                }
-            }.padding(24).navigationTitle("页面文字")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("插入") { onSave(source, format, size); dismiss() }
-                            .disabled(source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .accessibilityIdentifier("saveTextButton")
-                    }
-                }
-        }
+            }
     }
 }
 

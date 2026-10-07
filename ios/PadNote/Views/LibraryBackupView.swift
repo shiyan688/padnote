@@ -6,8 +6,8 @@ struct LibraryBackupView: View {
     @EnvironmentObject private var library: NoteLibrary
     @StateObject private var vault = VaultLibrary()
     @StateObject private var model = LibraryBackupViewModel()
-    @State private var importing = false
-    @State private var importingPreset = false
+    @State private var isImporting = false
+    @State private var importPurpose: LibraryBackupImportPurpose = .archive
     @State private var confirmRestore = false
     @State private var shareURL: URL?
     @State private var selectedNoteItemIDs = Set<String>()
@@ -36,7 +36,7 @@ struct LibraryBackupView: View {
                     if let shareURL {
                         ShareLink(item: shareURL) { Label("保存或分享备份", systemImage: "square.and.arrow.up") }
                     }
-                    Button { importing = true } label: { Label("检查并恢复备份", systemImage: "arrow.down.doc") }
+                    Button { importPurpose = .archive; isImporting = true } label: { Label("检查并恢复备份", systemImage: "arrow.down.doc") }
                         .disabled(model.busy).accessibilityIdentifier("libraryBackupImport")
 #if DEBUG
                     if LibraryBackupUITestFixture.isEnabled {
@@ -111,7 +111,7 @@ struct LibraryBackupView: View {
                 Section("独立恢复资料") {
                     IndependentArchiveMaterialsView(vault: vault, presets: presetStore, videos: restoredVideoStore)
                         .id(materialsRevision)
-                    Button { importingPreset = true } label: { Label("从文件添加用户封面预设", systemImage: "photo.badge.plus") }
+                    Button { importPurpose = .preset; isImporting = true } label: { Label("从文件添加用户封面预设", systemImage: "photo.badge.plus") }
                 }
                 if model.busy { Section { HStack {
 #if DEBUG
@@ -148,18 +148,21 @@ struct LibraryBackupView: View {
             .onChange(of: model.preview?.id) { _, _ in
                 selectedNoteItemIDs = Set(model.preview?.staged.manifest.notes.map(\.itemID) ?? [])
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.zip], allowsMultipleSelection: false) { result in
-                guard let url = try? result.get().first else { return }
-                Task { await inspect(url) }
-            }
-            .fileImporter(isPresented: $importingPreset, allowedContentTypes: [.png], allowsMultipleSelection: false) { result in
-                guard let url = try? result.get().first else { return }
-                Task { await model.run { cancellation in
-                    let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    _ = try cancellation.check()
-                    _ = try presetStore.add(name: url.deletingPathExtension().lastPathComponent, png: url)
-                    await MainActor.run { materialsRevision += 1 }
-                } }
+            .fileImporter(isPresented: $isImporting,
+                allowedContentTypes: importPurpose == .preset ? [.png] : [.zip],
+                allowsMultipleSelection: false) { result in
+                guard let selection = LibraryBackupImportSelection.resolve(result: result, purpose: importPurpose) else { return }
+                switch selection {
+                case .archive(let url):
+                    Task { await inspect(url) }
+                case .preset(let url):
+                    Task { await model.run { cancellation in
+                        let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                        _ = try cancellation.check()
+                        _ = try presetStore.add(name: url.deletingPathExtension().lastPathComponent, png: url)
+                        await MainActor.run { materialsRevision += 1 }
+                    } }
+                }
             }
             .confirmationDialog("将验证后的资料导入为新副本", isPresented: $confirmRestore, titleVisibility: .visible) {
                 Button("恢复所选资料") { Task { await restore() } }
@@ -497,6 +500,25 @@ private struct IndependentArchiveMaterialsView: View {
         Task {
             do { try await Task.detached(priority: .userInitiated) { try presets.remove(value) }.value; reload() }
             catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+
+enum LibraryBackupImportPurpose: Equatable {
+    case archive
+    case preset
+}
+
+enum LibraryBackupImportSelection {
+    case archive(URL)
+    case preset(URL)
+
+    static func resolve(result: Result<[URL], Error>, purpose: LibraryBackupImportPurpose) -> Self? {
+        guard case .success(let urls) = result, let url = urls.first else { return nil }
+        switch purpose {
+        case .archive: return .archive(url)
+        case .preset: return .preset(url)
         }
     }
 }

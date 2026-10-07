@@ -320,7 +320,10 @@ final class CompiledTextTests: XCTestCase {
         XCTAssertNil(renderer.state(documentID: cancelledExport.id, flow: mustNotStart),
                      "cancellation must not continue compiling later flows")
 
-        var budgetConfiguration = configuration
+        // The earlier cancellation/deadline case intentionally uses 250 ms.
+        // Budget rejection is a separate behavior and must not inherit that
+        // unrelated short JavaScript deadline under simulator load.
+        var budgetConfiguration = CompiledTextRenderer.Configuration()
         budgetConfiguration.maximumExportPixels = 100
         budgetConfiguration.maximumExportBytes = 400
         let budgetRenderer = CompiledTextRenderer(configuration: budgetConfiguration, resourceURLProvider: { url })

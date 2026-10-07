@@ -21,6 +21,27 @@ final class LibraryBackupArchiveTests: XCTestCase {
         SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
 
+    func testSelectedDocumentURLDispatchesByPersistentImportPurpose() throws {
+        let archiveURL = URL(fileURLWithPath: "/tmp/selected-library.zip")
+        let presetURL = URL(fileURLWithPath: "/tmp/selected-cover.png")
+
+        guard case .archive(let selectedArchive)? = LibraryBackupImportSelection.resolve(
+            result: .success([archiveURL]), purpose: .archive) else {
+            return XCTFail("selected ZIP URL must dispatch to archive inspection")
+        }
+        XCTAssertEqual(selectedArchive, archiveURL)
+
+        guard case .preset(let selectedPreset)? = LibraryBackupImportSelection.resolve(
+            result: .success([presetURL]), purpose: .preset) else {
+            return XCTFail("selected PNG URL must dispatch to preset import")
+        }
+        XCTAssertEqual(selectedPreset, presetURL)
+
+        let canceled: Result<[URL], Error> = .failure(CancellationError())
+        XCTAssertNil(LibraryBackupImportSelection.resolve(result: canceled, purpose: .archive))
+        XCTAssertNil(LibraryBackupImportSelection.resolve(result: .success([]), purpose: .preset))
+    }
+
     func testStoredWriterStagesExactManifestAndPayload() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var note = NoteDocument(title: "备份测试")
