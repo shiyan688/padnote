@@ -3,6 +3,7 @@ package com.padnote.android;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -54,6 +55,43 @@ public final class PdfExportTest {
     private static final int PAGE_GAP = 24;
 
     @Test
+    public void realBaseRendererCanDownsampleToBudgetedLongEdge() throws Exception {
+        JSONObject document = basicDocument("pdf_budget_" + UUID.randomUUID()
+                .toString().replace("-", ""), 1);
+        try (ExportSession session = ExportSession.open(document, null)) {
+            Bitmap rendered = session.snapshot.renderBasePage(0, 720);
+            try {
+                assertEquals(540, rendered.getWidth());
+                assertEquals(720, rendered.getHeight());
+                assertEquals(388_800L,
+                        (long) rendered.getWidth() * rendered.getHeight());
+            } finally {
+                rendered.recycle();
+            }
+        }
+    }
+
+    @Test
+    public void invalidDiagramFailsFlattenedExportInsteadOfReportingACompletePdf()
+            throws Exception {
+        JSONObject document = basicDocument("pdf_bad_diagram_" + UUID.randomUUID()
+                .toString().replace("-", ""), 1);
+        document.getJSONArray("textFlows").put(new TextFlow("bad-diagram",
+                NoteTextBox.Format.MARKDOWN,
+                "```mermaid\nflowchart TD\nA -->\n```", 16f, 1.35f,
+                500f, 0, 50f, 60f).toJson());
+        try (ExportSession session = ExportSession.open(document, null)) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            IOException error = assertThrows(IOException.class, () ->
+                    PdfNoteIO.exportFlattenedPdf(session.snapshot, session.renderHost,
+                            output, new Handler(Looper.getMainLooper()), null));
+            assertTrue("export failure did not identify the local display problem: " + error,
+                    containsMessage(error, "语法") || containsMessage(error, "显示"));
+            assertEquals("failed export returned a seemingly complete PDF", 0, output.size());
+        }
+    }
+
+    @Test
     public void flattenedPdfContainsEveryLayerOnItsActualPageAndOcrPngStaysTextFree()
             throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
@@ -68,13 +106,45 @@ public final class PdfExportTest {
             NoteTextBox diagram = fragment(session.fragments, "diagram-page-1", 1);
             NoteTextBox overflow = tailFragment(session.fragments, "overflow-page-1",
                     "TAIL_END_42");
-            NoteTextBox bottomMarker = fragment(session.fragments, "bottom-marker-page-4", 4);
+            List<NoteTextBox> overflowFragments = fragmentsForFlow(
+                    session.fragments, "overflow-page-1");
             assertNotNull("Markdown fixture was not laid out on page 1", markdown);
             assertNotNull("LaTeX fixture was not laid out on page 1", formula);
             assertNotNull("Mermaid fixture was not laid out on non-current page 2", diagram);
             assertNotNull("long flow did not continue onto a later page", overflow);
-            assertNotNull("bottom marker was not laid out on the requested later page",
-                    bottomMarker);
+            assertTrue("long flow was not paginated into readable fragments",
+                    overflowFragments.size() > 1);
+            assertTrue("heading was orphaned without its first body line",
+                    overflowFragments.get(0).fragmentSource.contains("# 跨页记录") &&
+                            overflowFragments.get(0).fragmentSource.contains("第 1 行"));
+            int previousPage = -1;
+            for (int index = 0; index < overflowFragments.size(); index++) {
+                NoteTextBox part = overflowFragments.get(index);
+                assertEquals("one flow changed authored font size between fragments",
+                        16f, part.fontSizeSp, 0.01f);
+                assertTrue("ordinary flow fragments must advance in page order",
+                        part.pageIndex > previousPage);
+                previousPage = part.pageIndex;
+                String trimmed = part.fragmentSource.trim();
+                assertFalse("fragment split after a bare Chinese ordinal prefix: " + trimmed,
+                        trimmed.matches("(?s).*第\\s*\\d*$") || trimmed.endsWith("第"));
+                if (index + 1 < overflowFragments.size()) {
+                    assertTrue("intermediate prose fragment did not end at a sentence boundary: " +
+                                    trimmed,
+                            trimmed.endsWith("。") || trimmed.endsWith("！") ||
+                                    trimmed.endsWith("？") || trimmed.endsWith(".") ||
+                                    trimmed.endsWith("!") || trimmed.endsWith("?"));
+                }
+            }
+            NoteTextBox finalPart = overflowFragments.get(overflowFragments.size() - 1);
+            assertTrue("final flow line was left alone on a new page",
+                    finalPart.fragmentSource.contains("尾段第二行仍需可见。") &&
+                            finalPart.fragmentSource.contains("最终尾行 TAIL_END_42"));
+            int highestFragmentPage = highestFragmentPage(session.fragments);
+            assertEquals("the marked tail must be the final fragment of the long flow",
+                    highestFragmentPage, overflow.pageIndex);
+            assertEquals("document length must follow the furthest complete content fragment",
+                    Math.max(5, highestFragmentPage + 1), session.pageCount);
 
             Bitmap ocrPage = BitmapFactory.decodeByteArray(session.ocrPageZero, 0,
                     session.ocrPageZero.length);
@@ -108,7 +178,6 @@ public final class PdfExportTest {
                 Bitmap first = rendered.render(0);
                 Bitmap second = rendered.render(1);
                 Bitmap later = rendered.render(overflow.pageIndex);
-                Bitmap bottom = rendered.render(bottomMarker.pageIndex);
                 try {
                     assertColorNear("page 1 PDF background missing", Color.rgb(255, 242, 190),
                             sample(first, 580, 100), 35);
@@ -133,15 +202,35 @@ public final class PdfExportTest {
                             countDarkPixels(second, fragmentRect(diagram, second), 160) > 25);
                     assertTrue("cross-page text continuation is absent from its later page",
                             countDarkPixels(later, fragmentRect(overflow, later), 140) > 20);
-                    assertTrue("low-position text near the bottom of a later page was clipped",
-                            countDarkPixels(bottom, fragmentRect(bottomMarker, bottom), 140) > 5);
                 } finally {
                     first.recycle();
                     second.recycle();
                     later.recycle();
-                    bottom.recycle();
                 }
             }
+        }
+    }
+
+    @Test
+    public void lowMarkerMovesIntactAndExtendsDocumentByExactlyOnePage() throws Exception {
+        JSONObject document = basicDocument("pdf_low_marker_" + UUID.randomUUID()
+                .toString().replace("-", ""), 5);
+        document.getJSONArray("textFlows").put(new TextFlow(
+                "bottom-marker-overflow", NoteTextBox.Format.MARKDOWN,
+                "BOTTOM_MARKER_VISIBLE", 18f, 1.35f, 300f, 4, 50f, 700f).toJson());
+        try (ExportSession session = ExportSession.open(document, null)) {
+            assertTrue("marker must not leave a clipped fragment on its requested page",
+                    fragment(session.fragments, "bottom-marker-overflow", 4) == null);
+            NoteTextBox moved = fragment(session.fragments, "bottom-marker-overflow", 5);
+            assertNotNull("marker was lost instead of moving intact to the next page", moved);
+            assertEquals("moving the marker must add exactly one physical page",
+                    6, session.pageCount);
+            float localTop = moved.y - moved.pageIndex * (PAGE_HEIGHT + PAGE_GAP);
+            assertTrue("moved marker starts above the paper", localTop >= 0f);
+            assertTrue("moved marker is still clipped at the page bottom",
+                    localTop + moved.height <= PAGE_HEIGHT);
+            assertEquals("marker source changed while moving pages",
+                    "BOTTOM_MARKER_VISIBLE", moved.fragmentSource);
         }
     }
 
@@ -176,6 +265,65 @@ public final class PdfExportTest {
         }
     }
 
+    @Test
+    public void cancellationBeforeFirstPageWritesNoPdfBytes() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        JSONObject document = basicDocument("pdf_cancel_" + UUID.randomUUID()
+                .toString().replace("-", ""), 3);
+        try (ExportSession session = ExportSession.open(document, null)) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try {
+                PdfNoteIO.exportFlattenedPdf(session.snapshot, session.renderHost, output,
+                        new Handler(Looper.getMainLooper()), (completed, total) -> { },
+                        () -> true);
+                fail("cancelled export must not report success");
+            } catch (PdfNoteIO.ExportCancelledException expected) {
+                assertEquals("PDF 导出已取消", expected.getMessage());
+            }
+            assertEquals("cancelled export wrote a misleading partial PDF", 0, output.size());
+        }
+    }
+
+    @Test
+    public void cancellationDuringBaseRenderReleasesSnapshotAndWritesNothing() throws Exception {
+        JSONObject document = basicDocument("pdf_cancel_render_" + UUID.randomUUID()
+                .toString().replace("-", ""), 3);
+        try (ExportSession session = ExportSession.open(document, null)) {
+            AtomicInteger checks = new AtomicInteger();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            assertThrows(PdfNoteIO.ExportCancelledException.class, () ->
+                    PdfNoteIO.exportFlattenedPdf(session.snapshot, session.renderHost, output,
+                            new Handler(Looper.getMainLooper()), (completed, total) -> { },
+                            () -> checks.incrementAndGet() >= 2));
+            assertEquals(0, output.size());
+        }
+    }
+
+    @Test
+    public void cancellationRaisedByDestinationWriteCannotReturnSuccess() throws Exception {
+        JSONObject document = basicDocument("pdf_cancel_write_" + UUID.randomUUID()
+                .toString().replace("-", ""), 1);
+        try (ExportSession session = ExportSession.open(document, null)) {
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+            ByteArrayOutputStream received = new ByteArrayOutputStream();
+            OutputStream destination = new OutputStream() {
+                @Override public void write(int value) {
+                    received.write(value);
+                    cancelled.set(true);
+                }
+                @Override public void write(byte[] bytes, int offset, int length) {
+                    received.write(bytes, offset, length);
+                    cancelled.set(true);
+                }
+            };
+            assertThrows(PdfNoteIO.ExportCancelledException.class, () ->
+                    PdfNoteIO.exportFlattenedPdf(session.snapshot, session.renderHost,
+                            destination, new Handler(Looper.getMainLooper()),
+                            (completed, total) -> { }, cancelled::get));
+            assertTrue("fixture must reach the destination write", received.size() > 0);
+        }
+    }
+
     private static JSONObject richDocument(String id) throws Exception {
         JSONObject document = basicDocument(id, 5).put("pdfPageCount", 2);
         JSONArray flows = document.getJSONArray("textFlows");
@@ -197,9 +345,6 @@ public final class PdfExportTest {
                 .append("最终尾行 TAIL_END_42");
         flows.put(new TextFlow("overflow-page-1", NoteTextBox.Format.MARKDOWN,
                 longText.toString(), 16f, 1.35f, 500f, 1, 50f, 500f).toJson());
-        flows.put(new TextFlow("bottom-marker-page-4", NoteTextBox.Format.MARKDOWN,
-                "BOTTOM_MARKER_VISIBLE", 18f, 1.35f, 300f, 4, 50f, 700f).toJson());
-
         JSONArray strokes = document.getJSONArray("strokes");
         strokes.put(stroke("page-zero-ink", Color.RED, 18f,
                 new float[][]{{300f, 620f}, {400f, 620f}}));
@@ -281,6 +426,21 @@ public final class PdfExportTest {
             if (flowId.equals(box.flowId) && box.fragmentSource.contains(marker)) return box;
         }
         return null;
+    }
+
+    private static List<NoteTextBox> fragmentsForFlow(List<NoteTextBox> fragments,
+                                                       String flowId) {
+        List<NoteTextBox> matches = new ArrayList<>();
+        for (NoteTextBox box : fragments) {
+            if (flowId.equals(box.flowId)) matches.add(box);
+        }
+        return matches;
+    }
+
+    private static int highestFragmentPage(List<NoteTextBox> fragments) {
+        int highest = -1;
+        for (NoteTextBox box : fragments) highest = Math.max(highest, box.pageIndex);
+        return highest;
     }
 
     private static Rect fragmentRect(NoteTextBox box, Bitmap page) {

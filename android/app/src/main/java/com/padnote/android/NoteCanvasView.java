@@ -29,6 +29,8 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -131,13 +133,18 @@ public final class NoteCanvasView extends View {
             return pageCount;
         }
 
+        float getPageWidth() { return pageWidth; }
+
+        float getPageHeight() { return pageHeight; }
+
         /** Draws everything except compiled text. Called by the export worker. */
         Bitmap renderBasePage(int pageIndex, int maxDimensionPx) throws IOException {
             if (closed || pageIndex < 0 || pageIndex >= pageCount) {
                 throw new IOException("PDF 导出快照已失效");
             }
             float longest = Math.max(pageWidth, pageHeight);
-            float scale = Math.min(2f, Math.max(1f, Math.max(1, maxDimensionPx) / longest));
+            float scale = Math.min(2f, Math.max(1f / longest,
+                    Math.max(1, maxDimensionPx) / longest));
             int width = Math.max(1, Math.round(pageWidth * scale));
             int height = Math.max(1, Math.round(pageHeight * scale));
             Bitmap bitmap;
@@ -355,8 +362,20 @@ public final class NoteCanvasView extends View {
                             try {
                                 float localY = box.y - pageIndex * (pageHeight + pageGap);
                                 float reservedHeight = Math.max(1f, box.height);
-                                float contain = containScaleForExport(
-                                        reservedHeight, visualHeightPx, density);
+                                boolean atomic = exportFragmentMayScale(box);
+                                if (!atomic && visualNativeHeight > reservedHeight + density * 2f) {
+                                    disposeTextView(host, view);
+                                    activePageCallback = null;
+                                    callback.onFailure(new IOException("第 " + (pageIndex + 1) +
+                                            " 页正文实高超过分页预留"));
+                                    return;
+                                }
+                                // Whole-fragment containment is reserved for truly
+                                // indivisible content. Scaling ordinary prose per
+                                // page makes one flow change type size at every
+                                // fragment and hides bad pagination estimates.
+                                float contain = atomic ? containScaleForExport(
+                                        reservedHeight, visualHeightPx, density) : 1f;
                                 Canvas canvas = new Canvas(page);
                                 canvas.save();
                                 canvas.clipRect(box.x * outputScale, localY * outputScale,
@@ -396,6 +415,13 @@ public final class NoteCanvasView extends View {
                 activeTextView = null;
                 activeHost = null;
             }
+        }
+
+        static boolean exportFragmentMayScale(NoteTextBox box) {
+            if (box == null || box.format == NoteTextBox.Format.LATEX) return true;
+            String source = box.displaySource() == null ? "" : box.displaySource().trim();
+            return source.startsWith("```") || source.startsWith("\\[") ||
+                    source.startsWith("$$") || source.contains("\n|");
         }
 
         @Override
@@ -438,6 +464,71 @@ public final class NoteCanvasView extends View {
             this.strokes = strokes;
             this.flows = flows;
             this.pageCount = pageCount;
+        }
+    }
+
+    enum AiEditState { EMPTY, APPLIED, UNDONE, MIXED, CONFLICT, BUSY }
+
+    static final class AiEditSnapshot {
+        final Map<String, TextFlow> flows;
+        final List<NoteTextBox> fragments;
+        final int pageCount;
+        final long pageEditSerial;
+        final long pageTopologySerial;
+
+        AiEditSnapshot(Map<String, TextFlow> flows, List<NoteTextBox> fragments,
+                       int pageCount, long pageEditSerial, long pageTopologySerial) {
+            this.flows = flows;
+            this.fragments = fragments;
+            this.pageCount = pageCount;
+            this.pageEditSerial = pageEditSerial;
+            this.pageTopologySerial = pageTopologySerial;
+        }
+    }
+
+    private static final class AiFlowChange {
+        final TextFlow before;
+        TextFlow after;
+
+        AiFlowChange(TextFlow before, TextFlow after) {
+            this.before = before == null ? null : before.copy();
+            this.after = after == null ? null : after.copy();
+        }
+    }
+
+    static final class AiEditRecord {
+        final String ownerId;
+        private final Map<String, AiFlowChange> changes = new LinkedHashMap<>();
+        private int beforePageCount = -1;
+        private int afterPageCount = -1;
+        private AiEditSnapshot afterSnapshot;
+        private long pageEditSerialAtCapture;
+        private long pageTopologySerialAtCapture;
+        private final Map<String, InkStroke> baselineStrokes = new LinkedHashMap<>();
+        private final Map<String, String> baselineImages = new LinkedHashMap<>();
+
+        AiEditRecord(String ownerId) {
+            this.ownerId = ownerId == null ? "" : ownerId;
+        }
+
+        boolean hasChanges() { return !changes.isEmpty(); }
+
+        int changedFlowCount() { return changes.size(); }
+
+        List<String> changedFlowIds() {
+            return Collections.unmodifiableList(new ArrayList<>(changes.keySet()));
+        }
+    }
+
+    static final class AiEditApplyResult {
+        final AiEditState state;
+        final int changedFlows;
+        final int conflictFlows;
+
+        AiEditApplyResult(AiEditState state, int changedFlows, int conflictFlows) {
+            this.state = state;
+            this.changedFlows = changedFlows;
+            this.conflictFlows = conflictFlows;
         }
     }
 
@@ -526,6 +617,11 @@ public final class NoteCanvasView extends View {
      * undo step.
      */
     private int undoTransactionDepth;
+    private long explicitPageEditSerial;
+    private long pageTopologySerial;
+    private String continuousAiUndoOwner;
+    private String aiUndoTransactionOwner;
+    private DocumentSnapshot pendingAiUndoSnapshot;
 
     /** Where the flow being dragged would land; empty when no drag is active. */
     private final List<RectF> dragPreviewRects = new ArrayList<>();
@@ -588,6 +684,14 @@ public final class NoteCanvasView extends View {
     private float lastGestureX = 0;
     private float lastGestureY = 0;
     private int pageCount = 1;
+    private double pageWidth64 = 0d;
+    private double pageHeight64 = 0d;
+    private double pageGap64 = 0d;
+    private boolean pageGapInitialized;
+    private double viewportScale64 = 1d;
+    private double viewportCenterX64 = 0d;
+    private double viewportCenterY64 = 0d;
+    private boolean viewportCenterDirty;
     private float pageWidth = 0;
     private float pageHeight = 0;
     private float pageGap = 0;
@@ -755,10 +859,10 @@ public final class NoteCanvasView extends View {
         image.page = Math.max(0, Math.min(pageCount - 1, page));
         float scale = Math.min((pageWidth - dp(32)) * 0.65f / image.bitmap.getWidth(),
                 (pageHeight - dp(32)) * 0.65f / image.bitmap.getHeight());
-        image.width = image.bitmap.getWidth() * scale;
-        image.height = image.bitmap.getHeight() * scale;
-        image.x = (pageWidth - image.width) / 2f;
-        image.y = (pageHeight - image.height) / 2f;
+        double imageWidth = image.bitmap.getWidth() * (double) scale;
+        double imageHeight = image.bitmap.getHeight() * (double) scale;
+        image.setGeometry((pageWidth - imageWidth) / 2d, (pageHeight - imageHeight) / 2d,
+                imageWidth, imageHeight);
         images.add(image);
         clearSelectionInternal();
         selectedImages.add(image);
@@ -878,9 +982,13 @@ public final class NoteCanvasView extends View {
             return null;
         }
         ensurePageGeometry();
-        String normalizedSource = source == null ? "" : source.trim();
-        if (normalizedSource.isEmpty()) {
+        String normalizedSource = source == null ? "" : source;
+        if (normalizedSource.trim().isEmpty()) {
             return null;
+        }
+        TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(normalizedSource);
+        if (sourceFailure != TextFlowCapacity.Failure.NONE) {
+            throw new TextFlowCapacity.Rejection(sourceFailure);
         }
         RectF anchor = anchorBounds == null || anchorBounds.isEmpty()
                 ? new RectF(pageWidth * 0.35f, screenToWorldY(getHeight() * 0.42f),
@@ -922,14 +1030,27 @@ public final class NoteCanvasView extends View {
             y = top + margin;
         }
 
-        pushUndoSnapshot();
         TextFlow flow = new TextFlow(
                 "flow-ai-" + UUID.randomUUID().toString().replace("-", ""),
                 format == null ? NoteTextBox.Format.MARKDOWN : format,
                 normalizedSource, 16f, TextFlow.DEFAULT_LINE_HEIGHT, width,
                 pageIndex, x, y - top);
+        int pageCountBeforePreview = pageCount;
+        List<TextFragmentLayout> preparedLayouts;
+        try {
+            preparedLayouts = layoutFlow(flow);
+            TextFlowCapacity.Failure layoutFailure = TextFlowCapacity.checkLayout(
+                    flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete);
+            if (layoutFailure != TextFlowCapacity.Failure.NONE) {
+                throw new TextFlowCapacity.Rejection(layoutFailure);
+            }
+        } finally {
+            pageCount = pageCountBeforePreview;
+        }
+        pushUndoSnapshot();
         textFlows.put(flow.id, flow);
-        NoteTextBox firstFragment = reflowFlow(flow);
+        pageCount = Math.max(pageCount, flow.lastLayoutPageCount);
+        NoteTextBox firstFragment = reflowFlow(flow, preparedLayouts);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
         dispatchViewportState("AI 回答已自动跨页排版");
@@ -959,10 +1080,15 @@ public final class NoteCanvasView extends View {
         }
         NoteTextBox.Format normalizedFormat = format == null
                 ? NoteTextBox.Format.LATEX : format;
+        boolean renderContentChanged = flow.format != normalizedFormat
+                || !flow.source.equals(source == null ? "" : source)
+                || Math.abs(flow.fontSizeSp - TextFlow.clampFontSize(fontSizeSp)) >= 0.01f
+                || Math.abs(flow.lineHeight - TextFlow.clampLineHeight(lineHeight)) >= 0.001f;
         flow.format = normalizedFormat;
         flow.source = source == null ? "" : source;
-        flow.fontSizeSp = TextFlow.clampFontSize(fontSizeSp);
-        flow.lineHeight = TextFlow.clampLineHeight(lineHeight);
+        flow.setStyle(TextFlow.clampFontSize(fontSizeSp),
+                TextFlow.clampLineHeight(lineHeight), flow.width64);
+        if (renderContentChanged) flow.clearRenderHeightFailure();
         NoteTextBox firstFragment = reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1019,8 +1145,8 @@ public final class NoteCanvasView extends View {
         pushUndoSnapshot();
         flow.format = normalizedFormat;
         flow.source = normalizedSource;
-        flow.fontSizeSp = normalizedFont;
-        flow.lineHeight = normalizedLeading;
+        flow.setStyle(normalizedFont, normalizedLeading, flow.width64);
+        flow.clearRenderHeightFailure();
         // The correction was learned from the previous content, so keeping it would
         // over-reserve space for simpler text. Relearn from the new render.
         flow.heightCorrection = 1f;
@@ -1064,8 +1190,7 @@ public final class NoteCanvasView extends View {
         }
         pushUndoSnapshot();
         flow.anchorPageIndex = target.pageIndex;
-        flow.anchorXInPage = target.xInPage;
-        flow.anchorYInPage = target.yInPage;
+        flow.setAnchor(target.xInPage, target.yInPage);
         reflowFlow(flow);
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
@@ -1137,8 +1262,7 @@ public final class NoteCanvasView extends View {
         int savedPageCount = pageCount;
         TextFlow candidate = flow.copy();
         candidate.anchorPageIndex = target.pageIndex;
-        candidate.anchorXInPage = target.xInPage;
-        candidate.anchorYInPage = target.yInPage;
+        candidate.setAnchor(target.xInPage, target.yInPage);
         dragPreviewRects.clear();
         for (TextFragmentLayout layout : layoutFlow(candidate)) {
             dragPreviewRects.add(new RectF(layout.x, layout.y,
@@ -1222,6 +1346,7 @@ public final class NoteCanvasView extends View {
     }
 
     private void scrollViewportToPage(int pageIndex) {
+        viewportCenterDirty = true;
         viewportPanY = dp(18) - pageTop(clampPageIndex(pageIndex)) * viewportScale;
         navigationRawPanY = viewportPanY;
         clampViewport(false);
@@ -1273,7 +1398,8 @@ public final class NoteCanvasView extends View {
             return;
         }
         pushUndoSnapshot();
-        flow.fontSizeSp = normalized;
+        flow.setStyle(normalized, flow.lineHeight64, flow.width64);
+        flow.clearRenderHeightFailure();
         // Height scales with size, so the old correction no longer describes this
         // content; relearn it from the next render.
         flow.heightCorrection = 1f;
@@ -1347,11 +1473,10 @@ public final class NoteCanvasView extends View {
         }
 
         pushUndoSnapshot();
-        flow.width = width;
-        flow.fontSizeSp = chosen;
-        flow.lineHeight = chosenLeading;
-        flow.anchorXInPage = clamp(flow.anchorXInPage, margin,
-                Math.max(margin, pageWidth - width - margin));
+        flow.setStyle(chosen, chosenLeading, width);
+        flow.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
+                flow.anchorXInPage64)), flow.anchorYInPage64);
+        flow.clearRenderHeightFailure();
         // Learned at the previous size, so it no longer describes this content.
         flow.heightCorrection = 1f;
         flow.heightCorrectionPasses = 0;
@@ -1370,8 +1495,7 @@ public final class NoteCanvasView extends View {
     /** Total laid-out height of a flow at a candidate width and size, in world px. */
     private float measuredFlowHeight(TextFlow flow, float width, float fontSizeSp) {
         TextFlow probe = flow.copy();
-        probe.width = width;
-        probe.fontSizeSp = fontSizeSp;
+        probe.setStyle(fontSizeSp, probe.lineHeight64, width);
         probe.heightCorrection = 1f;
         probe.clearMeasuredMermaidHeights();
         int savedPageCount = pageCount;
@@ -1399,9 +1523,10 @@ public final class NoteCanvasView extends View {
             return;
         }
         pushUndoSnapshot();
-        flow.width = width;
-        flow.anchorXInPage = clamp(flow.anchorXInPage, margin,
-                Math.max(margin, pageWidth - width - margin));
+        flow.setWidth(width);
+        flow.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
+                flow.anchorXInPage64)), flow.anchorYInPage64);
+        flow.clearRenderHeightFailure();
         flow.heightCorrection = 1f;
         flow.heightCorrectionPasses = 0;
         flow.clearMeasuredMermaidHeights();
@@ -1442,7 +1567,20 @@ public final class NoteCanvasView extends View {
         if (flow == null) {
             return null;
         }
+        List<TextFragmentLayout> layouts = layoutFlow(flow);
+        NoteTextBox first = reflowFlow(flow, layouts);
+        if (!flow.lastLayoutComplete) {
+            dispatchStats(0, "文字流超过 500 页，屏幕仅显示已排入部分；完整源码已保留，不能导出 PDF");
+        }
+        return first;
+    }
+
+    private NoteTextBox reflowFlow(TextFlow flow, List<TextFragmentLayout> layouts) {
+        if (flow == null) {
+            return null;
+        }
         List<NoteTextBox> existing = findTextFlow(flow.id);
+        flow.beginRenderLayout();
         int insertionIndex = textBoxes.size();
         for (NoteTextBox fragment : existing) {
             int at = textBoxes.indexOf(fragment);
@@ -1451,8 +1589,8 @@ public final class NoteCanvasView extends View {
             }
         }
 
-        List<TextFragmentLayout> layouts = layoutFlow(flow);
         int count = Math.max(1, layouts.size());
+        flow.setRenderLayoutFragmentCount(count);
         textBoxes.removeAll(existing);
         List<NoteTextBox> replacements = new ArrayList<>();
         for (int index = 0; index < count; index++) {
@@ -1463,6 +1601,7 @@ public final class NoteCanvasView extends View {
                     flow.format, flow.source, layout.source, flow.fontSizeSp,
                     flow.lineHeight, layout.pageIndex, layout.x, layout.y,
                     layout.width, layout.height));
+            replacements.get(replacements.size() - 1).renderLayoutEpoch = flow.renderLayoutEpoch;
         }
         textBoxes.addAll(Math.max(0, Math.min(insertionIndex, textBoxes.size())),
                 replacements);
@@ -1476,13 +1615,15 @@ public final class NoteCanvasView extends View {
      * drag without committing anything.
      */
     private List<TextFragmentLayout> layoutFlow(TextFlow flow) {
+        flow.lastLayoutComplete = true;
         float margin = dp(16);
         float width = clamp(flow.width, dp(180), Math.max(dp(180), pageWidth - margin * 2f));
         List<String> rawBlocks = splitTextFlowBlocks(flow.format, flow.source.trim());
         List<String> sourceBlocks = rawBlocks.isEmpty()
                 ? Collections.singletonList("") : rawBlocks;
-        List<String> blocks = expandOversizedTextBlocks(flow.format, sourceBlocks, width,
-                flow.fontSizeSp, flow.lineHeight, pageHeight - margin * 2f);
+        List<PaginationBlock> blocks = expandOversizedTextBlocks(flow.format, sourceBlocks, width,
+                flow.fontSizeSp, flow.lineHeight,
+                (pageHeight - margin * 2f) / Math.max(1f, flow.heightCorrection));
         List<TextFragmentLayout> layouts = new ArrayList<>();
 
         int pageIndex = Math.max(0, flow.anchorPageIndex);
@@ -1514,7 +1655,8 @@ public final class NoteCanvasView extends View {
             float usedHeight = dp(20);
             BlockKind previousKind = null;
             while (blockIndex < blocks.size()) {
-                String block = blocks.get(blockIndex);
+                PaginationBlock paginationBlock = blocks.get(blockIndex);
+                String block = paginationBlock.source;
                 boolean mermaid = flow.format == NoteTextBox.Format.MARKDOWN
                         && block.trim().matches("(?is)^```mermaid\\s.*");
                 float blockHeight = estimateTextBlockHeight(flow.format, block, width,
@@ -1538,11 +1680,11 @@ public final class NoteCanvasView extends View {
                 if (blockKindOf(flow.format, block) == BlockKind.HEADING
                         && blockIndex + 1 < blocks.size()) {
                     float followingHeight = estimateTextBlockHeight(flow.format,
-                            blocks.get(blockIndex + 1), width, flow.fontSizeSp,
+                            blocks.get(blockIndex + 1).source, width, flow.fontSizeSp,
                             flow.lineHeight, BlockKind.HEADING) * flow.heightCorrection;
-                    if (isMermaidBlock(flow.format, blocks.get(blockIndex + 1))) {
+                    if (isMermaidBlock(flow.format, blocks.get(blockIndex + 1).source)) {
                         float measuredFollowing = flow.measuredMermaidHeight(
-                                blocks.get(blockIndex + 1));
+                                blocks.get(blockIndex + 1).source);
                         if (measuredFollowing > 0f) {
                             followingHeight = measuredFollowing;
                         }
@@ -1566,22 +1708,48 @@ public final class NoteCanvasView extends View {
                         continue pages;
                     }
                 }
-                if (!finalAllowedPage && fragment.length() == 0
-                        && usedHeight + blockHeight > capacity
-                        && y > pageTop(pageIndex) + margin + 1f) {
-                    // Blocks are expanded against a full printable page. When a
-                    // same-page fragment boundary leaves a smaller tail, move an
-                    // otherwise indivisible first block instead of clipping it.
-                    pageIndex += 1;
-                    y = pageTop(pageIndex) + margin;
-                    continue pages;
+                if (fragment.length() == 0 && usedHeight + blockHeight > capacity) {
+                    if (!finalAllowedPage && y > pageTop(pageIndex) + margin + 1f) {
+                        // Blocks are expanded against a full printable page. When a
+                        // same-page fragment boundary leaves a smaller tail, move an
+                        // otherwise indivisible first block instead of clipping it.
+                        pageIndex += 1;
+                        y = pageTop(pageIndex) + margin;
+                        continue pages;
+                    }
+                    // The full block does not fit even on a fresh printable page.
+                    // Stop; callers that commit a flow must reject this incomplete
+                    // layout rather than accepting a clipped fragment.
+                    break pages;
                 }
                 if (!finalAllowedPage && fragment.length() > 0 &&
-                        usedHeight + blockHeight > capacity) {
+                        blockIndex + 1 < blocks.size()) {
+                    PaginationBlock nextBlock = blocks.get(blockIndex + 1);
+                    boolean nextEndsSourceBlock = blockIndex + 2 >= blocks.size() ||
+                            blocks.get(blockIndex + 2).sourceBlock != paginationBlock.sourceBlock;
+                    if (paginationBlock.sourceBlock == nextBlock.sourceBlock &&
+                            nextEndsSourceBlock) {
+                        float nextHeight = estimateTextBlockHeight(flow.format,
+                                nextBlock.source, width, flow.fontSizeSp, flow.lineHeight,
+                                blockKindOf(flow.format, block)) * flow.heightCorrection;
+                        if (shouldMovePenultimateForWidow(true, usedHeight, blockHeight,
+                                nextHeight, capacity)) {
+                            // Move the final two readable units together instead
+                            // of leaving one line alone on the following paper.
+                            // This is skipped on an empty page so layout progresses
+                            // even when the pair itself cannot fit one sheet.
+                            break;
+                        }
+                    }
+                }
+                if (fragment.length() > 0 && usedHeight + blockHeight > capacity) {
                     break;
                 }
                 if (fragment.length() > 0) {
-                    fragment.append("\n\n");
+                    // Pieces cut from one oversized source block keep its original
+                    // single-newline separation. Independent authored blocks retain
+                    // their blank-line separation.
+                    fragment.append(paginationBlock.softContinuation ? "\n" : "\n\n");
                 }
                 fragment.append(block);
                 usedHeight += blockHeight;
@@ -1594,7 +1762,7 @@ public final class NoteCanvasView extends View {
                     continueOnSamePage = true;
                     break;
                 }
-                if (!finalAllowedPage && usedHeight >= capacity) {
+                if (usedHeight >= capacity) {
                     break;
                 }
             }
@@ -1619,6 +1787,8 @@ public final class NoteCanvasView extends View {
             pageCount = Math.max(pageCount, pageIndex + 1);
             y = pageTop(pageIndex) + margin;
         }
+        flow.lastLayoutComplete = blockIndex >= blocks.size();
+        flow.lastLayoutPageCount = Math.max(1, pageCount);
         if (layouts.isEmpty()) {
             layouts.add(new TextFragmentLayout("", pageIndex, x, y, width, dp(72)));
         }
@@ -1635,6 +1805,16 @@ public final class NoteCanvasView extends View {
             return new FragmentContinuation(pageIndex, nextY);
         }
         return new FragmentContinuation(pageIndex + 1, nextPageY);
+    }
+
+    /** Prevents a final readable unit from becoming the sole item on a new page. */
+    static boolean shouldMovePenultimateForWidow(boolean fragmentHasContent,
+                                                  float usedHeight,
+                                                  float penultimateHeight,
+                                                  float finalHeight,
+                                                  float capacity) {
+        return fragmentHasContent && usedHeight + penultimateHeight <= capacity &&
+                usedHeight + penultimateHeight + finalHeight > capacity;
     }
 
     /** Full height of a standalone renderer fragment around one block. */
@@ -1746,15 +1926,15 @@ public final class NoteCanvasView extends View {
     private float estimateUnfragmentedFlowHeight(NoteTextBox.Format format, String source,
                                                   float width, float fontSizeSp,
                                                   float lineHeight) {
-        List<String> blocks = expandOversizedTextBlocks(format,
+        List<PaginationBlock> blocks = expandOversizedTextBlocks(format,
                 splitTextFlowBlocks(format, source), width, fontSizeSp, lineHeight,
                 pageHeight - dp(32));
         float height = dp(20);
         BlockKind previous = null;
-        for (String block : blocks) {
-            height += estimateTextBlockHeight(format, block, width, fontSizeSp,
+        for (PaginationBlock block : blocks) {
+            height += estimateTextBlockHeight(format, block.source, width, fontSizeSp,
                     lineHeight, previous);
-            previous = blockKindOf(format, block);
+            previous = blockKindOf(format, block.source);
         }
         return Math.max(dp(72), height);
     }
@@ -2143,56 +2323,122 @@ public final class NoteCanvasView extends View {
         return (wide * 1.0f + narrow * 0.5f) / total;
     }
 
-    private List<String> expandOversizedTextBlocks(NoteTextBox.Format format,
-                                                    List<String> blocks, float width,
-                                                    float fontSizeSp, float lineHeight,
-                                                    float capacity) {
-        List<String> expanded = new ArrayList<>();
-        for (String block : blocks) {
+    private static final class PaginationBlock {
+        final String source;
+        final boolean softContinuation;
+        final int sourceBlock;
+
+        PaginationBlock(String source, boolean softContinuation, int sourceBlock) {
+            this.source = source;
+            this.softContinuation = softContinuation;
+            this.sourceBlock = sourceBlock;
+        }
+    }
+
+    private List<PaginationBlock> expandOversizedTextBlocks(NoteTextBox.Format format,
+                                                             List<String> blocks, float width,
+                                                             float fontSizeSp, float lineHeight,
+                                                             float capacity) {
+        List<PaginationBlock> expanded = new ArrayList<>();
+        for (int sourceBlock = 0; sourceBlock < blocks.size(); sourceBlock++) {
+            String block = blocks.get(sourceBlock);
             String trimmed = block.trim();
             boolean atomic = format == NoteTextBox.Format.LATEX ||
                     trimmed.startsWith("\\[") || trimmed.startsWith("$$") ||
                     trimmed.startsWith("```") || trimmed.contains("\n|");
             if (atomic || estimateTextBlockHeight(format, block, width, fontSizeSp,
                     lineHeight, null) <= capacity) {
-                expanded.add(block);
+                expanded.add(new PaginationBlock(block, false, sourceBlock));
                 continue;
             }
-            // Average advance width of this specific block, so CJK text is not
-            // assumed to pack as densely as Latin text.
-            float characterWidth = Math.max(dp(5), dp(fontSizeSp * averageGlyphEm(block)));
-            int charactersPerLine = Math.max(10,
-                    (int) ((width - dp(24)) / Math.max(1f, characterWidth)));
-            int linesPerPage = Math.max(3,
-                    (int) (capacity / Math.max(1f, dp(fontSizeSp * lineHeight))) - 2);
-            int targetCharacters = Math.max(80, charactersPerLine * linesPerPage);
-            int cursor = 0;
-            while (cursor < block.length()) {
-                int preferredEnd = Math.min(block.length(), cursor + targetCharacters);
-                int end = preferredEnd;
-                if (preferredEnd < block.length()) {
-                    int minimumEnd = cursor + Math.max(40, targetCharacters / 2);
-                    for (int index = preferredEnd; index >= minimumEnd; index--) {
-                        char value = block.charAt(index - 1);
-                        if (value == '。' || value == '！' || value == '？' ||
-                                value == '.' || value == '!' || value == '?' ||
-                                Character.isWhitespace(value)) {
-                            end = index;
-                            break;
-                        }
-                    }
-                }
-                if (end <= cursor) {
-                    end = preferredEnd;
-                }
-                expanded.add(block.substring(cursor, end).trim());
-                cursor = end;
-                while (cursor < block.length() && Character.isWhitespace(block.charAt(cursor))) {
-                    cursor += 1;
+            // A long Markdown paragraph may contain authored line or sentence
+            // boundaries. Expose those boundaries to the paginator instead of
+            // estimating one near-page-sized character slice and later shrinking
+            // the entire WebView when that estimate is low.
+            boolean continuation = false;
+            for (String line : block.split("\n", -1)) {
+                String readable = line.trim();
+                if (readable.isEmpty()) continue;
+                List<String> pieces = splitReadableLineToFit(readable, width, fontSizeSp,
+                        lineHeight, capacity);
+                for (String piece : pieces) {
+                    expanded.add(new PaginationBlock(piece, continuation, sourceBlock));
+                    continuation = true;
                 }
             }
         }
-        return expanded.isEmpty() ? blocks : expanded;
+        if (expanded.isEmpty()) {
+            for (int sourceBlock = 0; sourceBlock < blocks.size(); sourceBlock++) {
+                expanded.add(new PaginationBlock(blocks.get(sourceBlock), false, sourceBlock));
+            }
+        }
+        return expanded;
+    }
+
+    /** Splits only when one authored line itself is taller than a printable page. */
+    private List<String> splitReadableLineToFit(String line, float width, float fontSizeSp,
+                                                float lineHeight, float capacity) {
+        List<String> pieces = new ArrayList<>();
+        if (estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN, line, width,
+                fontSizeSp, lineHeight, null) <= capacity) {
+            pieces.add(line);
+            return pieces;
+        }
+        // Leave enough room for a heading before the first piece. Subsequent
+        // pieces are packed together by layoutFlow, so this does not reserve a
+        // fixed empty quarter-page on every sheet.
+        float pieceCapacity = Math.max(dp(72), capacity * 0.74f);
+        int cursor = 0;
+        while (cursor < line.length()) {
+            int maximum = largestFittingTextEnd(line, cursor, width, fontSizeSp,
+                    lineHeight, pieceCapacity);
+            int end = preferredReadableBoundary(line, cursor, maximum);
+            if (end <= cursor) end = maximum;
+            if (end <= cursor) end = cursor + Character.charCount(line.codePointAt(cursor));
+            String piece = line.substring(cursor, Math.min(end, line.length())).trim();
+            if (!piece.isEmpty()) pieces.add(piece);
+            cursor = Math.min(end, line.length());
+            while (cursor < line.length() && Character.isWhitespace(line.charAt(cursor))) cursor++;
+        }
+        return pieces;
+    }
+
+    private int largestFittingTextEnd(String source, int start, float width, float fontSizeSp,
+                                      float lineHeight, float capacity) {
+        int low = start + 1;
+        int high = source.length();
+        int best = start;
+        while (low <= high) {
+            int probed = (low + high) >>> 1;
+            int boundary = probed;
+            if (boundary < source.length() && Character.isLowSurrogate(source.charAt(boundary)) &&
+                    boundary > start) boundary--;
+            String candidate = source.substring(start, boundary).trim();
+            float height = estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
+                    candidate, width, fontSizeSp, lineHeight, null);
+            if (height <= capacity) {
+                best = boundary;
+                low = probed + 1;
+            } else {
+                high = probed - 1;
+            }
+        }
+        return best;
+    }
+
+    private static int preferredReadableBoundary(String source, int start, int maximum) {
+        int minimum = start + Math.max(1, (maximum - start) / 2);
+        for (int index = maximum; index > minimum; index--) {
+            char value = source.charAt(index - 1);
+            if (value == '。' || value == '！' || value == '？' || value == '.' ||
+                    value == '!' || value == '?' || value == '；' || value == ';') {
+                return index;
+            }
+        }
+        for (int index = maximum; index > minimum; index--) {
+            if (Character.isWhitespace(source.charAt(index - 1))) return index;
+        }
+        return maximum;
     }
 
     void addPage() {
@@ -2328,6 +2574,14 @@ public final class NoteCanvasView extends View {
         if (pageWidth <= 0f || pageHeight <= 0f) {
             throw new IOException("纸张尺寸尚未就绪");
         }
+        for (TextFlow flow : textFlows.values()) {
+            if (!flow.lastLayoutComplete) {
+                throw new IOException("文字流超过 500 页容量，PDF 未导出；原始文字仍保存在笔记中");
+            }
+            if (flow.lastRenderHeightUnresolved) {
+                throw new IOException("文字实际高度未能完整确认，PDF 未导出；请缩小或分段文字后重试");
+            }
+        }
         List<InkStroke> strokeCopies = new ArrayList<>(strokes.size());
         for (InkStroke stroke : strokes) strokeCopies.add(stroke.copy());
         List<NoteImage> imageCopies = new ArrayList<>(images.size());
@@ -2345,6 +2599,341 @@ public final class NoteCanvasView extends View {
         return new ArrayList<>(textFlows.values());
     }
 
+    /** Builds a value-only outline snapshot from the persisted text-flow anchors and page objects. */
+    ContentOutlineSnapshot createContentOutlineSnapshot(String title) {
+        List<ContentOutlineSnapshot.Flow> flowValues = new ArrayList<>();
+        for (TextFlow flow : textFlows.values()) {
+            flowValues.add(new ContentOutlineSnapshot.Flow(flow.id, flow.format.storageValue(),
+                    flow.source, flow.anchorPageIndex));
+        }
+        List<ContentOutlineSnapshot.Image> imageValues = new ArrayList<>();
+        for (NoteImage image : images) imageValues.add(new ContentOutlineSnapshot.Image(image.id, image.page));
+        // This adapter is consumed synchronously by create() on the UI thread;
+        // it does not allocate or retain a second copy of the canvas point arrays.
+        ContentOutlineSnapshot.InkSource inkSource = new ContentOutlineSnapshot.InkSource() {
+            @Override public int strokeCount() { return strokes.size(); }
+            @Override public int pointCount(int strokeIndex) { return strokes.get(strokeIndex).points.size(); }
+            @Override public double x(int strokeIndex, int pointIndex) {
+                return strokes.get(strokeIndex).points.get(pointIndex).x;
+            }
+            @Override public double y(int strokeIndex, int pointIndex) {
+                return strokes.get(strokeIndex).points.get(pointIndex).y;
+            }
+        };
+        return ContentOutlineSnapshot.create(title, pageCount, pdfPageCount, pageWidth, pageHeight,
+                pageGap, flowValues, imageValues, inkSource);
+    }
+
+    AiEditRecord newAiEditRecord(String ownerId) {
+        return new AiEditRecord(ownerId);
+    }
+
+    AiEditSnapshot captureAiEditSnapshot() {
+        Map<String, TextFlow> copies = new LinkedHashMap<>();
+        for (Map.Entry<String, TextFlow> entry : textFlows.entrySet()) {
+            copies.put(entry.getKey(), entry.getValue().copy());
+        }
+        return new AiEditSnapshot(copies, copyTextBoxes(textBoxes), pageCount,
+                explicitPageEditSerial, pageTopologySerial);
+    }
+
+    /** Adds the actual flow changes since {@code before} to one request-owned record. */
+    boolean recordAiEditDelta(AiEditRecord record, AiEditSnapshot before) {
+        if (record == null || before == null) return false;
+        AiEditSnapshot after = captureAiEditSnapshot();
+        boolean changed = false;
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
+        ids.addAll(before.flows.keySet());
+        ids.addAll(after.flows.keySet());
+        for (String id : ids) {
+            TextFlow oldValue = before.flows.get(id);
+            TextFlow newValue = after.flows.get(id);
+            if (sameFlow(oldValue, newValue)) continue;
+            changed = true;
+            AiFlowChange existing = record.changes.get(id);
+            if (existing == null) {
+                record.changes.put(id, new AiFlowChange(oldValue, newValue));
+            } else {
+                existing.after = newValue == null ? null : newValue.copy();
+                if (sameFlow(existing.before, existing.after)) record.changes.remove(id);
+            }
+        }
+        if (changed) {
+            if (record.beforePageCount < 0) {
+                record.beforePageCount = before.pageCount;
+                record.pageEditSerialAtCapture = before.pageEditSerial;
+                record.pageTopologySerialAtCapture = before.pageTopologySerial;
+            }
+            record.afterPageCount = after.pageCount;
+            record.afterSnapshot = after;
+            refreshAiObstacleBaseline(record);
+        }
+        return changed;
+    }
+
+    AiEditState aiEditState(AiEditRecord record) {
+        if (record == null || !record.hasChanges()) return AiEditState.EMPTY;
+        int applied = 0;
+        int undone = 0;
+        for (Map.Entry<String, AiFlowChange> entry : record.changes.entrySet()) {
+            TextFlow live = textFlows.get(entry.getKey());
+            AiFlowChange change = entry.getValue();
+            if (sameFlow(live, change.after)) applied++;
+            else if (sameFlow(live, change.before)) undone++;
+            else return AiEditState.CONFLICT;
+        }
+        if (applied == record.changes.size()) return AiEditState.APPLIED;
+        if (undone == record.changes.size()) {
+            return record.pageTopologySerialAtCapture != pageTopologySerial
+                    || hasNewObstacleInAiTarget(record)
+                    ? AiEditState.CONFLICT : AiEditState.UNDONE;
+        }
+        return AiEditState.MIXED;
+    }
+
+    /**
+     * Selectively reverses or reapplies AI-owned flows. A full preflight runs
+     * before mutation: one user-edited target makes the operation a no-op.
+     */
+    AiEditApplyResult applyAiEdit(AiEditRecord record, boolean reapply) {
+        if (activePointerId != MotionEvent.INVALID_POINTER_ID || navigationGesture) {
+            return new AiEditApplyResult(AiEditState.BUSY, 0, 0);
+        }
+        ensurePageGeometry();
+        if (!reapply) refreshAiEditFootprint(record);
+        AiEditState beforeState = aiEditState(record);
+        if (beforeState == AiEditState.EMPTY) {
+            return new AiEditApplyResult(beforeState, 0, 0);
+        }
+        if (beforeState == AiEditState.CONFLICT) {
+            return new AiEditApplyResult(beforeState, 0, 1);
+        }
+        if (reapply && hasNewObstacleInAiTarget(record)) {
+            return new AiEditApplyResult(AiEditState.CONFLICT, 0, 1);
+        }
+        if (reapply && record.pageTopologySerialAtCapture != pageTopologySerial) {
+            return new AiEditApplyResult(AiEditState.CONFLICT, 0, 1);
+        }
+        int toChange = 0;
+        for (Map.Entry<String, AiFlowChange> entry : record.changes.entrySet()) {
+            TextFlow live = textFlows.get(entry.getKey());
+            AiFlowChange change = entry.getValue();
+            TextFlow expected = reapply ? change.before : change.after;
+            TextFlow target = reapply ? change.after : change.before;
+            if (sameFlow(live, target)) continue;
+            if (!sameFlow(live, expected)) {
+                return new AiEditApplyResult(AiEditState.CONFLICT, 0, 1);
+            }
+            toChange++;
+        }
+        if (toChange == 0) {
+            return new AiEditApplyResult(aiEditState(record), 0, 0);
+        }
+
+        pushUndoSnapshot();
+        for (Map.Entry<String, AiFlowChange> entry : record.changes.entrySet()) {
+            AiFlowChange change = entry.getValue();
+            TextFlow target = reapply ? change.after : change.before;
+            if (target == null) textFlows.remove(entry.getKey());
+            else textFlows.put(entry.getKey(), target.copy());
+        }
+        rebuildAllFlows();
+        if (reapply) {
+            if (record.afterPageCount > pageCount) pageCount = record.afterPageCount;
+        } else {
+            retractUnusedAiTailPages(record);
+        }
+        clearSelectionInternal();
+        clampViewport(false);
+        invalidate();
+        dispatchTextBoxesChanged();
+        dispatchSelectionState();
+        dispatchViewportState(reapply ? "已重新应用本次 AI 修改" : "已撤销本次 AI 修改");
+        notifyDocumentChanged();
+        return new AiEditApplyResult(aiEditState(record), toChange, 0);
+    }
+
+    private void retractUnusedAiTailPages(AiEditRecord record) {
+        if (record.beforePageCount < 1 || record.afterPageCount <= record.beforePageCount
+                || pageCount != record.afterPageCount
+                || record.pageEditSerialAtCapture != explicitPageEditSerial) return;
+        int minimum = Math.max(Math.max(1, pdfPageCount), record.beforePageCount);
+        while (pageCount > minimum && pageIsEmpty(pageCount - 1)) pageCount--;
+    }
+
+    private boolean pageIsEmpty(int pageIndex) {
+        float top = pageTop(pageIndex);
+        float bottom = top + pageHeight;
+        for (InkStroke stroke : strokes) {
+            if (stroke.points.isEmpty()) continue;
+            RectF bounds = strokeBounds(stroke, true);
+            if (bounds.bottom >= top && bounds.top <= bottom) return false;
+        }
+        for (NoteImage image : images) if (image.page == pageIndex) return false;
+        for (NoteTextBox box : textBoxes) if (box.pageIndex == pageIndex) return false;
+        return true;
+    }
+
+    private static boolean sameFlow(TextFlow left, TextFlow right) {
+        if (left == right) return true;
+        if (left == null || right == null) return false;
+        return left.id.equals(right.id) && left.format == right.format
+                && left.source.equals(right.source)
+                && Double.compare(left.fontSizeSp64, right.fontSizeSp64) == 0
+                && Double.compare(left.lineHeight64, right.lineHeight64) == 0
+                && Double.compare(left.width64, right.width64) == 0
+                && left.anchorPageIndex == right.anchorPageIndex
+                && Double.compare(left.anchorXInPage64, right.anchorXInPage64) == 0
+                && Double.compare(left.anchorYInPage64, right.anchorYInPage64) == 0;
+    }
+
+    private boolean hasNewObstacleInAiTarget(AiEditRecord record) {
+        if (record.afterSnapshot == null) return false;
+        List<RectF> targets = new ArrayList<>();
+        for (NoteTextBox fragment : record.afterSnapshot.fragments) {
+            AiFlowChange change = record.changes.get(fragment.flowId);
+            if (change != null && change.after != null) {
+                targets.add(new RectF(fragment.x, fragment.y,
+                        fragment.x + fragment.width, fragment.y + fragment.height));
+            }
+        }
+        if (targets.isEmpty()) return false;
+        for (InkStroke stroke : strokes) {
+            if (!intersectsAny(strokeBounds(stroke, true), targets)) continue;
+            InkStroke baseline = record.baselineStrokes.get(stroke.id);
+            if (baseline != stroke && !sameStrokeGeometry(baseline, stroke)) return true;
+        }
+        for (NoteImage image : images) {
+            RectF bounds = new RectF(image.x, pageTop(image.page) + image.y,
+                    image.x + image.width, pageTop(image.page) + image.y + image.height);
+            if (!intersectsAny(bounds, targets)) continue;
+            if (!imageGeometry(image).equals(
+                    record.baselineImages.get(image.id))) return true;
+        }
+        for (NoteTextBox fragment : textBoxes) {
+            if (record.changes.containsKey(fragment.flowId)) continue;
+            RectF bounds = new RectF(fragment.x, fragment.y,
+                    fragment.x + fragment.width, fragment.y + fragment.height);
+            if (!intersectsAny(bounds, targets)) continue;
+            if (!sameFlow(textFlows.get(fragment.flowId),
+                    record.afterSnapshot.flows.get(fragment.flowId))) return true;
+        }
+        return false;
+    }
+
+    private void refreshAiObstacleBaseline(AiEditRecord record) {
+        record.baselineStrokes.clear();
+        record.baselineImages.clear();
+        for (InkStroke stroke : strokes) {
+            // Completed strokes use copy-on-write for every geometry mutation,
+            // so object identity is a compact immutable version marker. This
+            // avoids serialising every point twice for each model tool round.
+            record.baselineStrokes.put(stroke.id, stroke);
+        }
+        for (NoteImage image : images) {
+            record.baselineImages.put(image.id, imageGeometry(image));
+        }
+    }
+
+    void refreshAiEditFootprint(AiEditRecord record) {
+        if (record == null || record.afterSnapshot == null || !authorsMatchAfter(record)) return;
+        List<NoteTextBox> current = new ArrayList<>();
+        for (NoteTextBox fragment : textBoxes) {
+            if (record.changes.containsKey(fragment.flowId)) current.add(fragment.copy());
+        }
+        if (record.pageEditSerialAtCapture == explicitPageEditSerial) {
+            int targetPages = record.beforePageCount;
+            for (NoteTextBox fragment : current) {
+                targetPages = Math.max(targetPages, fragment.pageIndex + 1);
+            }
+            record.afterPageCount = Math.max(record.afterPageCount, targetPages);
+        }
+        record.afterSnapshot = new AiEditSnapshot(record.afterSnapshot.flows,
+                current, record.afterPageCount, record.pageEditSerialAtCapture,
+                record.pageTopologySerialAtCapture);
+    }
+
+    private boolean authorsMatchAfter(AiEditRecord record) {
+        for (Map.Entry<String, AiFlowChange> entry : record.changes.entrySet()) {
+            if (!sameFlow(textFlows.get(entry.getKey()), entry.getValue().after)) return false;
+        }
+        return true;
+    }
+
+    private List<RectF> aiTargetRegions(AiEditRecord record) {
+        List<RectF> targets = new ArrayList<>();
+        if (record == null || record.afterSnapshot == null) return targets;
+        for (NoteTextBox fragment : record.afterSnapshot.fragments) {
+            AiFlowChange change = record.changes.get(fragment.flowId);
+            if (change != null && change.after != null) {
+                targets.add(new RectF(fragment.x, fragment.y,
+                        fragment.x + fragment.width, fragment.y + fragment.height));
+            }
+        }
+        return targets;
+    }
+
+    private static boolean intersectsAny(RectF bounds, List<RectF> targets) {
+        if (bounds == null || bounds.isEmpty()) return false;
+        for (RectF target : targets) if (RectF.intersects(bounds, target)) return true;
+        return false;
+    }
+
+    private static String imageGeometry(NoteImage image) {
+        return image.id + ':' + image.page + ':' + Double.toString(image.x64) + ':'
+                + Double.toString(image.y64) + ':' + Double.toString(image.width64) + ':'
+                + Double.toString(image.height64);
+    }
+
+    private static boolean sameStrokeGeometry(InkStroke left, InkStroke right) {
+        if (left == null || right == null || left.color != right.color
+                || Double.compare(left.baseWidth64, right.baseWidth64) != 0
+                || left.highlighter != right.highlighter
+                || left.points.size() != right.points.size()) return false;
+        for (int index = 0; index < left.points.size(); index++) {
+            InkPoint a = left.points.get(index);
+            InkPoint b = right.points.get(index);
+            if (Double.compare(a.x64, b.x64) != 0 || Double.compare(a.y64, b.y64) != 0
+                    || Double.compare(a.pressure64, b.pressure64) != 0) return false;
+        }
+        return true;
+    }
+
+    boolean locateAiEdit(AiEditRecord record) {
+        if (record == null) return false;
+        for (String flowId : record.changes.keySet()) {
+            for (NoteTextBox fragment : textBoxes) {
+                if (flowId.equals(fragment.flowId)) {
+                    ensurePageGeometry();
+                    viewportPanX = getWidth() / 2f
+                            - (fragment.x + fragment.width / 2f) * viewportScale;
+                    viewportPanY = dp(72) - fragment.y * viewportScale;
+                    navigationRawPanY = viewportPanY;
+                    clampViewport(false);
+                    invalidate();
+                    dispatchViewportState("已定位 AI 修改所在第 "
+                            + (fragment.pageIndex + 1) + " 页");
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    boolean hasAiEditTarget(AiEditRecord record) {
+        if (record == null) return false;
+        for (NoteTextBox fragment : textBoxes) {
+            if (record.changes.containsKey(fragment.flowId)) return true;
+        }
+        return false;
+    }
+
+    int undoDepthForTest() { return undoStack.size(); }
+
+    boolean isUserInteractionActive() {
+        return activePointerId != MotionEvent.INVALID_POINTER_ID || navigationGesture;
+    }
+
     boolean canUndo() {
         return !undoStack.isEmpty();
     }
@@ -2358,6 +2947,8 @@ public final class NoteCanvasView extends View {
             return;
         }
         pushBounded(redoStack, snapshotDocument());
+        continuousAiUndoOwner = null;
+        explicitPageEditSerial += 1;
         restoreSnapshot(undoStack.pop());
         clearSelectionInternal();
         rebuildInkBitmap();
@@ -2374,6 +2965,8 @@ public final class NoteCanvasView extends View {
             return;
         }
         pushBounded(undoStack, snapshotDocument());
+        continuousAiUndoOwner = null;
+        explicitPageEditSerial += 1;
         restoreSnapshot(redoStack.pop());
         clearSelectionInternal();
         rebuildInkBitmap();
@@ -2446,8 +3039,10 @@ public final class NoteCanvasView extends View {
         List<NoteImage> imageCopies = new ArrayList<>();
         for (NoteImage image : selectedImages) {
             NoteImage copy = image.copy(true);
-            copy.x = clamp(copy.x + offset, 0, pageWidth - copy.width);
-            copy.y = clamp(copy.y + offset, 0, pageHeight - copy.height);
+            copy.setGeometry(Math.max(0d, Math.min(pageWidth64 - copy.width64,
+                            copy.x64 + offset)),
+                    Math.max(0d, Math.min(pageHeight64 - copy.height64,
+                            copy.y64 + offset)), copy.width64, copy.height64);
             imageCopies.add(copy);
         }
         images.addAll(imageCopies);
@@ -2484,16 +3079,23 @@ public final class NoteCanvasView extends View {
         document.put("id", noteId);
         document.put("title", title);
         document.put("updatedAt", System.currentTimeMillis());
-        document.put("canvasWidth", pageWidth);
-        document.put("canvasHeight", pageHeight);
-        document.put("pageWidth", pageWidth);
-        document.put("pageHeight", pageHeight);
-        document.put("pageGap", pageGap);
+        if (viewportCenterDirty) {
+            viewportCenterX64 = screenToWorldX(getWidth() / 2f);
+            viewportCenterY64 = screenToWorldY(getHeight() / 2f);
+            viewportCenterDirty = false;
+        }
+        document.put("canvasWidth", pageWidth64);
+        document.put("canvasHeight", pageHeight64);
+        document.put("pageWidth", pageWidth64);
+        document.put("pageHeight", pageHeight64);
+        document.put("pageGap", pageGap64);
         document.put("pageCount", pageCount);
-        document.put("viewportScale", viewportScale);
-        document.put("viewportZoom", viewportScale / Math.max(0.001f, fittedPageScale()));
-        document.put("viewportCenterX", screenToWorldX(getWidth() / 2f));
-        document.put("viewportCenterY", screenToWorldY(getHeight() / 2f));
+        document.put("authorPageEditSerial", explicitPageEditSerial);
+        document.put("authorPageTopologySerial", pageTopologySerial);
+        document.put("viewportScale", viewportScale64);
+        document.put("viewportZoom", viewportScale64 / Math.max(0.001f, fittedPageScale()));
+        document.put("viewportCenterX", viewportCenterX64);
+        document.put("viewportCenterY", viewportCenterY64);
         JSONArray strokeArray = new JSONArray();
         for (InkStroke stroke : strokes) {
             strokeArray.put(stroke.toJson());
@@ -2517,87 +3119,474 @@ public final class NoteCanvasView extends View {
         return document;
     }
 
+    /**
+     * Digest of author-controlled note content used to bind resumable AI context.
+     * Viewport, save time, derived fragments and derived overflow page count are
+     * deliberately absent. Explicit page edits have their own persisted serial.
+     * This is called only at load/send/AI-commit boundaries, never per ink point.
+     */
+    String aiConversationFingerprint() {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digestPart(digest, "padnote-author-v1");
+            digestPart(digest, Double.toString(pageWidth64));
+            digestPart(digest, Double.toString(pageHeight64));
+            digestPart(digest, Double.toString(pageGap64));
+            digestPart(digest, Long.toString(explicitPageEditSerial));
+            digestPart(digest, pageStyle.paper.storageValue());
+            digestPart(digest, pageStyle.ratio.storageValue());
+            digestPart(digest, Boolean.toString(pageStyle.landscape));
+            for (InkStroke stroke : strokes) {
+                digestPart(digest, stroke.id);
+                digestPart(digest, Integer.toString(stroke.color));
+                digestPart(digest, Double.toString(stroke.baseWidth64));
+                digestPart(digest, stroke.createdAtValue.toString());
+                digestPart(digest, Boolean.toString(stroke.highlighter));
+                for (InkPoint point : stroke.points) {
+                    digestPart(digest, Double.toString(point.x64));
+                    digestPart(digest, Double.toString(point.y64));
+                    digestPart(digest, point.timestampValue.toString());
+                    digestPart(digest, Double.toString(point.pressure64));
+                }
+            }
+            for (TextFlow flow : textFlows.values()) {
+                digestPart(digest, flow.id);
+                digestPart(digest, flow.format.storageValue());
+                digestPart(digest, flow.source);
+                digestPart(digest, Double.toString(flow.fontSizeSp64));
+                digestPart(digest, Double.toString(flow.lineHeight64));
+                digestPart(digest, Double.toString(flow.width64));
+                digestPart(digest, Integer.toString(flow.anchorPageIndex));
+                digestPart(digest, Double.toString(flow.anchorXInPage64));
+                digestPart(digest, Double.toString(flow.anchorYInPage64));
+            }
+            for (NoteImage image : images) {
+                digestPart(digest, image.id);
+                digestPart(digest, image.png);
+                digestPart(digest, Integer.toString(image.page));
+                digestPart(digest, Double.toString(image.x64));
+                digestPart(digest, Double.toString(image.y64));
+                digestPart(digest, Double.toString(image.width64));
+                digestPart(digest, Double.toString(image.height64));
+            }
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest.digest()) {
+                result.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+            }
+            return result.toString();
+        } catch (Exception impossible) {
+            throw new IllegalStateException("无法计算笔记内容摘要", impossible);
+        }
+    }
+
+    String aiEditReceiptDigest(AiEditRecord record) {
+        if (record == null || !record.hasChanges()) return "";
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digestPart(digest, "padnote-ai-edit-receipt-v1");
+            List<String> ids = new ArrayList<>(record.changes.keySet());
+            Collections.sort(ids);
+            for (String id : ids) {
+                AiFlowChange change = record.changes.get(id);
+                digestPart(digest, id);
+                digestPart(digest, change == null || change.before == null
+                        ? "absent" : change.before.toJson().toString());
+                digestPart(digest, change == null || change.after == null
+                        ? "absent" : change.after.toJson().toString());
+            }
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest.digest()) {
+                result.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+            }
+            return result.toString();
+        } catch (Exception error) {
+            return "";
+        }
+    }
+
+    JSONObject serializeAiEditRecord(AiEditRecord record) throws JSONException {
+        if (record == null || !record.hasChanges() || record.afterSnapshot == null) {
+            throw new JSONException("AI 修改凭据为空");
+        }
+        refreshAiEditFootprint(record);
+        JSONObject receipt = new JSONObject().put("schemaVersion", 1)
+                .put("ownerId", record.ownerId)
+                .put("beforePageCount", record.beforePageCount)
+                .put("afterPageCount", record.afterPageCount)
+                .put("authorPageEditSerial", record.pageEditSerialAtCapture)
+                .put("authorPageTopologySerial", record.pageTopologySerialAtCapture)
+                .put("pageWidth", pageWidth).put("pageHeight", pageHeight)
+                .put("pageGap", pageGap);
+        JSONArray changes = new JSONArray();
+        for (Map.Entry<String, AiFlowChange> entry : record.changes.entrySet()) {
+            AiFlowChange change = entry.getValue();
+            JSONObject value = new JSONObject().put("id", entry.getKey());
+            if (change.before != null) value.put("before", change.before.toJson());
+            if (change.after != null) value.put("after", change.after.toJson());
+            changes.put(value);
+        }
+        receipt.put("changes", changes);
+        JSONArray fragments = new JSONArray();
+        for (NoteTextBox fragment : record.afterSnapshot.fragments) {
+            if (!record.changes.containsKey(fragment.flowId)) continue;
+            fragments.put(new JSONObject().put("flowId", fragment.flowId)
+                    .put("pageIndex", fragment.pageIndex).put("x", fragment.x)
+                    .put("y", fragment.y).put("width", fragment.width)
+                    .put("height", fragment.height));
+        }
+        receipt.put("fragments", fragments);
+        List<RectF> targets = aiTargetRegions(record);
+        JSONArray baselineStrokes = new JSONArray();
+        for (InkStroke stroke : record.baselineStrokes.values()) {
+            if (intersectsAny(strokeBounds(stroke, true), targets)) {
+                baselineStrokes.put(stroke.toJson());
+            }
+        }
+        receipt.put("baselineStrokes", baselineStrokes);
+        JSONObject baselineImages = new JSONObject();
+        for (Map.Entry<String, String> entry : record.baselineImages.entrySet()) {
+            baselineImages.put(entry.getKey(), entry.getValue());
+        }
+        receipt.put("baselineImages", baselineImages);
+        JSONArray baselineFlows = new JSONArray();
+        for (Map.Entry<String, TextFlow> entry : record.afterSnapshot.flows.entrySet()) {
+            if (record.changes.containsKey(entry.getKey())) continue;
+            boolean intersects = false;
+            for (NoteTextBox fragment : record.afterSnapshot.fragments) {
+                if (entry.getKey().equals(fragment.flowId)
+                        && intersectsAny(new RectF(fragment.x, fragment.y,
+                        fragment.x + fragment.width, fragment.y + fragment.height), targets)) {
+                    intersects = true;
+                    break;
+                }
+            }
+            if (intersects) baselineFlows.put(entry.getValue().toJson());
+        }
+        receipt.put("baselineFlows", baselineFlows);
+        return AiConversationStore.sealEditReceipt(receipt);
+    }
+
+    AiEditRecord restoreAiEditRecord(JSONObject receipt) throws JSONException {
+        if (receipt == null || receipt.optInt("schemaVersion", 0) != 1) return null;
+        if (!AiConversationStore.hasValidEditReceiptDigest(receipt)) return null;
+        AiEditRecord record = new AiEditRecord(receipt.getString("ownerId"));
+        record.beforePageCount = receipt.getInt("beforePageCount");
+        record.afterPageCount = receipt.getInt("afterPageCount");
+        record.pageEditSerialAtCapture = receipt.getLong("authorPageEditSerial");
+        record.pageTopologySerialAtCapture = receipt.getLong("authorPageTopologySerial");
+        if (record.beforePageCount < 1 || record.afterPageCount < record.beforePageCount
+                || record.afterPageCount > 500
+                || record.pageTopologySerialAtCapture != pageTopologySerial
+                || Float.compare(finiteReceipt(receipt, "pageWidth"), pageWidth) != 0
+                || Float.compare(finiteReceipt(receipt, "pageHeight"), pageHeight) != 0
+                || Float.compare(finiteReceipt(receipt, "pageGap"), pageGap) != 0) return null;
+        JSONArray changes = receipt.getJSONArray("changes");
+        if (changes.length() == 0 || changes.length() > 64) return null;
+        Map<String, TextFlow> baselineFlows = new LinkedHashMap<>();
+        for (int index = 0; index < changes.length(); index++) {
+            JSONObject value = changes.getJSONObject(index);
+            String id = value.getString("id");
+            TextFlow before = value.has("before")
+                    ? TextFlow.fromJson(value.getJSONObject("before")) : null;
+            TextFlow after = value.has("after")
+                    ? TextFlow.fromJson(value.getJSONObject("after")) : null;
+            if (before == null && after == null) return null;
+            if ((before != null && !id.equals(before.id))
+                    || (after != null && !id.equals(after.id))
+                    || record.changes.put(id, new AiFlowChange(before, after)) != null) return null;
+            if (after != null) baselineFlows.put(id, after.copy());
+        }
+        JSONArray otherFlows = receipt.optJSONArray("baselineFlows");
+        if (otherFlows != null) {
+            for (int index = 0; index < otherFlows.length(); index++) {
+                TextFlow flow = TextFlow.fromJson(otherFlows.getJSONObject(index));
+                if (baselineFlows.put(flow.id, flow) != null) return null;
+            }
+        }
+        List<NoteTextBox> fragments = new ArrayList<>();
+        JSONArray fragmentValues = receipt.getJSONArray("fragments");
+        for (int index = 0; index < fragmentValues.length(); index++) {
+            JSONObject value = fragmentValues.getJSONObject(index);
+            String flowId = value.getString("flowId");
+            TextFlow flow = baselineFlows.get(flowId);
+            if (flow == null) return null;
+            int receiptPage = value.getInt("pageIndex");
+            float receiptX = finiteReceipt(value, "x");
+            float receiptY = finiteReceipt(value, "y");
+            float receiptWidth = finiteReceipt(value, "width");
+            float receiptHeight = finiteReceipt(value, "height");
+            if (receiptPage < 0 || receiptPage >= record.afterPageCount
+                    || receiptWidth <= 0 || receiptHeight <= 0
+                    || receiptX + receiptWidth > pageWidth + 1
+                    || receiptY < pageTop(receiptPage)
+                    || receiptY + receiptHeight > pageTop(receiptPage) + pageHeight + 1) return null;
+            fragments.add(new NoteTextBox("receipt-" + index, flowId, index,
+                    fragmentValues.length(), flow.format, flow.source, flow.source,
+                    flow.fontSizeSp, flow.lineHeight, receiptPage, receiptX, receiptY,
+                    receiptWidth, receiptHeight));
+        }
+        record.afterSnapshot = new AiEditSnapshot(baselineFlows, fragments,
+                record.afterPageCount, record.pageEditSerialAtCapture,
+                record.pageTopologySerialAtCapture);
+        JSONArray strokeValues = receipt.optJSONArray("baselineStrokes");
+        if (strokeValues != null) {
+            for (int index = 0; index < strokeValues.length(); index++) {
+                InkStroke stroke = InkStroke.fromJson(strokeValues.getJSONObject(index));
+                record.baselineStrokes.put(stroke.id, stroke);
+            }
+        }
+        JSONObject imageValues = receipt.optJSONObject("baselineImages");
+        if (imageValues != null) {
+            java.util.Iterator<String> keys = imageValues.keys();
+            while (keys.hasNext()) {
+                String id = keys.next();
+                record.baselineImages.put(id, imageValues.getString(id));
+            }
+        }
+        AiEditState state = aiEditState(record);
+        return state == AiEditState.APPLIED || state == AiEditState.UNDONE ? record : null;
+    }
+
+    private static float finiteReceipt(JSONObject json, String key) throws JSONException {
+        float value = (float) json.getDouble(key);
+        if (!Float.isFinite(value) || value < 0) throw new JSONException("AI 修改凭据位置无效");
+        return value;
+    }
+
+    private static String sha256Text(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(64);
+            for (byte item : bytes) {
+                result.append(String.format(java.util.Locale.ROOT, "%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static void digestPart(MessageDigest digest, String value) {
+        digest.update((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 0);
+    }
+
+    /** Fully parsed state which is not made visible until every object is valid. */
+    private static final class ParsedDocument {
+        int schemaVersion;
+        int pdfPageCount;
+        PdfBackground pdfBackground;
+        double pageWidth64;
+        double pageHeight64;
+        double pageGap64;
+        double viewportScale64;
+        double viewportCenterX64;
+        double viewportCenterY64;
+        float pageWidth;
+        float pageHeight;
+        float pageGap;
+        boolean pageGapInitialized;
+        int pageCount;
+        long authorPageEditSerial;
+        long authorPageTopologySerial;
+        float viewportScale;
+        float viewportZoom;
+        boolean restoreViewportCenter;
+        float viewportCenterX;
+        float viewportCenterY;
+        PageStyle pageStyle;
+        final List<InkStroke> strokes = new ArrayList<>();
+        final List<NoteImage> images = new ArrayList<>();
+        final Map<String, TextFlow> flows = new LinkedHashMap<>();
+
+        void closeOnFailure() {
+            if (pdfBackground != null) pdfBackground.close();
+            for (NoteImage image : images) {
+                if (image.bitmap != null && !image.bitmap.isRecycled()) image.bitmap.recycle();
+            }
+        }
+    }
+
     void loadJsonDocument(JSONObject document) throws JSONException {
-        int schemaVersion = document.optInt("schemaVersion", 0);
-        if (schemaVersion < 1 || schemaVersion > 8) {
+        ParsedDocument parsed = new ParsedDocument();
+        parsed.schemaVersion = document.optInt("schemaVersion", 0);
+        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 8) {
             throw new JSONException("Unsupported PadNote schema version");
         }
-        if (pdfBackground != null) { pdfBackground.close(); pdfBackground = null; }
-        pdfPageCount = document.optInt("pdfPageCount", 0);
-        if (pdfPageCount > 0) {
+        parsed.pdfPageCount = document.optInt("pdfPageCount", 0);
+        parsed.pageWidth64 = positiveDocumentDouble(document.optDouble("pageWidth",
+                document.optDouble("canvasWidth", 0)));
+        parsed.pageHeight64 = positiveDocumentDouble(document.optDouble("pageHeight",
+                document.optDouble("canvasHeight", 0)));
+        parsed.pageGapInitialized = document.has("pageGap");
+        parsed.pageGap64 = parsed.pageGapInitialized
+                ? nonnegativeDocumentDouble(document.getDouble("pageGap")) : 0d;
+        parsed.pageWidth = renderDocumentFloat(parsed.pageWidth64, "pageWidth");
+        parsed.pageHeight = renderDocumentFloat(parsed.pageHeight64, "pageHeight");
+        parsed.pageGap = renderDocumentFloat(parsed.pageGap64, "pageGap");
+        parsed.pageCount = Math.max(1, Math.min(500, document.optInt("pageCount", 1)));
+        parsed.authorPageEditSerial = document.optLong("authorPageEditSerial", 0);
+        parsed.authorPageTopologySerial = document.optLong("authorPageTopologySerial", 0);
+        if (parsed.authorPageEditSerial < 0
+                || parsed.authorPageEditSerial > Long.MAX_VALUE - 1024
+                || parsed.authorPageTopologySerial < 0
+                || parsed.authorPageTopologySerial > Long.MAX_VALUE - 1024) {
+            throw new JSONException("页面修订计数无效");
+        }
+        parsed.viewportScale64 = clampDocumentDouble(document.optDouble("viewportScale", 1),
+                MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE);
+        parsed.viewportScale = renderDocumentFloat(parsed.viewportScale64, "viewportScale");
+        parsed.viewportZoom = positiveFloat(document.optDouble("viewportZoom", 0));
+        parsed.restoreViewportCenter = document.has("viewportCenterX") &&
+                document.has("viewportCenterY");
+        parsed.viewportCenterX64 = finiteDocumentDouble(document.optDouble(
+                "viewportCenterX", parsed.pageWidth64 / 2d), "视图位置无效");
+        parsed.viewportCenterY64 = finiteDocumentDouble(document.optDouble(
+                "viewportCenterY", parsed.pageHeight64 / 2d), "视图位置无效");
+        parsed.viewportCenterX = renderDocumentFloat(parsed.viewportCenterX64, "viewportCenterX");
+        parsed.viewportCenterY = renderDocumentFloat(parsed.viewportCenterY64, "viewportCenterY");
+        parsed.pageStyle = parsed.schemaVersion >= 6
+                ? PageStyle.fromJson(document.optJSONObject("pageStyle"))
+                : PageStyle.legacyDefault();
+        if (parsed.pdfPageCount < 0 || parsed.pdfPageCount > parsed.pageCount) {
+            throw new JSONException("PDF 页数无效");
+        }
+        if (parsed.pdfPageCount > 0) {
             try {
-                pdfBackground = new PdfBackground(NoteStore.pdfFile(getContext(), document.getString("id")), this);
+                parsed.pdfBackground = new PdfBackground(
+                        NoteStore.pdfFile(getContext(), document.getString("id")), this);
             } catch (Exception error) {
                 throw new JSONException("无法打开 PDF 原文：" + error.getMessage());
             }
         }
+        try {
+            JSONArray imageArray = document.optJSONArray("images");
+            if (imageArray != null) {
+                long pixels = 0;
+                long encoded = 0;
+                for (int index = 0; index < imageArray.length(); index++) {
+                    NoteImage image = NoteImage.fromJson(imageArray.getJSONObject(index));
+                    if (image.page < 0 || image.page >= parsed.pageCount ||
+                            image.width64 <= 0 || image.height64 <= 0 ||
+                            image.x64 + image.width64 > parsed.pageWidth64 + 1d ||
+                            image.y64 + image.height64 > parsed.pageHeight64 + 1d) {
+                        if (!image.bitmap.isRecycled()) image.bitmap.recycle();
+                        throw new JSONException("图片超出页面范围");
+                    }
+                    pixels += (long) image.bitmap.getWidth() * image.bitmap.getHeight();
+                    encoded += image.png.length();
+                    if (pixels > NoteImage.MAX_DOCUMENT_PIXELS ||
+                            encoded > NoteImage.MAX_DOCUMENT_ENCODED) {
+                        if (!image.bitmap.isRecycled()) image.bitmap.recycle();
+                        throw new JSONException("本笔记图片已达容量上限");
+                    }
+                    parsed.images.add(image);
+                }
+            }
+            JSONArray strokeArray = document.getJSONArray("strokes");
+            for (int index = 0; index < strokeArray.length(); index++) {
+                parsed.strokes.add(InkStroke.fromJson(strokeArray.getJSONObject(index)));
+            }
+            if (parsed.schemaVersion >= 5) {
+                JSONArray flowArray = document.optJSONArray("textFlows");
+                if (flowArray != null) {
+                    for (int index = 0; index < flowArray.length(); index++) {
+                        TextFlow flow = TextFlow.fromJson(flowArray.getJSONObject(index));
+                        if (flow.anchorPageIndex >= parsed.pageCount ||
+                                parsed.flows.put(flow.id, flow) != null) {
+                            throw new JSONException("文字流页码或 ID 无效");
+                        }
+                    }
+                }
+            } else {
+                migrateLegacyTextBoxes(document.optJSONArray("textBoxes"), parsed.flows,
+                        parsed.pageHeight, parsed.pageGap);
+            }
+        } catch (JSONException | RuntimeException error) {
+            parsed.closeOnFailure();
+            if (error instanceof JSONException) throw (JSONException) error;
+            throw new JSONException("笔记对象无效：" + error.getMessage());
+        }
+
+        // Commit only after the complete document and its PDF resource are readable.
+        PdfBackground oldBackground = pdfBackground;
+        pdfBackground = parsed.pdfBackground;
+        pdfPageCount = parsed.pdfPageCount;
+        pageWidth64 = parsed.pageWidth64;
+        pageHeight64 = parsed.pageHeight64;
+        pageGap64 = parsed.pageGap64;
+        pageGapInitialized = parsed.pageGapInitialized;
+        viewportScale64 = parsed.viewportScale64;
+        viewportCenterX64 = parsed.viewportCenterX64;
+        viewportCenterY64 = parsed.viewportCenterY64;
+        viewportCenterDirty = false;
+        pageWidth = parsed.pageWidth;
+        pageHeight = parsed.pageHeight;
+        pageGap = parsed.pageGap;
+        pageCount = parsed.pageCount;
+        viewportScale = parsed.viewportScale;
+        restoredViewportZoom = parsed.viewportZoom;
+        restoreViewportCenter = parsed.restoreViewportCenter;
+        restoredViewportCenterX = parsed.viewportCenterX;
+        restoredViewportCenterY = parsed.viewportCenterY;
+        pageStyle = parsed.pageStyle;
         strokes.clear();
+        strokes.addAll(parsed.strokes);
+        images.clear();
+        images.addAll(parsed.images);
         textBoxes.clear();
         textFlows.clear();
+        textFlows.putAll(parsed.flows);
         selectedStrokes.clear();
+        selectedImages.clear();
         lassoPoints.clear();
         selectionMaskPoints.clear();
         undoStack.clear();
         redoStack.clear();
-        pageWidth = positiveFloat(document.optDouble("pageWidth",
-                document.optDouble("canvasWidth", 0)));
-        pageHeight = positiveFloat(document.optDouble("pageHeight",
-                document.optDouble("canvasHeight", 0)));
-        pageGap = positiveFloat(document.optDouble("pageGap", 0));
-        pageCount = Math.max(1, Math.min(500, document.optInt("pageCount", 1)));
-        images.clear();
-        selectedImages.clear();
-        JSONArray imageArray = document.optJSONArray("images");
-        if (imageArray != null) {
-            for (int index = 0; index < imageArray.length(); index++) {
-                NoteImage image = NoteImage.fromJson(imageArray.getJSONObject(index));
-                if (image.page < 0 || image.page >= pageCount || image.width <= 0 || image.height <= 0
-                        || image.x + image.width > pageWidth + 1 || image.y + image.height > pageHeight + 1) {
-                    throw new JSONException("图片超出页面范围");
-                }
-                checkImageBudget(image);
-                images.add(image);
-            }
-        }
-        viewportScale = clamp((float) document.optDouble("viewportScale", 1),
-                MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE);
-        restoredViewportZoom = positiveFloat(document.optDouble("viewportZoom", 0));
-        restoreViewportCenter = document.has("viewportCenterX") &&
-                document.has("viewportCenterY");
-        restoredViewportCenterX = (float) document.optDouble("viewportCenterX", pageWidth / 2f);
-        restoredViewportCenterY = (float) document.optDouble("viewportCenterY", pageHeight / 2f);
+        continuousAiUndoOwner = null;
+        aiUndoTransactionOwner = null;
+        pendingAiUndoSnapshot = null;
+        undoTransactionDepth = 0;
+        explicitPageEditSerial = parsed.authorPageEditSerial;
+        pageTopologySerial = parsed.authorPageTopologySerial;
         viewportInitialized = false;
-        JSONArray strokeArray = document.optJSONArray("strokes");
-        if (strokeArray != null) {
-            for (int index = 0; index < strokeArray.length(); index++) {
-                strokes.add(InkStroke.fromJson(strokeArray.getJSONObject(index)));
-            }
-        }
-        // Notes written before page styles existed keep the appearance they had.
-        pageStyle = schemaVersion >= 6
-                ? PageStyle.fromJson(document.optJSONObject("pageStyle"))
-                : PageStyle.legacyDefault();
-        if (schemaVersion >= 5) {
-            JSONArray flowArray = document.optJSONArray("textFlows");
-            if (flowArray != null) {
-                for (int index = 0; index < flowArray.length(); index++) {
-                    TextFlow flow = TextFlow.fromJson(flowArray.getJSONObject(index));
-                    textFlows.put(flow.id, flow);
-                }
-            }
-        } else {
-            migrateLegacyTextBoxes(document.optJSONArray("textBoxes"));
-        }
+        if (oldBackground != null) oldBackground.close();
+
         recountPoints();
         ensurePageGeometry();
-        initializeViewportIfReady(schemaVersion == 1);
-        // Fragments are not stored; rebuild them once page geometry is known.
+        initializeViewportIfReady(parsed.schemaVersion == 1);
         rebuildAllFlows();
         rebuildInkBitmap();
         dispatchStats(0, "已恢复本地笔记");
         dispatchSelectionState();
         dispatchTextBoxesChanged();
-        dispatchViewportState(schemaVersion == 1 ? "旧笔记已升级为分页画布" : "已恢复页面位置");
+        dispatchViewportState(parsed.schemaVersion == 1
+                ? "旧笔记已升级为分页画布" : "已恢复页面位置");
+    }
+
+    private static double finiteDocumentDouble(double value, String message) throws JSONException {
+        if (!Double.isFinite(value)) throw new JSONException(message);
+        return value;
+    }
+
+    private static double positiveDocumentDouble(double value) throws JSONException {
+        return Double.isFinite(value) && value > 0d ? value : 0d;
+    }
+
+    private static double nonnegativeDocumentDouble(double value) throws JSONException {
+        if (!Double.isFinite(value) || value < 0d) return 0d;
+        return value; // preserves the sign bit of an explicit -0.0
+    }
+
+    private static double clampDocumentDouble(double value, double minimum, double maximum) throws JSONException {
+        if (!Double.isFinite(value)) throw new JSONException("视图缩放无效");
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static float renderDocumentFloat(double value, String field) throws JSONException {
+        try { return PersistedGeometry.renderFloat(value); }
+        catch (IllegalArgumentException error) { throw new JSONException(field + " 超出渲染范围"); }
     }
 
     @Override
@@ -2925,6 +3914,7 @@ public final class NoteCanvasView extends View {
             float anchorWorldX = (navigationLastFocusX - viewportPanX) / oldScale;
             float anchorWorldY = (navigationLastFocusY - viewportPanY) / oldScale;
             viewportScale = requestedScale;
+            viewportScale64 = requestedScale;
             viewportPanX = focusX - anchorWorldX * requestedScale;
             viewportPanY = focusY - anchorWorldY * requestedScale;
             navigationRawPanY = viewportPanY;
@@ -2956,6 +3946,7 @@ public final class NoteCanvasView extends View {
         navigationLastFocusX = focusX;
         navigationLastFocusY = focusY;
         navigationLastSpan = span;
+        viewportCenterDirty = true;
         invalidate();
     }
 
@@ -3128,13 +4119,13 @@ public final class NoteCanvasView extends View {
         if (shapeType == 1) { points.add(first); points.add(last); }
         else if (shapeType == 2) {
             float cx = (left + right) / 2f, cy = (top + bottom) / 2f;
-            for (int i = 0; i <= 24; i++) { double a = Math.PI * 2 * i / 24; points.add(new InkPoint(cx + (right-left)/2f*(float)Math.cos(a), cy + (bottom-top)/2f*(float)Math.sin(a), last.timestamp, last.pressure)); }
+            for (int i = 0; i <= 24; i++) { double a = Math.PI * 2 * i / 24; points.add(new InkPoint(cx + (right-left)/2d*Math.cos(a), cy + (bottom-top)/2d*Math.sin(a), last.timestampValue, last.pressure64)); }
         } else {
-            points.add(new InkPoint(left, top, first.timestamp, first.pressure));
-            points.add(new InkPoint(right, top, last.timestamp, last.pressure));
-            points.add(new InkPoint(right, bottom, last.timestamp, last.pressure));
-            points.add(new InkPoint(left, bottom, last.timestamp, last.pressure));
-            points.add(new InkPoint(left, top, last.timestamp, last.pressure));
+            points.add(new InkPoint(left, top, first.timestampValue, first.pressure64));
+            points.add(new InkPoint(right, top, last.timestampValue, last.pressure64));
+            points.add(new InkPoint(right, bottom, last.timestampValue, last.pressure64));
+            points.add(new InkPoint(left, bottom, last.timestampValue, last.pressure64));
+            points.add(new InkPoint(left, top, last.timestampValue, last.pressure64));
         }
         stroke.points.clear(); stroke.points.addAll(points);
     }
@@ -3288,7 +4279,8 @@ public final class NoteCanvasView extends View {
                 strokeSerial += 1;
                 id = "stroke-erase-" + System.currentTimeMillis() + '-' + strokeSerial;
             }
-            InkStroke fragment = new InkStroke(id, stroke.color, stroke.baseWidth, stroke.createdAt, stroke.highlighter);
+            InkStroke fragment = new InkStroke(id, stroke.color, stroke.baseWidth64,
+                    stroke.createdAtValue, stroke.highlighter);
             fragment.points.addAll(points);
             fragments.add(fragment);
         }
@@ -3331,11 +4323,14 @@ public final class NoteCanvasView extends View {
     }
 
     private InkPoint interpolatePoint(InkPoint from, InkPoint to, float ratio) {
+        if (ratio <= 0f) return from.copy();
+        if (ratio >= 1f) return to.copy();
         return new InkPoint(
-                from.x + (to.x - from.x) * ratio,
-                from.y + (to.y - from.y) * ratio,
-                from.timestamp + Math.round((to.timestamp - from.timestamp) * ratio),
-                from.pressure + (to.pressure - from.pressure) * ratio
+                from.x64 + (to.x64 - from.x64) * (double) ratio,
+                from.y64 + (to.y64 - from.y64) * (double) ratio,
+                from.timestampValue.doubleValue()
+                        + (to.timestampValue.doubleValue() - from.timestampValue.doubleValue()) * (double) ratio,
+                from.pressure64 + (to.pressure64 - from.pressure64) * (double) ratio
         );
     }
 
@@ -3410,8 +4405,9 @@ public final class NoteCanvasView extends View {
         if (resizingImage != null) {
             float ratio = resizingImage.bitmap.getHeight() / (float) resizingImage.bitmap.getWidth();
             float max = Math.min(pageWidth - resizingImage.x, (pageHeight - resizingImage.y) / ratio);
-            resizingImage.width = clamp(x - resizingImage.x, Math.min(dp(32), max), max);
-            resizingImage.height = resizingImage.width * ratio;
+            double nextWidth = clamp(x - resizingImage.x, Math.min(dp(32), max), max);
+            resizingImage.setGeometry(resizingImage.x64, resizingImage.y64,
+                    nextWidth, nextWidth * ratio);
             invalidate();
             return;
         }
@@ -3447,8 +4443,7 @@ public final class NoteCanvasView extends View {
             stroke.translate(dx, dy);
         }
         for (NoteImage image : selectedImages) {
-            image.x += dx;
-            image.y += dy;
+            image.setGeometry(image.x64 + dx, image.y64 + dy, image.width64, image.height64);
         }
         for (PointF point : selectionMaskPoints) {
             point.offset(dx, dy);
@@ -3752,8 +4747,10 @@ public final class NoteCanvasView extends View {
     }
 
     private void ensurePageGeometry() {
-        if (pageGap <= 0) {
+        if (!pageGapInitialized) {
             pageGap = dp(28);
+            pageGap64 = pageGap;
+            pageGapInitialized = true;
         }
         if ((pageWidth <= 0 || pageHeight <= 0) && getWidth() > 0 && getHeight() > 0) {
             // Size comes from the page style, so an A4 note keeps its proportion
@@ -3762,9 +4759,11 @@ public final class NoteCanvasView extends View {
                     getHeight() - dp(40), dp(320));
             if (pageWidth <= 0) {
                 pageWidth = size[0];
+                pageWidth64 = size[0];
             }
             if (pageHeight <= 0) {
                 pageHeight = size[1];
+                pageHeight64 = size[1];
             }
         }
     }
@@ -3834,6 +4833,8 @@ public final class NoteCanvasView extends View {
         pageStyle = style;
         pageWidth = 0;
         pageHeight = 0;
+        pageWidth64 = 0d;
+        pageHeight64 = 0d;
         ensurePageGeometry();
         rebuildInkBitmap();
         rebuildAllFlows();
@@ -3849,12 +4850,14 @@ public final class NoteCanvasView extends View {
         if (restoredViewportZoom > 0) {
             viewportScale = clamp(fittedPageScale() * restoredViewportZoom,
                     MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE);
+            viewportScale64 = viewportScale;
         }
         if (restoreViewportCenter && !forceFit) {
             viewportPanX = getWidth() / 2f - restoredViewportCenterX * viewportScale;
             viewportPanY = getHeight() / 2f - restoredViewportCenterY * viewportScale;
         } else {
             viewportScale = fittedPageScale();
+            viewportScale64 = viewportScale;
             viewportPanX = (getWidth() - pageWidth * viewportScale) / 2f;
             viewportPanY = (getHeight() - pageHeight * viewportScale) / 2f;
         }
@@ -3874,6 +4877,7 @@ public final class NoteCanvasView extends View {
             pushUndoSnapshot();
         }
         pageCount += 1;
+        explicitPageEditSerial += 1;
         bottomPullDistance = 0;
         if (navigateToNewPage) {
             float targetTop = pageTop(pageCount - 1);
@@ -3892,12 +4896,17 @@ public final class NoteCanvasView extends View {
         ensurePageGeometry();
         if (pageCount <= 1 || pageIndex < 0 || pageIndex >= pageCount) return false;
         pushUndoSnapshot();
-        float stride = pageHeight + pageGap;
+        double stride = pageHeight64 + pageGap64;
         for (int i = strokes.size() - 1; i >= 0; i--) {
             InkStroke stroke = strokes.get(i);
-            int strokePage = pageIndexForWorldY(stroke.points.isEmpty() ? 0 : stroke.points.get(0).y);
+            int strokePage = pageIndexForPersistedY(
+                    stroke.points.isEmpty() ? 0d : stroke.points.get(0).y64);
             if (strokePage == pageIndex) strokes.remove(i);
-            else if (strokePage > pageIndex) stroke.translate(0, -stride);
+            else if (strokePage > pageIndex) {
+                InkStroke moved = stroke.copy();
+                moved.translate(0, -stride);
+                strokes.set(i, moved);
+            }
         }
         List<String> removeFlows = new ArrayList<>();
         for (TextFlow flow : textFlows.values()) {
@@ -3911,6 +4920,8 @@ public final class NoteCanvasView extends View {
         }
         for (String id : removeFlows) textFlows.remove(id);
         pageCount -= 1;
+        explicitPageEditSerial += 1;
+        pageTopologySerial += 1;
         selectedStrokes.clear();
         selectedTextBoxId = null;
         inkCacheDirty = true;
@@ -3926,10 +4937,16 @@ public final class NoteCanvasView extends View {
         ensurePageGeometry();
         if (pageIndex < 0 || pageIndex >= pageCount || pageCount >= 500) return false;
         pushUndoSnapshot();
-        float stride = pageHeight + pageGap;
-        for (InkStroke stroke : strokes) {
-            int strokePage = pageIndexForWorldY(stroke.points.isEmpty() ? 0 : stroke.points.get(0).y);
-            if (strokePage > pageIndex) stroke.translate(0, stride);
+        double stride = pageHeight64 + pageGap64;
+        for (int index = 0; index < strokes.size(); index++) {
+            InkStroke stroke = strokes.get(index);
+            int strokePage = pageIndexForPersistedY(
+                    stroke.points.isEmpty() ? 0d : stroke.points.get(0).y64);
+            if (strokePage > pageIndex) {
+                InkStroke moved = stroke.copy();
+                moved.translate(0, stride);
+                strokes.set(index, moved);
+            }
         }
         for (TextFlow flow : textFlows.values()) {
             if (flow.anchorPageIndex > pageIndex) flow.anchorPageIndex += 1;
@@ -3937,7 +4954,8 @@ public final class NoteCanvasView extends View {
         for (NoteImage image : images) if (image.page > pageIndex) image.page += 1;
         List<InkStroke> copies = new ArrayList<>();
         for (InkStroke stroke : strokes) {
-            int strokePage = pageIndexForWorldY(stroke.points.isEmpty() ? 0 : stroke.points.get(0).y);
+            int strokePage = pageIndexForPersistedY(
+                    stroke.points.isEmpty() ? 0d : stroke.points.get(0).y64);
             if (strokePage == pageIndex) {
                 InkStroke copy = stroke.copyWithId(UUID.randomUUID().toString());
                 copy.translate(0, stride);
@@ -3955,11 +4973,13 @@ public final class NoteCanvasView extends View {
         }
         for (TextFlow copy : flowCopies) {
             TextFlow unique = new TextFlow(UUID.randomUUID().toString(), copy.format, copy.source,
-                    copy.fontSizeSp, copy.lineHeight, copy.width, copy.anchorPageIndex,
-                    copy.anchorXInPage, copy.anchorYInPage);
+                    copy.fontSizeSp64, copy.lineHeight64, copy.width64, copy.anchorPageIndex,
+                    copy.anchorXInPage64, copy.anchorYInPage64);
             textFlows.put(unique.id, unique);
         }
         pageCount += 1;
+        explicitPageEditSerial += 1;
+        pageTopologySerial += 1;
         inkCacheDirty = true;
         invalidate();
         notifyDocumentChanged();
@@ -3973,6 +4993,8 @@ public final class NoteCanvasView extends View {
         if (fromPage < 0 || toPage < 0 || fromPage >= pageCount || toPage >= pageCount
                 || fromPage == toPage) return false;
         pushUndoSnapshot();
+        explicitPageEditSerial += 1;
+        pageTopologySerial += 1;
         int[] mapping = new int[pageCount];
         for (int old = 0; old < pageCount; old++) {
             if (old == fromPage) mapping[old] = toPage;
@@ -3980,11 +5002,17 @@ public final class NoteCanvasView extends View {
             else if (toPage < fromPage && old >= toPage && old < fromPage) mapping[old] = old + 1;
             else mapping[old] = old;
         }
-        float stride = pageHeight + pageGap;
-        for (InkStroke stroke : strokes) {
-            int oldPage = pageIndexForWorldY(stroke.points.isEmpty() ? 0 : stroke.points.get(0).y);
+        double stride = pageHeight64 + pageGap64;
+        for (int index = 0; index < strokes.size(); index++) {
+            InkStroke stroke = strokes.get(index);
+            int oldPage = pageIndexForPersistedY(
+                    stroke.points.isEmpty() ? 0d : stroke.points.get(0).y64);
             int newPage = mapping[Math.max(0, Math.min(pageCount - 1, oldPage))];
-            stroke.translate(0, (newPage - oldPage) * stride);
+            if (newPage != oldPage) {
+                InkStroke moved = stroke.copy();
+                moved.translate(0, (newPage - oldPage) * stride);
+                strokes.set(index, moved);
+            }
         }
         for (TextFlow flow : textFlows.values()) {
             flow.anchorPageIndex = mapping[Math.max(0, Math.min(pageCount - 1, flow.anchorPageIndex))];
@@ -4022,6 +5050,13 @@ public final class NoteCanvasView extends View {
             return 0;
         }
         int index = (int) Math.floor(Math.max(0, worldY) / (pageHeight + pageGap));
+        return Math.max(0, Math.min(pageCount - 1, index));
+    }
+
+    /** Page ownership for persisted coordinates; render hit tests continue using float. */
+    private int pageIndexForPersistedY(double worldY) {
+        if (pageHeight64 <= 0d) return 0;
+        int index = (int) Math.floor(Math.max(0d, worldY) / (pageHeight64 + pageGap64));
         return Math.max(0, Math.min(pageCount - 1, index));
     }
 
@@ -4508,6 +5543,7 @@ public final class NoteCanvasView extends View {
             // several undos to reverse.
             return;
         }
+        continuousAiUndoOwner = null;
         pushBounded(undoStack, snapshotDocument());
         redoStack.clear();
         dispatchSelectionState();
@@ -4522,6 +5558,7 @@ public final class NoteCanvasView extends View {
      */
     void beginUndoTransaction() {
         if (undoTransactionDepth == 0) {
+            continuousAiUndoOwner = null;
             pushBounded(undoStack, snapshotDocument());
             redoStack.clear();
             dispatchSelectionState();
@@ -4531,6 +5568,41 @@ public final class NoteCanvasView extends View {
 
     void endUndoTransaction() {
         undoTransactionDepth = Math.max(0, undoTransactionDepth - 1);
+    }
+
+    /**
+     * Opens a short, synchronous tool batch. Consecutive batches owned by the
+     * same request share one toolbar undo entry; any intervening user mutation
+     * clears that ownership in {@link #pushUndoSnapshot()}.
+     */
+    void beginAiUndoTransaction(String ownerId) {
+        if (undoTransactionDepth != 0) {
+            undoTransactionDepth += 1;
+            return;
+        }
+        aiUndoTransactionOwner = ownerId == null ? "" : ownerId;
+        pendingAiUndoSnapshot = aiUndoTransactionOwner.equals(continuousAiUndoOwner)
+                ? null : snapshotDocument();
+        undoTransactionDepth = 1;
+    }
+
+    void endAiUndoTransaction(String ownerId, boolean mutated) {
+        if (undoTransactionDepth <= 0) return;
+        undoTransactionDepth -= 1;
+        if (undoTransactionDepth > 0) return;
+        String normalized = ownerId == null ? "" : ownerId;
+        if (!normalized.equals(aiUndoTransactionOwner)) {
+            continuousAiUndoOwner = null;
+        } else if (mutated) {
+            if (pendingAiUndoSnapshot != null) {
+                pushBounded(undoStack, pendingAiUndoSnapshot);
+                dispatchSelectionState();
+            }
+            continuousAiUndoOwner = normalized;
+            redoStack.clear();
+        }
+        aiUndoTransactionOwner = null;
+        pendingAiUndoSnapshot = null;
     }
 
     private void pushBounded(Deque<DocumentSnapshot> stack, DocumentSnapshot snapshot) {
@@ -4550,7 +5622,10 @@ public final class NoteCanvasView extends View {
      * Anything derived is discarded and recomputed, so a note saved by an older
      * build also picks up later paginator fixes.
      */
-    private void migrateLegacyTextBoxes(JSONArray textBoxArray) throws JSONException {
+    private static void migrateLegacyTextBoxes(JSONArray textBoxArray,
+                                               Map<String, TextFlow> destination,
+                                               float loadedPageHeight,
+                                               float loadedPageGap) throws JSONException {
         if (textBoxArray == null) {
             return;
         }
@@ -4577,30 +5652,30 @@ public final class NoteCanvasView extends View {
             if (source.length() > TextFlow.MAX_SOURCE_LENGTH) {
                 throw new JSONException("Text flow source is too large");
             }
-            float worldY = (float) head.optDouble("y", 0);
-            float worldX = (float) head.optDouble("x", 0);
+            double worldY = head.optDouble("y", 0);
+            double worldX = head.optDouble("x", 0);
             if (Double.isNaN(worldY) || Double.isInfinite(worldY) ||
                     Double.isNaN(worldX) || Double.isInfinite(worldX)) {
                 throw new JSONException("Text box geometry must be finite");
             }
             int pageIndex = 0;
-            float yInPage = worldY;
-            if (pageHeight > 0) {
-                float stride = pageHeight + Math.max(0f, pageGap);
+            double yInPage = worldY;
+            if (loadedPageHeight > 0) {
+                double stride = loadedPageHeight + Math.max(0d, loadedPageGap);
                 if (stride > 0) {
                     pageIndex = Math.max(0, Math.min(499, (int) (worldY / stride)));
                     yInPage = worldY - pageIndex * stride;
                 }
             }
-            textFlows.put(entry.getKey(), new TextFlow(
+            destination.put(entry.getKey(), new TextFlow(
                     entry.getKey(),
                     NoteTextBox.Format.fromStorage(head.optString("format", "latex")),
                     source,
-                    TextFlow.clampFontSize((float) head.optDouble("fontSizeSp", 16)),
+                    TextFlow.clampFontSize64(head.optDouble("fontSizeSp", 16)),
                     // Pre-0.10.1 notes had no stored leading; they pick up the
                     // tighter default, which is also what the estimator now assumes.
                     TextFlow.DEFAULT_LINE_HEIGHT,
-                    Math.max(80f, (float) head.optDouble("width", 360)),
+                    Math.max(80d, head.optDouble("width", 360)),
                     pageIndex, worldX, yInPage));
         }
     }
@@ -4841,7 +5916,7 @@ public final class NoteCanvasView extends View {
         @Override
         public JSONObject createTextFlow(String content, NoteTextBox.Format format,
                                          PlacementResolver.Placement placement) {
-            if (activePointerId != MotionEvent.INVALID_POINTER_ID || navigationGesture) {
+            if (isUserInteractionActive()) {
                 return null;
             }
             ensurePageGeometry();
@@ -4889,14 +5964,31 @@ public final class NoteCanvasView extends View {
             }
             int pagesBefore = pageCount;
             Map<String, Integer> anchorsBefore = flowAnchorPages();
-            pushUndoSnapshot();
             TextFlow flow = new TextFlow(
                     "flow-ai-" + UUID.randomUUID().toString().replace("-", ""),
                     format, content, 16f, TextFlow.DEFAULT_LINE_HEIGHT,
                     placement.width, placement.pageIndex, placement.xInPage,
                     placement.yInPage);
+            TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(content);
+            if (sourceFailure != TextFlowCapacity.Failure.NONE) {
+                throw new PlacementResolver.Failure(TextFlowCapacity.message(sourceFailure));
+            }
+            int pageCountBeforePreview = pageCount;
+            List<TextFragmentLayout> preparedLayouts;
+            try {
+                preparedLayouts = layoutFlow(flow);
+                TextFlowCapacity.Failure layoutFailure = TextFlowCapacity.checkLayout(
+                        flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete);
+                if (layoutFailure != TextFlowCapacity.Failure.NONE) {
+                    throw new PlacementResolver.Failure(TextFlowCapacity.message(layoutFailure));
+                }
+            } finally {
+                pageCount = pageCountBeforePreview;
+            }
+            pushUndoSnapshot();
             textFlows.put(flow.id, flow);
-            reflowFlow(flow);
+            pageCount = Math.max(pageCount, flow.lastLayoutPageCount);
+            reflowFlow(flow, preparedLayouts);
             dispatchTextBoxesChanged();
             dispatchSelectionState();
             notifyDocumentChanged();
@@ -4912,6 +6004,9 @@ public final class NoteCanvasView extends View {
         @Override
         public JSONObject styleTextFlow(String flowId, Float fontSizeSp, Float lineHeight,
                                         Float width) {
+            if (isUserInteractionActive()) {
+                return null;
+            }
             TextFlow flow = textFlows.get(flowId);
             if (flow == null) {
                 return null;
@@ -4919,21 +6014,28 @@ public final class NoteCanvasView extends View {
             ensurePageGeometry();
             int pagesBefore = pageCount;
             Map<String, Integer> anchorsBefore = flowAnchorPages();
+            double nextFont = fontSizeSp == null ? flow.fontSizeSp64
+                    : TextFlow.clampFontSize(fontSizeSp);
+            double nextLeading = lineHeight == null ? flow.lineHeight64
+                    : TextFlow.clampLineHeight(lineHeight);
+            double nextWidth = width == null ? flow.width64
+                    : clamp(width * densityScale(), dp(180),
+                    Math.max(dp(180), pageWidth - dp(32)));
+            if (Double.compare(flow.fontSizeSp64, nextFont) == 0
+                    && Double.compare(flow.lineHeight64, nextLeading) == 0
+                    && Double.compare(flow.width64, nextWidth) == 0) {
+                JSONObject unchanged = landingReport(flowId, pagesBefore, anchorsBefore);
+                try { unchanged.put("unchanged", true); }
+                catch (JSONException ignored) { }
+                return unchanged;
+            }
             pushUndoSnapshot();
-            if (fontSizeSp != null) {
-                flow.fontSizeSp = TextFlow.clampFontSize(fontSizeSp);
-            }
-            if (lineHeight != null) {
-                flow.lineHeight = TextFlow.clampLineHeight(lineHeight);
-            }
+            flow.setStyle(nextFont, nextLeading, nextWidth);
             if (fontSizeSp != null || lineHeight != null || width != null) {
+                flow.clearRenderHeightFailure();
                 flow.heightCorrection = 1f;
                 flow.heightCorrectionPasses = 0;
                 flow.clearMeasuredMermaidHeights();
-            }
-            if (width != null) {
-                flow.width = clamp(width * densityScale(), dp(180),
-                        Math.max(dp(180), pageWidth - dp(32)));
             }
             reflowFlow(flow);
             dispatchTextBoxesChanged();
@@ -4945,6 +6047,9 @@ public final class NoteCanvasView extends View {
         @Override
         public JSONObject moveTextFlow(String flowId,
                                        PlacementResolver.Placement placement) {
+            if (isUserInteractionActive()) {
+                return null;
+            }
             TextFlow flow = textFlows.get(flowId);
             if (flow == null) {
                 return null;
@@ -4954,8 +6059,7 @@ public final class NoteCanvasView extends View {
             Map<String, Integer> anchorsBefore = flowAnchorPages();
             pushUndoSnapshot();
             flow.anchorPageIndex = clampPageIndex(placement.pageIndex);
-            flow.anchorXInPage = placement.xInPage;
-            flow.anchorYInPage = placement.yInPage;
+            flow.setAnchor(placement.xInPage, placement.yInPage);
             if (flow.anchorPageIndex >= pageCount) {
                 pageCount = flow.anchorPageIndex + 1;
             }
@@ -5011,11 +6115,20 @@ public final class NoteCanvasView extends View {
      */
     void applyMeasuredFragmentHeight(String fragmentId, float measuredHeightDp) {
         NoteTextBox fragment = findTextBox(fragmentId);
+        if (fragment != null) {
+            applyMeasuredFragmentHeight(fragmentId, fragment.renderLayoutEpoch, measuredHeightDp);
+        }
+    }
+
+    void applyMeasuredFragmentHeight(String fragmentId, int renderLayoutEpoch,
+                                     float measuredHeightDp) {
+        NoteTextBox fragment = findTextBox(fragmentId);
         if (fragment == null) {
             return;
         }
         TextFlow flow = textFlows.get(fragment.flowId);
-        if (flow == null) {
+        if (flow == null || renderLayoutEpoch != flow.renderLayoutEpoch
+                || renderLayoutEpoch != fragment.renderLayoutEpoch) {
             return;
         }
         float measured = dp(measuredHeightDp);
@@ -5036,6 +6149,7 @@ public final class NoteCanvasView extends View {
             float tolerance = Math.max(dp(2), comparison * (MEASURED_HEIGHT_TOLERANCE - 1f));
             flow.recordMeasuredMermaidHeight(fragment.fragmentSource, corrected);
             if (Math.abs(corrected - comparison) <= tolerance) {
+                flow.recordRenderFragmentHeight(fragment.id, false);
                 return;
             }
             reflowFlow(flow);
@@ -5045,16 +6159,23 @@ public final class NoteCanvasView extends View {
             return;
         }
         if (measured <= reserved * MEASURED_HEIGHT_TOLERANCE) {
+            flow.recordRenderFragmentHeight(fragment.id, false);
             return;
         }
         if (flow.heightCorrectionPasses >= MAX_HEIGHT_CORRECTION_PASSES) {
-            // Give up rather than reflow forever; the safety factor still applies.
+            // Keep the canonical source, but make possible viewport clipping explicit.
+            flow.recordRenderFragmentHeight(fragment.id, true);
+            dispatchStats(0, "文字实际高度仍超过分页预留；已保留完整源码，请分段或缩小后重试");
             return;
         }
         float needed = measured / Math.max(1f, reserved);
         float correction = Math.min(MAX_HEIGHT_CORRECTION,
                 flow.heightCorrection * Math.max(1.02f, needed));
         if (Math.abs(correction - flow.heightCorrection) < 0.01f) {
+            // We cannot make another useful correction (usually MAX_HEIGHT_CORRECTION).
+            // Keep this fragment unresolved even before the pass counter is exhausted.
+            flow.recordRenderFragmentHeight(fragment.id, true);
+            dispatchStats(0, "文字实际高度超过分页预留上限；已保留完整源码，请分段或缩小后重试");
             return;
         }
         flow.heightCorrection = correction;

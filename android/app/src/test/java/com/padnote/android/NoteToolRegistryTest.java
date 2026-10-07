@@ -98,6 +98,22 @@ public class NoteToolRegistryTest {
         assertEquals("no write should have been attempted", 0, context.createCalls);
     }
 
+    @Test
+    public void overLimitWriteTextIsRejectedBeforePlacementOrDocumentMutation() throws JSONException {
+        FakeContext context = new FakeContext();
+        StringBuilder overLimit = new StringBuilder(TextFlow.MAX_SOURCE_LENGTH + 1);
+        for (int index = 0; index <= TextFlow.MAX_SOURCE_LENGTH; index++) overLimit.append('x');
+        JSONObject arguments = new JSONObject().put("content", overLimit.toString())
+                .put("placement", new JSONObject().put("relativeTo", "selection"));
+        NoteTool.Result result = NoteTools.createDefault().invoke("write_text", arguments,
+                context, NoteTool.Permission.CREATE_IN_FREE_SPACE);
+        assertFalse(result.ok);
+        assertFalse(result.mutatedDocument);
+        assertEquals(0, context.createCalls);
+        assertTrue("rejection must tell the caller how to preserve the full answer",
+                result.summary.contains("复制完整回答"));
+    }
+
     /** A successful write reports where it landed, so the model need not predict. */
     @Test
     public void successfulWriteReportsLanding() throws JSONException {

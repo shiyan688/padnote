@@ -10,8 +10,10 @@ import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Offline coverage for the knowledge-base reader tools.
@@ -81,10 +83,18 @@ public class VaultToolsTest {
                 null);
     }
 
+    private static NoteToolRegistry registry(FakeVault vault) throws Exception {
+        Set<String> noteIds = new LinkedHashSet<>();
+        for (VaultStore.VaultNote note : vault.notes) {
+            noteIds.add(note.noteId);
+        }
+        return NoteTools.createDefault(AiVaultSnapshot.capture(vault, noteIds));
+    }
+
     /** Core set stays four; the vault adds exactly the two readers. */
     @Test
     public void vaultToolsExtendTheCoreSet() throws Exception {
-        JSONArray described = NoteTools.createDefault(sampleVault()).describe();
+        JSONArray described = registry(sampleVault()).describe();
         assertEquals(7, described.length());
         boolean sawSearch = false;
         boolean sawRead = false;
@@ -100,7 +110,7 @@ public class VaultToolsTest {
     /** Vault reads are free: no grant is required, like read_page_map. */
     @Test
     public void vaultReadsNeedNoGrant() throws Exception {
-        NoteToolRegistry registry = NoteTools.createDefault(sampleVault());
+        NoteToolRegistry registry = registry(sampleVault());
         assertTrue(invoke(registry, "search_vault",
                 new JSONObject().put("query", "极限")).ok);
         assertTrue(invoke(registry, "read_vault_note",
@@ -109,7 +119,7 @@ public class VaultToolsTest {
 
     @Test
     public void searchFindsMatchesAcrossNotes() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "search_vault", new JSONObject().put("query", "极限"));
         assertTrue(result.summary, result.ok);
         // 线性代数第 1 页一处；概率论第 1 页与第 2 页（中心极限定理）各一处
@@ -123,7 +133,7 @@ public class VaultToolsTest {
 
     @Test
     public void searchTracksPageHeadings() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "search_vault", new JSONObject().put("query", "中心极限"));
         assertTrue(result.summary, result.ok);
         JSONObject excerpt = result.payload.optJSONArray("excerpts").getJSONObject(0);
@@ -135,7 +145,7 @@ public class VaultToolsTest {
         FakeVault vault = new FakeVault();
         vault.add("Calculus.md", "note-3", "Calculus", 1,
                 "---\ntitle: Calculus\n---\n\n## 第 1 页\n\nThe LIMIT exists.\n");
-        NoteTool.Result result = invoke(NoteTools.createDefault(vault),
+        NoteTool.Result result = invoke(registry(vault),
                 "search_vault", new JSONObject().put("query", "limit"));
         assertTrue(result.summary, result.ok);
         assertEquals(1, result.payload.optInt("totalMatches"));
@@ -144,7 +154,7 @@ public class VaultToolsTest {
     @Test
     public void emptyQueryIsRejectedWithoutTouchingTheVault() throws Exception {
         FakeVault vault = sampleVault();
-        NoteTool.Result result = invoke(NoteTools.createDefault(vault),
+        NoteTool.Result result = invoke(registry(vault),
                 "search_vault", new JSONObject().put("query", "  "));
         assertFalse(result.ok);
         assertTrue(result.summary.contains("query"));
@@ -152,7 +162,7 @@ public class VaultToolsTest {
 
     @Test
     public void searchOnEmptyVaultReportsZeroHitsInsteadOfFailing() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(new FakeVault()),
+        NoteTool.Result result = invoke(registry(new FakeVault()),
                 "search_vault", new JSONObject().put("query", "极限"));
         assertTrue(result.summary, result.ok);
         assertEquals(0, result.payload.optInt("totalMatches"));
@@ -160,18 +170,33 @@ public class VaultToolsTest {
     }
 
     @Test
-    public void searchSurvivesAnUnreadableFile() throws Exception {
+    public void unselectedUnreadableFileIsNeverOpenedBySearch() throws Exception {
         FakeVault vault = sampleVault();
         vault.add("损坏.md", "note-4", "损坏", 1, null);
-        NoteTool.Result result = invoke(NoteTools.createDefault(vault),
+        Set<String> selected = new LinkedHashSet<>();
+        selected.add("note-1");
+        selected.add("note-2");
+        NoteToolRegistry selectedRegistry = NoteTools.createDefault(
+                AiVaultSnapshot.capture(vault, selected));
+        NoteTool.Result result = invoke(selectedRegistry,
                 "search_vault", new JSONObject().put("query", "极限"));
-        assertTrue("a corrupt file must not fail the search", result.ok);
+        assertTrue("an unselected corrupt file must stay outside the snapshot", result.ok);
         assertEquals(3, result.payload.optInt("totalMatches"));
     }
 
     @Test
+    public void selectedUnreadableFileRejectsSnapshotBeforeConversationStarts() {
+        FakeVault vault = sampleVault();
+        vault.add("损坏.md", "note-4", "损坏", 1, null);
+        Set<String> selected = new LinkedHashSet<>();
+        selected.add("note-4");
+        org.junit.Assert.assertThrows(IllegalArgumentException.class,
+                () -> AiVaultSnapshot.capture(vault, selected));
+    }
+
+    @Test
     public void readByExactTitleReturnsFullContent() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "read_vault_note", new JSONObject().put("title", "线性代数"));
         assertTrue(result.summary, result.ok);
         String content = result.payload.optString("content");
@@ -183,7 +208,7 @@ public class VaultToolsTest {
 
     @Test
     public void readAcceptsFileNameAndUniqueSubstring() throws Exception {
-        NoteToolRegistry registry = NoteTools.createDefault(sampleVault());
+        NoteToolRegistry registry = registry(sampleVault());
         assertTrue(invoke(registry, "read_vault_note",
                 new JSONObject().put("title", "线性代数.md")).ok);
         assertTrue(invoke(registry, "read_vault_note",
@@ -197,7 +222,7 @@ public class VaultToolsTest {
                 markdownOf("凸优化·上", "凸集的定义。", "- 凸函数"));
         vault.add("凸优化·下.md", "note-7", "凸优化·下", 1,
                 markdownOf("凸优化·下", "凸优化的对偶理论。", "- KKT 条件"));
-        NoteTool.Result result = invoke(NoteTools.createDefault(vault),
+        NoteTool.Result result = invoke(registry(vault),
                 "read_vault_note", new JSONObject().put("title", "凸优化"));
         assertFalse(result.ok);
         assertEquals("ambiguous", result.payload.optString("error"));
@@ -206,7 +231,7 @@ public class VaultToolsTest {
 
     @Test
     public void unknownTitleListsTheAvailableLibrary() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "read_vault_note", new JSONObject().put("title", "拓扑学"));
         assertFalse(result.ok);
         assertEquals("not_found", result.payload.optString("error"));
@@ -216,7 +241,7 @@ public class VaultToolsTest {
 
     @Test
     public void emptyVaultIsAnActionableRejection() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(new FakeVault()),
+        NoteTool.Result result = invoke(registry(new FakeVault()),
                 "read_vault_note", new JSONObject().put("title", "任何"));
         assertFalse(result.ok);
         assertEquals("vault_empty", result.payload.optString("error"));
@@ -225,7 +250,7 @@ public class VaultToolsTest {
 
     @Test
     public void pageParameterExtractsOneSection() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "read_vault_note", new JSONObject().put("title", "线性代数")
                         .put("page", 2));
         assertTrue(result.summary, result.ok);
@@ -238,7 +263,7 @@ public class VaultToolsTest {
 
     @Test
     public void outOfRangePageIsRejectedWithPageCount() throws Exception {
-        NoteTool.Result result = invoke(NoteTools.createDefault(sampleVault()),
+        NoteTool.Result result = invoke(registry(sampleVault()),
                 "read_vault_note", new JSONObject().put("title", "线性代数")
                         .put("page", 5));
         assertFalse(result.ok);
@@ -255,7 +280,7 @@ public class VaultToolsTest {
         }
         vault.add("巨著.md", "note-5", "巨著", 1,
                 "---\ntitle: 巨著\npages: 1\n---\n\n## 第 1 页\n\n" + huge + "\n");
-        NoteTool.Result result = invoke(NoteTools.createDefault(vault),
+        NoteTool.Result result = invoke(registry(vault),
                 "read_vault_note", new JSONObject().put("title", "巨著"));
         assertTrue(result.summary, result.ok);
         assertTrue(result.payload.optBoolean("truncated"));

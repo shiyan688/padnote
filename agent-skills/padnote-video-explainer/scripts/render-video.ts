@@ -16,12 +16,15 @@ import {
   skillRoot,
   type JsonObject,
 } from './lib.js';
-import {validateAudio} from './validate-audio.js';
+import {validateAudio, type AudioInputBinding} from './validate-audio.js';
 import {validateIr} from './validate-ir.js';
 import {validateRenderManifest} from './validate-render.js';
 import {validateRequest} from './validate-request.js';
 import {validateResult} from './validate-result.js';
 import {validateReview} from './validate-review.js';
+import {rendererProjectLocation} from './renderer-project.js';
+import {renderBrowserExecutableOptions, renderBrowserOptions} from './renderer-browser.js';
+import {ffmpegLocalPath} from './ffmpeg-paths.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -43,6 +46,9 @@ interface RenderOptions {
   approval: 'approve' | 'revise' | 'cancel';
   revision?: number;
   allowFixtureAudio: boolean;
+  lessonIrPath?: string;
+  expectedLessonIrSha256?: string;
+  audioBinding?: AudioInputBinding;
 }
 
 export async function renderApprovedVideo(taskRoot: string, options: RenderOptions): Promise<JsonObject | undefined> {
@@ -52,8 +58,14 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
   }
   if (options.approval === 'revise') throw new Error('revise requires a new Lesson IR and storyboard review; full rendering was not started');
   const request = await validateRequest(taskRoot);
-  const ir = await validateIr(taskRoot);
+  const ir = await validateIr(taskRoot, options.lessonIrPath);
   const review = await validateReview(taskRoot);
+  if (options.expectedLessonIrSha256) {
+    if (await sha256File(options.lessonIrPath!) !== options.expectedLessonIrSha256
+        || await sha256File(resolve(taskRoot, 'output/lesson.ir.json')) !== options.expectedLessonIrSha256) {
+      throw new Error('render input no longer matches the approved immutable Lesson IR');
+    }
+  }
   if (options.revision !== review.lesson_ir_revision) {
     throw new Error(`approval revision ${options.revision ?? 'missing'} does not match review revision ${review.lesson_ir_revision}`);
   }
@@ -61,7 +73,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
   for (const scene of ir.scenes as JsonObject[]) {
     if (!supportedVisuals.has(scene.visual.type)) throw new Error(`unsupported renderer visual.type: ${scene.visual.type}`);
   }
-  const audio = await validateAudio(taskRoot);
+  const audio = await validateAudio(taskRoot, undefined, options.audioBinding, options.lessonIrPath);
   if ((audio.clips as JsonObject[]).some(clip => clip.fixture === true) && !options.allowFixtureAudio) {
     throw new Error('fixture audio is test-only; pass --allow-fixture-audio explicitly');
   }
@@ -117,12 +129,16 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
 
   process.env.DISABLE_TELEMETRY = 'true';
   process.env.XDG_CACHE_HOME = resolve(skillRoot(), '.local-cache/fontconfig');
-  const chromePath = await puppeteer.executablePath();
+  const executableOptions = renderBrowserExecutableOptions(process.platform);
+  const chromePath = executableOptions
+    ? await puppeteer.executablePath(executableOptions)
+    : await puppeteer.executablePath();
+  const rendererProject = rendererProjectLocation(skillRoot());
   for (let index = 0; index < (ir.scenes as JsonObject[]).length; index += 1) {
     const scene = (ir.scenes as JsonObject[])[index]!;
     const clip = (audio.clips as JsonObject[])[index]!;
     const keyframeVideo = await renderVideo({
-      projectFile: resolve(skillRoot(), 'renderer/project.ts'),
+      projectFile: rendererProject.projectFile,
       variables: {
         payload: {
           episode: ir.episode,
@@ -138,13 +154,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
         ffmpeg: {ffmpegPath, ffprobePath, ffmpegLogLevel: 'error'},
         puppeteer: {
           executablePath: chromePath,
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-background-networking',
-          ],
+          ...renderBrowserOptions(process.platform),
         },
         projectSettings: {
           background: '#f4f7fb',
@@ -152,6 +162,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
           range: [0, 1 / ir.render_profile.fps],
         },
         viteConfig: {
+          root: rendererProject.root,
           publicDir,
           cacheDir: resolve(skillRoot(), '.local-cache/vite'),
           optimizeDeps: {include: ['@revideo/renderer/lib/client/render', '@revideo/2d', '@revideo/core']},
@@ -160,17 +171,17 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
     });
     const keyframePath = resolve(keyframeDir, `${scene.id}.png`);
     await execFileAsync(ffmpegPath, [
-      '-y', '-v', 'error', '-i', keyframeVideo, '-vf', 'select=eq(n\\,1)', '-frames:v', '1', keyframePath,
+      '-y', '-v', 'error', '-i', ffmpegLocalPath(keyframeVideo), '-vf', 'select=eq(n\\,1)', '-frames:v', '1', ffmpegLocalPath(keyframePath),
     ]);
     const {stdout} = await execFileAsync(ffprobePath, [
-      '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', keyframePath,
+      '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', ffmpegLocalPath(keyframePath),
     ]);
     const stream = (JSON.parse(stdout) as JsonObject).streams?.[0];
     if (!stream || stream.width !== ir.render_profile.width || stream.height !== ir.render_profile.height) {
       throw new Error(`keyframe dimensions are incorrect for ${scene.id}`);
     }
     const {stdout: stats} = await execFileAsync(ffmpegPath, [
-      '-v', 'error', '-i', keyframePath, '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-',
+      '-v', 'error', '-i', ffmpegLocalPath(keyframePath), '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-',
     ]);
     const minimumLuma = Number(stats.match(/lavfi\.signalstats\.YMIN=([\d.]+)/)?.[1]);
     if (!Number.isFinite(minimumLuma) || minimumLuma >= 128) {
@@ -178,7 +189,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
     }
   }
   const renderedPath = await renderVideo({
-    projectFile: resolve(skillRoot(), 'renderer/project.ts'),
+    projectFile: rendererProject.projectFile,
     variables: {
       payload: {
         episode: ir.episode,
@@ -198,13 +209,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
       ffmpeg: {ffmpegPath, ffprobePath, ffmpegLogLevel: 'error'},
       puppeteer: {
         executablePath: chromePath,
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-background-networking',
-        ],
+        ...renderBrowserOptions(process.platform),
       },
       projectSettings: {
         background: '#f4f7fb',
@@ -212,6 +217,7 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
         range: [0, (Math.ceil(elapsedMs * ir.render_profile.fps / 1000) - 1) / ir.render_profile.fps],
       },
       viteConfig: {
+        root: rendererProject.root,
         publicDir,
         cacheDir: resolve(skillRoot(), '.local-cache/vite'),
         optimizeDeps: {include: ['@revideo/renderer/lib/client/render', '@revideo/2d', '@revideo/core']},
@@ -220,13 +226,13 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
   });
 
   const muxedPath = resolve(renderDir, 'explanation-with-complete-audio.mp4');
-  const muxArgs = ['-y', '-v', 'error', '-i', renderedPath];
+  const muxArgs = ['-y', '-v', 'error', '-i', ffmpegLocalPath(renderedPath)];
   for (const clip of audio.clips as JsonObject[]) {
-    muxArgs.push('-i', await assertExistingFileInside(taskRoot, clip.path));
+    muxArgs.push('-i', ffmpegLocalPath(await assertExistingFileInside(taskRoot, clip.path)));
   }
   muxArgs.push(
     '-filter_complex', `${(audio.clips as JsonObject[]).map((_, index) => `[${index + 1}:a]`).join('')}concat=n=${audio.clips.length}:v=0:a=1[a]`,
-    '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-t', (elapsedMs / 1000).toFixed(3), muxedPath,
+    '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-t', (elapsedMs / 1000).toFixed(3), ffmpegLocalPath(muxedPath),
   );
   await execFileAsync(ffmpegPath, muxArgs);
 
@@ -296,6 +302,10 @@ export async function renderApprovedVideo(taskRoot: string, options: RenderOptio
     artifacts,
     qa: {status: 'passed', checks: qaChecks},
   };
+  if (options.expectedLessonIrSha256
+      && await sha256File(resolve(taskRoot, 'output/lesson.ir.json')) !== options.expectedLessonIrSha256) {
+    throw new Error('Lesson IR changed while rendering; result publication refused');
+  }
   await atomicWriteJson(resolve(outputDir, 'result.json'), result);
   return validateResult(taskRoot);
 }
@@ -313,7 +323,7 @@ async function assertResultDoesNotExist(taskRoot: string): Promise<void> {
 async function assertVideoShape(path: string, width: number, height: number, fps: number, frames: number, audioDurationMs: number): Promise<void> {
   const {stdout} = await execFileAsync(ffprobePath, [
     '-v', 'error', '-count_frames', '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'json', path,
+    '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'json', ffmpegLocalPath(path),
   ]);
   const stream = (JSON.parse(stdout) as JsonObject).streams?.[0];
   if (!stream || stream.width !== width || stream.height !== height) throw new Error('rendered video dimensions are incorrect');
@@ -321,7 +331,7 @@ async function assertVideoShape(path: string, width: number, height: number, fps
   if (numerator! / denominator! !== fps) throw new Error('rendered video fps is incorrect');
   if (Number(stream.nb_read_frames) !== frames) throw new Error(`rendered video has ${stream.nb_read_frames} frames, expected ${frames}`);
   const {stdout: audioStdout} = await execFileAsync(ffprobePath, [
-    '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=duration', '-of', 'json', path,
+    '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=duration', '-of', 'json', ffmpegLocalPath(path),
   ]);
   const audioStream = (JSON.parse(audioStdout) as JsonObject).streams?.[0];
   if (!audioStream) throw new Error('rendered video has no audio stream');

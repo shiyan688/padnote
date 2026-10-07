@@ -22,6 +22,14 @@ export async function validateRequest(taskRoot: string): Promise<JsonObject> {
 
   const requestPath = await assertExistingFileInside(taskRoot, 'request.json');
   const request = await readJson(requestPath);
+  return validateRequestObject(taskRoot, request);
+}
+
+/** Validates the exact already-read request object without reopening request.json. */
+export async function validateRequestObject(
+  taskRoot: string,
+  request: JsonObject,
+): Promise<JsonObject> {
   await validateSchema('request', request);
   inspectRequestValue(request, '$');
 
@@ -63,7 +71,7 @@ export async function validateRequest(taskRoot: string): Promise<JsonObject> {
   return request;
 }
 
-function validateManifestShape(manifest: JsonObject): void {
+export function validateManifestShape(manifest: JsonObject): void {
   if (manifest.schema_version !== '1.0' || !Array.isArray(manifest.files) || manifest.files.length === 0) {
     throw new Error('invalid input manifest shape');
   }
@@ -83,7 +91,7 @@ function validateManifestShape(manifest: JsonObject): void {
   }
 }
 
-function inspectRequestValue(value: unknown, location: string): void {
+export function inspectRequestValue(value: unknown, location: string): void {
   if (typeof value === 'string') {
     if (forbiddenPayload.test(value)) throw new Error(`renderer payload is forbidden at ${location}`);
     return;

@@ -7,18 +7,37 @@
   "type": "module",
   "engines": {"node": ">=22.22.0"},
   "scripts": {
+    "postinstall": "node scripts/apply-revideo-renderer-patch.mjs && node scripts/apply-revideo-ffmpeg-path-patch.mjs",
     "check": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "validate:request": "node --import tsx scripts/validate-request.ts",
     "validate:ir": "node --import tsx scripts/validate-ir.ts",
     "validate:review": "node --import tsx scripts/validate-review.ts",
-    "storyboard": "node --import tsx scripts/build-storyboard.ts",
+    "storyboard": "node --import tsx scripts/task-worker.ts storyboard",
     "audio:index": "node --import tsx scripts/index-agent-audio.ts",
-    "audio:prepare": "node --import tsx scripts/prepare-audio.ts",
+    "audio:prepare": "node --import tsx scripts/task-worker.ts audio",
     "audio:fixture": "node --import tsx scripts/generate-fixture-audio.ts",
     "validate:audio": "node --import tsx scripts/validate-audio.ts",
     "validate:render": "node --import tsx scripts/validate-render.ts",
-    "render": "DISABLE_TELEMETRY=true node --import tsx scripts/render-video.ts",
+    "render": "DISABLE_TELEMETRY=true node --import tsx scripts/task-worker.ts render",
+    "task": "node --import tsx scripts/task-worker.ts",
+    "task:approve": "node --import tsx scripts/task-worker.ts approve",
+    "task:approve-exact": "node --import tsx scripts/task-worker.ts approve-exact",
+    "task:init-exact": "node --import tsx scripts/task-worker.ts init-exact",
+    "task:init-operation": "node --import tsx scripts/task-worker.ts initialize-operation",
+    "task:storyboard-operation": "node --import tsx scripts/task-worker.ts storyboard-operation",
+    "task:approve-operation": "node --import tsx scripts/task-worker.ts approve-operation",
+    "task:cancel-operation": "node --import tsx scripts/task-worker.ts cancel-operation",
+    "task:revise-operation": "node --import tsx scripts/task-worker.ts revise-operation",
+    "task:revision-start-operation": "node --import tsx scripts/task-worker.ts revision-start-operation",
+    "task:revision-install-operation": "node --import tsx scripts/task-worker.ts revision-install-operation",
+    "task:reconcile-operation": "node --import tsx scripts/task-worker.ts reconcile-operation",
+    "task:inspect": "node --import tsx scripts/task-worker.ts inspect",
+    "task:builtin": "node --import tsx scripts/builtin-engine.ts",
+    "task:review": "node --import tsx scripts/task-worker.ts review",
+    "task:status": "node --import tsx scripts/task-worker.ts status",
+    "diagnose:runtime": "node --import tsx scripts/diagnose-runtime.ts",
+    "task:cancel": "node --import tsx scripts/task-worker.ts cancel",
     "validate:result": "node --import tsx scripts/validate-result.ts"
   },
   "dependencies": {
@@ -37,5 +56,8 @@
     "@types/node": "24.3.0",
     "tsx": "4.23.13",
     "typescript": "5.9.2"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.9.12"
   }
 }

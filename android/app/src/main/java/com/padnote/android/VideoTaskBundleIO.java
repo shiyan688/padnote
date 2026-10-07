@@ -16,10 +16,40 @@ final class VideoTaskBundleIO {
     private VideoTaskBundleIO() {
     }
 
+    /** A single immutable task input reused by direct submission and SAF export. */
+    static final class FrozenBundle {
+        final String noteId, contentSha256;
+        final long noteRevision;
+        private final byte[] bytes;
+        private final String markdown;
+        FrozenBundle(String noteId,long noteRevision,String contentSha256,byte[] bytes,String markdown) {
+            this.noteId=noteId;this.noteRevision=noteRevision;this.contentSha256=contentSha256;
+            this.bytes=bytes.clone();
+            this.markdown=markdown;
+        }
+        byte[] copyBytes() { return bytes.clone(); }
+        int sizeBytes() { return bytes.length; }
+        String markdownPreview() { return markdown; }
+    }
+
+    static FrozenBundle freeze(String noteId,long noteRevision,String title,String markdown,
+                               String audience,String learningGoal,int durationSeconds,
+                               String voiceProfile,float speed) throws Exception {
+        if(noteRevision<=0)throw new IllegalArgumentException("来源修订必须是有效正数");
+        byte[] content=markdown.getBytes(StandardCharsets.UTF_8);
+        if (content.length > 512 * 1024) throw new IllegalArgumentException("已整理正文过大，暂不能在手机上预览任务包");
+        ByteArrayOutputStream output=new ByteArrayOutputStream();
+        write(output,noteId,noteRevision,title,markdown,audience,learningGoal,
+                durationSeconds,voiceProfile,speed);
+        return new FrozenBundle(noteId,noteRevision,
+                hex(MessageDigest.getInstance("SHA-256").digest(content)),output.toByteArray(),markdown);
+    }
+
     static void write(OutputStream destination, String noteId, long noteRevision,
                       String title, String markdown, String audience,
                       String learningGoal, int durationSeconds,
                       String voiceProfile, float speed) throws Exception {
+        if(noteRevision<=0)throw new IllegalArgumentException("来源修订必须是有效正数");
         byte[] content = markdown.getBytes(StandardCharsets.UTF_8);
         String contentHash = hex(MessageDigest.getInstance("SHA-256").digest(content));
         String manifestLine = "input/content.md\0" + content.length + "\0"
@@ -42,7 +72,7 @@ final class VideoTaskBundleIO {
                 .put("task_id", taskId)
                 .put("source", new JSONObject()
                         .put("note_id", noteId)
-                        .put("note_revision", Math.max(1L, noteRevision))
+                        .put("note_revision", noteRevision)
                         .put("title", title)
                         .put("language", "zh-CN")
                         .put("entrypoint", "input/content.md")

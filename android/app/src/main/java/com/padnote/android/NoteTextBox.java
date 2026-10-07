@@ -49,6 +49,8 @@ final class NoteTextBox {
     float y;
     float width;
     float height;
+    /** Transient generation token carried by renderer callbacks, never serialized. */
+    int renderLayoutEpoch;
 
     NoteTextBox(String id, String flowId, int flowIndex, int flowCount,
                 Format format, String source, String fragmentSource, float fontSizeSp,
@@ -71,8 +73,10 @@ final class NoteTextBox {
     }
 
     NoteTextBox copy() {
-        return new NoteTextBox(id, flowId, flowIndex, flowCount, format, source,
+        NoteTextBox duplicate = new NoteTextBox(id, flowId, flowIndex, flowCount, format, source,
                 fragmentSource, fontSizeSp, lineHeight, pageIndex, x, y, width, height);
+        duplicate.renderLayoutEpoch = renderLayoutEpoch;
+        return duplicate;
     }
 
     String displaySource() {

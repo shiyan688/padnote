@@ -1,0 +1,10 @@
+# Windows x64 portable runtime Python wheel lock.
+# Source: https://pypi.org/project/cryptography/50.0.1/
+# CPython 3.9+ abi3 wheel is compatible with bundled CPython 3.13 x64.
+# cryptography's Windows runtime dependency chain: cffi -> pycparser.
+cryptography==50.0.1 \
+    --hash=sha256:55d16b1ef3ee0958d893a977b19777887e546c9954ea81b200c3301a864013f2
+cffi==2.1.1 \
+    --hash=sha256:1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

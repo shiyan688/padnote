@@ -7,6 +7,8 @@ description: Generate a two-stage animated explainer video from a PadNote format
 
 Operate only on the supplied `<task-root>`. Treat `request.json` and `input/` as read-only. Write only `work/` and `output/`. The portable executable contract is the schemas and references in this directory. The PadNote repository may also provide `docs/VIDEO_AGENT_CONTRACT.md` as integration documentation, but it is not required at runtime.
 
+For the native built-in host, the host invokes `scripts/builtin-engine.ts` through the fixed stdin/stdout protocol described in `README.md`; do not switch into Agent chat, OpenClaw, or Hermes. The built-in provider key is transient and must never be written into the task root. Storyboard generation is initial-only. Exact storyboard approval is a separate operation and does not initiate paid work. TTS plus rendering requires the independent `produce` operation with explicit `allow_cloud_tts: true`; never synthesize or render from approval alone.
+
 ## Stage 1: author and review the storyboard
 
 Use the schemas and references as the authoring contract. Do not read validator or renderer implementation files before a concrete failure requires diagnosis. Make a compact teaching plan once, write the IR, and use validation feedback rather than repeatedly reconsidering equivalent scene plans.
@@ -24,11 +26,17 @@ For `revise`, update the Lesson IR from the user's feedback, increment the revis
 
 Proceed only after explicit `approve` for the exact `lesson_ir_revision` in `output/review.json`.
 
-1. If the Agent has a TTS capability, synthesize one 16-bit PCM WAV per scene into `work/audio/<scene-id>.wav`, then run `npm run audio:index -- <task-root>`.
-2. Otherwise use the provider-neutral adapter described in `references/tts-contract.md`: set `PADNOTE_TTS_COMMAND` and run `npm run audio:prepare -- <task-root>`.
-3. If neither is available, return exactly `{"code":"tts_not_configured","message":"没有配置可用的语音合成能力"}` and stop. Never make a silent video or substitute fixture audio.
-4. Run `npm run render -- <task-root> --approval approve --revision <n>`.
-5. Treat the task as completed only if `npm run validate:result -- <task-root>` passes and `output/result.json` exists.
+1. Persist that approval first with `npm run task:approve -- <task-root> --revision <n>`. It is bound to the current review and Lesson IR digests and can be consumed once.
+2. If the Agent has a TTS capability, read narration only from the frozen IR named by `work/task-state.json` → `approval.lesson_ir_snapshot_path`, synthesize one 16-bit PCM WAV per scene into `work/audio/<scene-id>.wav`, then run `npm run audio:index -- <task-root>`.
+3. Otherwise use the provider-neutral adapter described in `references/tts-contract.md`: set `PADNOTE_TTS_COMMAND` and run `npm run audio:prepare -- <task-root>`.
+4. If neither is available, return exactly `{"code":"tts_not_configured","message":"没有配置可用的语音合成能力"}` and stop. Never make a silent video or substitute fixture audio.
+5. Run `npm run render -- <task-root> --approval approve --revision <n>`.
+6. Treat the task as completed only if `npm run validate:result -- <task-root>` passes and `output/result.json` exists.
+
+Use `npm run task:cancel -- <task-root>` for cancellation. A failed or killed
+execution is not replayed automatically; inspect it before granting an explicit
+`--retry-uncertain` approval. Never delete or edit the persistent state to reuse
+an approval.
 
 `--allow-fixture-audio` is test-only. Use it only for repository fixtures and disclose that the result is not a real TTS end-to-end run.
 

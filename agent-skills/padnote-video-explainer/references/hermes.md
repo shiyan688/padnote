@@ -23,16 +23,23 @@ Invoke `/padnote-video-explainer` with the absolute task root and request Stage 
 If the host has configured `PADNOTE_TTS_COMMAND`, use that provider adapter instead of Hermes' native TTS tool:
 
 ```bash
+npm run task:approve -- <task-root> --revision <n>
 npm run audio:prepare -- <task-root>
 PADNOTE_AGENT_BACKEND=hermes npm run render -- <task-root> --approval approve --revision <n>
 npm run validate:result -- <task-root>
 ```
 
-The host can supply private environment-file paths to the adapter. Do not read, copy, or print those files or environment values in Agent messages. This is the configured DashScope path for the PadNote server; Hermes orchestrates the commands while the adapter performs synthesis.
+The host can supply exact DashScope fields directly, or a private environment-file path to the adapter. The adapter parses that file without sourcing it and selects only its documented `DASHSCOPE_*` fields. Do not copy or print those files or values in Agent messages. Hermes orchestrates the commands while the adapter performs synthesis.
 
 Otherwise, when native TTS is configured:
 
-For every scene in `output/lesson.ir.json`, call Hermes' `text_to_speech` tool once:
+```bash
+npm run task:approve -- <task-root> --revision <n>
+```
+
+Read `approval.lesson_ir_snapshot_path` from `work/task-state.json`. For every
+scene in that frozen, digest-bound IR, call Hermes' `text_to_speech` tool once.
+Do not synthesize from the mutable `output/lesson.ir.json` path after approval:
 
 - `text`: the scene's exact `narration` value.
 - `output_path`: the absolute `<task-root>/work/audio/<scene-id>.wav` path.

@@ -7,12 +7,15 @@ import android.os.Build;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /** Offline, non-networked renderer for persistent LaTeX and Markdown note boxes. */
 @SuppressLint("ViewConstructor")
@@ -20,6 +23,7 @@ final class CompiledTextWebView extends WebView {
     private static final String ASSET_BASE = "file:///android_asset/katex/";
     private static final int READY_POLL_LIMIT = 100;
     private static final long READY_POLL_INTERVAL_MS = 50L;
+    private static final int MAX_SOURCE_BYTES = 512 * 1024;
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
     private static final Pattern UNORDERED = Pattern.compile("^\\s*[-*+]\\s+(.+)$");
     private static final Pattern ORDERED = Pattern.compile("^\\s*(\\d+)[.)]\\s+(.+)$");
@@ -28,6 +32,38 @@ final class CompiledTextWebView extends WebView {
     private ExportReadyListener exportReadyListener;
     private int exportReadyGeneration = -1;
     private boolean renderingCancelled;
+    private RenderStateListener renderStateListener;
+    private String activeInputDigest = "";
+    private NoteTextBox.Format lastFormat = NoteTextBox.Format.LATEX;
+    private String lastSource = "";
+    private float lastFontSizeSp = 16f;
+    private float lastLineHeight = TextFlow.DEFAULT_LINE_HEIGHT;
+    private boolean lastDocumentMode;
+    private int settledGeneration = -1;
+    private boolean processGone;
+    private boolean destroyed;
+
+    enum FailureKind { RESOURCE, SYNTAX, TIMEOUT, TOO_LARGE, PROCESS_GONE, SCRIPT }
+
+    static final class RenderState {
+        final int generation;
+        final String inputDigest;
+        final FailureKind failure;
+        final String message;
+
+        RenderState(int generation, String inputDigest, FailureKind failure, String message) {
+            this.generation = generation;
+            this.inputDigest = inputDigest;
+            this.failure = failure;
+            this.message = message;
+        }
+
+        boolean isReady() { return failure == null; }
+    }
+
+    interface RenderStateListener {
+        void onRenderState(RenderState state);
+    }
 
     CompiledTextWebView(Context context, NoteTextBox.Format format, String source) {
         this(context);
@@ -76,23 +112,27 @@ final class CompiledTextWebView extends WebView {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
-                if (exportReadyListener != null) {
-                    failExportRender(renderGeneration, "文字资源加载失败");
-                }
+                // Subresource callbacks carry no reliable render identity. The
+                // page bootstrap reports resource failures with its own token.
             }
 
             @Override
             public void onReceivedHttpError(WebView view, WebResourceRequest request,
                                             WebResourceResponse errorResponse) {
-                if (exportReadyListener != null) {
-                    failExportRender(renderGeneration, "文字资源加载失败");
-                }
+                // See onReceivedError: token-bound page state is authoritative.
             }
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (!renderingCancelled) {
-                    pollRenderedHeightWhenReady(renderGeneration, 0);
+                    pollRenderedHeightWhenReady(renderGeneration, activeInputDigest, 0);
                 }
+            }
+
+            @Override
+            @android.annotation.TargetApi(android.os.Build.VERSION_CODES.O)
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                reportProcessGone();
+                return true;
             }
         });
     }
@@ -114,14 +154,19 @@ final class CompiledTextWebView extends WebView {
         this.heightListener = listener;
     }
 
+    void setRenderStateListener(RenderStateListener listener) {
+        this.renderStateListener = listener;
+    }
+
     /** Invalidates delayed JS/compositor callbacks before an export WebView dies. */
     void cancelPendingRendering() {
         renderingCancelled = true;
         renderGeneration += 1;
+        settledGeneration = -1;
         exportReadyGeneration = -1;
         exportReadyListener = null;
         heightListener = null;
-        stopLoading();
+        if (!processGone) stopLoading();
     }
 
     void render(NoteTextBox.Format format, String source) {
@@ -131,9 +176,27 @@ final class CompiledTextWebView extends WebView {
     void render(NoteTextBox.Format format, String source, float fontSizeSp,
                 float lineHeight) {
         renderingCancelled = false;
+        if (processGone || destroyed) throw new IllegalStateException("失效的显示组件不能重新使用");
         renderGeneration += 1;
-        loadDataWithBaseURL(ASSET_BASE, buildHtml(format, source, fontSizeSp, lineHeight),
-                "text/html", "UTF-8", null);
+        settledGeneration = -1;
+        lastFormat = format == null ? NoteTextBox.Format.LATEX : format;
+        lastSource = source == null ? "" : source;
+        lastFontSizeSp = fontSizeSp;
+        lastLineHeight = lineHeight;
+        lastDocumentMode = false;
+        activeInputDigest = inputDigest(lastFormat, lastSource, fontSizeSp, lineHeight,
+                Math.max(0, getWidth()), false);
+        int generation = renderGeneration;
+        String digest = activeInputDigest;
+        if (lastSource.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
+            post(() -> failRender(generation, digest, FailureKind.TOO_LARGE,
+                    "源码过长，已停止本地显示"));
+            return;
+        }
+        loadDataWithBaseURL(ASSET_BASE,
+                buildHtml(lastFormat, lastSource, fontSizeSp, lineHeight, renderToken(generation, digest)),
+                "text/html", "UTF-8", "about:blank#padnote-" + generation);
+        scheduleRenderTimeout(generation, digest);
     }
 
     /** Renders an attached offscreen export view and reports a compositor-ready frame. */
@@ -154,8 +217,29 @@ final class CompiledTextWebView extends WebView {
      */
     void renderDocument(String markdown) {
         renderingCancelled = false;
-        loadDataWithBaseURL(ASSET_BASE, buildDocumentHtml(markdown),
-                "text/html", "UTF-8", null);
+        if (processGone || destroyed) throw new IllegalStateException("失效的显示组件不能重新使用");
+        renderGeneration += 1;
+        lastDocumentMode = true;
+        lastSource = markdown == null ? "" : markdown;
+        activeInputDigest = inputDigest(NoteTextBox.Format.MARKDOWN, lastSource,
+                16f, 1.55f, Math.max(0, getWidth()), true);
+        int generation = renderGeneration;
+        String digest = activeInputDigest;
+        if (lastSource.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
+            post(() -> failRender(generation, digest, FailureKind.TOO_LARGE,
+                    "文档过长，已停止本地预览"));
+            return;
+        }
+        loadDataWithBaseURL(ASSET_BASE,
+                buildDocumentHtml(lastSource, renderToken(generation, digest)),
+                "text/html", "UTF-8", "about:blank#padnote-document-" + generation);
+        scheduleRenderTimeout(generation, digest);
+    }
+
+    void retryCurrentRender() {
+        if (processGone) return;
+        if (lastDocumentMode) renderDocument(lastSource);
+        else render(lastFormat, lastSource, lastFontSizeSp, lastLineHeight);
     }
 
     /**
@@ -168,12 +252,17 @@ final class CompiledTextWebView extends WebView {
      * parent path — no network, no file access beyond bundled assets.
      */
     static String buildDocumentHtml(String markdown) {
+        return buildDocumentHtml(markdown, "static");
+    }
+
+    private static String buildDocumentHtml(String markdown, String token) {
         String body = markdownToHtml(markdown == null ? "" : markdown, true);
         return "<!doctype html><html><head><meta charset=\"utf-8\">" +
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
                 "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; " +
                 "style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'; " +
                 "img-src 'self' data:\">" +
+                renderBootstrap(token) +
                 "<link rel=\"stylesheet\" href=\"katex.min.css\">" +
                 "<style>html,body{margin:0;padding:0;background:#ffffff;color:#17212b;" +
                 "font-family:sans-serif;font-size:16px;line-height:1.55}" +
@@ -189,15 +278,28 @@ final class CompiledTextWebView extends WebView {
                 "pre{white-space:pre-wrap;margin:10px 0;background:#eef0f2;border-radius:7px;" +
                 "padding:10px;overflow-x:auto}" +
                 "pre.mermaid{background:#ffffff;text-align:center}" +
-                ".md-link{color:#285ea8}.katex-error{color:#8f2f2b}</style></head>" +
+                ".md-link{color:#285ea8}.katex-error,.math-error{color:#8f2f2b}</style></head>" +
                 "<body><div class=\"content\">" + body + "</div>" +
                 "<script src=\"katex.min.js\"></script>" +
                 "<script src=\"../mermaid/mermaid.min.js\"></script><script>" +
-                "document.querySelectorAll('[data-tex]').forEach(function(el){" +
+                "(async function(){try{" +
+                "document.querySelectorAll('[data-tex]').forEach(function(el){try{" +
                 "katex.render(el.getAttribute('data-tex'),el,{displayMode:el.getAttribute('data-display')==='1'," +
-                "throwOnError:false,strict:'ignore',trust:false,output:'htmlAndMathml'});});" +
-                "if(window.mermaid){mermaid.initialize({startOnLoad:true,theme:'neutral'," +
-                "securityLevel:'strict',flowchart:{useMaxWidth:true}});}" +
+                "throwOnError:true,strict:'ignore',trust:false,output:'htmlAndMathml'});" +
+                "}catch(error){window.__padnoteError='syntax';el.classList.add('math-error');" +
+                "el.textContent='公式语法有误，可查看源码后编辑并重新显示。';}});" +
+                "if(window.mermaid){mermaid.initialize({startOnLoad:false,theme:'neutral'," +
+                "securityLevel:'strict',flowchart:{useMaxWidth:true}});" +
+                "var nodes=document.querySelectorAll('pre.mermaid');for(var i=0;i<nodes.length;i++){" +
+                "var el=nodes[i],code=el.textContent;try{var result=await mermaid.render(" +
+                "'padnote-document-'+i,code);el.innerHTML=result.svg;}catch(error){" +
+                "window.__padnoteError='syntax';el.classList.add('diagram-error');" +
+                "el.textContent='示意图语法有误，可查看源码后编辑并重新显示。';}}}" +
+                "}catch(error){if(!window.__padnoteError)window.__padnoteError='script';}" +
+                "var fonts=document.fonts&&document.fonts.ready?document.fonts.ready:Promise.resolve();" +
+                "fonts.then(function(){var c=document.querySelector('.content');" +
+                "window.__padnoteVisualHeight=Math.ceil(Math.max(c.getBoundingClientRect().height,c.scrollHeight));" +
+                "window.__padnoteHeight=window.__padnoteVisualHeight;window.__padnoteReady=true;});})();" +
                 "</script></body></html>";
     }
 
@@ -213,32 +315,48 @@ final class CompiledTextWebView extends WebView {
      * this WebView has network, file and storage access switched off, and adding an
      * injected object would widen that surface for one number.
      */
-    private void pollRenderedHeightWhenReady(int generation, int attempt) {
-        if (renderingCancelled || generation != renderGeneration) {
+    private void pollRenderedHeightWhenReady(int generation, String digest, int attempt) {
+        if (renderingCancelled || generation != renderGeneration
+                || !digest.equals(activeInputDigest)) {
             return;
         }
         // The page flips __padnoteReady only after KaTeX fonts and every Mermaid
         // render have settled. Polling the state avoids device-dependent timeout
         // guesses while keeping the WebView free of a JavaScript bridge.
         evaluateJavascript(
-                "(function(){return window.__padnoteError?'!':window.__padnoteReady?" +
-                        "String(window.__padnoteHeight||0)+'|'+" +
-                        "String(window.__padnoteVisualHeight||window.__padnoteHeight||0):'';})()",
+                "(function(){var token=String(window.__padnoteToken||'');" +
+                        "var state=window.__padnoteError?'!'+window.__padnoteError:" +
+                        "window.__padnoteReady?String(window.__padnoteHeight||0)+'|'+" +
+                        "String(window.__padnoteVisualHeight||window.__padnoteHeight||0):'';" +
+                        "return token+'~'+state;})()",
                 value -> {
-                    if (renderingCancelled || generation != renderGeneration) {
+                    if (renderingCancelled || generation != renderGeneration
+                            || !digest.equals(activeInputDigest)) {
                         return;
                     }
                     String normalized = value == null ? "" : value.replace("\"", "").trim();
-                    if ("!".equals(normalized)) {
-                        failExportRender(generation, "文字脚本渲染失败");
+                    int divider = normalized.indexOf('~');
+                    String expectedToken = renderToken(generation, digest);
+                    if (divider < 0 || !expectedToken.equals(normalized.substring(0, divider))) {
+                        return;
+                    }
+                    normalized = normalized.substring(divider + 1);
+                    if (normalized.startsWith("!")) {
+                        String code = normalized.substring(1);
+                        FailureKind kind = "syntax".equals(code) ? FailureKind.SYNTAX
+                                : "resource".equals(code) ? FailureKind.RESOURCE
+                                : FailureKind.SCRIPT;
+                        String message = kind == FailureKind.SYNTAX
+                                ? "公式或示意图语法有误"
+                                : kind == FailureKind.RESOURCE
+                                ? "本地显示资源无法载入" : "本地显示脚本失败";
+                        failRender(generation, digest, kind, message);
                         return;
                     }
                     if (normalized.isEmpty()) {
                         if (attempt + 1 < READY_POLL_LIMIT) {
                             postDelayed(() -> pollRenderedHeightWhenReady(
-                                    generation, attempt + 1), READY_POLL_INTERVAL_MS);
-                        } else {
-                            failExportRender(generation, "文字资源渲染超时");
+                                    generation, digest, attempt + 1), READY_POLL_INTERVAL_MS);
                         }
                         return;
                     }
@@ -249,10 +367,11 @@ final class CompiledTextWebView extends WebView {
                         if (heightListener != null && measured > 0f) {
                             heightListener.onMeasuredHeight(measured);
                         }
+                        notifyReady(generation, digest);
                         signalExportFrameWhenVisible(generation, measured, visual);
                     } catch (NumberFormatException malformed) {
-                        // A page that cannot report its height keeps the estimate.
-                        failExportRender(generation, "文字渲染高度无效");
+                        failRender(generation, digest, FailureKind.SCRIPT,
+                                "本地显示高度无效");
                     }
                 });
     }
@@ -294,6 +413,102 @@ final class CompiledTextWebView extends WebView {
         listener.onFailure(message);
     }
 
+    private void scheduleRenderTimeout(int generation, String digest) {
+        postDelayed(() -> {
+            if (!renderingCancelled && generation == renderGeneration
+                    && generation != settledGeneration && digest.equals(activeInputDigest)) {
+                failRender(generation, digest, FailureKind.TIMEOUT, "本地显示超时");
+            }
+        }, READY_POLL_LIMIT * READY_POLL_INTERVAL_MS);
+    }
+
+    private void notifyReady(int generation, String digest) {
+        if (renderStateListener != null && generation == renderGeneration
+                && digest.equals(activeInputDigest)) {
+            settledGeneration = generation;
+            renderStateListener.onRenderState(new RenderState(generation, digest, null, ""));
+        } else if (generation == renderGeneration && digest.equals(activeInputDigest)) {
+            settledGeneration = generation;
+        }
+    }
+
+    private void failRender(int generation, String digest, FailureKind kind, String message) {
+        if (renderingCancelled || generation != renderGeneration
+                || generation == settledGeneration || !digest.equals(activeInputDigest)) return;
+        settledGeneration = generation;
+        if (renderStateListener != null) {
+            renderStateListener.onRenderState(new RenderState(generation, digest, kind, message));
+        }
+        failExportRender(generation, message);
+    }
+
+    private void reportProcessGone() {
+        if (processGone) return;
+        processGone = true;
+        renderingCancelled = true;
+        int generation = renderGeneration;
+        String digest = activeInputDigest;
+        if (renderStateListener != null) {
+            renderStateListener.onRenderState(new RenderState(generation, digest,
+                    FailureKind.PROCESS_GONE, "显示进程已退出"));
+        }
+        if (exportReadyListener != null && exportReadyGeneration == generation) {
+            ExportReadyListener listener = exportReadyListener;
+            exportReadyListener = null;
+            listener.onFailure("显示进程已退出");
+        }
+    }
+
+    boolean isProcessGone() { return processGone; }
+
+    /** Test hook for the owner replacement path; does not emulate Chromium death itself. */
+    void simulateRenderProcessGoneForTest() { reportProcessGone(); }
+
+    @Override
+    public void destroy() {
+        destroyed = true;
+        if (processGone) {
+            renderStateListener = null;
+            exportReadyListener = null;
+            heightListener = null;
+            return;
+        }
+        cancelPendingRendering();
+        super.destroy();
+    }
+
+    static String renderBootstrap(String token) {
+        return "<script>window.__padnoteToken='" + token + "';" +
+                "window.__padnoteReady=false;window.__padnoteError='';" +
+                "window.__padnoteHeight=0;window.__padnoteVisualHeight=0;" +
+                "window.addEventListener('error',function(event){" +
+                "if(event&&event.target&&(event.target.src||event.target.href))" +
+                "window.__padnoteError='resource';else if(!window.__padnoteError)" +
+                "window.__padnoteError='script';},true);</script>";
+    }
+
+    private static String renderToken(int generation, String digest) {
+        return generation + "-" + digest;
+    }
+
+    static String inputDigest(NoteTextBox.Format format, String source,
+                              float fontSizeSp, float lineHeight,
+                              int widthPx, boolean documentMode) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            String value = "renderer-v2\n" + documentMode + '\n' + format + '\n'
+                    + fontSizeSp + '\n' + lineHeight + '\n' + widthPx + '\n' + source;
+            byte[] hashed = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(32);
+            for (int index = 0; index < 16; index++) {
+                result.append(String.format(java.util.Locale.ROOT, "%02x", hashed[index] & 0xff));
+            }
+            return result.toString();
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     /**
      * Builds the offline document for one fragment.
      *
@@ -303,6 +518,11 @@ final class CompiledTextWebView extends WebView {
      */
     static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
                             float lineHeight) {
+        return buildHtml(format, source, fontSizeSp, lineHeight, "static");
+    }
+
+    private static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
+                                    float lineHeight, String token) {
         NoteTextBox.Format safeFormat = format == null ? NoteTextBox.Format.LATEX : format;
         String safeSource = source == null ? "" : source;
         // 10-32sp is the range a user may *author* in, but the rendered size also
@@ -325,6 +545,7 @@ final class CompiledTextWebView extends WebView {
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">" +
                 "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; " +
                 "style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'\">" +
+                renderBootstrap(token) +
                 "<link rel=\"stylesheet\" href=\"katex.min.css\">" +
                 "<style>html,body{margin:0;padding:0;background:transparent;color:#17212b;" +
                 "font-family:system-ui,-apple-system,sans-serif;font-size:" + safeFontSize + "px;" +
@@ -354,15 +575,14 @@ final class CompiledTextWebView extends WebView {
                 "pre.mermaid svg{display:block;width:auto;height:auto;margin:0 auto;" +
                 "max-width:100%!important;object-fit:contain}" +
                 ".diagram-error{display:block;padding:12px;white-space:pre-wrap;color:#8f2f2b}" +
-                ".katex-error{color:#8f2f2b}</style></head><body><div class=\"content\">" +
+                ".katex-error,.math-error{color:#8f2f2b}</style></head><body><div class=\"content\">" +
                 body + "</div><script src=\"katex.min.js\"></script><script>" +
-                "window.__padnoteReady=false;window.__padnoteError='';window.__padnoteHeight=0;" +
-                "window.__padnoteVisualHeight=0;window.addEventListener('error',function(){" +
-                "window.__padnoteError='resource';});" +
                 "window.__padnoteDiagramExtra=0;window.__padnoteUnclippedExtra=0;" +
-                "document.querySelectorAll('[data-tex]').forEach(function(el){" +
+                "document.querySelectorAll('[data-tex]').forEach(function(el){try{" +
                 "katex.render(el.getAttribute('data-tex'),el,{displayMode:el.getAttribute('data-display')==='1'," +
-                "throwOnError:false,strict:'ignore',trust:false,output:'htmlAndMathml'});});" +
+                "throwOnError:true,strict:'ignore',trust:false,output:'htmlAndMathml'});" +
+                "}catch(error){window.__padnoteError='syntax';el.classList.add('math-error');" +
+                "el.textContent='公式语法有误，可查看源码后编辑并重新显示。';}});" +
                 "function __padnoteFitMath(){window.__padnoteUnclippedExtra=window.__padnoteDiagramExtra||0;" +
                 "document.querySelectorAll('.latex-root,.math-display').forEach(function(el){" +
                 "var k=el.querySelector('.katex');if(!k)return;k.style.fontSize='1em';" +
@@ -406,7 +626,8 @@ final class CompiledTextWebView extends WebView {
                 "svg.style.width=Math.max(1,naturalWidth*diagramScale)+'px';" +
                 "svg.style.height=Math.max(1,naturalHeight*diagramScale)+'px';}" +
                 "catch(error){var msg=document.createElement('span');msg.className='diagram-error';" +
-                "msg.textContent='示意图语法有误，请编辑 Mermaid 源码或让 AI 重新生成。';el.appendChild(msg);}}" +
+                "msg.textContent='示意图语法有误，请编辑 Mermaid 源码后重新显示。';el.appendChild(msg);" +
+                "window.__padnoteError='syntax';}}" +
                 "__padnoteSettle();})();</script>" :
                 "<script>__padnoteSettle();</script>") + "</body></html>";
     }

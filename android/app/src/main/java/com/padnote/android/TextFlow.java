@@ -41,10 +41,16 @@ final class TextFlow {
     final String id;
     NoteTextBox.Format format;
     String source;
+    /** Canonical persisted values; float members below are Android layout projections. */
+    double fontSizeSp64;
+    double lineHeight64;
+    double width64;
+    int anchorPageIndex;
+    double anchorXInPage64;
+    double anchorYInPage64;
     float fontSizeSp;
     float lineHeight;
     float width;
-    int anchorPageIndex;
     float anchorXInPage;
     float anchorYInPage;
     /**
@@ -56,41 +62,130 @@ final class TextFlow {
     transient float heightCorrection = 1f;
     /** Corrections applied so far, bounding the measure-reflow loop. */
     transient int heightCorrectionPasses;
+    /** False when the page cap stopped layout before every source block was placed. */
+    transient boolean lastLayoutComplete = true;
+    transient int lastLayoutPageCount;
+    transient boolean lastRenderHeightUnresolved;
+    /** Incremented whenever the committed fragment set changes; rejects stale WebView callbacks. */
+    transient int renderLayoutEpoch;
+    /** Current-epoch fragment ids whose measured height still exceeds their reservation. */
+    private final transient Map<String, Boolean> unresolvedRenderFragments = new LinkedHashMap<>();
+    private transient int renderLayoutFragmentCount = 1;
+    /** Once clipping is observed, require every fragment in the replacement layout to pass. */
+    private transient boolean renderHeightValidationRequired;
     /** Width-fitted Mermaid block heights, excluding the fragment content padding. */
     private final transient Map<String, Float> measuredMermaidHeights = new LinkedHashMap<>();
 
-    TextFlow(String id, NoteTextBox.Format format, String source, float fontSizeSp,
-             float lineHeight, float width, int anchorPageIndex, float anchorXInPage,
-             float anchorYInPage) {
+    TextFlow(String id, NoteTextBox.Format format, String source, double fontSizeSp,
+             double lineHeight, double width, int anchorPageIndex, double anchorXInPage,
+             double anchorYInPage) {
         this.id = id;
         this.format = format == null ? NoteTextBox.Format.LATEX : format;
         this.source = source == null ? "" : source;
-        this.fontSizeSp = clampFontSize(fontSizeSp);
-        this.lineHeight = clampLineHeight(lineHeight);
-        this.width = Math.max(80f, width);
+        this.fontSizeSp64 = clampFontSize64(fontSizeSp);
+        this.lineHeight64 = clampLineHeight64(lineHeight);
+        this.width64 = Math.max(80d, finite(width, "width"));
         this.anchorPageIndex = Math.max(0, anchorPageIndex);
-        this.anchorXInPage = anchorXInPage;
-        this.anchorYInPage = anchorYInPage;
+        this.anchorXInPage64 = finite(anchorXInPage, "anchorXInPage");
+        this.anchorYInPage64 = finite(anchorYInPage, "anchorYInPage");
+        projectPersistentValues();
     }
 
     static float clampFontSize(float value) {
         return Math.max(10f, Math.min(32f, value));
     }
 
+    static double clampFontSize64(double value) {
+        return Math.max(10d, Math.min(32d, finite(value, "fontSizeSp")));
+    }
+
     static float clampLineHeight(float value) {
-        if (Float.isNaN(value) || value <= 0f) {
-            return DEFAULT_LINE_HEIGHT;
-        }
+        if (Float.isNaN(value) || value <= 0f) return DEFAULT_LINE_HEIGHT;
         return Math.max(MIN_LINE_HEIGHT, Math.min(MAX_LINE_HEIGHT, value));
     }
 
+    static double clampLineHeight64(double value) {
+        finite(value, "lineHeight");
+        if (value <= 0d) return DEFAULT_LINE_HEIGHT;
+        return Math.max(1.1d, Math.min(2.0d, value));
+    }
+
+    private static double finite(double value, String name) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            throw new IllegalArgumentException(name + " must be finite");
+        }
+        return value;
+    }
+
+    private void projectPersistentValues() {
+        fontSizeSp = PersistedGeometry.renderFloat(fontSizeSp64);
+        lineHeight = PersistedGeometry.renderFloat(lineHeight64);
+        width = PersistedGeometry.renderFloat(width64);
+        anchorXInPage = PersistedGeometry.renderFloat(anchorXInPage64);
+        anchorYInPage = PersistedGeometry.renderFloat(anchorYInPage64);
+    }
+
+    void setStyle(double fontSize, double leading, double newWidth) {
+        fontSizeSp64 = clampFontSize64(fontSize);
+        lineHeight64 = clampLineHeight64(leading);
+        width64 = Math.max(80d, finite(newWidth, "width"));
+        projectPersistentValues();
+    }
+
+    void setWidth(double newWidth) {
+        width64 = Math.max(80d, finite(newWidth, "width"));
+        projectPersistentValues();
+    }
+
+    void setAnchor(double x, double y) {
+        anchorXInPage64 = finite(x, "anchorXInPage");
+        anchorYInPage64 = finite(y, "anchorYInPage");
+        projectPersistentValues();
+    }
+
     TextFlow copy() {
-        TextFlow duplicate = new TextFlow(id, format, source, fontSizeSp, lineHeight,
-                width, anchorPageIndex, anchorXInPage, anchorYInPage);
+        TextFlow duplicate = new TextFlow(id, format, source, fontSizeSp64, lineHeight64,
+                width64, anchorPageIndex, anchorXInPage64, anchorYInPage64);
         duplicate.heightCorrection = heightCorrection;
         duplicate.heightCorrectionPasses = heightCorrectionPasses;
+        duplicate.lastLayoutComplete = lastLayoutComplete;
+        duplicate.lastLayoutPageCount = lastLayoutPageCount;
+        duplicate.lastRenderHeightUnresolved = lastRenderHeightUnresolved;
+        duplicate.renderLayoutEpoch = renderLayoutEpoch;
+        duplicate.unresolvedRenderFragments.putAll(unresolvedRenderFragments);
+        duplicate.renderLayoutFragmentCount = renderLayoutFragmentCount;
+        duplicate.renderHeightValidationRequired = renderHeightValidationRequired;
         duplicate.measuredMermaidHeights.putAll(measuredMermaidHeights);
         return duplicate;
+    }
+
+    void beginRenderLayout() {
+        renderLayoutEpoch += 1;
+        unresolvedRenderFragments.clear();
+        renderHeightValidationRequired |= lastRenderHeightUnresolved;
+        lastRenderHeightUnresolved = renderHeightValidationRequired;
+    }
+
+    /** Clears a failure learned from prior content/style after a real visual edit. */
+    void clearRenderHeightFailure() {
+        unresolvedRenderFragments.clear();
+        renderHeightValidationRequired = false;
+        lastRenderHeightUnresolved = false;
+    }
+
+    void setRenderLayoutFragmentCount(int count) {
+        renderLayoutFragmentCount = Math.max(1, count);
+    }
+
+    void recordRenderFragmentHeight(String fragmentId, boolean unresolved) {
+        unresolvedRenderFragments.put(fragmentId, unresolved);
+        if (unresolved) renderHeightValidationRequired = true;
+        boolean anyUnresolved = unresolvedRenderFragments.containsValue(Boolean.TRUE);
+        boolean allResolved = unresolvedRenderFragments.size() >= renderLayoutFragmentCount;
+        if (renderHeightValidationRequired && allResolved && !anyUnresolved) {
+            renderHeightValidationRequired = false;
+        }
+        lastRenderHeightUnresolved = anyUnresolved || renderHeightValidationRequired;
     }
 
     float measuredMermaidHeight(String blockSource) {
@@ -117,12 +212,12 @@ final class TextFlow {
         json.put("id", id);
         json.put("format", format.storageValue());
         json.put("source", source);
-        json.put("fontSizeSp", fontSizeSp);
-        json.put("lineHeight", lineHeight);
-        json.put("width", width);
+        json.put("fontSizeSp", fontSizeSp64);
+        json.put("lineHeight", lineHeight64);
+        json.put("width", width64);
         json.put("anchorPageIndex", anchorPageIndex);
-        json.put("anchorXInPage", anchorXInPage);
-        json.put("anchorYInPage", anchorYInPage);
+        json.put("anchorXInPage", anchorXInPage64);
+        json.put("anchorYInPage", anchorYInPage64);
         return json;
     }
 
@@ -139,20 +234,13 @@ final class TextFlow {
                 id,
                 NoteTextBox.Format.fromStorage(json.optString("format", "latex")),
                 source,
-                clampFontSize(finiteFloat(json.optDouble("fontSizeSp", 16))),
-                clampLineHeight(finiteFloat(
-                        json.optDouble("lineHeight", DEFAULT_LINE_HEIGHT))),
-                Math.max(80f, finiteFloat(json.optDouble("width", 360))),
+                clampFontSize64(finite(json.optDouble("fontSizeSp", 16), "fontSizeSp")),
+                clampLineHeight64(finite(json.optDouble("lineHeight", DEFAULT_LINE_HEIGHT), "lineHeight")),
+                Math.max(80d, finite(json.optDouble("width", 360), "width")),
                 Math.max(0, json.optInt("anchorPageIndex", 0)),
-                finiteFloat(json.optDouble("anchorXInPage", 0)),
-                finiteFloat(json.optDouble("anchorYInPage", 0))
+                finite(json.optDouble("anchorXInPage", 0), "anchorXInPage"),
+                finite(json.optDouble("anchorYInPage", 0), "anchorYInPage")
         );
     }
 
-    private static float finiteFloat(double value) throws JSONException {
-        if (Double.isNaN(value) || Double.isInfinite(value)) {
-            throw new JSONException("Text flow geometry must be finite");
-        }
-        return (float) value;
-    }
 }

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "id": "fixture-schema-2",
+  "title": "Schema 2 构造回归样例",
+  "updatedAt": 1700000000002,
+  "pageCount": 2,
+  "strokes": [
+    {
+      "id": "stroke-v2",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000002,
+      "points": [
+        {
+          "x": 20,
+          "y": 900,
+          "timestamp": 1700000000002,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 930,
+          "timestamp": 1700000000012,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "pageWidth": 600,
+  "pageHeight": 800,
+  "pageGap": 24,
+  "canvasWidth": 600,
+  "canvasHeight": 800,
+  "viewportScale": 1.1,
+  "viewportZoom": 1.05,
+  "viewportCenterX": 300,
+  "viewportCenterY": 400
+}

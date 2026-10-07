@@ -8,10 +8,12 @@ import {
   type JsonObject,
 } from './lib.js';
 import {parseWav, validateAudio} from './validate-audio.js';
-import {validateIr} from './validate-ir.js';
+import {audioSceneInputDigest} from './validate-audio.js';
+import {loadApprovedAudioInput} from './approved-audio.js';
 
 export async function indexAgentAudio(taskRoot: string): Promise<JsonObject> {
-  const ir = await validateIr(taskRoot);
+  const approved = await loadApprovedAudioInput(taskRoot);
+  const ir = approved.ir;
   await mkdir(resolve(taskRoot, 'work/audio'), {recursive: true});
   const clips: JsonObject[] = [];
   for (const scene of ir.scenes as JsonObject[]) {
@@ -22,11 +24,13 @@ export async function indexAgentAudio(taskRoot: string): Promise<JsonObject> {
       scene_id: scene.id,
       ...await fileDescriptor(path, relativePath, 'audio/wav'),
       duration_ms: wav.durationMs,
+      input_sha256: audioSceneInputDigest(approved.binding, scene),
+      provider_idempotency_key: audioSceneInputDigest(approved.binding, scene),
     });
   }
-  const manifest = {schema_version: '1.0', clips};
+  const manifest = {schema_version: '1.0', input_binding: approved.binding, clips};
   await atomicWriteJson(resolve(taskRoot, 'work/audio-manifest.json'), manifest);
-  return validateAudio(taskRoot);
+  return validateAudio(taskRoot, undefined, approved.binding, approved.lessonIrPath);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

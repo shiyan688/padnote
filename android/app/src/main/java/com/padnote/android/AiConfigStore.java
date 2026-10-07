@@ -35,6 +35,8 @@ import org.json.JSONObject;
  * existing users keep working without re-entering their key.
  */
 final class AiConfigStore {
+    private static final long MAX_REVISION = Long.MAX_VALUE - 1024;
+    enum ToolCapability { UNKNOWN, CONFIRMED, EXPLICITLY_REJECTED }
     /** Wire-level credentials for one request leg. */
     static final class Config {
         final String endpoint;
@@ -69,6 +71,9 @@ final class AiConfigStore {
         String transcribeKeyIv = "";
         String answerKeyCiphertext = "";
         String answerKeyIv = "";
+        /** Changes for every recipient-affecting save, including a credential-only save. */
+        long revision;
+        ToolCapability toolCapability = ToolCapability.UNKNOWN;
 
         boolean hasDirectKey() {
             return !directKeyCiphertext.isEmpty() && !directKeyIv.isEmpty();
@@ -120,6 +125,8 @@ final class AiConfigStore {
             json.put("transcribeKeyIv", transcribeKeyIv);
             json.put("answerKeyCiphertext", answerKeyCiphertext);
             json.put("answerKeyIv", answerKeyIv);
+            json.put("revision", revision);
+            json.put("toolCapability", toolCapability.name());
             return json;
         }
 
@@ -140,6 +147,16 @@ final class AiConfigStore {
             profile.transcribeKeyIv = json.optString("transcribeKeyIv");
             profile.answerKeyCiphertext = json.optString("answerKeyCiphertext");
             profile.answerKeyIv = json.optString("answerKeyIv");
+            profile.revision = json.optLong("revision", 0);
+            if (profile.revision < 0 || profile.revision > MAX_REVISION) {
+                throw new IllegalArgumentException("AI 配置修订无效");
+            }
+            try {
+                profile.toolCapability = ToolCapability.valueOf(
+                        json.optString("toolCapability", ToolCapability.UNKNOWN.name()));
+            } catch (IllegalArgumentException ignored) {
+                profile.toolCapability = ToolCapability.UNKNOWN;
+            }
             return profile;
         }
     }
@@ -177,6 +194,7 @@ final class AiConfigStore {
     private static final String PREF_KEY_IV = "apiKeyIv";
 
     private final SharedPreferences preferences;
+    private static final Object STORE_LOCK = new Object();
 
     AiConfigStore(Context context) {
         preferences = context.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE);
@@ -218,33 +236,36 @@ final class AiConfigStore {
     }
 
     List<Profile> listProfiles() {
-        migrateLegacyIfNeeded();
-        List<Profile> profiles = new ArrayList<>();
-        for (String id : profileIds()) {
-            String raw = preferences.getString(PREF_PROFILE_PREFIX + id, null);
-            if (raw == null) {
-                continue;
+        synchronized (STORE_LOCK) {
+            migrateLegacyIfNeeded();
+            List<Profile> profiles = new ArrayList<>();
+            for (String id : profileIds()) {
+                String raw = preferences.getString(PREF_PROFILE_PREFIX + id, null);
+                if (raw == null) continue;
+                try {
+                    Profile profile = Profile.fromJson(new JSONObject(raw));
+                    if (profile.revision <= 0) {
+                        profile.revision = 1;
+                        if (!preferences.edit().putString(PREF_PROFILE_PREFIX + id,
+                                profile.toJson().toString()).commit()) {
+                            continue;
+                        }
+                    }
+                    profiles.add(profile);
+                } catch (Exception corrupted) {
+                    // Skip a damaged entry instead of failing the whole list.
+                }
             }
-            try {
-                profiles.add(Profile.fromJson(new JSONObject(raw)));
-            } catch (Exception corrupted) {
-                // Skip a damaged entry instead of failing the whole list.
-            }
+            return profiles;
         }
-        return profiles;
     }
 
     Profile activeProfile() {
         migrateLegacyIfNeeded();
         String activeId = preferences.getString(PREF_ACTIVE_ID, "");
         if (!activeId.isEmpty()) {
-            String raw = preferences.getString(PREF_PROFILE_PREFIX + activeId, null);
-            if (raw != null) {
-                try {
-                    return Profile.fromJson(new JSONObject(raw));
-                } catch (Exception corrupted) {
-                    // Fall through to the first readable profile.
-                }
+            for (Profile profile : listProfiles()) {
+                if (activeId.equals(profile.id)) return profile;
             }
         }
         List<Profile> profiles = listProfiles();
@@ -262,6 +283,7 @@ final class AiConfigStore {
     /** Inserts or updates a profile; a null key keeps the stored one. */
     void saveProfile(Profile profile, String directKey, String transcribeKey,
                      String answerKey) throws Exception {
+        synchronized (STORE_LOCK) {
         if (profile.id == null || profile.id.isEmpty()) {
             profile.id = java.util.UUID.randomUUID().toString();
         }
@@ -281,6 +303,17 @@ final class AiConfigStore {
             profile.answerKeyIv = Base64.encodeToString(encrypted[1], Base64.NO_WRAP);
         }
 
+        long oldRevision = 0;
+        String stored = preferences.getString(PREF_PROFILE_PREFIX + profile.id, null);
+        if (stored != null) {
+            try { oldRevision = Profile.fromJson(new JSONObject(stored)).revision; }
+            catch (Exception ignored) { }
+        }
+        if (oldRevision >= MAX_REVISION) {
+            throw new java.io.IOException("AI 配置修订已达上限");
+        }
+        profile.revision = Math.max(1, oldRevision + 1);
+        profile.toolCapability = ToolCapability.UNKNOWN;
         List<String> ids = profileIds();
         if (!ids.contains(profile.id)) {
             ids.add(profile.id);
@@ -291,7 +324,25 @@ final class AiConfigStore {
         if (preferences.getString(PREF_ACTIVE_ID, "").isEmpty()) {
             editor.putString(PREF_ACTIVE_ID, profile.id);
         }
-        editor.apply();
+        if (!editor.commit()) throw new java.io.IOException("无法保存 AI 配置修订");
+        }
+    }
+
+    boolean recordToolCapability(String profileId, long expectedRevision,
+                                 ToolCapability capability) {
+        synchronized (STORE_LOCK) {
+            String raw = preferences.getString(PREF_PROFILE_PREFIX + profileId, null);
+            if (raw == null) return false;
+            try {
+                Profile profile = Profile.fromJson(new JSONObject(raw));
+                if (profile.revision != expectedRevision) return false;
+                profile.toolCapability = capability == null ? ToolCapability.UNKNOWN : capability;
+                return preferences.edit().putString(PREF_PROFILE_PREFIX + profileId,
+                        profile.toJson().toString()).commit();
+            } catch (Exception invalid) {
+                return false;
+            }
+        }
     }
 
     void deleteProfile(String id) {

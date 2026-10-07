@@ -15,19 +15,190 @@ import {
 import {validateIr} from './validate-ir.js';
 import {validateReview} from './validate-review.js';
 import {validateRequest} from './validate-request.js';
+import {storyboardBrowserArgs} from './renderer-browser.js';
 
-export async function buildStoryboard(taskRoot: string, lessonIrRevision = 1): Promise<JsonObject> {
+// This function body runs in the page, not in Node. It must therefore contain
+// NO NAMED FUNCTION BINDING -- no `const helper = () => {}`, no
+// `function helper() {}`, no `{helper: () => {}}` object property.
+//
+// `tsx` transpiles with esbuild's `keepNames` on, which rewrites every named
+// function binding in the file into `__name(fn, "<name>")` so that `fn.name`
+// survives. `page.evaluate` serialises this function with `toString()` and
+// evaluates it inside the page, where `__name` does not exist, so any such
+// binding throws `ReferenceError: __name is not defined` at the moment the
+// line is reached. Anonymous callbacks passed straight as arguments (`.map(n
+// => n)`) are not rewritten, which is why the original body was safe by
+// accident -- keep it that way. `assertEvaluatePayloadSurvivesSerialisation`
+// below makes a reintroduction loud instead of silent.
+//
+// The layout question this answers: a `[data-check]` node is reported when its
+// laid-out content leaves its padding box, because that is what `overflow:hidden`
+// clips.
+//
+// The obvious test -- `scrollHeight > clientHeight` -- does not measure that, and
+// is font-dependent. For the element's own inline content `scrollHeight` counts
+// the INLINE box, and an inline box is as tall as the resolved font's vertical
+// metrics, not as tall as the line box that contains it. Measured on Linux
+// (tests/fixtures/formula-note, Noto Sans CJK SC installed):
+//
+//   node          font-size  line-height  inline box  scrollHeight - clientHeight
+//   scene-id      28px       33.6px       40px        +2  (2.41 measured)
+//   objective     42px       56.7px       61px        +1
+//   title         102px      110.16px     147px       +10
+//   screen-text   34px       45.9px       49px        +1
+//
+// In every case the excess equals the amount by which that inline box hangs past
+// the element's padding box. Nothing is actually clipped -- the overhang is
+// leading, not glyph. The verdict therefore depends on which font resolved:
+// macOS lacks "Noto Sans CJK SC" and Chromium silently falls back to a tighter
+// face, where the excess is 0, so the same markup passes there and fails here.
+// (Measured with Chromium 150 on Linux and macOS, formula-note fixture.)
+//
+// So measure line boxes instead of inline boxes:
+//
+//   * Text: `Range.getClientRects()` gives one rect per line, but in Chromium its
+//     height is the font's metric box, not the line box (measured above: 40px for
+//     a 33.6px line). CSS centres an inline box in its line box with symmetric
+//     half-leading, so the line box has the same vertical centre and is
+//     `line-height` tall. Reconstruct it that way. When `line-height` computes to
+//     `normal` the inline box already IS the line box, so the rect is used as-is.
+//   * Block descendants: their border boxes are real layout; use them directly.
+//   * `display:inline` descendants: an inline box is not a layout container, has
+//     no content box of its own and has the same font-metric height as a text
+//     rect. Do not test its box; recurse so its text is measured against the
+//     enclosing block's line-height.
+//   * Do not descend into a box that clips -- its content is clipped there, so it
+//     is not this element's overflow -- and skip out-of-flow boxes, which
+//     something else positions.
+//
+// The clip edge is the PADDING box, so compare against the inner border edge:
+// content that only reaches into the padding is not clipped at all. Comparing
+// against the content box instead is a false-positive generator -- `.formula-step`
+// has `padding:30px 38px`, so a centred KaTeX box taller than the content box
+// stays inside the padding box and is fully visible.
+//
+// `tolerance` is 2px because Chromium snaps Range rects to integers, which moves
+// a reconstructed line box by up to ~1px; a real overflow of a 1080x1920 frame is
+// far larger than that.
+const storyboardLayoutProbe = () => {
+  const tolerance = 2;
+  return [...document.querySelectorAll<HTMLElement>('.scene')].map(scene => {
+    const outer = scene.getBoundingClientRect();
+    const safe = scene.querySelector<HTMLElement>('.safe-content')!.getBoundingClientRect();
+    const overflows = [...scene.querySelectorAll<HTMLElement>('[data-check]')]
+      .map(node => {
+        const box = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const limits = {
+          left: box.left + parseFloat(style.borderLeftWidth),
+          top: box.top + parseFloat(style.borderTopWidth),
+          right: box.right - parseFloat(style.borderRightWidth),
+          bottom: box.bottom - parseFloat(style.borderBottomWidth),
+        };
+        const rects: Array<{left: number; top: number; right: number; bottom: number}> = [];
+        const pending: Array<{element: Element; lineHeight: number}> = [
+          {element: node, lineHeight: parseFloat(style.lineHeight)},
+        ];
+        while (pending.length > 0) {
+          const frame = pending.pop()!;
+          for (const child of Array.from(frame.element.childNodes)) {
+            if (child.nodeType === Node.TEXT_NODE) {
+              const text = child as Text;
+              if (!text.textContent || !text.textContent.trim()) continue;
+              const range = document.createRange();
+              range.selectNodeContents(text);
+              for (const rect of Array.from(range.getClientRects())) {
+                if (Number.isFinite(frame.lineHeight)) {
+                  const centre = (rect.top + rect.bottom) / 2;
+                  rects.push({left: rect.left, top: centre - frame.lineHeight / 2,
+                    right: rect.right, bottom: centre + frame.lineHeight / 2});
+                } else {
+                  rects.push({left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom});
+                }
+              }
+              continue;
+            }
+            if (child.nodeType !== Node.ELEMENT_NODE) continue;
+            const descendant = child as HTMLElement;
+            const descendantStyle = getComputedStyle(descendant);
+            if (descendantStyle.position === 'absolute' || descendantStyle.position === 'fixed') continue;
+            if (descendantStyle.display === 'inline') {
+              if (descendantStyle.overflowX === 'visible' && descendantStyle.overflowY === 'visible') {
+                pending.push({element: descendant, lineHeight: frame.lineHeight});
+              }
+              continue;
+            }
+            const descendantBox = descendant.getBoundingClientRect();
+            rects.push({left: descendantBox.left, top: descendantBox.top,
+              right: descendantBox.right, bottom: descendantBox.bottom});
+            if (descendantStyle.overflowX === 'visible' && descendantStyle.overflowY === 'visible') {
+              pending.push({element: descendant, lineHeight: parseFloat(descendantStyle.lineHeight)});
+            }
+          }
+        }
+        const worst = rects.reduce<null | {edge: string; by: number;
+          rect: {top: number; right: number; bottom: number; left: number}}>((found, rect) => {
+          const candidates: Array<[string, number]> = [
+            ['left', limits.left - rect.left], ['top', limits.top - rect.top],
+            ['right', rect.right - limits.right], ['bottom', rect.bottom - limits.bottom],
+          ];
+          for (const [edge, by] of candidates) {
+            if (by > tolerance && (!found || by > found.by)) {
+              found = {edge, by: Math.round(by * 10) / 10,
+                rect: {top: Math.round(rect.top * 10) / 10, right: Math.round(rect.right * 10) / 10,
+                  bottom: Math.round(rect.bottom * 10) / 10, left: Math.round(rect.left * 10) / 10}};
+            }
+          }
+          return found;
+        }, null);
+        const horizontal = node.scrollWidth - node.clientWidth;
+        if (worst === null && horizontal <= tolerance) return null;
+        return {label: node.dataset.check, limits, worst, horizontal,
+          scrollWidth: node.scrollWidth, clientWidth: node.clientWidth,
+          scrollHeight: node.scrollHeight, clientHeight: node.clientHeight};
+      })
+      .filter(entry => entry !== null);
+    return {
+      id: scene.dataset.sceneId,
+      safe: safe.left - outer.left >= 72 && outer.right - safe.right >= 72 && safe.top - outer.top >= 120 && outer.bottom - safe.bottom >= 120,
+      overflows,
+    };
+  });
+};
+
+// `page.evaluate` sends `probe.toString()` to the page, so that exact string is
+// the contract. Checking it here converts a page-side `__name is not defined`
+// (which only fires on the code path that reaches the binding) into a Node-side
+// failure naming the cause, at the moment the probe is built.
+function assertEvaluatePayloadSurvivesSerialisation(probe: () => unknown): void {
+  if (/\b__name\b/.test(probe.toString())) {
+    throw new Error('storyboard layout probe was rewritten by the TypeScript loader: it contains a named '
+      + 'function binding, which esbuild `keepNames` turns into a `__name(...)` call that does not exist in '
+      + 'the page. Use anonymous callbacks and non-function locals inside the probe.');
+  }
+}
+
+export async function buildStoryboard(
+  taskRoot: string,
+  lessonIrRevision = 1,
+  exactInputs?: {request: JsonObject; ir: JsonObject},
+  // When set, every artifact (and review.json) is written here instead of
+  // output/, and the caller must already have placed lesson.ir.json in it. The
+  // caller then owns publishing and the final validateReview; a revision install
+  // uses this so a candidate that fails the layout check never reaches output/.
+  outputDir?: string,
+): Promise<JsonObject> {
   if (!Number.isInteger(lessonIrRevision) || lessonIrRevision < 1) throw new Error('lesson_ir_revision must be a positive integer');
-  const request = await validateRequest(taskRoot);
-  const ir = await validateIr(taskRoot);
-  const output = resolve(taskRoot, 'output');
+  const request = exactInputs?.request ?? await validateRequest(taskRoot);
+  const ir = exactInputs?.ir ?? await validateIr(taskRoot);
+  const output = outputDir ?? resolve(taskRoot, 'output');
   const htmlPath = resolve(output, 'storyboard.html');
   const html = await buildHtml(taskRoot, ir);
   await atomicWriteFile(htmlPath, html);
 
   const browser = await puppeteer.launch({
     headless: 'shell',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--no-zygote', '--single-process', '--disable-dev-shm-usage', '--disable-background-networking'],
+    args: storyboardBrowserArgs(process.platform),
   });
   try {
     const page = await browser.newPage();
@@ -39,20 +210,8 @@ export async function buildStoryboard(taskRoot: string, lessonIrRevision = 1): P
     });
     await page.setViewport({width: 1080, height: 1920, deviceScaleFactor: 1});
     await page.goto(`file://${htmlPath}`, {waitUntil: 'networkidle0'});
-    const checks = await page.evaluate(() => {
-      return [...document.querySelectorAll<HTMLElement>('.scene')].map(scene => {
-        const outer = scene.getBoundingClientRect();
-        const safe = scene.querySelector<HTMLElement>('.safe-content')!.getBoundingClientRect();
-        const overflows = [...scene.querySelectorAll<HTMLElement>('[data-check]')]
-          .filter(node => node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1)
-          .map(node => ({label: node.dataset.check, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight}));
-        return {
-          id: scene.dataset.sceneId,
-          safe: safe.left - outer.left >= 72 && outer.right - safe.right >= 72 && safe.top - outer.top >= 120 && outer.bottom - safe.bottom >= 120,
-          overflows,
-        };
-      });
-    });
+    assertEvaluatePayloadSurvivesSerialisation(storyboardLayoutProbe);
+    const checks = await page.evaluate(storyboardLayoutProbe);
     for (const check of checks) {
       if (!check.safe || check.overflows.length > 0) throw new Error(`storyboard layout failed for ${check.id}: ${JSON.stringify(check)}`);
     }
@@ -83,7 +242,7 @@ export async function buildStoryboard(taskRoot: string, lessonIrRevision = 1): P
   };
   await validateSchema('review', review);
   await atomicWriteJson(resolve(output, 'review.json'), review);
-  await validateReview(taskRoot);
+  if (!outputDir) await validateReview(taskRoot);
   return review;
 }
 

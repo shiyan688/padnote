@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {
   lstat,
   mkdir,
@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rename,
+  rm,
   stat,
 } from 'node:fs/promises';
 import {dirname, extname, isAbsolute, relative, resolve, sep} from 'node:path';
@@ -31,9 +32,13 @@ export async function validateSchema(name: string, value: unknown): Promise<void
   let validate = validators.get(name);
   if (!validate) {
     const schema = await readJson(resolve(scriptRoot, 'schemas', `${name}.schema.json`));
-    const compiled = ajv.compile(schema);
-    validators.set(name, compiled);
-    validate = compiled;
+    // Multiple first-time validators can await the same schema read. Recheck
+    // after the await so only one continuation compiles a given $id in Ajv.
+    validate = validators.get(name);
+    if (!validate) {
+      validate = ajv.compile(schema);
+      validators.set(name, validate);
+    }
   }
   if (!validate(value)) {
     throw new Error(`${name} schema failed:\n${formatAjvErrors(validate.errors)}`);
@@ -146,15 +151,18 @@ export async function atomicWriteJson(path: string, value: unknown): Promise<voi
 
 export async function atomicWriteFile(path: string, value: string | Buffer): Promise<void> {
   await mkdir(dirname(path), {recursive: true});
-  const temporary = `${path}.tmp`;
-  const handle = await open(temporary, 'w');
+  const temporary = `${path}.tmp-${randomUUID()}`;
+  const handle = await open(temporary, 'wx', 0o600);
   try {
     await handle.writeFile(value);
     await handle.sync();
-  } finally {
     await handle.close();
+    await rename(temporary, path);
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await rm(temporary, {force: true}).catch(() => undefined);
+    throw error;
   }
-  await rename(temporary, path);
 }
 
 export async function walkRegularFiles(root: string): Promise<string[]> {

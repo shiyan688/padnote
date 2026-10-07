@@ -13,6 +13,12 @@ import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.security.MessageDigest;
+import java.io.FileInputStream;
+import java.io.FileDescriptor;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructStat;
 
 /**
  * Notebook covers: one optional PNG per note plus a preset library.
@@ -58,11 +64,13 @@ final class CoverStore {
     }
 
     static boolean has(Context context, String noteId) {
-        return coverFile(context, noteId).isFile();
+        try { NoteStore.requireRestoreGroupV2Visible(context,noteId); return coverFile(context, noteId).isFile(); }
+        catch (Exception hidden) { return false; }
     }
 
     /** Writes {@code source} as the note's cover, downscaled, replacing any old one. */
     static void assign(Context context, String noteId, Bitmap source) throws Exception {
+        NoteStore.requireNoteMaterialAccess(context,noteId);
         if (source == null || source.isRecycled()) {
             throw new IllegalArgumentException("封面位图不可用");
         }
@@ -83,7 +91,94 @@ final class CoverStore {
         }
     }
 
+    /** Promotes a byte-exact, already archive-validated PNG to a new note without re-encoding. */
+    static void restoreRaw(Context context, String noteId, File staged, long size, String sha256) throws Exception {
+        File target=coverFile(context,noteId), parent=target.getParentFile();
+        LibraryBackupArchive.AndroidSafeFiles.canonicalPrivateAndroidDirectory(parent);
+        if(target.exists()){
+            if(!matchesRaw(target,size,sha256))throw new java.io.IOException("RESTORE_COVER_TARGET_CONFLICT");
+            return;
+        }
+        StructStat link=Os.lstat(staged.getAbsolutePath());
+        if((link.st_mode&OsConstants.S_IFMT)!=OsConstants.S_IFREG||link.st_nlink!=1||link.st_size!=size||size<=0||size>8L*1024*1024)
+            throw new java.io.IOException("RESTORE_COVER_UNSAFE");
+        FileDescriptor inputFd=Os.open(staged.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
+        FileDescriptor outputFd=null;
+        long outputDev=-1,outputIno=-1;
+        try {
+            StructStat before=Os.fstat(inputFd);
+            if(before.st_dev!=link.st_dev||before.st_ino!=link.st_ino||before.st_size!=size||before.st_nlink!=1)
+                throw new java.io.IOException("RESTORE_COVER_CHANGED");
+            outputFd=Os.open(target.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
+            StructStat created=Os.fstat(outputFd);outputDev=created.st_dev;outputIno=created.st_ino;
+            MessageDigest digest=MessageDigest.getInstance("SHA-256"); long total=0; byte[] buffer=new byte[16*1024];
+            try(FileInputStream in=new FileInputStream(inputFd);FileOutputStream out=new FileOutputStream(outputFd)){
+                int n;while((n=in.read(buffer))!=-1){total+=n;if(total>size)throw new java.io.IOException("RESTORE_COVER_CHANGED");digest.update(buffer,0,n);out.write(buffer,0,n);}out.flush();out.getFD().sync();
+                StructStat after=Os.fstat(in.getFD());if(total!=size||after.st_dev!=before.st_dev||after.st_ino!=before.st_ino||after.st_size!=before.st_size||after.st_mtime!=before.st_mtime||after.st_ctime!=before.st_ctime)throw new java.io.IOException("RESTORE_COVER_CHANGED");
+            }
+            String actual=hex(digest.digest());if(!actual.equals(sha256))throw new java.io.IOException("RESTORE_COVER_SHA");
+            BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;BitmapFactory.decodeFile(target.getAbsolutePath(),options);
+            if(options.outWidth<=0||options.outHeight<=0||(long)options.outWidth*options.outHeight>NoteImage.MAX_DOCUMENT_PIXELS)throw new java.io.IOException("RESTORE_COVER_INVALID");
+        } catch(Exception error){deleteIfIdentity(target,outputDev,outputIno);throw error;}
+        finally{try{if(outputFd!=null)Os.close(outputFd);}catch(Exception ignored){} try{Os.close(inputFd);}catch(Exception ignored){}}
+    }
+
+    static boolean matchesRaw(File file,long size,String sha256)throws Exception{
+        StructStat link=Os.lstat(file.getAbsolutePath());
+        if((link.st_mode&OsConstants.S_IFMT)!=OsConstants.S_IFREG||link.st_nlink!=1||link.st_size!=size)return false;
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;byte[] buffer=new byte[16*1024];
+        FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
+        try(FileInputStream in=new FileInputStream(fd)){int n;while((n=in.read(buffer))!=-1){total+=n;if(total>size)return false;digest.update(buffer,0,n);}StructStat after=Os.fstat(in.getFD());return total==size&&after.st_dev==link.st_dev&&after.st_ino==link.st_ino&&after.st_size==link.st_size&&hex(digest.digest()).equals(sha256);}
+    }
+
+    static void rollbackRestoredRaw(Context context,String noteId,String sha256,LibraryRestoreGroupV2.Lease lease,
+            LibraryRestoreGroupV2.MemberProof proof)throws Exception {
+        if(lease==null||proof==null||proof.kind!=LibraryRestoreGroupV2.Kind.ASSIGNED_COVER||
+                !noteId.equals(proof.localObjectId)||!sha256.equals(proof.payloadSha256)||
+                lease.recoveryStatus()==LibraryRestoreGroupV2.RecoveryPhase.COMMITTED)
+            throw new java.io.IOException("RESTORE_COVER_ROLLBACK_AUTHORITY");
+        File target=coverFile(context,noteId);LibraryBackupArchive.SafeFiles safe=new LibraryBackupArchive.AndroidSafeFiles();
+        try(LibraryBackupArchive.SafeFiles.PublishLock ignored=safe.lockPublish(target)){
+            android.system.StructStat current;
+            try{current=Os.lstat(target.getAbsolutePath());}catch(android.system.ErrnoException missing){if(missing.errno==android.system.OsConstants.ENOENT)return;throw missing;}
+            if(!OsConstants.S_ISREG(current.st_mode)||current.st_nlink!=1||!matchesRaw(target,current.st_size,sha256))
+                throw new java.io.IOException("RESTORE_COVER_ROLLBACK_OWNERSHIP");
+            android.system.StructStat recheck=Os.lstat(target.getAbsolutePath());
+            if(current.st_dev!=recheck.st_dev||current.st_ino!=recheck.st_ino||current.st_size!=recheck.st_size||current.st_nlink!=recheck.st_nlink)
+                throw new java.io.IOException("RESTORE_COVER_ROLLBACK_CHANGED");
+            Os.remove(target.getAbsolutePath());safe.syncDirectory(target.getParentFile());
+        }
+    }
+
+    static void restoreRawToFile(File staged,File target,long size,String sha256)throws Exception{
+        if(target.exists())throw new java.io.IOException("RESTORE_RESOURCE_TARGET_EXISTS");
+        StructStat link=Os.lstat(staged.getAbsolutePath());
+        if((link.st_mode&OsConstants.S_IFMT)!=OsConstants.S_IFREG||link.st_nlink!=1||link.st_size!=size||size<=0||size>100L*1024*1024)
+            throw new java.io.IOException("RESTORE_RESOURCE_UNSAFE");
+        FileDescriptor inputFd=Os.open(staged.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
+        FileDescriptor outputFd=null;
+        long outputDev=-1,outputIno=-1;
+        try{
+            StructStat before=Os.fstat(inputFd);
+            if(before.st_dev!=link.st_dev||before.st_ino!=link.st_ino||before.st_size!=size||before.st_nlink!=1)throw new java.io.IOException("RESTORE_RESOURCE_CHANGED");
+            outputFd=Os.open(target.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
+            StructStat created=Os.fstat(outputFd);outputDev=created.st_dev;outputIno=created.st_ino;
+            MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;byte[] buffer=new byte[32768];
+            try(FileInputStream in=new FileInputStream(inputFd);FileOutputStream out=new FileOutputStream(outputFd)){
+                int n;while((n=in.read(buffer))!=-1){total+=n;if(total>size)throw new java.io.IOException("RESTORE_RESOURCE_CHANGED");digest.update(buffer,0,n);out.write(buffer,0,n);}out.flush();out.getFD().sync();
+                StructStat after=Os.fstat(in.getFD());if(total!=size||after.st_dev!=before.st_dev||after.st_ino!=before.st_ino||after.st_size!=before.st_size||after.st_mtime!=before.st_mtime||after.st_ctime!=before.st_ctime)throw new java.io.IOException("RESTORE_RESOURCE_CHANGED");
+            }
+            if(!hex(digest.digest()).equals(sha256))throw new java.io.IOException("RESTORE_RESOURCE_SHA");
+        }catch(Exception error){deleteIfIdentity(target,outputDev,outputIno);throw error;}
+        finally{try{if(outputFd!=null)Os.close(outputFd);}catch(Exception ignored){}try{Os.close(inputFd);}catch(Exception ignored){}}
+    }
+
+    private static void deleteIfIdentity(File file,long dev,long ino){try{if(dev<0||ino<0)return;StructStat s=Os.lstat(file.getAbsolutePath());if((s.st_mode&OsConstants.S_IFMT)==OsConstants.S_IFREG&&s.st_nlink==1&&s.st_dev==dev&&s.st_ino==ino)Os.remove(file.getAbsolutePath());}catch(Exception ignored){}}
+
+    private static String hex(byte[] bytes){StringBuilder out=new StringBuilder();for(byte b:bytes)out.append(String.format(Locale.ROOT,"%02x",b&255));return out.toString();}
+
     static void remove(Context context, String noteId) {
+        try { NoteStore.requireNoteMaterialAccess(context,noteId); } catch (Exception hidden) { return; }
         File file = coverFile(context, noteId);
         if (file.isFile()) {
             file.delete();
@@ -92,6 +187,7 @@ final class CoverStore {
 
     /** Decodes a cover sampled near {@code targetWidth} to keep the shelf smooth. */
     static Bitmap load(Context context, String noteId, int targetWidth) {
+        try { NoteStore.requireRestoreGroupV2Visible(context,noteId); } catch (Exception hidden) { return null; }
         File file = coverFile(context, noteId);
         if (!file.isFile()) {
             return null;

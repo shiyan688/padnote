@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="com.padnote.android.IsolatedLibraryRestoreActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+        <activity
+            android:name=".AgentSettingsLayoutHarnessActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+        <activity
+            android:name=".AgentSettingsLayoutHarnessActivity$TwoX"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+    </application>
+</manifest>

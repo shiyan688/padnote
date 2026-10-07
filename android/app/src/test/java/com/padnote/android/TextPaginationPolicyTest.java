@@ -78,4 +78,32 @@ public class TextPaginationPolicyTest {
         assertEquals(72f, copy.measuredMermaidHeight(horizontal), 0.01f);
         assertEquals(420f, copy.measuredMermaidHeight(vertical), 0.01f);
     }
+
+    @Test public void exportNeverShrinksOrdinaryProsePerFragment() {
+        NoteTextBox prose = new NoteTextBox("part", "flow", 1, 3,
+                NoteTextBox.Format.MARKDOWN, "source", "第 13 行完整保留。",
+                16f, 1.35f, 2, 16f, 16f, 500f, 700f);
+        NoteTextBox diagram = new NoteTextBox("diagram", "diagram-flow", 0, 1,
+                NoteTextBox.Format.MARKDOWN, "source",
+                "```mermaid\nflowchart TD\nA-->B\n```", 16f, 1.35f,
+                0, 16f, 16f, 500f, 300f);
+        NoteTextBox formula = new NoteTextBox("formula", "formula-flow", 0, 1,
+                NoteTextBox.Format.LATEX, "x^2", "x^2", 16f, 1.35f,
+                0, 16f, 16f, 500f, 100f);
+
+        assertFalse(NoteCanvasView.PdfExportSnapshot.exportFragmentMayScale(prose));
+        assertTrue(NoteCanvasView.PdfExportSnapshot.exportFragmentMayScale(diagram));
+        assertTrue(NoteCanvasView.PdfExportSnapshot.exportFragmentMayScale(formula));
+    }
+
+    @Test public void finalReadableUnitDoesNotStartANewPageAlone() {
+        assertTrue(NoteCanvasView.shouldMovePenultimateForWidow(
+                true, 540f, 36f, 36f, 610f));
+        assertFalse("a fresh page must still make progress",
+                NoteCanvasView.shouldMovePenultimateForWidow(
+                        false, 20f, 400f, 400f, 610f));
+        assertFalse("keep both when they already fit",
+                NoteCanvasView.shouldMovePenultimateForWidow(
+                        true, 500f, 36f, 36f, 610f));
+    }
 }

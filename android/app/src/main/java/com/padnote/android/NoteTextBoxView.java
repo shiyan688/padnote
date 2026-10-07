@@ -2,6 +2,8 @@ package com.padnote.android;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -20,9 +22,12 @@ import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.app.AlertDialog;
 
 /** A page-anchored PPT-style text object with an editor embedded inside the object. */
 @SuppressLint("ViewConstructor")
@@ -89,7 +94,9 @@ final class NoteTextBoxView extends FrameLayout {
     /** True while the corner handle is scaling type to a target area. */
     private boolean scalingByArea;
     private final int touchSlop;
-    private final CompiledTextWebView compiledView;
+    private CompiledTextWebView compiledView;
+    private final LinearLayout renderErrorPanel;
+    private final TextView renderErrorStatus;
     private final LinearLayout editorPanel;
     private final LinearLayout editorToolbar;
     private final EditText sourceEditor;
@@ -118,12 +125,6 @@ final class NoteTextBoxView extends FrameLayout {
     private float renderedLineHeight = -1f;
     /** World-space column width used by the current compiled document. */
     private float renderedWidth = -1f;
-    /** Canvas scale the current render was produced at. */
-    private float renderedScale = -1f;
-    private float pendingRenderScale = 1f;
-    /** Quiet period before re-rendering, so a pinch does not recompile per frame. */
-    private static final long CRISP_RERENDER_DELAY_MS = 140L;
-    private final Runnable crispRerenderRunnable = this::renderAtSettledScale;
     private float viewportScale = 1f;
     private float viewportPanX;
     private float viewportPanY;
@@ -133,7 +134,10 @@ final class NoteTextBoxView extends FrameLayout {
     private boolean resizing;
     /** True while a touch is being routed to selection chrome rather than a drag. */
     private boolean controlGesture;
+    private boolean errorMarkerGesture;
     private boolean moved;
+    private boolean renderFailed;
+    private String renderFailureReason = "文字对象显示失败";
     private float downRawX;
     private float downRawY;
     private float startScreenX;
@@ -161,18 +165,29 @@ final class NoteTextBoxView extends FrameLayout {
         cornerHandleInnerPaint.setStyle(Paint.Style.FILL);
         cornerHandleInnerPaint.setColor(Color.WHITE);
 
-        compiledView = new CompiledTextWebView(context, NoteTextBox.Format.LATEX, "");
-        compiledView.setHeightListener(heightDp -> {
-            if (model == null || inlineEditing) {
-                return;
-            }
-            // The render carries the canvas zoom, so divide it back out to get a
-            // world-space height comparable with the paginator's estimate.
-            float worldHeight = heightDp / Math.max(0.01f, renderedScale);
-            listener.onMeasuredHeight(model.copy(), worldHeight);
-        });
+        compiledView = new CompiledTextWebView(context);
         addView(compiledView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        renderErrorPanel = new LinearLayout(context);
+        renderErrorPanel.setOrientation(LinearLayout.VERTICAL);
+        renderErrorPanel.setGravity(Gravity.CENTER);
+        renderErrorPanel.setPadding(dp(5), 0, dp(5), 0);
+        renderErrorPanel.setBackground(roundedBackground(Color.rgb(255, 245, 241),
+                Color.rgb(205, 98, 83), 7));
+        renderErrorPanel.setVisibility(GONE);
+        renderErrorPanel.setContentDescription("显示失败，点按查看原因和修复");
+        renderErrorPanel.setClickable(true);
+        renderErrorStatus = new TextView(context);
+        renderErrorStatus.setTextSize(9);
+        renderErrorStatus.setTextColor(Color.rgb(143, 47, 43));
+        renderErrorPanel.addView(renderErrorStatus, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        renderErrorPanel.setOnClickListener(view -> showRenderRecoveryDialog());
+        addView(renderErrorPanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+        configureCompiledView(compiledView);
 
         editorPanel = new LinearLayout(context);
         editorPanel.setOrientation(LinearLayout.VERTICAL);
@@ -187,46 +202,59 @@ final class NoteTextBoxView extends FrameLayout {
         editorPanel.addView(editorToolbar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(43)));
 
+        HorizontalScrollView formatScroll = new HorizontalScrollView(context);
+        formatScroll.setHorizontalScrollBarEnabled(false);
+        formatScroll.setFillViewport(false);
+        formatScroll.setContentDescription("文字格式工具栏，可横向滚动");
+        LinearLayout formatControls = new LinearLayout(context);
+        formatControls.setOrientation(LinearLayout.HORIZONTAL);
+        formatControls.setGravity(Gravity.CENTER_VERTICAL);
+        formatScroll.addView(formatControls, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        editorToolbar.addView(formatScroll,
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+
         latexButton = actionButton("LaTeX", "使用 LaTeX 编译");
         markdownButton = actionButton("MD", "使用 Markdown 编译");
-        editorToolbar.addView(latexButton, new LinearLayout.LayoutParams(dp(64), dp(35)));
+        formatControls.addView(latexButton, new LinearLayout.LayoutParams(dp(64), dp(35)));
         LinearLayout.LayoutParams mdParams = new LinearLayout.LayoutParams(dp(48), dp(35));
         mdParams.setMargins(dp(5), 0, 0, 0);
-        editorToolbar.addView(markdownButton, mdParams);
+        formatControls.addView(markdownButton, mdParams);
         fontDecreaseButton = actionButton("A−", "减小文字字号");
         fontIncreaseButton = actionButton("A+", "增大文字字号");
         LinearLayout.LayoutParams decreaseParams = new LinearLayout.LayoutParams(dp(40), dp(35));
         decreaseParams.setMargins(dp(5), 0, 0, 0);
-        editorToolbar.addView(fontDecreaseButton, decreaseParams);
+        formatControls.addView(fontDecreaseButton, decreaseParams);
         LinearLayout.LayoutParams increaseParams = new LinearLayout.LayoutParams(dp(40), dp(35));
         increaseParams.setMargins(dp(4), 0, 0, 0);
-        editorToolbar.addView(fontIncreaseButton, increaseParams);
-        // Line height lives only here, behind the double tap: it is a typographic
-        // detail most edits never touch, so it should not compete for space with
-        // the selected-state controls.
+        formatControls.addView(fontIncreaseButton, increaseParams);
+        // Line height is less common, so keep it in the same horizontal strip.
         lineHeightDecreaseButton = actionButton("⇱", "减小行距");
         lineHeightIncreaseButton = actionButton("⇲", "增大行距");
         LinearLayout.LayoutParams leadingDownParams =
                 new LinearLayout.LayoutParams(dp(38), dp(35));
         leadingDownParams.setMargins(dp(8), 0, 0, 0);
-        editorToolbar.addView(lineHeightDecreaseButton, leadingDownParams);
+        formatControls.addView(lineHeightDecreaseButton, leadingDownParams);
         LinearLayout.LayoutParams leadingUpParams =
                 new LinearLayout.LayoutParams(dp(38), dp(35));
         leadingUpParams.setMargins(dp(4), 0, 0, 0);
-        editorToolbar.addView(lineHeightIncreaseButton, leadingUpParams);
+        formatControls.addView(lineHeightIncreaseButton, leadingUpParams);
 
-        View spacer = new View(context);
-        editorToolbar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        LinearLayout editActions = new LinearLayout(context);
+        editActions.setOrientation(LinearLayout.HORIZONTAL);
+        editActions.setGravity(Gravity.CENTER_VERTICAL);
+        editorToolbar.addView(editActions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
         TextView deleteButton = actionButton("删", "删除文字对象");
         TextView cancelButton = actionButton("取消", "取消本次编辑");
         TextView doneButton = actionButton("完成", "完成文字输入");
-        editorToolbar.addView(deleteButton, new LinearLayout.LayoutParams(dp(42), dp(35)));
+        editActions.addView(deleteButton, new LinearLayout.LayoutParams(dp(42), dp(35)));
         LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(dp(52), dp(35));
         cancelParams.setMargins(dp(4), 0, 0, 0);
-        editorToolbar.addView(cancelButton, cancelParams);
+        editActions.addView(cancelButton, cancelParams);
         LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(dp(52), dp(35));
         doneParams.setMargins(dp(4), 0, 0, 0);
-        editorToolbar.addView(doneButton, doneParams);
+        editActions.addView(doneButton, doneParams);
 
         sourceEditor = new EditText(context);
         sourceEditor.setTextSize(15);
@@ -344,6 +372,67 @@ final class NoteTextBoxView extends FrameLayout {
         });
     }
 
+    private void configureCompiledView(CompiledTextWebView view) {
+        view.setHeightListener(heightDp -> {
+            if (view != compiledView || model == null || inlineEditing) return;
+            // The WebView renders at canonical paper dimensions; viewport zoom is
+            // only a native view transform and never changes the measured CSS box.
+            listener.onMeasuredHeight(model.copy(), heightDp);
+        });
+        view.setRenderStateListener(state -> {
+            if (view != compiledView) return;
+            if (state.isReady()) {
+                renderFailed = false;
+                renderErrorPanel.setVisibility(GONE);
+                return;
+            }
+            renderFailed = true;
+            renderErrorStatus.setText("!");
+            renderErrorStatus.setContentDescription(null);
+            renderFailureReason = "显示失败：" + state.message;
+            renderErrorPanel.setVisibility(VISIBLE);
+            if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
+                post(() -> replaceDeadCompiledView(view));
+            }
+        });
+    }
+
+    private void replaceDeadCompiledView(CompiledTextWebView dead) {
+        if (compiledView != dead || !isAttachedToWindow()) return;
+        removeView(dead);
+        CompiledTextWebView replacement = new CompiledTextWebView(getContext());
+        compiledView = replacement;
+        addView(replacement, 0, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        configureCompiledView(replacement);
+        // A renderer-process replacement starts with MATCH_PARENT parameters.
+        // Restore the same canonical paper viewport and display transform as the
+        // old child before the user retries rendering at the current zoom.
+        applyScreenGeometry();
+        applyZoomToCompiledText();
+    }
+
+    private void retryCompiledRender() {
+        renderedSource = null;
+        if (inlineEditing) renderDraftNow();
+        else if (model != null) renderIfChanged(model.format, model.displaySource(),
+                model.fontSizeSp, model.lineHeight);
+    }
+
+    private void showRenderRecoveryDialog() {
+        String[] actions = new String[]{"查看源码", "复制源码", "编辑", "重新显示"};
+        new AlertDialog.Builder(getContext()).setTitle(renderFailureReason)
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) showFailedSource();
+                    else if (which == 1) copyFailedSource();
+                    else if (which == 2) beginInlineEditing();
+                    else {
+                        renderErrorStatus.setText("…");
+                        retryCompiledRender();
+                    }
+                }).setNegativeButton("关闭", null).show();
+    }
+
     void bind(NoteTextBox replacement, float scale, float panX, float panY,
               boolean isSelected) {
         if (replacement == null) {
@@ -401,6 +490,7 @@ final class NoteTextBoxView extends FrameLayout {
         selectedStyleBar.setVisibility(GONE);
         updateFormatButtons();
         applyScreenGeometry();
+        applyZoomToCompiledText();
         renderDraftNow();
         sourceEditor.requestFocus();
         sourceEditor.post(() -> {
@@ -455,6 +545,35 @@ final class NoteTextBoxView extends FrameLayout {
         listener.onCancel(canceled);
     }
 
+    private String failedSource() {
+        if (inlineEditing) return sourceEditor.getText().toString();
+        return model == null ? (renderedSource == null ? "" : renderedSource) : model.source;
+    }
+
+    private void showFailedSource() {
+        TextView source = new TextView(getContext());
+        source.setText(failedSource());
+        source.setTextIsSelectable(true);
+        source.setTypeface(Typeface.MONOSPACE);
+        source.setTextSize(13);
+        source.setPadding(dp(16), dp(12), dp(16), dp(12));
+        ScrollView scroll = new ScrollView(getContext());
+        scroll.addView(source, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        new AlertDialog.Builder(getContext()).setTitle("显示失败对象的源码")
+                .setView(scroll).setNegativeButton("关闭", null)
+                .setPositiveButton("复制", (dialog, which) -> copyFailedSource()).show();
+    }
+
+    private void copyFailedSource() {
+        ClipboardManager clipboard = (ClipboardManager) getContext()
+                .getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("PadNote 文字源码", failedSource()));
+            Toast.makeText(getContext(), "源码已复制", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     void dispose() {
         removeCallbacks(renderDraftRunnable);
         hideKeyboard();
@@ -464,9 +583,20 @@ final class NoteTextBoxView extends FrameLayout {
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         // Finished text is visual page content, not a permanent invisible touch shield.
-        // Only a lasso-selected object (or its inline editor) may consume input.
+        // An unselected failed object consumes only the compact recovery marker;
+        // pen/lasso input elsewhere continues to the canvas underneath it.
         if (!selected && !inlineEditing) {
-            return false;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                errorMarkerGesture = renderErrorPanel.getVisibility() == VISIBLE
+                        && touchInside(renderErrorPanel, event);
+            }
+            if (!errorMarkerGesture) return false;
+            boolean handled = super.dispatchTouchEvent(event);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                errorMarkerGesture = false;
+            }
+            return handled;
         }
         return super.dispatchTouchEvent(event);
     }
@@ -480,7 +610,8 @@ final class NoteTextBoxView extends FrameLayout {
             // Taps landing on selection chrome must reach those buttons instead of
             // starting a drag of the whole flow.
             controlGesture = touchInside(selectedDeleteButton, event) ||
-                    touchInside(selectedStyleBar, event);
+                    touchInside(selectedStyleBar, event) ||
+                    touchInside(renderErrorPanel, event);
         }
         if (controlGesture) {
             if (event.getActionMasked() == MotionEvent.ACTION_UP ||
@@ -658,72 +789,43 @@ final class NoteTextBoxView extends FrameLayout {
     }
 
     /**
-     * Keeps compiled text magnified in step with the canvas.
-     *
-     * <p>During a pinch the already-rendered content is stretched, which is cheap
-     * and cannot re-wrap mid-gesture. When the scale stops changing, the content is
-     * re-rendered at the new effective size so it is sharp again and the stretch is
-     * reset. The visual size is the same either way; only crispness differs.
+     * Zoom is a display transform only. The child WebView keeps the paper-space
+     * width, height, font size, and CSS viewport that pagination measured. In
+     * particular, do not re-render at a settled zoom: doing so changes the CSS
+     * viewport/padding ratio and can change line breaks or reported height.
      */
     private void applyZoomToCompiledText() {
         if (model == null) {
             return;
         }
-        float target = Math.max(0.01f, viewportScale);
-        if (renderedScale <= 0f) {
-            renderedScale = target;
-        }
-        float stretch = target / renderedScale;
+        float scale = Math.max(0.01f, viewportScale);
         compiledView.setPivotX(0f);
         compiledView.setPivotY(0f);
-        compiledView.setScaleX(stretch);
-        compiledView.setScaleY(stretch);
-        // The WebView keeps its unscaled layout size, so widen it by the inverse of
-        // the stretch; otherwise stretching would crop the right and bottom edges.
+        if (inlineEditing) {
+            // The editor preview is a screen-space panel below the toolbar, not a
+            // paginated paper fragment. Keep applyScreenGeometry's top margin and
+            // preview viewport intact while the editing UI is open.
+            compiledView.setScaleX(1f);
+            compiledView.setScaleY(1f);
+            return;
+        }
+        compiledView.setScaleX(scale);
+        compiledView.setScaleY(scale);
+
+        // The parent overlay is laid out in screen dimensions. Give the WebView
+        // its unscaled paper dimensions directly rather than deriving them from
+        // getWidth()/scale while either view may still be awaiting layout.
         FrameLayout.LayoutParams params =
                 (FrameLayout.LayoutParams) compiledView.getLayoutParams();
-        int unscaledWidth = Math.max(1, Math.round(getWidth() / Math.max(0.01f, stretch)));
-        int unscaledHeight = Math.max(1, Math.round(getHeight() / Math.max(0.01f, stretch)));
-        if (params.width != unscaledWidth || params.height != unscaledHeight) {
-            params.width = unscaledWidth;
-            params.height = unscaledHeight;
+        int canonicalWidth = Math.max(1, Math.round(model.width));
+        int canonicalHeight = Math.max(1, Math.round(model.height));
+        if (params.width != canonicalWidth || params.height != canonicalHeight
+                || params.topMargin != 0) {
+            params.width = canonicalWidth;
+            params.height = canonicalHeight;
+            params.topMargin = 0;
             compiledView.setLayoutParams(params);
         }
-        scheduleCrispRerender(target);
-    }
-
-    /**
-     * Re-renders at the settled scale after a short quiet period, so a continuous
-     * pinch does not trigger a recompile on every frame.
-     */
-    private void scheduleCrispRerender(float target) {
-        if (Math.abs(target - renderedScale) < 0.01f) {
-            return;
-        }
-        removeCallbacks(crispRerenderRunnable);
-        pendingRenderScale = target;
-        postDelayed(crispRerenderRunnable, CRISP_RERENDER_DELAY_MS);
-    }
-
-    private void renderAtSettledScale() {
-        if (model == null || inlineEditing) {
-            return;
-        }
-        renderedScale = Math.max(0.01f, pendingRenderScale);
-        compiledView.setScaleX(1f);
-        compiledView.setScaleY(1f);
-        FrameLayout.LayoutParams params =
-                (FrameLayout.LayoutParams) compiledView.getLayoutParams();
-        params.width = FrameLayout.LayoutParams.MATCH_PARENT;
-        params.height = inlineEditing
-                ? params.height : FrameLayout.LayoutParams.MATCH_PARENT;
-        compiledView.setLayoutParams(params);
-        // Force a render even though source and font size are unchanged: only the
-        // effective scale moved.
-        renderedScale = pendingRenderScale;
-        renderedSource = null;
-        renderIfChanged(model.format, model.displaySource(), model.fontSizeSp,
-                model.lineHeight);
     }
 
     private void updateSelectedFontSizeLabel() {
@@ -806,13 +908,12 @@ final class NoteTextBoxView extends FrameLayout {
         renderedFontSizeSp = normalizedFontSize;
         renderedLineHeight = normalizedLineHeight;
         renderedWidth = normalizedWidth;
-        if (renderedScale <= 0f) {
-            renderedScale = Math.max(0.01f, viewportScale);
-        }
-        // Render at the zoomed size so magnified text stays sharp instead of being
-        // a stretched bitmap. Line height is a ratio, so it needs no scaling.
+        renderErrorPanel.setVisibility(GONE);
+        renderFailed = false;
+        // Source font and WebView layout remain in paper coordinates. Canvas zoom
+        // is applied to the native child view, not to the renderer inputs.
         compiledView.render(normalizedFormat, normalizedSource,
-                normalizedFontSize * renderedScale, normalizedLineHeight);
+                normalizedFontSize, normalizedLineHeight);
     }
 
     private void updateFormatButtons() {
@@ -874,6 +975,7 @@ final class NoteTextBoxView extends FrameLayout {
                 selected && model != null && model.isFlowStart() ? VISIBLE : GONE);
         updateSelectedFontSizeLabel();
         applyScreenGeometry();
+        applyZoomToCompiledText();
         invalidate();
     }
 
