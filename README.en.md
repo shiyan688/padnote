@@ -8,7 +8,7 @@ Our long-term goal is a better tablet interface for Agents. Express an idea in w
 
 Android · iPad · Your choice of model · Local notes · MIT
 
-[Downloads](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.8) · [Desktop connection assistant](desktop/connection-assistant/README.md) · [Report an issue](https://github.com/shiyan688/padnote/issues) · [中文](README.md)
+[Downloads](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.9) · [Desktop connection assistant](desktop/connection-assistant/README.md) · [Report an issue](https://github.com/shiyan688/padnote/issues) · [中文](README.md)
 
 ## Keep the answer on the page
 
@@ -32,9 +32,9 @@ These flows are still being validated. Real Hermes, native Windows distribution,
 
 ## Install or build
 
-Android requires Android 7.0 / API 24 or newer. Download the [PadNote Android beta 8 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.8/PadNote-Android-0.18.0-beta.8-debug.apk) or read the [beta 8 release notes](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.8). The beta package and the original 0.17.5 mainline use different package names and can coexist. Export and import notes to move between them.
+Android requires Android 7.0 / API 24 or newer. Download the [PadNote Android beta 9 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.9/PadNote-Android-0.18.0-beta.9-debug.apk) or read the [beta 9 release notes](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.9). The beta package and the original 0.17.5 mainline use different package names and can coexist. Export and import notes to move between them.
 
-Beta.8 uses a debug signing certificate. Back up important notes before installation and check the SHA-256 on the release page. Attachment migration depends on the export format; automatic cloud sync is not provided. The beta.8 APK in the Release is the immutable build published for that version. Current `main` source includes a later two-file Android local-storage failure fix that is not in the beta.8 APK. Reviewing `main` source does not verify the APK you installed.
+Beta.9 uses a debug signing certificate. Back up important notes before installation and check the SHA-256 on the release page. Attachment migration depends on the export format; automatic cloud sync is not provided. Beta.9 includes the local-storage failure fix for Agent task submission and details: a failed connection read shows an unsent task, keeps the selected Agent, and avoids a stuck submission or a details crash. It uses the same package and signing certificate as beta.8 for in-place upgrades. The original beta.8 download remains available.
 
 For Android, install JDK 17 or newer, Android SDK Platform 35, and Build Tools 34/35. Set `JAVA_HOME` and `ANDROID_SDK_ROOT`, then run:
 
@@ -44,7 +44,7 @@ cd padnote
 tools/build-android-apk.sh
 ```
 
-iPad requires iPadOS 17 or newer. Current `main` source includes the complete native iPad client. Open `ios/PadNote.xcodeproj` in Xcode and run the PadNote scheme on a simulator; a physical device requires your own Apple Development Team. There is no installable IPA, App Store, or TestFlight release. See the [iPad build guide](ios/README.md) for validation scope and limits. The iPad source update does not change the beta.8 Android APK or establish complete feature parity between platforms.
+iPad requires iPadOS 17 or newer. Current `main` source includes the complete native iPad client. Open `ios/PadNote.xcodeproj` in Xcode and run the PadNote scheme on a simulator; a physical device requires your own Apple Development Team. There is no installable IPA, App Store, or TestFlight release. See the [iPad build guide](ios/README.md) for validation scope and limits. The iPad source update does not change the beta.9 Android APK or establish complete feature parity between platforms.
 
 ## Contribute
 

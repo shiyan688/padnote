@@ -44,16 +44,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
-/** Beta6-to-beta8 preservation using a pre-existing schema-7 fixture and real Main UI routes. */
+/** Beta8-to-beta9 preservation of an existing schema-7 note and its linked media through real Main UI routes. */
 @RunWith(AndroidJUnit4.class)
 public final class BetaUpgradePreservationInstrumentedTest {
     private static final String NOTE_ID = "fixture-schema-7";
     private static final String NOTE_TITLE = "Schema 7 构造回归样例";
     private static final String SOURCE = "SCHEMA7_PDF_ANNOTATION";
-    private static final String EDITED = SOURCE + "\n原地升级 UI 保存标记 beta8";
+    private static final String EDITED = SOURCE + "\n原地升级 UI 保存标记 beta9";
     private static final String SINK_AUTHORITY = "com.padnote.android.beta.test.contentoutline";
 
-    @Test public void existingSchemaSevenNoteSurvivesUpgradeUiEditReopenAndPdfExport() throws Exception {
+    @Test public void existingSchemaSevenNoteSurvivesBeta8ToBeta9UpgradeUiEditReopenAndPdfExport() throws Exception {
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Context test = InstrumentationRegistry.getInstrumentation().getContext();
         File noteFile = NoteStore.noteFileForBackup(target, NOTE_ID);
@@ -62,7 +62,7 @@ public final class BetaUpgradePreservationInstrumentedTest {
         File videoRoot = new File(target.getFilesDir(), "video-attachments");
         File videoIndex = new File(videoRoot, "index.json");
         JSONObject before = NoteStore.load(target, NOTE_ID);
-        assertEquals("fixture must be injected before beta8 install", 7, before.getInt("schemaVersion"));
+        assertEquals("fixture must be injected before beta9 install", 7, before.getInt("schemaVersion"));
         assertEquals(NOTE_TITLE, before.getString("title"));
         assertEquals(SOURCE, onlyFlow(before).getString("source"));
         assertTrue(pdfFile.isFile() && pdfFile.length() > 0);
