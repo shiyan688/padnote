@@ -36,12 +36,18 @@ public struct NoteCanvas: UIViewRepresentable {
         context.coordinator.update(view, document: document, pdfURL: pdfURL)
     }
 
+    public static func dismantleUIView(_ view: CanvasScrollView, coordinator: Coordinator) {
+        if let noteID = coordinator.currentDocumentID { CompiledTextRenderer.shared.release(documentID: noteID) }
+        view.surface.controller = nil
+    }
+
     @MainActor
     public final class Coordinator {
         var parent: NoteCanvas
         weak var mountedView: CanvasScrollView?
         private var lastDocument: NoteDocument?
         private var textEditor: CanvasTextEditor?
+        var currentDocumentID: String? { lastDocument?.id }
 
         init(_ parent: NoteCanvas) { self.parent = parent }
 
@@ -117,10 +123,14 @@ public struct NoteCanvas: UIViewRepresentable {
             let command = parent.controller.consumeHistoryCommand()
             let before = value
             transform(&value)
-            guard value != before else { return }
+            guard value != before else {
+                parent.controller.finishPendingAIApplication(didChange: false)
+                return
+            }
             expandPagesForText(&value)
             value.updatedAt = NoteDocument.nowMillis()
             if command == nil { parent.controller.recordEdit(from: before) }
+            parent.controller.finishPendingAIApplication(didChange: true)
             parent.document = value
             lastDocument = value
             parent.controller.setDocument(value)
@@ -300,7 +310,7 @@ public final class CanvasScrollView: UIScrollView, UIScrollViewDelegate {
         }
         bottomPullDistance = 0
         pullPreview.alpha = 0
-        surface.controller?.performEdit { value in value.pageCount += 1 }
+        surface.controller?.performEdit { value in _ = NotePageOperations.appendBlankPage(in: &value) }
         DispatchQueue.main.async { [weak self] in
             guard let self, let page = self.surface.document?.pageCount else { return }
             self.scrollToPage(page - 1, animated: true)
@@ -420,14 +430,21 @@ public final class CanvasSurface: UIView {
     }
 
     func setDocument(_ document: NoteDocument) {
-        if self.document?.id != document.id { clearSelection() }
+        let previousID = self.document?.id
+        if previousID != document.id {
+            clearSelection()
+            if let previousID { CompiledTextRenderer.shared.release(documentID: previousID) }
+        }
         self.document = document
         worldSize = CGSize(width: CGFloat(max(1, document.pageWidth)), height: max(1, CGFloat(document.pageCount) * CGFloat(document.pageHeight + document.pageGap) - CGFloat(document.pageGap)))
         refreshSnapshot()
         superview?.setNeedsLayout()
         setNeedsDisplay()
+        let requestedID = document.id
+        let requestedInputs = Dictionary(uniqueKeysWithValues: document.textFlows.map { ($0.id, CompiledTextCache.digest($0)) })
         CompiledTextRenderer.shared.prepare(document: document) { [weak self] in
-            guard let self, let current = self.document else { return }
+            guard let self, let current = self.document, current.id == requestedID,
+                  Dictionary(uniqueKeysWithValues: current.textFlows.map { ($0.id, CompiledTextCache.digest($0)) }) == requestedInputs else { return }
             let pages = NoteTextLayout.requiredPageCount(current)
             if pages > current.pageCount { self.derivedPageCountDidChange?(pages) }
             self.refreshSnapshot()
@@ -589,6 +606,7 @@ public final class CanvasSurface: UIView {
             activeTouch = nil
             return
         }
+        controller.setActiveCanvasInput(true)
         switch controller.tool {
         case .pen, .highlighter, .rectangle, .line, .ellipse:
             activeStroke = isPaperPoint(point, document: document) ? newStroke(at: point, touch: touch, highlighter: controller.tool == .highlighter) : nil
@@ -663,7 +681,9 @@ public final class CanvasSurface: UIView {
                             selectionPolygon = selectionPolygon.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
                         }
                         editDocument { document in
-                            if candidate.pageCount > document.pageCount { document.pageCount = candidate.pageCount }
+                            if candidate.pageCount > document.pageCount {
+                                _ = NotePageOperations.appendBlankPage(in: &document)
+                            }
                             if let index = document.textFlows.firstIndex(where: { $0.id == candidate.flow.id }) {
                                 document.textFlows[index] = candidate.flow
                             }
@@ -709,6 +729,7 @@ public final class CanvasSurface: UIView {
             break
         }
         activeTouch = nil
+        controller.setActiveCanvasInput(false)
         refreshSnapshot()
         setNeedsDisplay()
     }
@@ -1010,7 +1031,7 @@ public final class CanvasSurface: UIView {
         stroke.points.reduce(CGRect.null) { $0.union(CGRect(x: CGFloat($1.x), y: CGFloat($1.y), width: 0, height: 0)) }
     }
 
-    private func cancelGesture() { edgeTask?.cancel(); edgeTask = nil; activeTouch = nil; activeStroke = nil; finishedActiveStrokes.removeAll(); eraserSamples.removeAll(); lasso.removeAll(); movingSelection = false; movingSingleFlowID = nil; candidateFlow = nil; edgeDwellStartedAt = nil; edgePageTriggered = false; resizingImageID = nil; resizingFlowID = nil; resizeStartImage = nil; resizePreview = nil; refreshSnapshot(); setNeedsDisplay() }
+    private func cancelGesture() { edgeTask?.cancel(); edgeTask = nil; activeTouch = nil; activeStroke = nil; finishedActiveStrokes.removeAll(); eraserSamples.removeAll(); lasso.removeAll(); movingSelection = false; movingSingleFlowID = nil; candidateFlow = nil; edgeDwellStartedAt = nil; edgePageTriggered = false; resizingImageID = nil; resizingFlowID = nil; resizeStartImage = nil; resizePreview = nil; controller?.setActiveCanvasInput(false); refreshSnapshot(); setNeedsDisplay() }
 }
 
 public enum CanvasGeometry {

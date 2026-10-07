@@ -13,7 +13,7 @@ public enum NoteCoverError: Error, LocalizedError {
     }
 }
 
-public final class NoteCoverStore {
+public final class NoteCoverStore: @unchecked Sendable {
     public static let maxBytes = 8 * 1024 * 1024
     public static let maxPixels = 12_000_000
     private let directory: URL
@@ -47,6 +47,50 @@ public final class NoteCoverStore {
         guard let data = scaled.pngData(), data.count <= Self.maxBytes else { throw NoteCoverError.tooLarge }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+    }
+
+    public func backupPNGURL(noteID: String) throws -> URL? {
+        guard let source = url(noteID), FileManager.default.fileExists(atPath: source.path) else { return nil }
+        _ = try LibraryBackupArchive.validateRegularSource(source, maximumBytes: Int64(Self.maxBytes))
+        return source
+    }
+
+    public func restorePNG(noteID: String, from staged: URL, expectedSize: Int64? = nil, expectedSHA256: String? = nil, cancellation: LibraryBackupCancellationToken? = nil) throws {
+        guard let target = url(noteID), !FileManager.default.fileExists(atPath: target.path) else { throw LibraryBackupError.transaction("封面目标已存在或 ID 无效") }
+        _ = try Self.validatePNGFile(staged)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            let copied = try LibraryBackupArchive.copyVerified(staged, to: target, maximumBytes: Int64(Self.maxBytes), cancellation: cancellation)
+            if let expectedSize, copied.size != expectedSize { throw LibraryBackupError.sourceChanged }
+            if let expectedSHA256, copied.sha256 != expectedSHA256 { throw LibraryBackupError.sourceChanged }
+            _ = try Self.validatePNGFile(target)
+        } catch { try? FileManager.default.removeItem(at: target); throw error }
+    }
+
+    public static func validatePNGFile(_ url: URL) throws -> (width: Int, height: Int) {
+        _ = try LibraryBackupArchive.validateRegularSource(url, maximumBytes: Int64(maxBytes))
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) == 1,
+              CGImageSourceGetType(source) as String? == "public.png",
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= maxPixels / height,
+              CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceShouldCacheImmediately: true, kCGImageSourceThumbnailMaxPixelSize: 720] as CFDictionary) != nil else {
+            throw NoteCoverError.invalidImage
+        }
+        return (width, height)
+    }
+
+    func rollbackRestoredPNG(noteID: String, expectedSHA256: String) throws {
+        guard let target = url(noteID), expectedSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+            throw LibraryBackupError.unsafeFile
+        }
+        guard FileManager.default.fileExists(atPath: target.path) else { return }
+        _ = try LibraryBackupArchive.validateRegularSource(target, maximumBytes: Int64(Self.maxBytes))
+        guard try LibraryBackupArchive.hashFile(target).sha256 == expectedSHA256 else { throw LibraryBackupError.sourceChanged }
+        try FileManager.default.removeItem(at: target)
     }
 
     public func remove(noteID: String) { if let url = url(noteID) { try? FileManager.default.removeItem(at: url) } }

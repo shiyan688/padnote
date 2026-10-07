@@ -17,6 +17,7 @@ struct BookshelfView: View {
     @State private var sharing: ShareArtifact?
     @State private var error: String?
     @State private var coverNote: NoteDocument?
+    @State private var showingRecovery = false
     @State private var coverRefresh = UUID()
     private let coverStore = NoteCoverStore()
 
@@ -30,6 +31,10 @@ struct BookshelfView: View {
                 Section {
                     Label("全部笔记", systemImage: "books.vertical").tag("notes")
                     Label("知识库", systemImage: "text.book.closed").tag("vault")
+                    Button { section = "backup" } label: { Label("整库备份", systemImage: "archivebox") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("整库备份")
+                        .accessibilityIdentifier("bookshelfBackupEntry")
                 }
                 Section {
                     Button { settings = true } label: { Label("AI 设置", systemImage: "slider.horizontal.3") }
@@ -49,6 +54,8 @@ struct BookshelfView: View {
         } detail: {
             if section == "vault" {
                 VaultShelfView()
+            } else if section == "backup" {
+                LibraryBackupView().environmentObject(library)
             } else {
                 NavigationStack {
                     ScrollView {
@@ -63,6 +70,33 @@ struct BookshelfView: View {
                                 Button { creating = true } label: { Label("新建笔记", systemImage: "plus") }
                                     .buttonStyle(.borderedProminent).controlSize(.large).foregroundStyle(.white)
                                     .accessibilityIdentifier("newNoteButton")
+                            }
+                            if !library.pendingDrafts.isEmpty {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Label("未保存的更改", systemImage: "exclamationmark.arrow.circlepath")
+                                        .font(.headline).foregroundStyle(.orange)
+                                    ForEach(library.pendingDrafts) { draft in
+                                        Button {
+                                            openedNote = draft.document
+                                        } label: {
+                                            HStack {
+                                                VStack(alignment: .leading) {
+                                                    Text(draft.document.title).font(.subheadline.weight(.semibold))
+                                                    Text("恢复版本 · 打开后可重试保存或导出")
+                                                        .font(.caption).foregroundStyle(PadTheme.secondary)
+                                                }
+                                                Spacer()
+                                                Image(systemName: "chevron.right")
+                                            }
+                                        }.buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(16).background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                            }
+                            if !library.recoveryItems.isEmpty {
+                                Button { showingRecovery = true } label: {
+                                    Label("\(library.recoveryItems.count) 个文件需要恢复", systemImage: "externaldrive.badge.exclamationmark")
+                                }.buttonStyle(.bordered)
                             }
                             if library.notes.isEmpty {
                                 emptyShelf
@@ -100,6 +134,7 @@ struct BookshelfView: View {
         .sheet(isPresented: $settings) { AISettingsView() }
         .sheet(isPresented: $agentSettings) { AgentSettingsView() }
         .sheet(item: $sharing) { ShareSheet(url: $0.url) }
+        .sheet(isPresented: $showingRecovery) { NoteRecoveryListView().environmentObject(library) }
         .sheet(item: $coverNote) { note in
             NoteCoverPicker { image in
                 if let image { try coverStore.assign(noteID: note.id, image: image) }
@@ -135,10 +170,14 @@ struct BookshelfView: View {
             Button("取消", role: .cancel) { deleting = nil }
             Button("删除", role: .destructive) {
                 guard let note = deleting else { return }
-                do { try library.delete(note); coverStore.remove(noteID: note.id) } catch { self.error = error.localizedDescription }
+                do {
+                    try AIConversationStore().clearNote(noteID: note.id)
+                    try library.delete(note)
+                    coverStore.remove(noteID: note.id)
+                } catch { self.error = error.localizedDescription }
                 deleting = nil
             }
-        } message: { Text("将从此 iPad 移除笔记和原始 PDF。此操作无法撤销。") }
+        } message: { Text("将从此 iPad 移除笔记和原始 PDF。已关联的视频保存在独立附件目录中，不会随笔记自动删除；来源删除后也不能再为该笔记新建视频关联。已创建的电脑任务仍保留，可单独导出。") }
         .alert("无法完成操作", isPresented: Binding(get: { error != nil || library.errorMessage != nil }, set: { if !$0 { error = nil; library.errorMessage = nil } })) {
             Button("好", role: .cancel) { error = nil; library.errorMessage = nil }
         } message: { Text(error ?? library.errorMessage ?? "") }
@@ -169,12 +208,16 @@ struct BookshelfView: View {
 
     private func noteCard(_ note: NoteDocument) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { openedNote = note } label: {
+            Button { openedNote = library.pendingDraft(noteID: note.id)?.document ?? note } label: {
                 VStack(alignment: .leading, spacing: 16) {
                     NoteCoverView(note: note, pdfURL: library.pdfURL(for: note), refresh: coverRefresh)
                         .frame(height: 200).clipped()
                     Text(note.title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
                         .padding(.horizontal, 20)
+                    if library.pendingDraft(noteID: note.id) != nil {
+                        Label("有未保存版本", systemImage: "exclamationmark.arrow.circlepath")
+                            .font(.caption).foregroundStyle(.orange).padding(.horizontal, 20)
+                    }
                 }
             }.buttonStyle(.plain).accessibilityIdentifier("note-\(note.title)")
             HStack {
@@ -195,6 +238,41 @@ struct BookshelfView: View {
         .background(.white, in: RoundedRectangle(cornerRadius: 20))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(PadTheme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+}
+
+private struct NoteRecoveryListView: View {
+    @EnvironmentObject private var library: NoteLibrary
+    @Environment(\.dismiss) private var dismiss
+    @State private var sharing: ShareArtifact?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("这些文件未被当作正常笔记打开，也不会被自动覆盖。可先导出原始字节，再在副本上排查或联系支持。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(library.recoveryItems) { item in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(item.filename).font(.headline).textSelection(.enabled)
+                        Text(item.reason).font(.caption).foregroundStyle(.secondary)
+                        Button("导出原始文件", systemImage: "square.and.arrow.up") {
+                            do { sharing = ShareArtifact(url: try library.exportRecoveryURL(for: item)) }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    }.padding(.vertical, 4)
+                }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle("文件恢复")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("重新检查") { library.reload() } }
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
+            .sheet(item: $sharing) { ShareSheet(url: $0.url) }
+        }
     }
 }
 

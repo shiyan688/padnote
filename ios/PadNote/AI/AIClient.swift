@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import Security
 import UIKit
@@ -58,22 +59,44 @@ public struct AIProfile: Codable, Equatable, Identifiable {
     public var textModel: String
     public var visionKeyReference: String
     public var textKeyReference: String
+    public var revision: Int
     public init(id: String = UUID().uuidString, name: String = "默认配置", provider: AIProvider = .custom,
                 mode: AIProfileMode = .direct, visionEndpoint: String = "", visionModel: String = "",
                 textEndpoint: String = "", textModel: String = "",
-                visionKeyReference: String? = nil, textKeyReference: String? = nil) {
+                visionKeyReference: String? = nil, textKeyReference: String? = nil,
+                revision: Int = 1) {
         self.id = id; self.name = name; self.provider = provider; self.mode = mode
         self.visionEndpoint = visionEndpoint; self.visionModel = visionModel
         self.textEndpoint = textEndpoint.isEmpty ? visionEndpoint : textEndpoint
         self.textModel = textModel.isEmpty ? visionModel : textModel
         self.visionKeyReference = visionKeyReference ?? "secure-storage://padnote/profile/\(id)/vision"
         self.textKeyReference = textKeyReference ?? "secure-storage://padnote/profile/\(id)/text"
+        self.revision = min(1_000_000_000, max(1, revision))
     }
     public var summary: String { mode == .direct ? "直连 · \(visionModel)" : "两段式 · 转写 \(visionModel) → 回答 \(textModel)" }
     public func applying(_ preset: AIProviderPreset) -> AIProfile {
         var copy = self; copy.provider = preset.provider; copy.visionEndpoint = preset.endpoint
         copy.visionModel = mode == .direct ? preset.directModel : preset.visionModel
         copy.textEndpoint = preset.endpoint; copy.textModel = preset.textModel; return copy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, provider, mode, visionEndpoint, visionModel, textEndpoint, textModel,
+             visionKeyReference, textKeyReference, revision
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try c.decode(String.self, forKey: .id),
+                  name: try c.decode(String.self, forKey: .name),
+                  provider: try c.decodeIfPresent(AIProvider.self, forKey: .provider) ?? .custom,
+                  mode: try c.decodeIfPresent(AIProfileMode.self, forKey: .mode) ?? .direct,
+                  visionEndpoint: try c.decodeIfPresent(String.self, forKey: .visionEndpoint) ?? "",
+                  visionModel: try c.decodeIfPresent(String.self, forKey: .visionModel) ?? "",
+                  textEndpoint: try c.decodeIfPresent(String.self, forKey: .textEndpoint) ?? "",
+                  textModel: try c.decodeIfPresent(String.self, forKey: .textModel) ?? "",
+                  visionKeyReference: try c.decodeIfPresent(String.self, forKey: .visionKeyReference),
+                  textKeyReference: try c.decodeIfPresent(String.self, forKey: .textKeyReference),
+                  revision: try c.decodeIfPresent(Int.self, forKey: .revision) ?? 1)
     }
 }
 
@@ -88,35 +111,155 @@ public struct AISettings: Codable, Equatable {
 public typealias AIConfiguration = AISettings
 
 public final class AISettingsStore: ObservableObject {
-    @Published public var settings: AISettings { didSet { save() } }
+    private struct PendingSecretDelete: Codable, Equatable {
+        let reference: String
+        let processGeneration: String
+    }
+    private static let profilesKey = "padnote.ai.profiles"
+    private static let pendingSecretDeletesKey = "padnote.ai.pendingSecretDeletes"
+    private static let processGeneration = UUID().uuidString
+    @Published private var storedSettings = AISettings()
     @Published public private(set) var profiles: [AIProfile]
-    @Published public var activeProfileID: String? { didSet { saveProfiles() } }
-    @Published public var visionProfileID: String? { didSet { saveProfiles() } }
-    @Published public var textProfileID: String? { didSet { saveProfiles() } }
-    @Published public var mode: AIProfileMode { didSet { saveProfiles() } }
+    @Published private var storedActiveProfileID: String?
+    @Published private var storedVisionProfileID: String?
+    @Published private var storedTextProfileID: String?
+    @Published private var storedMode: AIProfileMode = .direct
+    @Published public private(set) var credentialError: String?
     private let defaults: UserDefaults
-    public init(defaults: UserDefaults = .standard) {
+    private let secrets: SecretStore
+    private let currentProcessGeneration: String
+    let lifecycleRuntime: CredentialLifecycleRuntime
+    private var profileMetadataIsValid: Bool
+    private var lifecycleObserver: NSObjectProtocol?
+    private var loadedLifecycleEpoch: UInt64 = 0
+
+    private var canWriteCurrentSnapshot: Bool {
+        guard lifecycleRuntime.allowsMutation, profileMetadataIsValid else {
+            credentialError = "本机凭据清理或档案恢复未完成；设置保存已阻止。"
+            return false
+        }
+        guard loadedLifecycleEpoch == lifecycleRuntime.epochSnapshot else {
+            credentialError = "凭据档案刚刚变化；请刷新后再保存。"
+            return false
+        }
+        return true
+    }
+
+    public var settings: AISettings {
+        get { storedSettings }
+        set {
+            lifecycleRuntime.withMutation {
+                guard canWriteCurrentSnapshot else {
+                    credentialError = "本机凭据清理状态未恢复；设置保存已阻止。"
+                    return
+                }
+                if (try? lifecycleRuntime.isDisabled(side: .ai, reference: newValue.keyReference)) == true {
+                    credentialError = "此凭据已在本机停用；请重新填写 API Key。"
+                    return
+                }
+                storedSettings = newValue
+                save()
+            }
+        }
+    }
+    public var activeProfileID: String? {
+        get { storedActiveProfileID }
+        set { lifecycleRuntime.withMutation { guard canWriteCurrentSnapshot else { return }; storedActiveProfileID = newValue; saveProfiles() } }
+    }
+    public var visionProfileID: String? {
+        get { storedVisionProfileID }
+        set { lifecycleRuntime.withMutation { guard canWriteCurrentSnapshot else { return }; storedVisionProfileID = newValue; saveProfiles() } }
+    }
+    public var textProfileID: String? {
+        get { storedTextProfileID }
+        set { lifecycleRuntime.withMutation { guard canWriteCurrentSnapshot else { return }; storedTextProfileID = newValue; saveProfiles() } }
+    }
+    public var mode: AIProfileMode {
+        get { storedMode }
+        set { lifecycleRuntime.withMutation { guard canWriteCurrentSnapshot else { return }; storedMode = newValue; saveProfiles() } }
+    }
+
+    public convenience init(defaults: UserDefaults = .standard,
+                            secretStore: SecretStore = KeychainSecretStore(),
+                            lifecycleRuntime: CredentialLifecycleRuntime? = nil) {
+        let runtime = lifecycleRuntime ?? ((defaults === UserDefaults.standard && secretStore is KeychainSecretStore)
+            ? .shared : .isolatedForInjectedAI(defaults: defaults, secrets: secretStore))
+        self.init(defaults: defaults, secretStore: secretStore,
+                  processGeneration: Self.processGeneration,
+                  lifecycleRuntime: runtime)
+    }
+    init(defaults: UserDefaults, secretStore: SecretStore, processGeneration: String,
+         lifecycleRuntime: CredentialLifecycleRuntime? = nil) {
+        let lifecycleRuntime = lifecycleRuntime ?? ((defaults === UserDefaults.standard && secretStore is KeychainSecretStore)
+            ? .shared : .isolatedForInjectedAI(defaults: defaults, secrets: secretStore))
+        let initializationLease = lifecycleRuntime.lockForStoreInitialization()
+        defer { initializationLease.release() }
         self.defaults = defaults
-        let legacySettings = defaults.data(forKey: "padnote.ai.settings")
+        secrets = secretStore
+        currentProcessGeneration = processGeneration
+        self.lifecycleRuntime = lifecycleRuntime
+        let startupState = lifecycleRuntime.currentState
+        loadedLifecycleEpoch = lifecycleRuntime.epochSnapshot
+        credentialError = nil
+        let legacyData = defaults.data(forKey: "padnote.ai.settings")
+        let legacySettings = legacyData
             .flatMap { try? JSONDecoder().decode(AISettings.self, from: $0) } ?? AISettings()
-        settings = legacySettings
-        let saved = defaults.data(forKey: "padnote.ai.profiles").flatMap { try? JSONDecoder().decode([AIProfile].self, from: $0) }
+        let profilesData = defaults.data(forKey: Self.profilesKey)
+        let saved = profilesData.flatMap { try? JSONDecoder().decode([AIProfile].self, from: $0) }
+        profileMetadataIsValid = (profilesData == nil || saved != nil) && lifecycleRuntime.allowsMutation
         let initialProfiles: [AIProfile]
-        if let saved, !saved.isEmpty { initialProfiles = saved } else {
+        if profilesData != nil {
+            // An empty list is an intentional result of deleting the final
+            // profile. A corrupt new-format payload also fails closed instead
+            // of recreating a profile from stale legacy settings.
+            initialProfiles = saved ?? []
+        } else {
             let legacy = AIProfile(name: "默认配置", visionEndpoint: legacySettings.endpoint, visionModel: legacySettings.model,
                                    visionKeyReference: legacySettings.keyReference, textKeyReference: legacySettings.keyReference)
             initialProfiles = [legacy]
         }
+        let storedActiveID = defaults.string(forKey: "padnote.ai.activeProfile")
+        let resolvedActiveID = initialProfiles.contains { $0.id == storedActiveID }
+            ? storedActiveID : initialProfiles.first?.id
+        if profilesData != nil {
+            if let active = initialProfiles.first(where: { $0.id == resolvedActiveID }) {
+                storedSettings = AISettings(endpoint: active.visionEndpoint, model: active.visionModel,
+                                            keyReference: active.visionKeyReference)
+            } else {
+                storedSettings = AISettings(endpoint: "", model: "", keyReference: "")
+            }
+        } else {
+            storedSettings = legacySettings
+        }
         profiles = initialProfiles
-        activeProfileID = defaults.string(forKey: "padnote.ai.activeProfile") ?? initialProfiles.first?.id
-        visionProfileID = defaults.string(forKey: "padnote.ai.visionProfile")
-        textProfileID = defaults.string(forKey: "padnote.ai.textProfile")
-        mode = AIProfileMode(rawValue: defaults.string(forKey: "padnote.ai.mode") ?? "direct") ?? .direct
-        if defaults.data(forKey: "padnote.ai.profiles") == nil { saveProfiles() }
+        storedActiveProfileID = resolvedActiveID
+        let storedVisionID = defaults.string(forKey: "padnote.ai.visionProfile")
+        let storedTextID = defaults.string(forKey: "padnote.ai.textProfile")
+        storedVisionProfileID = initialProfiles.contains { $0.id == storedVisionID } ? storedVisionID : nil
+        storedTextProfileID = initialProfiles.contains { $0.id == storedTextID } ? storedTextID : nil
+        storedMode = AIProfileMode(rawValue: defaults.string(forKey: "padnote.ai.mode") ?? "direct") ?? .direct
+        if profileMetadataIsValid {
+            if profilesData == nil { saveProfiles() }
+            else { save() }
+            drainPendingSecretDeletes()
+        } else {
+            credentialError = startupState.blockingMessage ?? "模型档案数据无法读取；凭据已保留，请先恢复档案数据。"
+        }
+        lifecycleObserver = NotificationCenter.default.addObserver(
+            forName: CredentialLifecycleRuntime.stateDidChange, object: lifecycleRuntime, queue: nil) { [weak self] _ in
+                DispatchQueue.main.async { self?.reloadCredentialMetadataAfterLifecycleChange() }
+            }
     }
-    private func save() { if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: "padnote.ai.settings") } }
+    deinit {
+        if let lifecycleObserver { NotificationCenter.default.removeObserver(lifecycleObserver) }
+    }
+    private func save() {
+        guard canWriteCurrentSnapshot else { return }
+        if let data = try? JSONEncoder().encode(storedSettings) { defaults.set(data, forKey: "padnote.ai.settings") }
+    }
     private func saveProfiles() {
-        if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: "padnote.ai.profiles") }
+        guard canWriteCurrentSnapshot else { return }
+        if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: Self.profilesKey) }
         defaults.set(activeProfileID, forKey: "padnote.ai.activeProfile"); defaults.set(visionProfileID, forKey: "padnote.ai.visionProfile")
         defaults.set(textProfileID, forKey: "padnote.ai.textProfile"); defaults.set(mode.rawValue, forKey: "padnote.ai.mode")
     }
@@ -129,39 +272,244 @@ public final class AISettingsStore: ObservableObject {
         merged.textEndpoint = text.textEndpoint; merged.textModel = text.textModel; merged.textKeyReference = text.textKeyReference
         return merged
     }
-    public func upsert(_ profile: AIProfile) { if let i = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[i] = profile } else { profiles.append(profile) }; if activeProfileID == nil { activeProfileID = profile.id }; saveProfiles() }
+    var requestRecipientIdentity: AIRecipientIdentity? {
+        guard let base = activeProfile else { return nil }
+        let vision = profiles.first { $0.id == visionProfileID } ?? base
+        let text = profiles.first { $0.id == textProfileID } ?? base
+        let raw = [mode.rawValue,
+                   vision.id, String(vision.revision), vision.visionModel, vision.visionKeyReference,
+                   text.id, String(text.revision), text.textModel, text.textKeyReference]
+            .joined(separator: "\u{0}")
+        let fingerprint = SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+        func host(_ value: String) -> String { URLComponents(string: value)?.host ?? "未配置地址" }
+        let display = mode == .direct
+            ? "\(host(vision.visionEndpoint)) · \(vision.visionModel)"
+            : "转写 \(host(vision.visionEndpoint)) · \(vision.visionModel) → 回答 \(host(text.textEndpoint)) · \(text.textModel)"
+        return AIRecipientIdentity(fingerprint: fingerprint, display: display)
+    }
+    public func upsert(_ profile: AIProfile) {
+        lifecycleRuntime.withMutation {
+            guard canWriteCurrentSnapshot else {
+                credentialError = "本机凭据清理状态未恢复；档案保存已阻止。"
+                return
+            }
+            let incomingReferences = [profile.visionKeyReference, profile.textKeyReference].filter { !$0.isEmpty }
+            if incomingReferences.contains(where: { (try? lifecycleRuntime.isDisabled(side: .ai, reference: $0)) == true }) {
+                credentialError = "此档案仍引用已停用凭据；请重新填写 API Key 后保存。"
+                return
+            }
+            profileMetadataIsValid = true
+            let replacedReferences: Set<String>
+            var profile = profile
+            if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+                replacedReferences = secretReferences(in: profiles[index])
+                let old = profiles[index]
+                let identityChanged = old.mode != profile.mode || old.visionEndpoint != profile.visionEndpoint
+                    || old.visionModel != profile.visionModel || old.textEndpoint != profile.textEndpoint
+                    || old.textModel != profile.textModel || old.visionKeyReference != profile.visionKeyReference
+                    || old.textKeyReference != profile.textKeyReference
+                profile.revision = identityChanged ? max(profile.revision, old.revision + 1)
+                                                   : max(profile.revision, old.revision)
+                profiles[index] = profile
+            } else {
+                replacedReferences = []
+                profiles.append(profile)
+            }
+            if activeProfileID == nil { activeProfileID = profile.id }
+            if activeProfileID == profile.id {
+                settings = AISettings(endpoint: profile.visionEndpoint, model: profile.visionModel,
+                                      keyReference: profile.visionKeyReference)
+            }
+            saveProfiles()
+            enqueueSecretDeletes(replacedReferences.subtracting(referencedSecretReferences))
+        }
+    }
+
+    /// Stages replacement credentials under new references, verifies them, then
+    /// commits metadata. Shared references used by another profile are never
+    /// overwritten by editing this profile.
+    public func upsert(_ profile: AIProfile, visionToken: String?, textToken: String?) throws {
+        try lifecycleRuntime.withMutation {
+            if loadedLifecycleEpoch != lifecycleRuntime.epochSnapshot {
+                reloadCredentialMetadataUnlocked()
+            }
+            guard canWriteCurrentSnapshot else { throw CredentialLifecycleError.blocked("本机凭据清理状态未恢复；新凭据保存已阻止。") }
+            let cleanVision = visionToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let cleanText = textToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let previous = profiles.first { $0.id == profile.id }
+            var staged = profile
+            if cleanVision.isEmpty, let previous { staged.visionKeyReference = previous.visionKeyReference }
+            if cleanText.isEmpty, let previous { staged.textKeyReference = previous.textKeyReference }
+            let nextRevision = max(profile.revision, (previous?.revision ?? 0) + 1)
+            var stagedReferences: [String] = []
+            do {
+                if !cleanVision.isEmpty {
+                    let reference = "secure-storage://padnote/profile/\(profile.id)/vision.r\(nextRevision).\(UUID().uuidString.lowercased())"
+                    try secrets.write(cleanVision, reference: reference)
+                    guard try lifecycleRuntime.readCredential(side: .ai, reference: reference, rawRead: { try secrets.readForCleanup(reference: reference) }) == cleanVision else { throw SecretStoreError.invalidData }
+                    staged.visionKeyReference = reference
+                    stagedReferences.append(reference)
+                }
+                if !cleanText.isEmpty {
+                    let reference = "secure-storage://padnote/profile/\(profile.id)/text.r\(nextRevision).\(UUID().uuidString.lowercased())"
+                    try secrets.write(cleanText, reference: reference)
+                    guard try lifecycleRuntime.readCredential(side: .ai, reference: reference, rawRead: { try secrets.readForCleanup(reference: reference) }) == cleanText else { throw SecretStoreError.invalidData }
+                    staged.textKeyReference = reference
+                    stagedReferences.append(reference)
+                }
+                if !stagedReferences.isEmpty { staged.revision = nextRevision }
+                upsert(staged)
+            } catch {
+                for reference in stagedReferences { try? secrets.delete(reference: reference) }
+                throw error
+            }
+        }
+    }
     public func select(_ id: String) {
-        guard let profile = profiles.first(where: { $0.id == id }) else { return }
-        if activeProfileID != id { visionProfileID = id; textProfileID = id; mode = profile.mode }
-        activeProfileID = id
-        settings = AISettings(endpoint: profile.visionEndpoint, model: profile.visionModel, keyReference: profile.visionKeyReference)
-        saveProfiles()
+        lifecycleRuntime.withMutation {
+            guard canWriteCurrentSnapshot, let profile = profiles.first(where: { $0.id == id }) else { return }
+            if activeProfileID != id { visionProfileID = id; textProfileID = id; mode = profile.mode }
+            activeProfileID = id
+            settings = AISettings(endpoint: profile.visionEndpoint, model: profile.visionModel, keyReference: profile.visionKeyReference)
+            saveProfiles()
+        }
     }
     public func delete(_ id: String) {
-        profiles.removeAll { $0.id == id }
-        if visionProfileID == id { visionProfileID = nil }
-        if textProfileID == id { textProfileID = nil }
-        if activeProfileID == id, let first = profiles.first { select(first.id) }
-        saveProfiles()
+        lifecycleRuntime.withMutation {
+            guard canWriteCurrentSnapshot else { return }
+            let removedReferences = Set(profiles.filter { $0.id == id }.flatMap { secretReferences(in: $0) })
+            profiles.removeAll { $0.id == id }
+            let fallback = profiles.first
+            if visionProfileID == id { visionProfileID = fallback?.id }
+            if textProfileID == id { textProfileID = fallback?.id }
+            if activeProfileID == id { activeProfileID = fallback?.id }
+            if let active = activeProfile {
+                settings = AISettings(endpoint: active.visionEndpoint, model: active.visionModel,
+                                      keyReference: active.visionKeyReference)
+            } else {
+                activeProfileID = nil; visionProfileID = nil; textProfileID = nil
+                settings = AISettings(endpoint: "", model: "", keyReference: "")
+            }
+            saveProfiles()
+            enqueueSecretDeletes(removedReferences.subtracting(referencedSecretReferences))
+        }
+    }
+
+    private var referencedSecretReferences: Set<String> {
+        var references = Set(profiles.flatMap { secretReferences(in: $0) })
+        if !settings.keyReference.isEmpty { references.insert(settings.keyReference) }
+        return references
+    }
+
+    private func secretReferences(in profile: AIProfile) -> Set<String> {
+        Set([profile.visionKeyReference, profile.textKeyReference].filter { !$0.isEmpty })
+    }
+
+    private func enqueueSecretDeletes(_ references: Set<String>) {
+        guard !references.isEmpty else { return }
+        var pending = pendingSecretDeletes()
+        pending.removeAll { references.contains($0.reference) }
+        pending.append(contentsOf: references.sorted().map {
+            PendingSecretDelete(reference: $0, processGeneration: currentProcessGeneration)
+        })
+        savePendingSecretDeletes(pending)
+        // A new store in this process shares the same generation and cannot
+        // drain these entries. Only a later process generation may remove the
+        // rollback credential after both metadata and journal were persisted.
+    }
+
+    private func drainPendingSecretDeletes() {
+        guard profileMetadataIsValid else { return }
+        var retained: [PendingSecretDelete] = []
+        for item in pendingSecretDeletes() {
+            if referencedSecretReferences.contains(item.reference) { continue }
+            if item.processGeneration == currentProcessGeneration {
+                retained.append(item)
+                continue
+            }
+            do { try secrets.delete(reference: item.reference) }
+            catch {
+                retained.append(item)
+                credentialError = "旧模型凭据尚未清理，将在下次启动重试：\(error.localizedDescription)"
+            }
+        }
+        savePendingSecretDeletes(retained)
+    }
+
+    private func pendingSecretDeletes() -> [PendingSecretDelete] {
+        if let data = defaults.data(forKey: Self.pendingSecretDeletesKey),
+           let value = try? JSONDecoder().decode([PendingSecretDelete].self, from: data) {
+            return value
+        }
+        // beta.7 stored a string array. It can only have been written by an
+        // earlier app process, so it is safe to mark as a legacy generation.
+        return (defaults.stringArray(forKey: Self.pendingSecretDeletesKey) ?? []).map {
+            PendingSecretDelete(reference: $0, processGeneration: "legacy")
+        }
+    }
+
+    private func savePendingSecretDeletes(_ items: [PendingSecretDelete]) {
+        if items.isEmpty {
+            defaults.removeObject(forKey: Self.pendingSecretDeletesKey)
+        } else if let data = try? JSONEncoder().encode(items) {
+            defaults.set(data, forKey: Self.pendingSecretDeletesKey)
+        }
     }
 }
 
-public protocol SecretStore { func read(reference: String) throws -> String?; func write(_ value: String, reference: String) throws }
+public protocol SecretStore {
+    func read(reference: String) throws -> String?
+    func readForCleanup(reference: String) throws -> String?
+    func write(_ value: String, reference: String) throws
+    func delete(reference: String) throws
+}
+public extension SecretStore {
+    /// The raw read is reserved for exact deletion verification in the clear coordinator.
+    /// Store adapters should override this only when their ordinary read is lifecycle-gated.
+    func readForCleanup(reference: String) throws -> String? { try read(reference: reference) }
+}
 public enum SecretStoreError: Error { case invalidData, operation(OSStatus) }
 public final class KeychainSecretStore: SecretStore {
     private let service = "com.padnote.ai"
     public init() {}
     public func read(reference: String) throws -> String? {
+        try CredentialLifecycleRuntime.shared.readCredential(side: .ai, reference: reference) {
+            try readForCleanup(reference: reference)
+        }
+    }
+    public func readForCleanup(reference: String) throws -> String? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: reference, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?; let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }; guard status == errSecSuccess else { throw SecretStoreError.operation(status) }
         guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else { throw SecretStoreError.invalidData }; return value
     }
     public func write(_ value: String, reference: String) throws {
+        try CredentialLifecycleRuntime.shared.withMutation {
+            guard try CredentialLifecycleRuntime.shared.isDisabled(side: .ai, reference: reference) == false else {
+                throw CredentialLifecycleError.blocked("此凭据引用已停用；新配置必须使用新的凭据引用。")
+            }
+            try writeRaw(value, reference: reference)
+        }
+    }
+    private func writeRaw(_ value: String, reference: String) throws {
         let identity: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: reference]
         let update: [String: Any] = [kSecValueData as String: Data(value.utf8), kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
         let status = SecItemUpdate(identity as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound { var item = identity; update.forEach { item[$0.key] = $0.value }; let add = SecItemAdd(item as CFDictionary, nil); guard add == errSecSuccess else { throw SecretStoreError.operation(add) } } else if status != errSecSuccess { throw SecretStoreError.operation(status) }
+    }
+    public func delete(reference: String) throws {
+        try CredentialLifecycleRuntime.shared.withMutation {
+            try deleteRaw(reference: reference)
+        }
+    }
+    private func deleteRaw(reference: String) throws {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: reference]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw SecretStoreError.operation(status)
+        }
     }
 }
 
@@ -199,12 +547,15 @@ public enum AIClientError: LocalizedError { case invalidEndpoint, insecureEndpoi
 public final class AIClient {
     public let settings: AISettings
     private let secrets: SecretStore
+    private let lifecycleRuntime: CredentialLifecycleRuntime
     private let configuration: URLSessionConfiguration
 
     public init(settings: AISettings, secretStore: SecretStore = KeychainSecretStore(),
+                lifecycleRuntime: CredentialLifecycleRuntime = .shared,
                 sessionConfiguration: URLSessionConfiguration = .ephemeral) {
         self.settings = settings
         secrets = secretStore
+        self.lifecycleRuntime = lifecycleRuntime
         configuration = sessionConfiguration.copy() as! URLSessionConfiguration
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
@@ -300,7 +651,8 @@ public final class AIClient {
         guard !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIClientError.invalidResponse
         }
-        guard let token = try secrets.read(reference: settings.keyReference), !token.isEmpty else {
+        guard let token = try lifecycleRuntime.readCredential(side: .ai, reference: settings.keyReference,
+            rawRead: { try secrets.readForCleanup(reference: settings.keyReference) }), !token.isEmpty else {
             throw AIClientError.missingToken
         }
         var value = URLRequest(url: endpoint)
@@ -458,5 +810,141 @@ public final class AIClient {
             task = nil
             session = nil
         }
+    }
+}
+
+private struct AIStoredPendingDelete: Codable {
+    let reference: String
+    let processGeneration: String
+}
+
+extension AISettingsStore {
+    fileprivate func reloadCredentialMetadataAfterLifecycleChange() {
+        lifecycleRuntime.withMutation { reloadCredentialMetadataUnlocked() }
+    }
+
+    fileprivate func reloadCredentialMetadataUnlocked() {
+        do {
+            let refreshed = try Self.aiProfiles(defaults: defaults)
+            let refreshedSettings = try Self.aiLegacySettings(defaults: defaults)
+            profiles = refreshed
+            storedSettings = refreshedSettings
+            let active = defaults.string(forKey: "padnote.ai.activeProfile")
+            storedActiveProfileID = refreshed.contains(where: { $0.id == active }) ? active : refreshed.first?.id
+            let vision = defaults.string(forKey: "padnote.ai.visionProfile")
+            let text = defaults.string(forKey: "padnote.ai.textProfile")
+            storedVisionProfileID = refreshed.contains(where: { $0.id == vision }) ? vision : nil
+            storedTextProfileID = refreshed.contains(where: { $0.id == text }) ? text : nil
+            storedMode = AIProfileMode(rawValue: defaults.string(forKey: "padnote.ai.mode") ?? "direct") ?? .direct
+            profileMetadataIsValid = lifecycleRuntime.allowsMutation
+            loadedLifecycleEpoch = lifecycleRuntime.epochSnapshot
+            switch lifecycleRuntime.currentState {
+            case .disabledAwaitingNextProcess, .cleanupRetryRequired:
+                credentialError = "本机已知凭据已停用；如需继续使用，请重新填写 API Key。"
+            case .blocked(let message):
+                credentialError = message
+            default:
+                credentialError = nil
+            }
+        } catch {
+            profileMetadataIsValid = false
+            credentialError = error.localizedDescription
+        }
+    }
+
+    static func credentialLifecycleParticipant(defaults: UserDefaults,
+                                                secrets: SecretStore) -> CredentialLifecycleParticipant {
+        ClosureCredentialLifecycleParticipant(side: .ai,
+            snapshot: { try aiKnownReferences(defaults: defaults) },
+            disable: { refs, operationID in try disableAIReferences(refs, operationID: operationID, defaults: defaults) },
+            verify: { refs, _ in try aiMetadataDisables(refs, defaults: defaults) },
+            deleteRaw: { try secrets.delete(reference: $0) },
+            readRaw: { try secrets.readForCleanup(reference: $0) })
+    }
+
+    private static func aiKnownReferences(defaults: UserDefaults) throws -> Set<String> {
+        var refs = Set<String>()
+        let profiles = try aiProfiles(defaults: defaults)
+        for profile in profiles { refs.formUnion([profile.visionKeyReference, profile.textKeyReference]) }
+        let settings = try aiLegacySettings(defaults: defaults)
+        refs.insert(settings.keyReference)
+        // This historical default account is the fallback used by AISettings itself.
+        if defaults.object(forKey: "padnote.ai.profiles") == nil { refs.insert("secure-storage://padnote/default") }
+        refs.formUnion(try aiPendingReferences(defaults: defaults))
+        return Set(refs.filter { !$0.isEmpty && !$0.hasPrefix("padnote-disabled://") })
+    }
+
+    private static func aiProfiles(defaults: UserDefaults) throws -> [AIProfile] {
+        guard let object = defaults.object(forKey: "padnote.ai.profiles") else { return [] }
+        guard let data = object as? Data,
+              let profiles = try? JSONDecoder().decode([AIProfile].self, from: data) else {
+            throw CredentialLifecycleError.corruptMetadata(.ai)
+        }
+        return profiles
+    }
+
+    private static func aiLegacySettings(defaults: UserDefaults) throws -> AISettings {
+        guard let object = defaults.object(forKey: "padnote.ai.settings") else { return AISettings() }
+        guard let data = object as? Data,
+              let settings = try? JSONDecoder().decode(AISettings.self, from: data) else {
+            throw CredentialLifecycleError.corruptMetadata(.ai)
+        }
+        return settings
+    }
+
+    private static func aiPendingReferences(defaults: UserDefaults) throws -> Set<String> {
+        guard let object = defaults.object(forKey: "padnote.ai.pendingSecretDeletes") else { return [] }
+        if let data = object as? Data,
+           let pending = try? JSONDecoder().decode([AIStoredPendingDelete].self, from: data) {
+            return Set(pending.map(\.reference))
+        }
+        if let values = object as? [String] { return Set(values) }
+        throw CredentialLifecycleError.corruptMetadata(.ai)
+    }
+
+    private static func disableAIReferences(_ references: Set<String>, operationID: String,
+                                            defaults: UserDefaults) throws {
+        var profiles = try aiProfiles(defaults: defaults)
+        var settings = try aiLegacySettings(defaults: defaults)
+        if profiles.isEmpty && defaults.object(forKey: "padnote.ai.profiles") == nil {
+            profiles = [AIProfile(name: "默认配置", visionEndpoint: settings.endpoint, visionModel: settings.model,
+                visionKeyReference: settings.keyReference, textKeyReference: settings.keyReference)]
+        }
+        for index in profiles.indices {
+            let oldVision = profiles[index].visionKeyReference
+            let oldText = profiles[index].textKeyReference
+            let changesIdentity = references.contains(oldVision) || references.contains(oldText)
+            if changesIdentity {
+                guard profiles[index].revision < 1_000_000_000 else { throw CredentialLifecycleError.corruptMetadata(.ai) }
+                if references.contains(oldVision) {
+                    profiles[index].visionKeyReference = CredentialLifecycleRuntime.disabledReference(
+                        operationID: operationID, side: .ai, account: oldVision)
+                }
+                if references.contains(oldText) {
+                    profiles[index].textKeyReference = CredentialLifecycleRuntime.disabledReference(
+                        operationID: operationID, side: .ai, account: oldText)
+                }
+                profiles[index].revision += 1
+            }
+        }
+        if references.contains(settings.keyReference) {
+            settings.keyReference = CredentialLifecycleRuntime.disabledReference(
+                operationID: operationID, side: .ai, account: settings.keyReference)
+        }
+        let profileData = try JSONEncoder().encode(profiles)
+        let settingsData = try JSONEncoder().encode(settings)
+        defaults.set(profileData, forKey: "padnote.ai.profiles")
+        guard defaults.data(forKey: "padnote.ai.profiles") == profileData else { throw CredentialLifecycleError.persistence }
+        defaults.set(settingsData, forKey: "padnote.ai.settings")
+        guard defaults.data(forKey: "padnote.ai.settings") == settingsData else { throw CredentialLifecycleError.persistence }
+    }
+
+    private static func aiMetadataDisables(_ references: Set<String>, defaults: UserDefaults) throws -> Bool {
+        guard defaults.object(forKey: "padnote.ai.profiles") != nil,
+              defaults.object(forKey: "padnote.ai.settings") != nil else { return false }
+        let profiles = try aiProfiles(defaults: defaults)
+        let settings = try aiLegacySettings(defaults: defaults)
+        let active = Set(profiles.flatMap { [$0.visionKeyReference, $0.textKeyReference] } + [settings.keyReference])
+        return active.isDisjoint(with: references)
     }
 }

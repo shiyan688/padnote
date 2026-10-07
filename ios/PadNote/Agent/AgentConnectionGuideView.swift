@@ -51,7 +51,7 @@ public struct AgentConnectionGuideView: View {
                         VStack(alignment: .leading, spacing: 24) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(guide.summary).font(.title3)
-                                Label("当前仅支持连接测试；任务发送与状态回传尚未实现。", systemImage: "info.circle.fill")
+                                Label("Hermes 文字任务可发送并查看状态。内置视频任务仅在连接助手提供相应能力时开放；视频分镜和配音使用你在电脑助手配置的云服务密钥，费用计入你的账户，且配音须经单独确认；渲染在电脑完成。OpenClaw 目前不支持任务执行。", systemImage: "info.circle.fill")
                                     .font(.callout.weight(.semibold))
                                     .foregroundStyle(.secondary)
                             }

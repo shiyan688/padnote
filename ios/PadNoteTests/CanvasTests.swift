@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import PDFKit
 import UIKit
 @testable import PadNote
@@ -101,6 +102,36 @@ final class CanvasTests: XCTestCase {
         scroll.scrollViewDidScroll(scroll)
         XCTAssertEqual(controller.currentPage, 1)
         XCTAssertEqual(scroll.surface.center.y, scroll.contentSize.height / 2, accuracy: 0.001)
+    }
+
+    func testTextSelectionStateIsImmediateButObserverNotificationIsDeferredAndCoalesced() async {
+        let suite = "CanvasTests.selection-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = CanvasController(defaults: defaults)
+        let published = expectation(description: "selection observer notified after setter returns")
+        var setterReturned = false
+        var publishedInline = false
+        var notificationCount = 0
+        let cancellable = controller.objectWillChange.sink {
+            notificationCount += 1
+            if !setterReturned { publishedInline = true }
+            published.fulfill()
+        }
+
+        controller.updateVisiblePage(2)
+        XCTAssertEqual(controller.currentPage, 2, "page state must remain immediately readable")
+        controller.setSelectedTextFlows(["flow-a"], fontSize: 18)
+        XCTAssertEqual(controller.selectedTextFlowIDs, ["flow-a"], "internal selection must be immediately readable")
+        XCTAssertEqual(controller.selectedTextFontSize, 18)
+        XCTAssertEqual(notificationCount, 0, "setter must not publish inside the SwiftUI update stack")
+        setterReturned = true
+        controller.setSelectedTextFlows(["flow-a", "flow-b"], fontSize: 20)
+        XCTAssertEqual(controller.selectedTextFlowIDs, ["flow-a", "flow-b"])
+        await fulfillment(of: [published], timeout: 1)
+        XCTAssertFalse(publishedInline)
+        XCTAssertEqual(notificationCount, 1, "multiple same-turn selection changes should coalesce")
+        withExtendedLifetime(cancellable) {}
     }
 
 }

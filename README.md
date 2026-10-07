@@ -34,7 +34,7 @@ Android · iPad · 自选模型 · 本地笔记 · MIT
 
 Android 最低 Android 7.0 / API 24。下载 [PadNote Android beta 8 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.8/PadNote-Android-0.18.0-beta.8-debug.apk)，或查看 [beta 8 发布说明](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.8)。beta 测试包与原 0.17.5 主线使用不同包名，可以共存；跨包迁移请先导出笔记，再导入。
 
-beta.8 使用调试签名。安装前请备份重要笔记并核对发布页提供的 SHA-256。视频等本地附件的迁移范围以具体导出格式为准；项目不提供自动云同步。
+beta.8 使用调试签名。安装前请备份重要笔记并核对发布页提供的 SHA-256。视频等本地附件的迁移范围以具体导出格式为准；项目不提供自动云同步。Release 中的 beta.8 APK 是该版本发布时的不可变构建；当前 `main` 源码包含之后加入的两文件 Android 本地存储失败修复，beta.8 APK 不含这项修复。检查 `main` 源码不能替代检查你实际安装的 APK。
 
 构建 Android 需要 JDK 17 或更新版本、Android SDK Platform 35 和 Build Tools 34/35。配置 `JAVA_HOME`、`ANDROID_SDK_ROOT` 后运行：
 
@@ -44,7 +44,7 @@ cd padnote
 tools/build-android-apk.sh
 ```
 
-iPad 最低 iPadOS 17。用 Xcode 打开 `ios/PadNote.xcodeproj`，选择 PadNote scheme 运行模拟器；真机需自己的 Apple Development Team。目前暂无可直接安装的 IPA、App Store 或 TestFlight 版本，见 [iPad 构建说明](ios/README.md)。本次更新主要面向 Android，不能据此推断两端功能完全一致。
+iPad 最低 iPadOS 17。当前 `main` 源码包含完整的原生 iPad 客户端；用 Xcode 打开 `ios/PadNote.xcodeproj` 并选择 PadNote scheme 运行模拟器，真机需自己的 Apple Development Team。目前暂无可直接安装的 IPA、App Store 或 TestFlight 版本。iPad 验证范围与限制见 [iPad 构建说明](ios/README.md)。iPad 源码更新不代表 beta.8 Android APK 内容变化，也不代表两端功能完全一致。
 
 ## 参与开发
 

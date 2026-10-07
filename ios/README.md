@@ -1,45 +1,46 @@
 # PadNote iPad
 
-原生 SwiftUI / UIKit 工程，对齐 Android `0.18.0-beta.2`（`beta` / `0bc3a68`）的应用功能范围。最低 iPadOS 17，iPad 专用；版本 `0.18.0`，build `41`。
+PadNote 是面向 iPadOS 17 及以上版本的原生 SwiftUI / UIKit 笔记应用。此目录包含当前 iPad 客户端源码和 Xcode 工程。iPad 与 Android 功能范围相关，但两端并非完全一致。
 
-## 在 Xcode 运行
+## 构建与运行
 
-打开 `ios/PadNote.xcodeproj`，选择共享 scheme `PadNote` 和 iPad Simulator，点击 Run。工程无第三方 Swift Package；离线 KaTeX、Mermaid、字体及许可证随应用打包。
+在 Xcode 中打开 `ios/PadNote.xcodeproj`，选择共享 scheme `PadNote`，即可在 iPad Simulator 上运行。真机运行需在 Signing & Capabilities 中选择自己的 Apple Development Team。仓库目前不提供签名 IPA、App Store 或 TestFlight 版本。
 
-真机运行时，在 Signing & Capabilities 选择自己的 Apple Development Team，然后选择已配对的 iPad。无签名构建不等于已经在真机验证。
+工程没有第三方 Swift Package 依赖。离线 KaTeX、Mermaid、字体和对应声明随工程提供。构建脚本生成的中间文件和测试结果位于 `ios/build`、`ios/TestResults`，不属于源码发布内容。
 
-## 许可范围
-
-PadNote Android 与 iPad 客户端的自研代码（含手写引擎）采用 [MIT 许可](../LICENSE)，范围见 [LICENSING.md](../LICENSING.md)。MIT 允许商用和闭源衍生版本，要求保留版权与许可声明。第三方资产保留各自许可证，见仓库的 [第三方声明](../THIRD_PARTY_NOTICES.md)；视频 Agent 子项目继续单独使用 Apache-2.0。
-
-## 已接入的功能
-
-- 多笔记书架、新建/搜索/重命名/删除；内置封面、照片或文件封面；四种纸张、A4/屏幕比例及方向。
-- UIKit 原始压感笔迹与合并触点采样，Apple Pencil/手指策略；画笔、高亮、精确局部橡皮、矩形/直线/椭圆、HSV 颜色与独立宽度，设置持久化。
-- 套索选择、移动/复制/删除，文字调宽/字号、图片等比缩放；30 步撤销重做，可撤销清空。
-- 多页连续浏览、缩放与视口保存；缩略图跳页、复制/删除/上移/下移；末页拉出新纸张，边缘停留后拖动文字翻页。原始 PDF 页保持固定前缀。
-- 页内 LaTeX/Markdown 源码编辑、即时预览；离线公式与 Mermaid 实际编译到纸面，语义块跨页；源码仍为唯一持久化内容。
-- JSON schema 1–8 迁移、Android `.padnote.json` / `.padnote.zip` 交换、PDF 导入批注与平面化 PDF 导出、图片插入；原子保存、损坏文件保留与备份恢复。
-- 多模型档案与 Keychain 凭据；直连或视觉转写→文本回答；转写可见、请求取消、上传确认、可拖动/缩放/最小化 AI 卡片。
-- 标准工具调用：页面地图、文字写入/移动/样式、Mermaid、知识库检索/读取。默认只创建新内容，修改已有内容需在卡片开启；写入先避让，有限轮次、整个动作一次撤销，编辑冲突阻止旧快照覆盖。
-- 本地 Markdown 知识库、数字化/已有文字整理、检索与导出。
-- 电脑 Agent HTTPS 配置、Hermes 五项 capabilities 健康检查；连接后导出 `video.explain.v1` 任务 ZIP，包含 Markdown、参数与完整性 manifest。
-
-## 验证与边界
-
-2026-09-22：Xcode 27 / iOS 27 的 iPad Pro 11-inch (M5) 模拟器通过 62 项单元测试、3 项 UI 测试；iPad 真机 arm64 无签名构建通过。测试涵盖跨平台数据、局部橡皮、文本排版像素、离线数学、模型路由/取消、工具权限/事务、Agent/ZIP、封面及保存重启 UI 流程。
-
-真实模型 endpoint、Hermes 实例及 Apple Pencil 的延迟/压感/防误触仍需使用实际配置与 iPad 验收；当前测试使用隔离的本地夹具。Hermes 任务提交/SSE/审批/产物回传和 OpenClaw Gateway Bridge 与 Android beta 一样仍属下一阶段。
-
-封面保存在本机 sidecar，不加入跨平台笔记 JSON。Markdown 支持安全常用子集；极长且不可分割的公式/图表会等比缩小到页面内。编译缓存仅用于显示，失败时保留源码并使用原生文字回退。
-
-## 重复构建
+运行完整单元测试时，先将占位符替换为一台已启动的 iPad Simulator UDID：
 
 ```sh
-python3 ios/scripts/generate-project.py  # 新增 Swift 文件后更新工程
-PADNOTE_SIMULATOR_ID=172ECBE4-DB05-400A-8051-7D9B3DB0C775 ios/scripts/verify.sh
+SIMULATOR_UDID="<替换为已启动的 iPad Simulator UDID>"
+xcodebuild \
+  -project ios/PadNote.xcodeproj \
+  -scheme PadNote \
+  -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
+  -only-testing:PadNoteTests \
+  -collect-test-diagnostics never \
+  -enableCodeCoverage NO \
+  test
 ```
 
-脚本把 derived data 和日志放入 `ios/build`；测试报告另存于忽略的 `ios/TestResults`。不会安装工具或修改用户签名配置。
+这条命令仅运行 `PadNoteTests` 单元测试 target；scheme 中的 UI 测试需另行运行。
 
-2026-09-23 排版更新：build 44 的 Canvas、CompiledText 与 Math 共 20 项针对性模拟器测试通过，arm64 无签名构建通过；Apple Pencil 和真机仍需验证。电脑 Agent 页已加入共用的离线连接教程。
+## 当前功能
+
+- 多笔记书架、多页手写、Apple Pencil 输入、选区、图形、撤销重做、图片和 PDF 导入/导出。
+- Markdown 与 LaTeX 文本流、离线公式和 Mermaid 渲染；支持 JSON schema 1–8 迁移，以及与 Android 的 `.padnote.json` / `.padnote.zip` 文件交换。
+- 用户自选 AI 服务地址、模型和 API Key；密钥保存在本机 Keychain。发送内容由用户确认，服务商费用由用户自己的账户承担。
+- 本地 Markdown 知识库、PDF 或既有文字的数字化处理及检查点保存。
+- 通过 HTTPS 连接电脑 Agent。客户端支持 Hermes 文字任务；电脑视频流程取决于连接助手报告的能力和电脑端配置。OpenClaw 任务执行当前不受 iPad 客户端支持。
+- 整库本地归档包括已保存笔记、原始 PDF、已分配封面、用户封面预设、知识库条目和本机已验证的 MP4 附件。恢复预览通过校验后按新副本恢复，不覆盖现有笔记；Vault 与视频关联会映射到新笔记。归档不包含连接凭据或授权、AI 对话、电脑任务历史及在途工作。此功能不是云同步。
+
+## 已验证
+
+2026-10-08，`PadNoteTests` 单元测试在 iOS 27.0 Simulator 的 iPad Pro 13-inch (M4) 上通过 **240/240** 项，0 失败、0 跳过，Xcode 退出码为 0。测试运行记录有一条运行时警告。scheme 中的 39 项 UI 测试未运行。
+
+## 后续验证
+
+上述结果是模拟器单元测试结果。真实 iPad、签名与 IPA 分发、真实模型服务和凭据、实际服务费用、真实 Hermes 电脑连接及电脑端视频渲染环境仍需单独验证。测试使用本地夹具和注入客户端，不代表外部服务或真实设备验收。测试通过也不证明两端完全一致或完成跨平台全媒体往返。
+
+## 许可
+
+PadNote Android 与 iPad 自研代码（含手写引擎）采用 [MIT 许可](../LICENSE)，保留版权与许可声明。视频 Agent 子项目继续采用 Apache-2.0；第三方资产遵循各自许可，见 [LICENSING.md](../LICENSING.md) 和 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。

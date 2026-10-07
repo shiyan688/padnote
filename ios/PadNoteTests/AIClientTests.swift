@@ -5,6 +5,7 @@ final class AIClientTests: XCTestCase {
     final class Store: SecretStore {
         func read(reference: String) throws -> String? { "test-key" }
         func write(_ value: String, reference: String) throws {}
+        func delete(reference: String) throws {}
     }
 
     final class ProtocolStub: URLProtocol {
@@ -50,7 +51,12 @@ final class AIClientTests: XCTestCase {
     func makeClient(_ endpoint: String = "https://example.test/v1") -> AIClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ProtocolStub.self]
-        return AIClient(settings: AISettings(endpoint: endpoint, model: "test-model"), secretStore: Store(), sessionConfiguration: config)
+        let secrets = Store()
+        let suite = "padnote.ai-client.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        return AIClient(settings: AISettings(endpoint: endpoint, model: "test-model"), secretStore: secrets,
+            lifecycleRuntime: CredentialLifecycleRuntime.isolatedForInjectedAI(defaults: defaults, secrets: secrets),
+            sessionConfiguration: config)
     }
 
     func request() -> AIConversationRequest {

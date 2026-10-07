@@ -3,6 +3,7 @@ package com.padnote.android;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
@@ -49,14 +50,18 @@ public final class AgentTaskBundleTargetConfirmationInstrumentedTest {
     private static final String SECOND_INSTANCE = "instance-second-r4";
 
     @Test public void selectingSameNameSecondThenCancelDoesNotBuildOrSubmitBundle() throws Exception {
-        runFlow(false);
+        runFlow(false, false);
     }
 
     @Test public void selectingSameNameSecondConfirmsAndPersistsSubmitsExactProfileIdentity() throws Exception {
-        runFlow(true);
+        runFlow(true, false);
     }
 
-    private void runFlow(boolean confirm) throws Exception {
+    @Test public void targetLookupFailureIsPersistedAndShownAfterSelection() throws Exception {
+        runFlow(true, true);
+    }
+
+    private void runFlow(boolean confirm, boolean failTargetLookup) throws Exception {
         Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String fixtureId=UUID.randomUUID().toString();
         File fixtureRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
@@ -76,7 +81,7 @@ public final class AgentTaskBundleTargetConfirmationInstrumentedTest {
             scenario=ActivityScenario.launch(intent);
             ActivityScenario<IsolatedLibraryRestoreActivity> active=scenario;
             List<AgentConnectionStore.Config> profiles=profiles();
-            TaskSource source=new TaskSource(profiles);
+            TaskSource source=new TaskSource(profiles,failTargetLookup);
             AgentTaskClient.Factory clientFactory=()->{
                 clientFactoryCalls.incrementAndGet();
                 return new AgentTaskClient(request->{
@@ -133,26 +138,46 @@ public final class AgentTaskBundleTargetConfirmationInstrumentedTest {
                 assertTrue(taskStore.get().list().isEmpty());
             }else{
                 onView(withText("发送到此 Agent")).inRoot(isDialog()).perform(click());
-                assertTrue("fake status response did not complete",statusFinished.await(10,TimeUnit.SECONDS));
-                waitFor(()->!taskStore.get().list().isEmpty()&&
-                        taskStore.get().list().get(0).status==AgentTaskStore.Status.COMPLETED,"persisted completed task");
-                AgentTaskStore.Task saved=taskStore.get().list().get(0);
-                AgentConnectionStore.Config selected=profiles.get(1);
-                assertEquals(1,bundleFactoryCalls.get());
-                assertEquals(1,postCalls.get());
-                assertEquals(1,statusCalls.get());
-                assertEquals(selected.id,saved.connectionId);
-                assertEquals(selected.revision,saved.connectionRevision);
-                assertEquals(selected.endpoint,saved.origin);
-                assertEquals(selected.bridgeId,saved.bridgeId);
-                assertEquals(selected.instanceId,saved.instanceId);
-                assertEquals("remote-r4-selected",saved.remoteTaskId);
-                assertTrue(new JSONObject(saved.submissionJson).has("bundle_base64"));
-                assertNotNull(submitted.get());
-                assertEquals("synthetic-token-second",submitted.get().bearer);
-                assertTrue(submitted.get().url.toString().contains(SECOND_INSTANCE));
-                assertFalse(submitted.get().url.toString().contains(FIRST_INSTANCE));
-                captureScreenshot(active,fixtureId,"submitted-selected-target");
+                if(failTargetLookup){
+                    waitFor(()->!taskStore.get().list().isEmpty()&&
+                            taskStore.get().list().get(0).status==AgentTaskStore.Status.FAILED,
+                            "persisted connection lookup failure");
+                    AgentTaskStore.Task failed=taskStore.get().list().get(0);
+                    assertEquals(AgentTaskStore.Status.FAILED,failed.status);
+                    assertEquals(profiles.get(1).id,failed.connectionId);
+                    assertEquals(profiles.get(1).revision,failed.connectionRevision);
+                    assertEquals("读取目标连接失败，本次尚未发送。请重新打开连接设置后再试。",failed.error);
+                    assertFalse(failed.error.contains("synthetic connection store read failure"));
+                    assertEquals(0,clientFactoryCalls.get());
+                    assertEquals(0,postCalls.get());
+                    onView(withText(org.hamcrest.Matchers.containsString(
+                            "读取目标连接失败，本次尚未发送。请重新打开连接设置后再试。")))
+                            .inRoot(isDialog()).check(matches(isDisplayed()));
+                    onView(withText(org.hamcrest.Matchers.containsString("synthetic connection store read failure")))
+                            .check(doesNotExist());
+                    captureScreenshot(active,fixtureId,"target-lookup-failure");
+                }else{
+                    assertTrue("fake status response did not complete",statusFinished.await(10,TimeUnit.SECONDS));
+                    waitFor(()->!taskStore.get().list().isEmpty()&&
+                            taskStore.get().list().get(0).status==AgentTaskStore.Status.COMPLETED,"persisted completed task");
+                    AgentTaskStore.Task saved=taskStore.get().list().get(0);
+                    AgentConnectionStore.Config selected=profiles.get(1);
+                    assertEquals(1,bundleFactoryCalls.get());
+                    assertEquals(1,postCalls.get());
+                    assertEquals(1,statusCalls.get());
+                    assertEquals(selected.id,saved.connectionId);
+                    assertEquals(selected.revision,saved.connectionRevision);
+                    assertEquals(selected.endpoint,saved.origin);
+                    assertEquals(selected.bridgeId,saved.bridgeId);
+                    assertEquals(selected.instanceId,saved.instanceId);
+                    assertEquals("remote-r4-selected",saved.remoteTaskId);
+                    assertTrue(new JSONObject(saved.submissionJson).has("bundle_base64"));
+                    assertNotNull(submitted.get());
+                    assertEquals("synthetic-token-second",submitted.get().bearer);
+                    assertTrue(submitted.get().url.toString().contains(SECOND_INSTANCE));
+                    assertFalse(submitted.get().url.toString().contains(FIRST_INSTANCE));
+                    captureScreenshot(active,fixtureId,"submitted-selected-target");
+                }
             }
         } finally {
             worker.shutdownNow();worker.awaitTermination(5,TimeUnit.SECONDS);
@@ -266,12 +291,19 @@ public final class AgentTaskBundleTargetConfirmationInstrumentedTest {
     private static final class TaskSource implements AgentTaskDialogs.TaskConnectionSource {
         private final Map<String,AgentConnectionStore.Config> byId=new HashMap<>();
         private final List<AgentConnectionStore.Config> profiles;
-        TaskSource(List<AgentConnectionStore.Config> profiles){
+        private final boolean failLookup;
+
+        TaskSource(List<AgentConnectionStore.Config> profiles,boolean failLookup){
             this.profiles=Collections.unmodifiableList(new ArrayList<>(profiles));
+            this.failLookup=failLookup;
             for(AgentConnectionStore.Config profile:profiles)byId.put(profile.id,profile);
         }
         @Override public List<AgentConnectionStore.Config> list(){return profiles;}
-        @Override public AgentConnectionStore.Config get(String id){return byId.get(id);}
+        @Override public synchronized AgentConnectionStore.Config get(String id){
+            if(failLookup)
+                throw new IllegalStateException("synthetic connection store read failure");
+            return byId.get(id);
+        }
     }
 
     private static final class MemoryBackend implements AgentConnectionStore.Backend {

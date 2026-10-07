@@ -197,7 +197,22 @@ final class AgentTaskDialogs {
     private void submit(AgentTaskStore.Task task) {
         toast("任务已保存，正在提交…");
         worker.execute(()->{
-            AgentConnectionStore.Config connection=taskConnectionSource.get(task.connectionId);
+            final AgentConnectionStore.Config connection;
+            try{connection=taskConnectionSource.get(task.connectionId);}
+            catch(Exception error){
+                boolean persisted=false;
+                try{persisted=tasks.markFailed(task.clientTaskId,task.updatedAt,
+                        "读取目标连接失败，本次尚未发送。请重新打开连接设置后再试。");}
+                catch(Exception ignored){}
+                final boolean failureRecorded=persisted;
+                main.post(()->{
+                    if(!failureRecorded){
+                        toast("本次未发送；任务状态保存失败，请勿重复提交，先重新打开任务查看。");
+                        return;
+                    }
+                    showDetail(task.clientTaskId);
+                });return;
+            }
             if(!task.matches(connection)){try{tasks.markLocal(task.clientTaskId,
                     AgentTaskStore.Status.INTERRUPTED,"连接身份已变化，请新建任务");}catch(Exception ignored){}
                 main.post(()->showDetail(task.clientTaskId));return;}
@@ -276,7 +291,8 @@ final class AgentTaskDialogs {
             AgentTaskStore.Task task=tasks.get(clientId);if(task==null||!dialog.isShowing())return;
             content.setText(detail(task));retry.setVisibility(task.status==AgentTaskStore.Status.SUBMITTING?View.VISIBLE:View.GONE);
             video.setVisibility(videoBundleValid&&!task.remoteTaskId.isEmpty()?View.VISIBLE:View.GONE);
-            AgentConnectionStore.Config bound=taskConnectionSource.get(task.connectionId);
+            AgentConnectionStore.Config bound=null;
+            try{bound=taskConnectionSource.get(task.connectionId);}catch(Exception ignored){}
             boolean canContinue=task.transport==AgentConnectionStore.Transport.BRIDGE&&
                     task.status==AgentTaskStore.Status.COMPLETED&&task.followupAvailable&&
                     task.childClientTaskId.isEmpty()&&task.matches(bound);

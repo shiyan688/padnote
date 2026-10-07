@@ -15,8 +15,13 @@ function waitForFrames(timeout = 120) {
 async function settleLayout() {
     // Detached or background WKWebViews may not receive animation frames, and
     // a damaged font resource must not stall paper compilation indefinitely.
-    await Promise.race([document.fonts.ready, new Promise(resolve => setTimeout(resolve, 500))]);
+    let fontsReady = false;
+    await Promise.race([
+        document.fonts.ready.then(() => { fontsReady = true; }),
+        new Promise(resolve => setTimeout(resolve, 500))
+    ]);
     await waitForFrames();
+    return fontsReady;
 }
 
 // WebKit snapshots do not include horizontally scrolled content. Scale only
@@ -71,12 +76,13 @@ function fitDiagrams(root) {
 }
 
 async function finishRichLayout(root) {
-    await settleLayout();
+    const firstFontsReady = await settleLayout();
     fitDisplayMath(root);
     fitDiagrams(root);
-    await settleLayout();
+    const secondFontsReady = await settleLayout();
+    return firstFontsReady || secondFontsReady;
 }
-function inline(source) {
+function inline(source, diagnostics) {
     const pattern = /\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$|\\\(([\s\S]*?)\\\)|\$([^$\n]+)\$|`([^`\n]+)`/g;
     let output = '', last = 0, match;
     function prose(s) {
@@ -93,7 +99,15 @@ function inline(source) {
         if (match[5] !== undefined) output += '<code>' + escapeHTML(match[5]) + '</code>';
         else {
             const formula = match[1] ?? match[2] ?? match[3] ?? match[4];
-            output += window.katex ? katex.renderToString(formula, {throwOnError:false, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:match[1] !== undefined || match[2] !== undefined}) : escapeHTML(match[0]);
+            if (!window.katex) output += escapeHTML(match[0]);
+            else {
+                try {
+                    output += katex.renderToString(formula, {throwOnError:true, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:match[1] !== undefined || match[2] !== undefined});
+                } catch (_) {
+                    diagnostics.push({kind:'syntax', detail:'katex'});
+                    output += '<span class="katex-source-error">' + escapeHTML(match[0]) + '</span>';
+                }
+            }
         }
         last = pattern.lastIndex;
     }
@@ -101,9 +115,20 @@ function inline(source) {
 }
 window.renderNote = async function (source, size, format = 'markdown') {
     const revision = ++renderingRevision;
+    const diagnostics = [];
     document.body.style.fontSize = Number(size) + 'px';
     const root = document.getElementById('content');
     root.replaceChildren();
+    // Accessing cssRules for a file stylesheet is not portable in WKWebView:
+    // WebKit may reject it even though the sheet is loaded. Probe an authored
+    // computed property instead, which also detects a missing/broken sheet.
+    if (getComputedStyle(document.body).overflowWrap !== 'anywhere') {
+        diagnostics.push({kind:'resource', detail:'reader-style'});
+    }
+    const containsMath = format === 'latex' || /\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$[^$\n]+\$/.test(source);
+    if (containsMath && (!window.katex || typeof window.katex.renderToString !== 'function')) {
+        diagnostics.push({kind:'resource', detail:'katex-script'});
+    }
     if (format === 'latex') {
         let formula = source.trim();
         for (const [start, end] of [['\\[','\\]'], ['\\(','\\)'], ['$$','$$'], ['$','$']]) {
@@ -112,10 +137,27 @@ window.renderNote = async function (source, size, format = 'markdown') {
             }
         }
         const block = document.createElement('div');
-        block.innerHTML = katex.renderToString(formula, {throwOnError:false, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:true});
+        if (!window.katex || typeof window.katex.renderToString !== 'function') {
+            diagnostics.push({kind:'resource', detail:'katex-script'});
+            return {formulas:0, height:Math.max(1, root.scrollHeight), diagnostics};
+        }
+        try {
+            block.innerHTML = katex.renderToString(formula, {throwOnError:true, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:true});
+        } catch (_) {
+            diagnostics.push({kind:'syntax', detail:'katex'});
+            block.textContent = source;
+        }
         root.append(block);
-        await finishRichLayout(root);
-        return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight};
+        const fontsReady = await finishRichLayout(root);
+        if (root.querySelector('.katex-error')) diagnostics.push({kind:'syntax', detail:'katex'});
+        const renderedMath = root.querySelector('.katex');
+        if (renderedMath) {
+            const family = getComputedStyle(renderedMath).fontFamily || '';
+            if (!family.includes('KaTeX') || !fontsReady || !document.fonts.check('16px "KaTeX_Main"')) {
+                diagnostics.push({kind:'resource', detail:'katex-font'});
+            }
+        }
+        return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight, diagnostics};
     }
     const diagrams = [];
     const lines = source.replace(/\r\n?/g, '\n').split('\n');
@@ -127,7 +169,7 @@ window.renderNote = async function (source, size, format = 'markdown') {
         blocks.forEach(block => {
             if (!block.trim()) return;
             if (/^(\\\[|\$\$)/.test(block)) {
-                const div = document.createElement('div'); div.innerHTML = inline(block); root.append(div); return;
+                const div = document.createElement('div'); div.innerHTML = inline(block, diagnostics); root.append(div); return;
             }
             let listType = null, listElement = null;
             block.split('\n').forEach(line => {
@@ -143,7 +185,7 @@ window.renderNote = async function (source, size, format = 'markdown') {
                         if (ordered) listElement.start = Number(ordered[1]);
                     }
                     const item = document.createElement('li');
-                    item.innerHTML = inline(unordered ? unordered[1] : ordered[2]) || '<br>';
+                    item.innerHTML = inline(unordered ? unordered[1] : ordered[2], diagnostics) || '<br>';
                     listElement.append(item); return;
                 }
                 if (listElement) { root.append(listElement); listElement = null; listType = null; }
@@ -152,7 +194,7 @@ window.renderNote = async function (source, size, format = 'markdown') {
                 // blank lines through textContent.
                 if (!line.trim()) return;
                 const element = document.createElement(heading ? 'h' + heading[1].length : quote ? 'blockquote' : 'p');
-                element.innerHTML = inline(heading ? heading[2] : quote ? quote[1] : line);
+                element.innerHTML = inline(heading ? heading[2] : quote ? quote[1] : line, diagnostics);
                 root.append(element);
             });
             if (listElement) root.append(listElement);
@@ -175,7 +217,9 @@ window.renderNote = async function (source, size, format = 'markdown') {
         appendFence(language, code.join('\n'));
     }
     appendProseLines(proseLines);
-    if (window.mermaid && diagrams.length) {
+    if (diagrams.length && (!window.mermaid || typeof window.mermaid.render !== 'function')) {
+        diagnostics.push({kind:'resource', detail:'mermaid-script'});
+    } else if (diagrams.length) {
         mermaid.initialize({startOnLoad:false, securityLevel:'strict', theme:'neutral', suppressErrorRendering:true, maxTextSize:50000});
         for (let i = 0; i < diagrams.length; i++) {
             const element = diagrams[i], original = element.textContent;
@@ -183,11 +227,24 @@ window.renderNote = async function (source, size, format = 'markdown') {
                 const {svg} = await mermaid.render('diagram-' + revision + '-' + i, original);
                 if (revision !== renderingRevision) return;
                 element.innerHTML = svg;
-            } catch (_) { element.textContent = '图表无法显示，请检查 Mermaid 语法。\n' + original; }
+            } catch (_) {
+                diagnostics.push({kind:'syntax', detail:'mermaid'});
+                element.textContent = '图表无法显示，请检查 Mermaid 语法。\n' + original;
+            }
         }
     }
-    await finishRichLayout(root);
-    return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight};
+    const fontsReady = await finishRichLayout(root);
+    if (root.querySelector('.katex-error')) diagnostics.push({kind:'syntax', detail:'katex'});
+    const renderedMath = root.querySelector('.katex');
+    if (renderedMath) {
+        const family = getComputedStyle(renderedMath).fontFamily || '';
+        if (!window.katex || typeof window.katex.renderToString !== 'function') {
+            diagnostics.push({kind:'resource', detail:'katex-script'});
+        } else if (!family.includes('KaTeX') || !fontsReady || !document.fonts.check('16px "KaTeX_Main"')) {
+            diagnostics.push({kind:'resource', detail:'katex-font'});
+        }
+    }
+    return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight, diagnostics};
 };
 
 // Paper snapshots use exactly the same offline renderer as the preview.
@@ -199,7 +256,7 @@ window.preparePaper = async function(source, size, spacing, format) {
     document.body.style.lineHeight = Math.max(1.1, Math.min(2, Number(spacing)));
     const root = document.getElementById('content');
     root.style.transform = '';
-    await window.renderNote(source, size, format);
+    const rendered = await window.renderNote(source, size, format);
     await finishRichLayout(root);
     const chunks = [];
     const records = Array.from(root.children).filter(block => block.textContent.trim() || block.querySelector('svg')).map(block => {
@@ -270,7 +327,7 @@ window.preparePaper = async function(source, size, spacing, format) {
             appendSplitBlock(current);
         }
     }
-    return {chunks, height:previous, formulas:root.querySelectorAll('.katex').length};
+    return {chunks, height:previous, formulas:root.querySelectorAll('.katex').length, diagnostics:rendered.diagnostics || []};
 };
 window.positionPaper = async function(top) {
     document.getElementById('content').style.transform = 'translateY(' + (-Number(top)) + 'px)';

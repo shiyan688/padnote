@@ -34,7 +34,7 @@ These flows are still being validated. Real Hermes, native Windows distribution,
 
 Android requires Android 7.0 / API 24 or newer. Download the [PadNote Android beta 8 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.8/PadNote-Android-0.18.0-beta.8-debug.apk) or read the [beta 8 release notes](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.8). The beta package and the original 0.17.5 mainline use different package names and can coexist. Export and import notes to move between them.
 
-Beta.8 uses a debug signing certificate. Back up important notes before installation and check the SHA-256 on the release page. Attachment migration depends on the export format; automatic cloud sync is not provided.
+Beta.8 uses a debug signing certificate. Back up important notes before installation and check the SHA-256 on the release page. Attachment migration depends on the export format; automatic cloud sync is not provided. The beta.8 APK in the Release is the immutable build published for that version. Current `main` source includes a later two-file Android local-storage failure fix that is not in the beta.8 APK. Reviewing `main` source does not verify the APK you installed.
 
 For Android, install JDK 17 or newer, Android SDK Platform 35, and Build Tools 34/35. Set `JAVA_HOME` and `ANDROID_SDK_ROOT`, then run:
 
@@ -44,7 +44,7 @@ cd padnote
 tools/build-android-apk.sh
 ```
 
-iPad requires iPadOS 17 or newer. Open `ios/PadNote.xcodeproj` in Xcode and run the PadNote scheme on a simulator. A physical device requires your own Apple Development Team. There is no installable IPA, App Store, or TestFlight release yet. See the [iPad build guide](ios/README.md). This update primarily targets Android; it does not establish feature parity between platforms.
+iPad requires iPadOS 17 or newer. Current `main` source includes the complete native iPad client. Open `ios/PadNote.xcodeproj` in Xcode and run the PadNote scheme on a simulator; a physical device requires your own Apple Development Team. There is no installable IPA, App Store, or TestFlight release. See the [iPad build guide](ios/README.md) for validation scope and limits. The iPad source update does not change the beta.8 Android APK or establish complete feature parity between platforms.
 
 ## Contribute
 

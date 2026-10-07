@@ -62,9 +62,16 @@ public final class CanvasController: ObservableObject {
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
     @Published public private(set) var hasSelection = false
-    @Published public private(set) var currentPage = 0
-    @Published public private(set) var selectedTextFlowIDs: Set<String> = []
-    @Published public private(set) var selectedTextFontSize: Double?
+    public private(set) var currentPage = 0
+    // These two values are read synchronously by the canvas/editor, but their
+    // observer notification is coalesced onto the next main-queue turn. The
+    // UIKit coordinator can update selection while SwiftUI is installing or
+    // updating the representable; publishing inline there triggers SwiftUI's
+    // "Publishing changes from within view updates" warning.
+    public private(set) var selectedTextFlowIDs: Set<String> = []
+    public private(set) var selectedTextFontSize: Double?
+    @Published public private(set) var aiHistoryRevision = 0
+    @Published public private(set) var hasActiveCanvasInput = false
     public private(set) var selectionBounds: CGRect?
 
     /// Root-owned inline editor hooks. Canvas only reports taps; it never
@@ -75,10 +82,17 @@ public final class CanvasController: ObservableObject {
 
     public private(set) var selectionImage: UIImage?
 
-    private var undoStack: [NoteDocument] = []
-    private var redoStack: [NoteDocument] = []
+    private struct HistoryEntry {
+        let document: NoteDocument
+        let aiApplications: [UUID: Bool]
+    }
+    private var undoStack: [HistoryEntry] = []
+    private var redoStack: [HistoryEntry] = []
+    private var aiApplications: [UUID: Bool] = [:]
+    private var pendingAIApplication: (id: UUID, applied: Bool)?
     private var editingGroupDepth = 0
     private var editingGroupRecorded = false
+    private var transientPublicationScheduled = false
     private let settingsDefaults: UserDefaults
     private var loadingSettings = false
     private var editHandler: ((@escaping DocumentTransform) -> Void)?
@@ -141,6 +155,15 @@ public final class CanvasController: ObservableObject {
         editHandler?(transform)
     }
 
+    public func performAIEdit(id: UUID, applied: Bool, _ transform: @escaping DocumentTransform) {
+        guard pendingAIApplication == nil else { return }
+        pendingAIApplication = (id, applied)
+        guard let editHandler else { pendingAIApplication = nil; return }
+        editHandler(transform)
+    }
+
+    public func aiApplicationState(for id: UUID) -> Bool? { aiApplications[id] }
+
     /// Coalesces a stream of small edits (for example inline text layout
     /// updates) into one undo entry. Nested callers share the outer group.
     public func beginEditingGroup() {
@@ -160,9 +183,10 @@ public final class CanvasController: ObservableObject {
         pendingHistoryCommand = .undo
         editHandler? { [weak self] document in
             guard let self, let previous = self.undoStack.popLast() else { return }
-            self.redoStack.append(document)
+            self.redoStack.append(.init(document: document, aiApplications: self.aiApplications))
             if self.redoStack.count > 30 { self.redoStack.removeFirst(self.redoStack.count - 30) }
-            document = previous
+            document = previous.document
+            self.replaceAIApplications(previous.aiApplications)
         }
     }
 
@@ -172,9 +196,10 @@ public final class CanvasController: ObservableObject {
         pendingHistoryCommand = .redo
         editHandler? { [weak self] document in
             guard let self, let next = self.redoStack.popLast() else { return }
-            self.undoStack.append(document)
+            self.undoStack.append(.init(document: document, aiApplications: self.aiApplications))
             if self.undoStack.count > 30 { self.undoStack.removeFirst(self.undoStack.count - 30) }
-            document = next
+            document = next.document
+            self.replaceAIApplications(next.aiApplications)
         }
     }
 
@@ -211,7 +236,7 @@ public final class CanvasController: ObservableObject {
     public func goToPage(_ index: Int) {
         let next = max(0, index)
         if currentPage != next {
-            currentPage = next
+            setCurrentPage(next)
             NotificationCenter.default.post(name: .canvasPageDidChange, object: currentPage)
         }
         mountedScrollView?.scrollToPage(next, animated: true)
@@ -220,7 +245,11 @@ public final class CanvasController: ObservableObject {
     func updateVisiblePage(_ index: Int) {
         let next = max(0, index)
         guard currentPage != next else { return }
-        currentPage = next
+        setCurrentPage(next)
+    }
+
+    func setActiveCanvasInput(_ active: Bool) {
+        if hasActiveCanvasInput != active { hasActiveCanvasInput = active }
     }
 
     public func pageImage(_ index: Int) -> UIImage? {
@@ -236,8 +265,26 @@ public final class CanvasController: ObservableObject {
     func setSelectionBounds(_ bounds: CGRect?) { selectionBounds = bounds }
 
     func setSelectedTextFlows(_ ids: Set<String>, fontSize: Double?) {
+        guard selectedTextFlowIDs != ids || selectedTextFontSize != fontSize else { return }
         selectedTextFlowIDs = ids
         selectedTextFontSize = fontSize
+        scheduleTransientPublication()
+    }
+
+    private func setCurrentPage(_ page: Int) {
+        guard currentPage != page else { return }
+        currentPage = page
+        scheduleTransientPublication()
+    }
+
+    private func scheduleTransientPublication() {
+        guard !transientPublicationScheduled else { return }
+        transientPublicationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.transientPublicationScheduled = false
+            self.objectWillChange.send()
+        }
     }
 
     public func adjustSelectedTextFontSize(by delta: Double) {
@@ -265,7 +312,7 @@ public final class CanvasController: ObservableObject {
             guard !editingGroupRecorded else { return }
             editingGroupRecorded = true
         }
-        undoStack.append(document)
+        undoStack.append(.init(document: document, aiApplications: aiApplications))
         if undoStack.count > 30 { undoStack.removeFirst(undoStack.count - 30) }
         redoStack.removeAll(keepingCapacity: true)
         canUndo = true
@@ -275,6 +322,19 @@ public final class CanvasController: ObservableObject {
     func consumeHistoryCommand() -> HistoryCommand? {
         defer { pendingHistoryCommand = nil }
         return pendingHistoryCommand
+    }
+
+    func finishPendingAIApplication(didChange: Bool) {
+        defer { pendingAIApplication = nil }
+        guard didChange, let pendingAIApplication else { return }
+        aiApplications[pendingAIApplication.id] = pendingAIApplication.applied
+        aiHistoryRevision &+= 1
+    }
+
+    private func replaceAIApplications(_ value: [UUID: Bool]) {
+        guard aiApplications != value else { return }
+        aiApplications = value
+        aiHistoryRevision &+= 1
     }
 }
 

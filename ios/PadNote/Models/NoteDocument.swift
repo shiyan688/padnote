@@ -156,6 +156,7 @@ public struct PageStyle: Codable, Equatable {
 }
 
 public struct NoteDocument: Codable, Identifiable, Equatable {
+    public static let maximumEncodedBytes = 50 * 1024 * 1024
     public var schemaVersion: Int
     public var id: String
     public var title: String
@@ -165,6 +166,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public var pageGap: Double
     public var pageCount: Int
     public var pdfPageCount: Int
+    public var pageTopologyRevision: Int
     public var strokes: [InkStroke]
     public var textFlows: [NoteTextFlow]
     public var images: [NoteImage]
@@ -177,6 +179,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
                 title: String = "未命名笔记", updatedAt: Double = NoteDocument.nowMillis(),
                 pageWidth: Double = 768, pageHeight: Double = 1086, pageGap: Double = 24,
                 pageCount: Int = 1, pdfPageCount: Int = 0, strokes: [InkStroke] = [],
+                pageTopologyRevision: Int = 0,
                 textFlows: [NoteTextFlow] = [], images: [NoteImage] = [],
                 pageStyle: PageStyle = PageStyle(), viewportZoom: Double = 1,
                 viewportCenterX: Double = 384, viewportCenterY: Double = 543) {
@@ -189,6 +192,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         self.pageGap = pageGap
         self.pageCount = pageCount
         self.pdfPageCount = pdfPageCount
+        self.pageTopologyRevision = pageTopologyRevision
         self.strokes = strokes
         self.textFlows = textFlows
         self.images = images
@@ -213,6 +217,9 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         try checkFinite(updatedAt, "updatedAt")
         guard pageCount >= 1 && pageCount <= 500 else { throw NoteDocumentError.malformed("Page count must be 1–500") }
         guard pdfPageCount >= 0 && pdfPageCount <= pageCount else { throw NoteDocumentError.malformed("Invalid PDF page count") }
+        guard (0...1_000_000_000).contains(pageTopologyRevision) else {
+            throw NoteDocumentError.malformed("Invalid page topology revision")
+        }
         if pdfPageCount > 0 && schemaVersion < 7 { throw NoteDocumentError.malformed("PDF metadata requires schema version 7 or newer") }
         try checkPositive(pageWidth, "pageWidth")
         try checkPositive(pageHeight, "pageHeight")
@@ -278,8 +285,8 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         return self
     }
 
-    public static func decode(_ data: Data) throws -> NoteDocument {
-        guard data.count <= 50 * 1024 * 1024 else { throw NoteDocumentError.tooLarge("Note file exceeds 50 MB") }
+    public static func decode(_ data: Data, maximumBytes: Int = NoteDocument.maximumEncodedBytes) throws -> NoteDocument {
+        guard maximumBytes > 0, data.count <= maximumBytes else { throw NoteDocumentError.tooLarge("Note file exceeds 50 MB") }
         do {
             return try JSONDecoder().decode(NoteDocument.self, from: data).validated()
         } catch let error as NoteDocumentError {
@@ -289,16 +296,23 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         }
     }
 
-    public func encoded() throws -> Data {
+    public func encoded(maximumBytes: Int = NoteDocument.maximumEncodedBytes) throws -> Data {
         let checked = try validated()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        do { return try encoder.encode(checked) }
+        do {
+            let data = try encoder.encode(checked)
+            guard maximumBytes > 0, data.count <= maximumBytes else {
+                throw NoteDocumentError.tooLarge("Note file exceeds 50 MB")
+            }
+            return data
+        }
+        catch let error as NoteDocumentError { throw error }
         catch { throw NoteDocumentError.malformed("Unable to encode note: \(error.localizedDescription)") }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, title, updatedAt, canvasWidth, canvasHeight, pageWidth, pageHeight, pageGap, pageCount, pdfPageCount
+        case schemaVersion, id, title, updatedAt, canvasWidth, canvasHeight, pageWidth, pageHeight, pageGap, pageCount, pdfPageCount, pageTopologyRevision
         case viewportScale, viewportZoom, viewportCenterX, viewportCenterY, strokes, textFlows, textBoxes, images, pageStyle
     }
 
@@ -350,6 +364,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         pageGap = try c.decodeIfPresent(Double.self, forKey: .pageGap) ?? 24
         pageCount = try c.decodeIfPresent(Int.self, forKey: .pageCount) ?? 1
         pdfPageCount = try c.decodeIfPresent(Int.self, forKey: .pdfPageCount) ?? 0
+        pageTopologyRevision = try c.decodeIfPresent(Int.self, forKey: .pageTopologyRevision) ?? 0
         strokes = try c.decodeIfPresent([InkStroke].self, forKey: .strokes) ?? []
         images = try c.decodeIfPresent([NoteImage].self, forKey: .images) ?? []
         pageStyle = try c.decodeIfPresent(PageStyle.self, forKey: .pageStyle) ?? PageStyle()
@@ -399,6 +414,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         try c.encode(id, forKey: .id); try c.encode(title, forKey: .title); try c.encode(updatedAt, forKey: .updatedAt)
         try c.encode(pageWidth, forKey: .pageWidth); try c.encode(pageHeight, forKey: .pageHeight); try c.encode(pageGap, forKey: .pageGap)
         try c.encode(pageCount, forKey: .pageCount); try c.encode(pdfPageCount, forKey: .pdfPageCount)
+        try c.encode(pageTopologyRevision, forKey: .pageTopologyRevision)
         try c.encode(strokes, forKey: .strokes); try c.encode(textFlows, forKey: .textFlows); try c.encode(images, forKey: .images)
         try c.encode(pageStyle, forKey: .pageStyle); try c.encode(viewportZoom, forKey: .viewportZoom)
         try c.encode(viewportCenterX, forKey: .viewportCenterX); try c.encode(viewportCenterY, forKey: .viewportCenterY)

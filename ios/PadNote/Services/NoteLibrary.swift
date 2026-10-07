@@ -1,26 +1,58 @@
 import Combine
 import Foundation
 import PDFKit
+import CryptoKit
+
+public struct NotePendingDraft: Identifiable, Equatable {
+    public var id: String { document.id }
+    public let revision: Int
+    public let document: NoteDocument
+}
+
+public struct NoteRecoveryItem: Identifiable, Equatable {
+    public let id: String
+    public let filename: String
+    public let reason: String
+    fileprivate let sourceURL: URL
+}
 
 @MainActor
 public final class NoteLibrary: ObservableObject {
     @Published public private(set) var notes: [NoteDocument] = []
+    @Published public private(set) var pendingDrafts: [NotePendingDraft] = []
+    @Published public private(set) var recoveryItems: [NoteRecoveryItem] = []
     @Published public var errorMessage: String?
 
     private let directory: URL
+    private let draftDirectory: URL
     private let fileManager = FileManager.default
     private let maxPDFBytes = NoteArchive.maxPDFBytes
+    private let faultInjector: ((NoteLibraryFaultPoint, URL) -> Error?)?
+    private let revisionGate: NoteRevisionGate
+    private let draftWorker: NoteDraftWorker
+    var backupTransactionDirectory: URL { LibraryBackupTransactionGate.defaultJournalRoot }
 
-    public init(directory: URL? = nil) {
+    public init(
+        directory: URL? = nil,
+        faultInjector: ((NoteLibraryFaultPoint, URL) -> Error?)? = nil
+    ) {
+        let resolved: URL
         if let directory {
-            self.directory = directory
+            resolved = directory
         } else {
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            self.directory = base.appendingPathComponent("PadNote/notes", isDirectory: true)
+            resolved = base.appendingPathComponent("PadNote/notes", isDirectory: true)
         }
+        self.directory = resolved
+        draftDirectory = resolved.appendingPathComponent(".pending-edits", isDirectory: true)
+        self.faultInjector = faultInjector
+        let gate = NoteRevisionGate()
+        revisionGate = gate
+        draftWorker = NoteDraftWorker(directory: draftDirectory, gate: gate, faultInjector: faultInjector)
         do {
             try fileManager.createDirectory(at: self.directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: draftDirectory, withIntermediateDirectories: true)
             loadNotes()
         } catch {
             errorMessage = error.localizedDescription
@@ -33,23 +65,67 @@ public final class NoteLibrary: ObservableObject {
         if let existing = notes.first(where: { $0.id == value.id }) {
             var comparable = value
             comparable.updatedAt = existing.updatedAt
-            if comparable == existing { return }
+            if comparable == existing,
+               let persisted = try? readLimited(noteURL(for: value), limit: NoteDocument.maximumEncodedBytes),
+               let reopened = try? NoteDocument.decode(persisted), reopened == existing {
+                return
+            }
         }
-        _ = try value.validated()
-        try writeAtomically(value.encoded(), to: noteURL(for: value))
+        let data = try value.encoded()
+        try writeAtomically(data, to: noteURL(for: value)) { persisted in
+            guard try NoteDocument.decode(persisted) == value else {
+                throw NoteDocumentError.malformed("Saved note verification failed")
+            }
+        }
+        NoteVideoAttachmentStore.markSourcePresent(value.id)
         notes.removeAll { $0.id == value.id }
         notes.append(value)
         notes.sort { $0.updatedAt > $1.updatedAt }
     }
 
+    public func registerDraftRevision(noteID: String, revision: Int) {
+        revisionGate.register(noteID: noteID, revision: revision)
+    }
+
+    public func nextDraftRevision(noteID: String) -> Int {
+        revisionGate.nextRevision(noteID: noteID)
+    }
+
+    @discardableResult
+    public func persistRegisteredDraft(_ note: NoteDocument, revision: Int) async throws -> Bool {
+        let persisted = try await draftWorker.persist(document: note, revision: revision)
+        if persisted && revisionGate.shouldCommit(noteID: note.id, revision: revision) {
+            pendingDrafts.removeAll { $0.id == note.id }
+            pendingDrafts.append(NotePendingDraft(revision: revision, document: note))
+            pendingDrafts.sort { $0.document.updatedAt > $1.document.updatedAt }
+        }
+        return persisted
+    }
+
+    public func markCanonicalSaved(noteID: String, revision: Int) async {
+        revisionGate.markSaved(noteID: noteID, revision: revision)
+        await draftWorker.canonicalSaved(noteID: noteID, revision: revision)
+        pendingDrafts.removeAll { $0.id == noteID && $0.revision <= revision }
+    }
+
+    public func pendingDraft(noteID: String) -> NotePendingDraft? {
+        pendingDrafts.first { $0.id == noteID }
+    }
+
     public func delete(_ note: NoteDocument) throws {
         let checked = try note.validated()
-        let target = noteURL(for: checked)
-        let targets = [target, sidecarURL(target, suffix: ".bak"), sidecarURL(target, suffix: ".tmp")] + (pdfURL(for: checked).map { [$0] } ?? [])
-        for url in targets {
-            if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+        try NoteVideoAttachmentStore.withSourceMutation {
+            revisionGate.invalidate(noteID: checked.id)
+            let target = noteURL(for: checked)
+            let targets = [target, sidecarURL(target, suffix: ".bak"), sidecarURL(target, suffix: ".tmp")] + (pdfURL(for: checked).map { [$0] } ?? [])
+            for url in targets {
+                if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+            }
+            NoteAtomicFile.removeFamily(draftURL(noteID: checked.id))
+            NoteVideoAttachmentStore.markSourceDeleted(checked.id)
         }
         notes.removeAll { $0.id == note.id }
+        pendingDrafts.removeAll { $0.id == note.id }
     }
 
     public func importNote(from url: URL) throws -> NoteDocument {
@@ -82,6 +158,120 @@ public final class NoteLibrary: ObservableObject {
         return copy
     }
 
+    /// Returns a stable, already-saved note snapshot only if its on-disk bytes still decode to the current revision.
+    public func backupSourceURL(for note: NoteDocument) throws -> URL {
+        guard notes.contains(where: { $0.id == note.id && $0 == note }), safeID(note.id) else { throw LibraryBackupError.sourceChanged }
+        let url = noteURL(for: note)
+        _ = try LibraryBackupArchive.validateRegularSource(url, maximumBytes: Int64(NoteDocument.maximumEncodedBytes))
+        guard !pendingDrafts.contains(where: { $0.id == note.id }) else { throw LibraryBackupError.sourceChanged }
+        return url
+    }
+
+    /// Commits the book JSON last, after the restore coordinator has promoted and verified its resources.
+    public func restoreBackupNote(_ note: NoteDocument, stagedPDF: URL?, expectedPDF: LibraryBackupManifest.Resource? = nil,
+                                  transactionID: String, groupID: String, expectedNoteSHA256: String?, journalRoot: URL, cancellation: LibraryBackupCancellationToken? = nil) async throws {
+        guard safeID(note.id), !notes.contains(where: { $0.id == note.id }), !fileManager.fileExists(atPath: noteURL(for: note).path),
+              let expectedNoteSHA256 else { throw LibraryBackupError.transaction("恢复目标笔记 ID 或摘要无效") }
+        let encodedNote = try note.validated().encoded()
+        let encodedSHA = SHA256.hash(data: encodedNote).map { String(format: "%02x", $0) }.joined()
+        guard encodedSHA == expectedNoteSHA256 else { throw LibraryBackupError.sourceChanged }
+        try LibraryBackupTransactionGate.createPendingMarker(noteID: note.id, transactionID: transactionID, groupID: groupID,
+            expectedNoteSHA256: expectedNoteSHA256, expectedPDFSHA256: expectedPDF?.sha256,
+            in: directory, journalRoot: journalRoot)
+        var promotedPDF: URL?
+        do {
+            if note.pdfPageCount > 0 {
+                guard let stagedPDF, let expectedPDF else { throw LibraryBackupError.transaction("PDF 笔记缺少 PDF 原文") }
+                let pdfTarget = directory.appendingPathComponent("\(note.id).pdf")
+                guard !fileManager.fileExists(atPath: pdfTarget.path) else { throw LibraryBackupError.transaction("PDF 恢复目标已存在") }
+                let pdfLimit = Int64(maxPDFBytes)
+                try await Task.detached(priority: .userInitiated) {
+                    let copied = try LibraryBackupArchive.copyVerified(stagedPDF, to: pdfTarget, maximumBytes: pdfLimit, cancellation: cancellation)
+                    guard expectedPDF.role == "pdf_original", copied.size == expectedPDF.byteLength,
+                          copied.sha256 == expectedPDF.sha256 else { throw LibraryBackupError.sourceChanged }
+                    guard let document = PDFDocument(url: pdfTarget), !document.isEncrypted, !document.isLocked,
+                          document.pageCount == note.pdfPageCount, document.pageCount > 0, document.pageCount <= 500 else {
+                        throw LibraryBackupError.invalidManifest("恢复后的 PDF 校验失败")
+                    }
+                }.value
+                promotedPDF = pdfTarget
+            } else if stagedPDF != nil || expectedPDF != nil { throw LibraryBackupError.transaction("普通笔记不能附带 PDF") }
+            try cancellation?.check()
+            try writeAtomically(encodedNote, to: noteURL(for: note)) { persisted in
+                guard try NoteDocument.decode(persisted) == note else { throw NoteDocumentError.malformed("备份恢复笔记复核失败") }
+            }
+        } catch {
+            if let promotedPDF { try? fileManager.removeItem(at: promotedPDF) }
+            throw error
+        }
+    }
+
+    public func verifyBackupNote(_ note: NoteDocument) async throws {
+        let url = noteURL(for: note)
+        let pdf = note.pdfPageCount > 0 ? pdfURL(for: note) : nil
+        try await Task.detached(priority: .userInitiated) {
+            let bytes = try LibraryBackupArchive.readSmallFile(url, maximumBytes: Int64(NoteDocument.maximumEncodedBytes))
+            guard try NoteDocument.decode(bytes) == note else { throw LibraryBackupError.sourceChanged }
+            if note.pdfPageCount > 0 {
+                guard let pdf, let document = PDFDocument(url: pdf), document.pageCount == note.pdfPageCount,
+                      !document.isEncrypted, !document.isLocked else {
+                    throw LibraryBackupError.sourceChanged
+                }
+            }
+        }.value
+    }
+
+    public func completeBackupNoteRestore(id: String, transactionID: String, groupID: String,
+                                          expectedNoteSHA256: String?, journalRoot: URL) throws {
+        guard let expectedNoteSHA256 else { throw LibraryBackupError.transaction("恢复笔记摘要缺失") }
+        try LibraryBackupTransactionGate.removePendingMarker(noteID: id, transactionID: transactionID, groupID: groupID,
+            expectedNoteSHA256: expectedNoteSHA256, in: directory, journalRoot: journalRoot)
+    }
+
+    func rollbackBackupNoteIfPresent(id: String, transactionID: String, groupID: String, journalRoot: URL) throws {
+        guard safeID(id) else { throw LibraryBackupError.unsafeFile }
+        let marker = directory.appendingPathComponent(".backup-restore-pending", isDirectory: true).appendingPathComponent(id + ".json")
+        let note = directory.appendingPathComponent("\(id).json")
+        let pdf = directory.appendingPathComponent("\(id).pdf")
+        guard fileManager.fileExists(atPath: marker.path) else {
+            guard !fileManager.fileExists(atPath: note.path), !fileManager.fileExists(atPath: pdf.path) else {
+                throw LibraryBackupError.transaction("存在没有本地恢复标记的恢复目标")
+            }
+            return
+        }
+        try rollbackBackupNote(id: id, transactionID: transactionID, groupID: groupID, journalRoot: journalRoot)
+    }
+
+    public func rollbackBackupNote(id: String, transactionID: String, groupID: String, journalRoot: URL) throws {
+        guard safeID(id) else { throw LibraryBackupError.transaction("无法验证备份恢复事务所有权") }
+        let markerRoot = directory.appendingPathComponent(".backup-restore-pending", isDirectory: true)
+        let markerURL = markerRoot.appendingPathComponent(id + ".json")
+        _ = try LibraryBackupArchive.validateRegularSource(markerURL, maximumBytes: 16 * 1024)
+        let markerBytes = try LibraryBackupArchive.readSmallFile(markerURL, maximumBytes: 16 * 1024)
+        let marker = try JSONDecoder().decode(BackupPendingNoteMarker.self, from: markerBytes)
+        guard marker.noteID == id, marker.transactionID == transactionID, marker.groupID == groupID,
+              LibraryBackupTransactionGate.ownsPendingNoteMarker(marker, in: journalRoot) else {
+            throw LibraryBackupError.transaction("无法验证备份恢复事务所有权")
+        }
+        let note = directory.appendingPathComponent("\(id).json")
+        if fileManager.fileExists(atPath: note.path) {
+            let bytes = try LibraryBackupArchive.readSmallFile(note, maximumBytes: Int64(NoteDocument.maximumEncodedBytes))
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            guard digest == marker.expectedNoteSHA256 else { throw LibraryBackupError.sourceChanged }
+            try fileManager.removeItem(at: note)
+        }
+        let pdf = directory.appendingPathComponent("\(id).pdf")
+        if fileManager.fileExists(atPath: pdf.path) {
+            guard let expected = marker.expectedPDFSHA256 else { throw LibraryBackupError.unsafeFile }
+            let actual = try LibraryBackupArchive.hashFile(pdf)
+            guard actual.sha256 == expected else { throw LibraryBackupError.sourceChanged }
+            try fileManager.removeItem(at: pdf)
+        }
+        try LibraryBackupTransactionGate.removePendingMarker(noteID: id, transactionID: transactionID, groupID: groupID,
+            expectedNoteSHA256: marker.expectedNoteSHA256, in: directory, journalRoot: journalRoot, requireCommitted: false)
+        notes.removeAll { $0.id == id }
+    }
+
     public func exportURL(for note: NoteDocument) throws -> URL {
         let checked = try note.validated()
         let exports = directory.appendingPathComponent("Exports", isDirectory: true)
@@ -97,6 +287,23 @@ public final class NoteLibrary: ObservableObject {
             try checked.encoded().write(to: output, options: .atomic)
         }
         return output
+    }
+
+    public func exportRecoveryURL(for item: NoteRecoveryItem) throws -> URL {
+        guard recoveryItems.contains(where: { $0.id == item.id }),
+              fileManager.fileExists(atPath: item.sourceURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let exports = directory.appendingPathComponent("Exports", isDirectory: true)
+        try fileManager.createDirectory(at: exports, withIntermediateDirectories: true)
+        let name = safeFilename(item.filename, fallback: "damaged-note")
+        let output = exports.appendingPathComponent("\(name)-\(UUID().uuidString.prefix(8)).recovery")
+        try fileManager.copyItem(at: item.sourceURL, to: output)
+        return output
+    }
+
+    public func reload() {
+        loadNotes()
     }
 
     public func pdfURL(for note: NoteDocument) -> URL? {
@@ -134,8 +341,10 @@ public final class NoteLibrary: ObservableObject {
     }
 
     private func loadNotes() {
+        errorMessage = nil
         guard let urls = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return }
         var candidates = Set<URL>()
+        var recoveries = [NoteRecoveryItem]()
         for url in urls {
             if url.pathExtension.lowercased() == "json" && !url.lastPathComponent.hasPrefix(".") {
                 candidates.insert(url)
@@ -143,64 +352,186 @@ public final class NoteLibrary: ObservableObject {
                 candidates.insert(URL(fileURLWithPath: String(url.path.dropLast(4))))
             } else if url.lastPathComponent.hasSuffix(".json.tmp") {
                 candidates.insert(URL(fileURLWithPath: String(url.path.dropLast(4))))
+            } else if url.lastPathComponent.contains(".corrupt-") || url.lastPathComponent.contains(".failed-") {
+                recoveries.append(recoveryItem(url, reason: "此前加载或保存时保留的原始文件"))
             }
         }
         var loaded: [NoteDocument] = []
+        let pendingBackupIDs: Set<String>
+        do { pendingBackupIDs = try LibraryBackupTransactionGate.pendingNoteIDs(in: directory, journalRoot: backupTransactionDirectory) }
+        catch {
+            notes = []
+            errorMessage = "备份恢复标记无法安全验证，笔记暂未显示：\(error.localizedDescription)"
+            return
+        }
         for url in candidates {
             do {
-                let value = try recoverAndLoad(url)
+                let result = try recoverAndLoad(url)
+                let value = result.note
+                recoveries.append(contentsOf: result.recoveries)
+                if pendingBackupIDs.contains(value.id) { continue }
                 if value.pdfPageCount > 0 && !fileManager.fileExists(atPath: pdfURL(for: value)?.path ?? "") {
                     throw NoteDocumentError.malformed("PDF original is missing")
                 }
                 loaded.append(value)
             } catch {
+                for candidate in noteCandidateURLs(url) where fileManager.fileExists(atPath: candidate.path) {
+                    recoveries.append(recoveryItem(candidate, reason: error.localizedDescription))
+                }
                 errorMessage = [errorMessage, "Skipped \(url.lastPathComponent): \(error.localizedDescription)"]
                     .compactMap { $0 }.joined(separator: "\n")
             }
         }
         notes = loaded.sorted { $0.updatedAt > $1.updatedAt }
+        loadPendingDrafts(recoveries: &recoveries)
+        recoveryItems = Dictionary(grouping: recoveries, by: \.id).compactMap { $0.value.first }
+            .sorted { $0.filename < $1.filename }
     }
 
-    private func recoverAndLoad(_ target: URL) throws -> NoteDocument {
-        do { return try NoteDocument.decode(try Data(contentsOf: target)) }
-        catch let originalError {
-            let backup = sidecarURL(target, suffix: ".bak")
-            if fileManager.fileExists(atPath: backup.path), let value = try? NoteDocument.decode(Data(contentsOf: backup)) {
-                preserveCorrupt(target)
-                try? fileManager.moveItem(at: backup, to: target)
-                return value
-            }
-            let temporary = sidecarURL(target, suffix: ".tmp")
-            if fileManager.fileExists(atPath: temporary.path), let value = try? NoteDocument.decode(Data(contentsOf: temporary)) {
-                preserveCorrupt(target)
-                try? fileManager.moveItem(at: temporary, to: target)
-                return value
-            }
-            throw originalError
+    private func recoverAndLoad(_ target: URL) throws -> (note: NoteDocument, recoveries: [NoteRecoveryItem]) {
+        var valid = [(url: URL, data: Data, note: NoteDocument)]()
+        var invalid = [(url: URL, error: Error)]()
+        for url in noteCandidateURLs(target) where fileManager.fileExists(atPath: url.path) {
+            do {
+                let data = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+                valid.append((url, data, try NoteDocument.decode(data)))
+            } catch { invalid.append((url, error)) }
         }
-    }
-
-    private func writeAtomically(_ data: Data, to target: URL) throws {
-        try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temporary = sidecarURL(target, suffix: ".tmp")
-        let backup = sidecarURL(target, suffix: ".bak")
-        try data.write(to: temporary, options: .atomic)
-        if fileManager.fileExists(atPath: backup.path) { try fileManager.removeItem(at: backup) }
-        let hadTarget = fileManager.fileExists(atPath: target.path)
-        if hadTarget { try fileManager.moveItem(at: target, to: backup) }
-        do {
-            try fileManager.moveItem(at: temporary, to: target)
-            if fileManager.fileExists(atPath: backup.path) { try fileManager.removeItem(at: backup) }
-        } catch {
-            if hadTarget && fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: target) }
-            throw error
+        guard let selected = valid.max(by: {
+            if $0.note.updatedAt == $1.note.updatedAt { return $0.url != target && $1.url == target }
+            return $0.note.updatedAt < $1.note.updatedAt
+        }) else {
+            throw invalid.first?.error ?? CocoaError(.fileNoSuchFile)
         }
+        var recoveries = invalid.map { recoveryItem($0.url, reason: $0.error.localizedDescription) }
+        var promotionSucceeded = true
+        if selected.url != target {
+            if invalid.contains(where: { $0.url == target }), let preserved = preserveCorrupt(target) {
+                recoveries.removeAll { $0.sourceURL == target }
+                recoveries.append(recoveryItem(preserved, reason: "原笔记损坏，已从可读取的保存候选恢复"))
+            }
+            do {
+                try promoteRecovery(selected.data, to: target) { data in
+                    guard try NoteDocument.decode(data) == selected.note else {
+                        throw NoteDocumentError.malformed("Recovered note verification failed")
+                    }
+                }
+            } catch {
+                promotionSucceeded = false
+                recoveries.append(recoveryItem(selected.url,
+                    reason: "恢复提升失败，原候选已保留：\(error.localizedDescription)"))
+                errorMessage = [errorMessage, "Could not promote \(selected.url.lastPathComponent): \(error.localizedDescription)"]
+                    .compactMap { $0 }.joined(separator: "\n")
+            }
+        }
+        if promotionSucceeded {
+            for url in [sidecarURL(target, suffix: ".tmp"), sidecarURL(target, suffix: ".bak")]
+            where fileManager.fileExists(atPath: url.path)
+                  && !invalid.contains(where: { $0.url == url }) {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+        return (selected.note, recoveries)
     }
 
-    private func preserveCorrupt(_ target: URL) {
-        guard fileManager.fileExists(atPath: target.path) else { return }
+    private func writeAtomically(_ data: Data, to target: URL, verify: (Data) throws -> Void = { _ in }) throws {
+        try NoteAtomicFile.write(data, to: target, faultInjector: faultInjector, verify: verify)
+    }
+
+    private func preserveCorrupt(_ target: URL) -> URL? {
+        guard fileManager.fileExists(atPath: target.path) else { return nil }
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        try? fileManager.moveItem(at: target, to: target.deletingLastPathComponent().appendingPathComponent("\(target.lastPathComponent).corrupt-\(stamp)"))
+        let destination = target.deletingLastPathComponent().appendingPathComponent("\(target.lastPathComponent).corrupt-\(stamp)")
+        do { try fileManager.moveItem(at: target, to: destination); return destination }
+        catch { return nil }
+    }
+
+    private func loadPendingDrafts(recoveries: inout [NoteRecoveryItem]) {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: draftDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { pendingDrafts = []; return }
+        var targets = Set<URL>()
+        for url in urls {
+            if url.lastPathComponent.hasSuffix(".draft.json") { targets.insert(url) }
+            else if url.lastPathComponent.hasSuffix(".draft.json.bak") || url.lastPathComponent.hasSuffix(".draft.json.tmp") {
+                targets.insert(URL(fileURLWithPath: String(url.path.dropLast(4))))
+            } else if url.lastPathComponent.contains(".corrupt-") {
+                recoveries.append(recoveryItem(url, reason: "损坏的未保存恢复副本"))
+            }
+        }
+        var drafts = [NotePendingDraft]()
+        for target in targets {
+            let family = [target, sidecarURL(target, suffix: ".tmp"), sidecarURL(target, suffix: ".bak")]
+                .filter { fileManager.fileExists(atPath: $0.path) }
+            var valid = [(url: URL, data: Data, value: PersistedNoteDraft)]()
+            var invalidURLs = Set<URL>()
+            for url in family {
+                do {
+                    let data = try readLimited(url, limit: NoteDocument.maximumEncodedBytes + 64 * 1024)
+                    valid.append((url, data, try PersistedNoteDraft.decode(data)))
+                } catch {
+                    invalidURLs.insert(url)
+                    recoveries.append(recoveryItem(url, reason: error.localizedDescription))
+                }
+            }
+            guard let selected = valid.max(by: { $0.value.revision < $1.value.revision }) else { continue }
+            var promotionSucceeded = true
+            if selected.url != target {
+                if invalidURLs.contains(target), let preserved = preserveCorrupt(target) {
+                    recoveries.removeAll { $0.sourceURL == target }
+                    recoveries.append(recoveryItem(preserved, reason: "损坏的草稿已从可读取候选恢复"))
+                }
+                do {
+                    try promoteRecovery(selected.data, to: target) { data in
+                        guard try PersistedNoteDraft.decode(data) == selected.value else {
+                            throw NoteDocumentError.malformed("Recovery draft verification failed")
+                        }
+                    }
+                } catch {
+                    promotionSucceeded = false
+                    recoveries.append(recoveryItem(selected.url,
+                        reason: "草稿恢复提升失败，原候选已保留：\(error.localizedDescription)"))
+                    errorMessage = [errorMessage, "Could not promote \(selected.url.lastPathComponent): \(error.localizedDescription)"]
+                        .compactMap { $0 }.joined(separator: "\n")
+                }
+            }
+            if promotionSucceeded {
+                for url in [sidecarURL(target, suffix: ".tmp"), sidecarURL(target, suffix: ".bak")]
+                where fileManager.fileExists(atPath: url.path) && !invalidURLs.contains(url) {
+                    try? fileManager.removeItem(at: url)
+                }
+            }
+            if let canonical = notes.first(where: { $0.id == selected.value.document.id }), canonical == selected.value.document {
+                NoteAtomicFile.removeFamily(target)
+            } else {
+                revisionGate.register(noteID: selected.value.document.id, revision: selected.value.revision)
+                drafts.append(NotePendingDraft(revision: selected.value.revision, document: selected.value.document))
+            }
+        }
+        pendingDrafts = drafts.sorted { $0.document.updatedAt > $1.document.updatedAt }
+    }
+
+    private func recoveryItem(_ url: URL, reason: String) -> NoteRecoveryItem {
+        NoteRecoveryItem(id: url.standardizedFileURL.path, filename: url.lastPathComponent, reason: reason, sourceURL: url)
+    }
+
+    /// Recovery candidates may themselves be the normal `.tmp` or `.bak` path.
+    /// Promote through unique sidecars so a failed write can never truncate or
+    /// replace the only valid candidate selected above.
+    private func promoteRecovery(_ data: Data, to target: URL, verify: (Data) throws -> Void) throws {
+        let token = UUID().uuidString
+        let temporary = target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).recovery-\(token).tmp")
+        let backup = target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).recovery-\(token).bak")
+        try NoteAtomicFile.write(data, to: target, faultInjector: faultInjector,
+                                 temporaryURL: temporary, backupURL: backup, verify: verify)
+    }
+
+    private func noteCandidateURLs(_ target: URL) -> [URL] {
+        [target, sidecarURL(target, suffix: ".tmp"), sidecarURL(target, suffix: ".bak")]
     }
 
     private func readLimited(_ url: URL, limit: Int) throws -> Data {
@@ -213,6 +544,7 @@ public final class NoteLibrary: ObservableObject {
     }
 
     private func noteURL(for note: NoteDocument) -> URL { directory.appendingPathComponent("\(note.id).json") }
+    private func draftURL(noteID: String) -> URL { draftDirectory.appendingPathComponent("\(noteID).draft.json") }
     private func sidecarURL(_ target: URL, suffix: String) -> URL { URL(fileURLWithPath: target.path + suffix) }
     private func uniqueID() -> String { UUID().uuidString }
     private func safeID(_ value: String) -> Bool { value.range(of: #"^[A-Za-z0-9_.:-]+$"#, options: .regularExpression) != nil }

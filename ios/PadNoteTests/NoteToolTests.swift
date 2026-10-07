@@ -97,6 +97,44 @@ final class NoteToolTests: XCTestCase {
         XCTAssertTrue(result.jsonString.contains("第二页")); XCTAssertFalse(result.jsonString.contains("第一页"))
     }
 
+    func testPageMapNeverContainsTextSourceAndVaultToolsRequireSelectedSnapshot() throws {
+        var note = NoteDocument(title: "读取边界", pageCount: 2)
+        note.textFlows = [
+            NoteTextFlow(id: "flow-a", source: "SAME_PAGE_OUTSIDE_SELECTION", anchorPageIndex: 0),
+            NoteTextFlow(id: "flow-b", source: "ADJACENT_PAGE_PRIVATE", anchorPageIndex: 1)
+        ]
+        let withoutVault = NoteToolEngine(note: note, currentPage: 0,
+            selectionBounds: CGRect(x: 10, y: 10, width: 100, height: 60))
+        let map = withoutVault.invoke(name: "read_page_map", callID: "map",
+            argumentsJSON: #"{"page":2}"#).jsonString
+        XCTAssertTrue(map.contains("flow-a"))
+        XCTAssertTrue(map.contains("flow-b"))
+        XCTAssertFalse(map.contains("SAME_PAGE_OUTSIDE_SELECTION"))
+        XCTAssertFalse(map.contains("ADJACENT_PAGE_PRIVATE"))
+        XCTAssertFalse(withoutVault.describeToolsJSON().contains("search_vault"))
+        XCTAssertFalse(withoutVault.describeToolsJSON().contains("read_vault_note"))
+
+        let selected = NoteToolVaultEntry(id: "selected-a", title: "材料 A", markdown: "AUTHORIZED_A")
+        let scoped = NoteToolEngine(note: note, vault: [selected])
+        XCTAssertTrue(scoped.describeToolsJSON().contains("search_vault"))
+        let guessed = scoped.invoke(name: "read_vault_note", callID: "guess",
+            argumentsJSON: #"{"id":"unselected-b"}"#).jsonString
+        XCTAssertFalse(guessed.contains("UNSELECTED_B"))
+        XCTAssertTrue(guessed.contains("找不到"))
+    }
+
+    func testVaultSnapshotLimitsAreEnforcedBeforeToolExposure() {
+        let normal = (0..<13).map {
+            NoteToolVaultEntry(id: "n\($0)", title: "材料 \($0)", markdown: String(repeating: "字", count: 32))
+        }
+        XCTAssertEqual(NoteToolVaultEntry.bounded(normal).count, 12)
+        let oversized = NoteToolVaultEntry(id: "large", title: "过大",
+            markdown: String(repeating: "x", count: NoteToolVaultEntry.maximumEntryBytes + 1))
+        XCTAssertTrue(NoteToolVaultEntry.bounded([oversized]).isEmpty)
+        let engine = NoteToolEngine(note: NoteDocument(), vault: [oversized])
+        XCTAssertFalse(engine.describeToolsJSON().contains("search_vault"))
+    }
+
     func testFailedPlacementDoesNotMutateAndSecondPageInkIsAvoided() throws {
         var note = NoteDocument(title: "分页", pageCount: 2)
         let y = note.pageHeight + note.pageGap + 20

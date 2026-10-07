@@ -7,37 +7,152 @@ struct VaultNote: Codable, Identifiable {
     var markdown: String
     var sourceUpdatedAt: Double
     var createdAt: Date
+    var archiveOrigin: String? = nil
+    var archiveSourceNoteID: String? = nil
+    var archiveLinkedNoteID: String? = nil
+    var archiveSourceState: String? = nil
+    var restoreTransactionID: String? = nil
+    var restoreGroupID: String? = nil
 }
 
 @MainActor
-final class VaultLibrary: ObservableObject {
+final class VaultLibrary: ObservableObject, DigitizationVaultPublishing {
     @Published var notes: [VaultNote] = []
     @Published var errorMessage: String?
+    @Published private(set) var listingIssueCount = 0
     private let directory: URL
+    private let journalRoot: URL
 
-    init() {
+    init(directory: URL? = nil, journalRoot: URL? = nil) {
         let testing = ProcessInfo.processInfo.arguments.contains("--uitesting")
-        directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let fallback = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(testing ? "PadNoteUITestVault" : "PadNoteVault", isDirectory: true)
+        self.directory = directory ?? LibraryBackupUITestPaths.directory("vault", fallback: fallback)
+        self.journalRoot = journalRoot ?? LibraryBackupTransactionGate.defaultJournalRoot
         reload()
     }
 
     func reload() {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            notes = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "json" }
-                .map { try JSONDecoder().decode(VaultNote.self, from: Data(contentsOf: $0)) }
-                .sorted { $0.createdAt > $1.createdAt }
-        } catch { errorMessage = error.localizedDescription }
+            try UserCoverPresetStore.requireDirectoryForResources(directory)
+            let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            guard files.count <= 20_000 else { throw LibraryBackupError.sizeLimit("知识库记录数量超限") }
+            var valid = [VaultNote](), issues = 0
+            for url in files where url.pathExtension == "json" {
+                do {
+                    _ = try LibraryBackupArchive.validateRegularSource(url, maximumBytes: LibraryBackupArchive.maxVaultBytes + 128 * 1024)
+                    let data = try LibraryBackupArchive.readSmallFile(url, maximumBytes: LibraryBackupArchive.maxVaultBytes + 128 * 1024)
+                    let entry = try JSONDecoder().decode(VaultNote.self, from: data)
+                    guard !entry.id.isEmpty, entry.id.utf8.count <= 512,
+                          entry.id.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+                          url.lastPathComponent == "\(safeID(entry.id)).json",
+                          !entry.title.isEmpty, entry.title.utf8.count <= 512,
+                          entry.markdown.utf8.count <= LibraryBackupArchive.maxVaultBytes,
+                          entry.sourceUpdatedAt.isFinite,
+                          entry.createdAt.timeIntervalSince1970.isFinite,
+                          entry.createdAt.timeIntervalSince1970 >= 0 else {
+                        throw LibraryBackupError.invalidManifest("知识库记录无效")
+                    }
+                    if LibraryBackupTransactionGate.isVisible(originKind: entry.archiveOrigin,
+                        transactionID: entry.restoreTransactionID, groupID: entry.restoreGroupID, kind: "vault",
+                        localID: entry.id, in: journalRoot) {
+                        valid.append(entry)
+                    }
+                } catch { issues += 1 }
+            }
+            notes = valid.sorted { $0.createdAt > $1.createdAt }
+            listingIssueCount = issues
+            errorMessage = issues == 0 ? nil : "有 \(issues) 条知识库记录无法读取；其他有效条目仍可用，原文件已保留。"
+        } catch {
+            listingIssueCount = max(1, listingIssueCount)
+            errorMessage = "知识库目录无法安全读取：\(error.localizedDescription)"
+        }
     }
 
+    /// Re-reads the persisted Vault row before a backup snapshot relies on its association.
+    func backupColdRead(for expected: VaultNote) throws -> VaultNote {
+        let url = directory.appendingPathComponent("\(safeID(expected.id)).json")
+        let maximumBytes = LibraryBackupArchive.maxVaultBytes + 128 * 1024
+        _ = try LibraryBackupArchive.validateRegularSource(url, maximumBytes: maximumBytes)
+        let data = try LibraryBackupArchive.readSmallFile(url, maximumBytes: maximumBytes)
+        let value = try JSONDecoder().decode(VaultNote.self, from: data)
+        guard value.id == expected.id, value.title == expected.title, value.markdown == expected.markdown,
+              value.sourceUpdatedAt == expected.sourceUpdatedAt, value.createdAt == expected.createdAt,
+              value.archiveOrigin == expected.archiveOrigin, value.archiveSourceNoteID == expected.archiveSourceNoteID,
+              value.archiveLinkedNoteID == expected.archiveLinkedNoteID, value.archiveSourceState == expected.archiveSourceState,
+              value.restoreTransactionID == expected.restoreTransactionID, value.restoreGroupID == expected.restoreGroupID,
+              url.lastPathComponent == "\(safeID(value.id)).json",
+              LibraryBackupTransactionGate.isVisible(originKind: value.archiveOrigin,
+                  transactionID: value.restoreTransactionID, groupID: value.restoreGroupID, kind: "vault",
+                  localID: value.id, in: journalRoot) else {
+            throw LibraryBackupError.sourceChanged
+        }
+        return value
+    }
+
+    func backupJournalRoot() -> URL { journalRoot }
+
     func save(note: NoteDocument, markdown: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let existingCreatedAt = notes.first(where: { $0.id == note.id })?.createdAt
         let entry = VaultNote(id: note.id, title: note.title, markdown: markdown,
-                              sourceUpdatedAt: note.updatedAt, createdAt: Date())
+                              sourceUpdatedAt: note.updatedAt, createdAt: existingCreatedAt ?? Date())
         let data = try JSONEncoder().encode(entry)
         try data.write(to: directory.appendingPathComponent("\(safeID(note.id)).json"), options: .atomic)
         reload()
+    }
+
+    func publishDigitization(note: NoteDocument, checkpoint: DigitizationCheckpoint) throws {
+        guard checkpoint.source.noteID == note.id, checkpoint.isComplete,
+              checkpoint.state == .readyToPublish else {
+            throw DigitizationError.invalidSource("只有全部页面完成的数字化批次才能保存到知识库。")
+        }
+        try save(note: note, markdown: checkpoint.markdown(markIncomplete: false))
+    }
+
+    func archiveSourceNoteIDs() -> Set<String> { Set(notes.compactMap { $0.archiveOrigin == nil ? $0.id : ($0.archiveLinkedNoteID ?? $0.archiveSourceNoteID) }) }
+
+    func restoreArchiveEntry(id: String, title: String, markdown: String, sourceRevisionMS: Int64,
+                             createdAtMS: Int64, sourceNoteID: String, sourceState: String = "independent",
+                             linkedNoteID: String? = nil, transactionID: String? = nil,
+                             groupID: String? = nil) throws -> VaultNote {
+        guard UUID(uuidString: id)?.uuidString.lowercased() == id, sourceRevisionMS >= 0, createdAtMS >= 0,
+              ["linked_note", "source_deleted", "source_not_selected", "independent"].contains(sourceState),
+              (sourceState == "linked_note" ? linkedNoteID != nil : linkedNoteID == nil),
+              linkedNoteID == nil || UUID(uuidString: linkedNoteID!)?.uuidString.lowercased() == linkedNoteID,
+              Data(markdown.utf8).count <= 16 * 1024 * 1024 else { throw LibraryBackupError.invalidManifest("知识库恢复载荷无效") }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let entry = VaultNote(id: id, title: title, markdown: markdown, sourceUpdatedAt: Double(sourceRevisionMS),
+                              createdAt: Date(timeIntervalSince1970: Double(createdAtMS) / 1000),
+                              archiveOrigin: "restored_archive", archiveSourceNoteID: sourceNoteID,
+                              archiveLinkedNoteID: linkedNoteID, archiveSourceState: sourceState,
+                              restoreTransactionID: transactionID, restoreGroupID: groupID)
+        let target = directory.appendingPathComponent("\(safeID(id)).json")
+        guard !FileManager.default.fileExists(atPath: target.path) else { throw LibraryBackupError.transaction("知识库目标已存在") }
+        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).restore.partial")
+        let bytes = try JSONEncoder().encode(entry)
+        try bytes.write(to: temporary, options: [.atomic, .completeFileProtectionUnlessOpen])
+        do { try FileManager.default.moveItem(at: temporary, to: target) } catch { try? FileManager.default.removeItem(at: temporary); throw error }
+        reload()
+        return entry
+    }
+
+    func rollbackPartialArchiveEntry(id: String, transactionID: String, groupID: String) throws {
+        guard let uuid = UUID(uuidString: id), uuid.uuidString.lowercased() == id else { throw LibraryBackupError.unsafeFile }
+        let target = directory.appendingPathComponent("\(safeID(id)).json")
+        guard FileManager.default.fileExists(atPath: target.path) else { return }
+        _ = try LibraryBackupArchive.validateRegularSource(target, maximumBytes: 16 * 1024 * 1024)
+        let entry = try JSONDecoder().decode(VaultNote.self, from: LibraryBackupArchive.readSmallFile(target, maximumBytes: 16 * 1024 * 1024))
+        guard entry.id == id, entry.archiveOrigin == "restored_archive", entry.restoreTransactionID == transactionID,
+              entry.restoreGroupID == groupID else { throw LibraryBackupError.transaction("知识库恢复所有权不匹配") }
+        try FileManager.default.removeItem(at: target)
+        reload()
+    }
+
+    func removeRestoredArchiveEntry(_ note: VaultNote) throws {
+        guard note.archiveOrigin == "restored_archive" else { throw LibraryBackupError.transaction("只能通过归档恢复记录执行此操作") }
+        try delete(note)
     }
 
     func delete(_ note: VaultNote) throws {

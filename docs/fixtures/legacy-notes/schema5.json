@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 5,
+  "id": "fixture-schema-5",
+  "title": "Schema 5 构造回归样例",
+  "updatedAt": 1700000000005,
+  "pageCount": 3,
+  "strokes": [
+    {
+      "id": "stroke-v5",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000005,
+      "points": [
+        {
+          "x": 20,
+          "y": 40,
+          "timestamp": 1700000000005,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 70,
+          "timestamp": 1700000000015,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "pageWidth": 600,
+  "pageHeight": 800,
+  "pageGap": 24,
+  "canvasWidth": 600,
+  "canvasHeight": 800,
+  "viewportScale": 1.1,
+  "viewportZoom": 1.05,
+  "viewportCenterX": 300,
+  "viewportCenterY": 400,
+  "textFlows": [
+    {
+      "id": "flow-v5",
+      "format": "markdown",
+      "source": "# Schema 5 flow\n\n片段不再持久化。",
+      "fontSizeSp": 18,
+      "width": 470,
+      "anchorPageIndex": 1,
+      "anchorXInPage": 55,
+      "anchorYInPage": 85
+    }
+  ]
+}

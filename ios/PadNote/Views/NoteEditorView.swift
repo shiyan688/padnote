@@ -1,31 +1,84 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct NoteAISourceSnapshot: Identifiable {
+    let id = UUID()
+    let image: UIImage?
+    let note: NoteDocument
+    let page: Int
+    let selectionBounds: CGRect?
+    let vaultEntries: [NoteToolVaultEntry]
+    let pdfDigest: String?
+
+    init(image: UIImage?, note: NoteDocument, page: Int, selectionBounds: CGRect?,
+         vaultEntries: [NoteToolVaultEntry], pdfDigest: String? = nil) {
+        self.image = image?.pngData().flatMap(UIImage.init(data:)) ?? image
+        self.note = note
+        self.page = page
+        self.selectionBounds = selectionBounds
+        self.vaultEntries = vaultEntries
+        self.pdfDigest = pdfDigest
+    }
+}
+
 struct NoteEditorView: View {
+    private enum SavePhase: Equatable { case saved, dirty, saving, failed }
+    private enum PendingContentOutlineAction {
+        case editFlow(String)
+        case shareMarkdown
+    }
+    private struct TextEditorRequest: Identifiable {
+        let id = UUID()
+        let flow: NoteTextFlow?
+    }
     @EnvironmentObject private var library: NoteLibrary
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var document: NoteDocument
     @StateObject private var canvas = CanvasController()
     @StateObject private var vault = VaultLibrary()
+    @ObservedObject private var compiledRenderer = CompiledTextRenderer.shared
     @State private var pendingSave: Task<Void, Never>?
-    @State private var saveStatus = "已保存"
+    @State private var pendingDraft: Task<Void, Never>?
+    @State private var savePhase: SavePhase = .saved
+    @State private var editRevision = 0
+    @State private var persistedDraftRevision = 0
+    @State private var lastSavedAt: Date?
+    @State private var saveFailure: String?
+    @State private var showSaveActions = false
     @State private var error: String?
-    @State private var showText = false
-    @State private var editingFlow: NoteTextFlow?
+    @State private var textEditorRequest: TextEditorRequest?
+    @State private var pendingTextEditorFlowID: String?
     @State private var showAI = false
-    @State private var aiImage: UIImage?
+    @State private var aiSource: NoteAISourceSnapshot?
     @State private var showPages = false
     @State private var showPaperSettings = false
+    @State private var showContentOutline = false
+    @State private var contentOutlineCopied = false
+    @State private var pendingContentOutlineAction: PendingContentOutlineAction?
     @State private var sharing: ShareArtifact?
     @State private var showImageImport = false
     @State private var showDigitize = false
     @State private var showWidth = false
     @State private var showColors = false
     @State private var exportingPDF = false
+    @State private var showPDFRenderRecovery = false
+    @State private var pdfExportOperationID = UUID()
     @State private var confirmClear = false
+    @State private var videoSource: VaultNote?
+    @State private var videoSourceIsStale = false
+    @State private var showingVideoAttachments = false
+    private let videoConnectionStore: AgentConnectionStore
+    private let videoTaskStore: AgentTaskStore
+    private let videoTaskService: AgentTaskService?
 
-    init(note: NoteDocument) { _document = State(initialValue: note) }
+    init(note: NoteDocument, videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
+         videoTaskStore: AgentTaskStore = AgentTaskStore(), videoTaskService: AgentTaskService? = nil) {
+        _document = State(initialValue: note)
+        self.videoConnectionStore = videoConnectionStore
+        self.videoTaskStore = videoTaskStore
+        self.videoTaskService = videoTaskService
+    }
 
     private var pdfURL: URL? { library.pdfURL(for: document) }
     private let colors = ["#FF1F2933", "#FF285EA8", "#FFB23A30", "#FF2F805B", "#FF74509A"]
@@ -36,11 +89,11 @@ struct NoteEditorView: View {
                 inkToolbar
                 Divider()
                 ZStack(alignment: .bottom) {
-                    NoteCanvas(document: $document, controller: canvas, pdfURL: pdfURL, onChange: scheduleSave)
+                    NoteCanvas(document: $document, controller: canvas, pdfURL: pdfURL)
                         .accessibilityIdentifier("noteCanvas")
                     if canvas.hasSelection {
                         HStack(spacing: 16) {
-                            Button("问 AI", systemImage: "sparkles") { aiImage = canvas.selectionImage; showAI = true }
+                            Button("问 AI", systemImage: "sparkles") { openAI(image: canvas.selectionImage) }
                                 .disabled(canvas.selectionImage == nil)
                             Button("复制", systemImage: "doc.on.doc") { canvas.duplicateSelection() }
                             Button("删除", systemImage: "trash", role: .destructive) { canvas.deleteSelection() }
@@ -50,13 +103,26 @@ struct NoteEditorView: View {
                         .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                         .padding(16)
                     }
-                    if showAI {
-                        FloatingAIPanel(onClose: { showAI = false }) {
-                            AIAssistantView(image: aiImage, noteContext: "", embedded: true, onClose: { showAI = false },
-                                toolNote: document, toolPage: canvas.currentPage, selectionBounds: canvas.selectionBounds,
-                                vaultEntries: vault.notes.map { NoteToolVaultEntry(id: $0.id, title: $0.title, markdown: $0.markdown) },
-                                onToolCommit: commitAITools) { _ in }
+                    if showAI, let source = aiSource {
+                        FloatingAIPanel(onClose: closeAI) {
+                            AIAssistantView(image: source.image, noteContext: "", embedded: true, onClose: closeAI,
+                                toolNote: source.note, toolPage: source.page, selectionBounds: source.selectionBounds,
+                                vaultEntries: source.vaultEntries, currentToolDocument: document,
+                                sourcePDFDigest: source.pdfDigest,
+                                onToolCommit: commitAITools, onToolMutationAction: performAIToolMutation,
+                                onToolLocate: locateAIToolMutation,
+                                toolMutationApplied: { canvas.aiApplicationState(for: $0) }) { _ in }
+                                .id(source.id)
                         }
+                    }
+                    if !compiledRenderer.failures(document: document).isEmpty && !showAI {
+                        Button {
+                            showPaperSettings = true
+                        } label: {
+                            Label("有 \(compiledRenderer.failures(document: document).count) 个文字对象未完成排版", systemImage: "exclamationmark.triangle")
+                        }
+                        .buttonStyle(.borderedProminent).tint(.orange)
+                        .padding(16).accessibilityIdentifier("renderFailureEntry")
                     }
                 }
                 HStack {
@@ -67,7 +133,12 @@ struct NoteEditorView: View {
                     Text(canvas.pencilOnly ? "Apple Pencil 书写 · 手指浏览 · 双指缩放" : "手指或 Apple Pencil 书写 · 双指浏览与缩放")
                         .lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
-                    Text(saveStatus).accessibilityIdentifier("saveStatus")
+                    if savePhase == .failed {
+                        Button("重试保存") { beginSave() }.buttonStyle(.borderless)
+                        Button("导出未保存副本") { exportEditableSnapshot() }.buttonStyle(.borderless)
+                    }
+                    Text(saveStatusText).foregroundStyle(savePhase == .failed ? .red : PadTheme.secondary)
+                        .accessibilityIdentifier("saveStatus")
                 }
                 .font(.system(size: 12)).foregroundStyle(PadTheme.secondary)
                 .padding(.horizontal, 24).padding(.vertical, 8)
@@ -77,7 +148,7 @@ struct NoteEditorView: View {
             .navigationTitle(document.title).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { saveNow(); if error == nil { dismiss() } } label: { Label("书架", systemImage: "chevron.left") }
+                    Button { requestClose() } label: { Label("书架", systemImage: "chevron.left") }
                         .accessibilityIdentifier("backToShelf")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -85,36 +156,55 @@ struct NoteEditorView: View {
                         .disabled(!canvas.canUndo).accessibilityLabel("撤销").accessibilityIdentifier("undoButton")
                     Button { canvas.redo() } label: { Image(systemName: "arrow.uturn.forward") }
                         .disabled(!canvas.canRedo).accessibilityLabel("重做")
-                    Button { aiImage = canvas.selectionImage; showAI = true } label: { Image(systemName: "sparkles") }
+                    Button { openAI(image: canvas.selectionImage) } label: { Image(systemName: "sparkles") }
                         .accessibilityLabel("AI 助手")
                     Menu {
-                        Button("保存", systemImage: "checkmark.circle") { saveNow() }
+                        Button("保存", systemImage: "checkmark.circle") { beginSave() }
                         Button("导出可编辑笔记", systemImage: "square.and.arrow.up") {
-                            saveNow()
-                            do { sharing = ShareArtifact(url: try library.exportURL(for: document)) }
-                            catch { self.error = error.localizedDescription }
+                            exportEditableSnapshot()
                         }
                         Button("导出 PDF", systemImage: "doc.richtext") { exportPDF() }
                         Button("整理到知识库", systemImage: "text.book.closed") { showDigitize = true }
+                        Button("生成视频", systemImage: "film") { beginVideoEntry() }
+                        Button("查看已关联视频", systemImage: "play.rectangle") { showingVideoAttachments = true }
                         Button("插入图片", systemImage: "photo") { showImageImport = true }
+                        Button("内容大纲", systemImage: "list.bullet.indent") { presentContentOutline() }
+                            .accessibilityIdentifier("contentOutlineEntry")
                         Button("管理文字", systemImage: "text.alignleft") { showPaperSettings = true }
                         Button("清空当前笔记", systemImage: "trash", role: .destructive) { confirmClear = true }
                             .disabled(document.strokes.isEmpty && document.textFlows.isEmpty && document.images.isEmpty)
-                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("更多操作")
+                    } label: { Image(systemName: "ellipsis.circle") }
+                        .accessibilityLabel("更多操作").accessibilityIdentifier("moreActionsButton")
                 }
             }
         }
-        .onChange(of: document) { _, _ in scheduleSave() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { saveNow() } }
-        .onDisappear { canvas.onFinishTextEditing?(); saveNow() }
-        .sheet(isPresented: $showText) {
-            TextFlowEditor(flow: editingFlow) { source, format, size in
-                insertText(source, format: format, size: size, replacing: editingFlow?.id)
+        .onAppear(perform: configureInitialSaveState)
+        .onChange(of: document) { _, _ in documentChanged() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                canvas.onFinishTextEditing?()
+                beginSave()
+            }
+        }
+        .onDisappear {
+            canvas.onFinishTextEditing?()
+            if savePhase != .saved { enqueueDraft(document, revision: editRevision) }
+        }
+        .interactiveDismissDisabled(savePhase != .saved)
+        .sheet(item: $textEditorRequest) { request in
+            TextFlowEditor(flow: request.flow) { source, format, size in
+                insertText(source, format: format, size: size, replacing: request.flow?.id)
             }
         }
         .sheet(isPresented: $showPages) { pageManager }
-        .sheet(isPresented: $showPaperSettings) { textManager }
+        .sheet(isPresented: $showPaperSettings, onDismiss: textManagerDidDismiss) { textManager }
+        .sheet(isPresented: $showContentOutline, onDismiss: contentOutlineDidDismiss) { contentOutline }
         .sheet(isPresented: $showDigitize) { DigitizeNoteView(note: document, pdfURL: pdfURL) }
+        .sheet(item: $videoSource) { source in
+            VideoTaskExportView(note: source, sourceIsStale: videoSourceIsStale,
+                connectionStore: videoConnectionStore, taskStore: videoTaskStore, service: videoTaskService) { _ in }
+        }
+        .sheet(isPresented: $showingVideoAttachments) { NoteVideoAttachmentShelf(noteID: document.id) }
         .sheet(item: $sharing) { ShareSheet(url: $0.url) }
         .fileImporter(isPresented: $showImageImport, allowedContentTypes: [.image]) { result in
             do {
@@ -150,6 +240,22 @@ struct NoteEditorView: View {
             }
             Button("取消", role: .cancel) {}
         } message: { Text("清除笔迹、文字和图片。页面和 PDF 底图保留，可使用撤销恢复。") }
+        .confirmationDialog("PDF 中有文字未完成排版", isPresented: $showPDFRenderRecovery, titleVisibility: .visible) {
+            Button("查看并修复源码") { showPaperSettings = true }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("完整 PDF 尚未生成。请查看失败对象，修复或重试后再导出。笔记源码仍然保留。")
+        }
+        .confirmationDialog("更改尚未保存", isPresented: $showSaveActions, titleVisibility: .visible) {
+            Button("重试保存") { beginSave() }
+            Button("导出未保存副本") { exportEditableSnapshot() }
+            if persistedDraftRevision == editRevision && editRevision > 0 {
+                Button("保留恢复副本并离开") { dismiss() }
+            }
+            Button("继续编辑", role: .cancel) {}
+        } message: {
+            Text(saveFailure ?? "保存未完成。请重试或先导出当前副本。")
+        }
     }
 
     private var currentPageText: String {
@@ -204,7 +310,7 @@ struct NoteEditorView: View {
                     .accessibilityValue(canvas.pencilOnly ? "1" : "0")
                 Button {
                     let page = document.pageCount
-                    canvas.performEdit { if $0.pageCount < 500 { $0.pageCount += 1 } }
+                    canvas.performEdit { _ = NotePageOperations.appendBlankPage(in: &$0) }
                     canvas.goToPage(min(page, document.pageCount - 1))
                 } label: { Image(systemName: "doc.badge.plus").frame(width: 44, height: 44) }
                     .accessibilityLabel("添加页面").accessibilityIdentifier("addPageButton")
@@ -261,13 +367,22 @@ struct NoteEditorView: View {
             List {
                 if document.textFlows.isEmpty { Text("还没有文字。使用工具栏的文字按钮插入内容。") }
                 ForEach(document.textFlows) { flow in
-                    Button {
-                        editingFlow = flow; showPaperSettings = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showText = true }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(flow.source).lineLimit(3)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            editFlow(flow)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                            Text(flow.source).lineLimit(3).accessibilityIdentifier("textFlowSource")
                             Text("第 \(flow.anchorPageIndex + 1) 页 · \(flow.format)").font(.caption).foregroundStyle(PadTheme.secondary)
+                            }
+                        }.accessibilityIdentifier("textFlowEditButton")
+                        if let failure = compiledRenderer.failure(documentID: document.id, flow: flow) {
+                            Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                            ViewThatFits(in: .horizontal) {
+                                renderFailureActions(flow)
+                                ScrollView(.horizontal, showsIndicators: false) { renderFailureActions(flow) }
+                            }
                         }
                     }.swipeActions { Button("删除", role: .destructive) { canvas.performEdit { $0.textFlows.removeAll { $0.id == flow.id } } } }
                 }
@@ -276,9 +391,130 @@ struct NoteEditorView: View {
         }
     }
 
+    private var contentOutline: some View {
+        NavigationStack {
+            List {
+                if contentOutlineCopied {
+                    Label("Markdown 已复制到剪贴板", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(PadTheme.accent)
+                        .accessibilityIdentifier("contentOutlineCopyAcknowledgement")
+                }
+                Text("文字对象按起始页归组；长对象内容可能延伸到后续页面。")
+                    .font(.footnote).foregroundStyle(PadTheme.secondary)
+                ForEach(outlineSnapshot.pages) { page in
+                    Section("第 \(page.index + 1) 页") {
+                        if page.hasPDFBackground {
+                            Label("PDF 原文背景；没有提取文字", systemImage: "doc.text.image")
+                                .font(.subheadline).foregroundStyle(PadTheme.secondary)
+                        }
+                        ForEach(page.textFlows) { flow in
+                            Button {
+                                pendingContentOutlineAction = .editFlow(flow.id)
+                                showContentOutline = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(flow.format == "latex" ? "公式 · LaTeX 源码" : "正文 · Markdown",
+                                          systemImage: flow.format == "latex" ? "function" : "text.alignleft")
+                                    Text(flow.source).lineLimit(3).foregroundStyle(PadTheme.secondary)
+                                }
+                            }
+                            .accessibilityLabel("第 \(page.index + 1) 页文字对象起始页，\(flow.format == "latex" ? "公式 LaTeX 源码" : "Markdown 正文")：\(flow.source.prefix(120))。定位并编辑")
+                            .accessibilityIdentifier("contentOutlineFlow-\(flow.id)-page-\(page.index)")
+                        }
+                        ForEach(page.imageIDs, id: \.self) { imageID in
+                            Button {
+                                canvas.goToPage(page.index)
+                                showContentOutline = false
+                            } label: {
+                                Label("图片（未添加说明）", systemImage: "photo")
+                            }
+                            .accessibilityLabel("第 \(page.index + 1) 页，图片（未添加说明），定位到所在页")
+                            .accessibilityIdentifier("contentOutlineImage-\(imageID)")
+                        }
+                        if page.hasHandwriting {
+                            Label("手写笔迹尚未识别", systemImage: "pencil.tip.crop.circle.badge.questionmark")
+                                .font(.subheadline).foregroundStyle(PadTheme.secondary)
+                        }
+                        if page.textFlows.isEmpty && page.imageIDs.isEmpty && !page.hasHandwriting && !page.hasPDFBackground {
+                            Text("此页没有可导出的文字对象。")
+                                .font(.subheadline).foregroundStyle(PadTheme.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("内容大纲")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("复制 Markdown") { copyContentOutline() }
+                        .accessibilityIdentifier("contentOutlineCopy")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("分享 Markdown", systemImage: "square.and.arrow.up") {
+                        pendingContentOutlineAction = .shareMarkdown
+                        showContentOutline = false
+                    }
+                    .accessibilityIdentifier("contentOutlineShare")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { showContentOutline = false }
+                        .accessibilityIdentifier("contentOutlineDone")
+                }
+            }
+        }
+    }
+
+    private var outlineSnapshot: ContentOutlineSnapshot {
+        ContentOutlineSnapshot(document: document)
+    }
+
+    private func presentContentOutline() {
+        contentOutlineCopied = false
+        showContentOutline = true
+    }
+
+    private func contentOutlineDidDismiss() {
+        guard let action = pendingContentOutlineAction else { return }
+        pendingContentOutlineAction = nil
+        switch action {
+        case .editFlow(let flowID):
+            guard let latestFlow = document.textFlows.first(where: { $0.id == flowID }) else {
+                error = "这段文字已不存在，无法打开编辑器。"
+                return
+            }
+            canvas.goToPage(latestFlow.anchorPageIndex)
+            textEditorRequest = TextEditorRequest(flow: latestFlow)
+        case .shareMarkdown:
+            shareContentOutline()
+        }
+    }
+
+    private func copyContentOutline() {
+        UIPasteboard.general.string = outlineSnapshot.markdown
+        contentOutlineCopied = true
+        UIAccessibility.post(notification: .announcement, argument: "Markdown 已复制到剪贴板")
+    }
+
+    private func shareContentOutline() {
+        do {
+            let base = LibraryBackupUITestPaths.root.map {
+                $0.appendingPathComponent("outline-exports", isDirectory: true)
+            } ?? FileManager.default.temporaryDirectory
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let url = base.appendingPathComponent("PadNote-Outline-\(UUID().uuidString).md")
+            try Data(outlineSnapshot.markdown.utf8).write(to: url, options: .atomic)
+            sharing = ShareArtifact(url: url)
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     private func insertText(_ source: String, format: String, size: Double, replacing id: String? = nil) {
         let clean = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
+        if let id, !document.textFlows.contains(where: { $0.id == id }) {
+            error = "这段文字已不存在，无法保存编辑。"
+            return
+        }
         let targetPage = id.flatMap { id in document.textFlows.first(where: { $0.id == id })?.anchorPageIndex }
             ?? ((!document.strokes.isEmpty || !document.textFlows.isEmpty || document.pdfPageCount > 0 || !document.images.isEmpty) ? document.pageCount : 0)
         canvas.performEdit { note in
@@ -289,7 +525,7 @@ struct NoteEditorView: View {
                 let needsPage = !note.strokes.isEmpty || !note.textFlows.isEmpty || note.pdfPageCount > 0 || !note.images.isEmpty
                 let page = needsPage ? note.pageCount : 0
                 guard page < 500 else { return }
-                if needsPage { note.pageCount += 1 }
+                if needsPage { _ = NotePageOperations.appendBlankPage(in: &note) }
                 let flow = NoteTextFlow(id: UUID().uuidString, format: format, source: clean, fontSizeSp: size,
                                         lineHeight: 1.35, width: note.pageWidth - 32, anchorPageIndex: page,
                                         anchorXInPage: 16, anchorYInPage: 40)
@@ -299,29 +535,194 @@ struct NoteEditorView: View {
         DispatchQueue.main.async { canvas.goToPage(targetPage) }
     }
 
-    private func scheduleSave() {
-        pendingSave?.cancel(); saveStatus = "正在保存…"
-        pendingSave = Task { @MainActor in
-            do { try await Task.sleep(nanoseconds: 600_000_000) } catch { return }
-            saveNow()
+    private var saveStatusText: String {
+        switch savePhase {
+        case .dirty: return "未保存"
+        case .saving: return "正在保存…"
+        case .failed:
+            if let lastSavedAt { return "保存失败 · 上次成功 \(lastSavedAt.formatted(date: .omitted, time: .shortened))" }
+            return "保存失败 · 尚无成功版本"
+        case .saved:
+            if let lastSavedAt { return "已保存 \(lastSavedAt.formatted(date: .omitted, time: .shortened))" }
+            return "已保存"
         }
     }
 
-    private func commitAITools(_ original: NoteDocument, _ proposed: NoteDocument) throws {
-        guard document.id == original.id, document.strokes == original.strokes,
-              document.textFlows == original.textFlows, document.images == original.images,
-              document.pageCount == original.pageCount else { throw NoteAIConversationError.changedDocument }
-        let validated = try proposed.validated()
-        canvas.performEdit { note in
-            note.textFlows = validated.textFlows
-            note.pageCount = validated.pageCount
+    private func configureInitialSaveState() {
+        if let canonical = library.notes.first(where: { $0.id == document.id }) {
+            lastSavedAt = Date(timeIntervalSince1970: canonical.updatedAt / 1000)
+        }
+        if let draft = library.pendingDraft(noteID: document.id), draft.document == document {
+            editRevision = draft.revision
+            persistedDraftRevision = draft.revision
+            savePhase = .dirty
         }
     }
 
-    private func saveNow() {
+    @MainActor
+    private func beginVideoEntry() {
+        Task { @MainActor in
+            guard await saveCurrentRevision() else {
+                error = "当前笔记未能保存。请先修复保存问题，再创建视频任务；不会改用旧快照。"
+                showSaveActions = true
+                return
+            }
+            vault.reload()
+            guard let source = vault.notes.first(where: { $0.id == document.id }) else {
+                error = "还没有已整理的文字材料。接下来会打开逐页整理流程；确认发布完整结果后，再从这里创建视频任务。"
+                showDigitize = true
+                return
+            }
+            videoSourceIsStale = source.sourceUpdatedAt + 1000 < document.updatedAt
+            videoSource = source
+        }
+    }
+
+    private func documentChanged() {
+        let revision = library.nextDraftRevision(noteID: document.id)
+        guard revision > 0 else { return }
+        editRevision = revision
+        savePhase = .dirty
+        saveFailure = nil
+        enqueueDraft(document, revision: revision)
         pendingSave?.cancel()
-        do { try library.save(document); saveStatus = "已保存" }
-        catch { saveStatus = "保存失败"; self.error = error.localizedDescription }
+        pendingSave = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(600)) }
+            catch { return }
+            _ = await saveCurrentRevision()
+        }
+    }
+
+    private func enqueueDraft(_ snapshot: NoteDocument, revision: Int) {
+        guard revision > 0 else { return }
+        library.registerDraftRevision(noteID: snapshot.id, revision: revision)
+        pendingDraft?.cancel()
+        pendingDraft = Task { @MainActor in
+            do {
+                let persisted = try await library.persistRegisteredDraft(snapshot, revision: revision)
+                guard !Task.isCancelled, persisted, editRevision == revision else { return }
+                persistedDraftRevision = revision
+            } catch is CancellationError {
+            } catch {
+                guard editRevision == revision else { return }
+                saveFailure = "未保存恢复副本也未能写入：\(error.localizedDescription)"
+                savePhase = .failed
+            }
+        }
+    }
+
+    private func beginSave() {
+        pendingSave?.cancel()
+        Task { @MainActor in _ = await saveCurrentRevision() }
+    }
+
+    @MainActor
+    private func saveCurrentRevision() async -> Bool {
+        if savePhase == .saved { return true }
+        let snapshot = document
+        let revision = editRevision
+        guard revision > 0 else { return true }
+        savePhase = .saving
+        var draftError: Error?
+        do {
+            library.registerDraftRevision(noteID: snapshot.id, revision: revision)
+            if try await library.persistRegisteredDraft(snapshot, revision: revision), editRevision == revision {
+                persistedDraftRevision = revision
+            }
+        } catch { draftError = error }
+        guard editRevision == revision else {
+            savePhase = .dirty
+            return false
+        }
+        do {
+            try library.save(snapshot)
+            await library.markCanonicalSaved(noteID: snapshot.id, revision: revision)
+            guard editRevision == revision else { savePhase = .dirty; return false }
+            persistedDraftRevision = 0
+            lastSavedAt = Date()
+            saveFailure = nil
+            savePhase = .saved
+            return true
+        } catch {
+            let detail = draftError.map { "恢复副本写入失败：\($0.localizedDescription)\n" } ?? ""
+            saveFailure = detail + error.localizedDescription
+            savePhase = .failed
+            return false
+        }
+    }
+
+    private func requestClose() {
+        canvas.onFinishTextEditing?()
+        Task { @MainActor in
+            await Task.yield()
+            if await saveCurrentRevision() { dismiss() }
+            else { showSaveActions = true }
+        }
+    }
+
+    private func exportEditableSnapshot() {
+        do { sharing = ShareArtifact(url: try library.exportURL(for: document)) }
+        catch { self.error = error.localizedDescription }
+    }
+
+    private func openAI(image: UIImage?) {
+        let note = document
+        let page = canvas.currentPage
+        let bounds = canvas.selectionBounds
+        let entries = vault.notes.map {
+                NoteToolVaultEntry(id: $0.id, title: $0.title, markdown: $0.markdown,
+                                   sourceRevision: $0.sourceUpdatedAt)
+            }
+        let sourcePDF = pdfURL
+        Task { @MainActor in
+            let digest = await Task.detached { sourcePDF.flatMap { try? AIConversationDigest.file($0) } }.value
+            guard document.id == note.id else { return }
+            aiSource = NoteAISourceSnapshot(image: image, note: note, page: page,
+                selectionBounds: bounds, vaultEntries: entries, pdfDigest: digest)
+            showAI = true
+        }
+    }
+
+    private func closeAI() {
+        showAI = false
+        aiSource = nil
+    }
+
+    private func commitAITools(_ original: NoteDocument, _ proposed: NoteDocument) throws -> NoteAIToolCommit {
+        guard !canvas.hasActiveCanvasInput else { throw NoteAIMutationError.activeCanvasInput }
+        guard NoteAIMutation.sourceCompatible(original, document) else {
+            throw NoteAIConversationError.changedDocument
+        }
+        guard let mutation = try NoteAIMutation(original: original, proposed: proposed) else {
+            return NoteAIToolCommit(mutation: nil, document: document)
+        }
+        let candidate = try mutation.applying(to: document, recordedApplied: false)
+        canvas.performAIEdit(id: mutation.id, applied: true) { note in
+            note.textFlows = candidate.textFlows
+            note.pageCount = candidate.pageCount
+        }
+        guard NoteAIMutation.sourceCompatible(candidate, document),
+              (try? AIConversationDigest.document(candidate)) == (try? AIConversationDigest.document(document)) else {
+            throw NoteAIConversationError.changedDocument
+        }
+        return NoteAIToolCommit(mutation: mutation, document: candidate)
+    }
+
+    private func performAIToolMutation(_ mutation: NoteAIMutation, apply: Bool) throws {
+        guard !canvas.hasActiveCanvasInput else { throw NoteAIMutationError.activeCanvasInput }
+        let recorded = canvas.aiApplicationState(for: mutation.id)
+        let candidate = try apply
+            ? mutation.applying(to: document, recordedApplied: recorded)
+            : mutation.undoing(in: document, recordedApplied: recorded)
+        canvas.performAIEdit(id: mutation.id, applied: apply) { note in
+            note.textFlows = candidate.textFlows
+            note.pageCount = candidate.pageCount
+        }
+    }
+
+    private func locateAIToolMutation(_ mutation: NoteAIMutation) {
+        guard let page = mutation.targetPages(in: document).first else { return }
+        canvas.goToPage(page)
     }
 
     private func exportPDF() {
@@ -329,18 +730,75 @@ struct NoteEditorView: View {
         canvas.onFinishTextEditing?()
         exportingPDF = true
         let snapshot = document
+        let snapshotPDFURL = pdfURL
+        let operationID = UUID()
+        pdfExportOperationID = operationID
         Task { @MainActor in
           defer { exportingPDF = false }
           do {
-            try await CompiledTextRenderer.shared.prepareAndWait(document: snapshot)
-            var rendered = snapshot
-            rendered.pageCount = NoteTextLayout.requiredPageCount(rendered)
-            let data = NoteRenderer.exportPDF(document: rendered, pdfURL: pdfURL)
+            let compiledText = try await CompiledTextRenderer.shared.prepareExportSnapshot(document: snapshot)
+            guard pdfExportOperationID == operationID, pdfContentMatches(snapshot, document) else {
+                self.error = "笔记内容已变化，请重新导出当前版本。"
+                return
+            }
+            let data = try NoteRenderer.exportVerifiedPDF(document: snapshot, pdfURL: snapshotPDFURL,
+                                                          compiledText: compiledText)
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("PadNote-\(UUID().uuidString.prefix(8)).pdf")
             try data.write(to: url, options: .atomic)
             sharing = ShareArtifact(url: url)
-          } catch { self.error = error.localizedDescription }
+          } catch {
+            guard pdfExportOperationID == operationID, pdfContentMatches(snapshot, document) else {
+                self.error = "笔记内容已变化，请重新导出当前版本。"
+                return
+            }
+            let failures = Dictionary(uniqueKeysWithValues: compiledRenderer.failures(document: snapshot).map { ($0.0.id, $0.1) })
+            if !failures.isEmpty {
+                showPDFRenderRecovery = true
+            } else {
+                self.error = (error as? LocalizedError)?.errorDescription ?? "PDF 本地排版失败，请重试。"
+            }
+          }
         }
+    }
+
+    private func pdfContentMatches(_ lhs: NoteDocument, _ rhs: NoteDocument) -> Bool {
+        lhs.id == rhs.id && lhs.pageWidth == rhs.pageWidth && lhs.pageHeight == rhs.pageHeight &&
+        lhs.pageGap == rhs.pageGap && lhs.pageCount == rhs.pageCount && lhs.pdfPageCount == rhs.pdfPageCount &&
+        lhs.pageTopologyRevision == rhs.pageTopologyRevision && lhs.strokes == rhs.strokes &&
+        lhs.textFlows == rhs.textFlows && lhs.images == rhs.images && lhs.pageStyle == rhs.pageStyle
+    }
+
+    private func editFlow(_ flow: NoteTextFlow) {
+        guard document.textFlows.contains(where: { $0.id == flow.id }) else {
+            error = "这段文字已不存在，无法打开编辑器。"
+            return
+        }
+        pendingTextEditorFlowID = flow.id
+        showPaperSettings = false
+    }
+
+    private func textManagerDidDismiss() {
+        guard let flowID = pendingTextEditorFlowID else { return }
+        pendingTextEditorFlowID = nil
+        guard let latestFlow = document.textFlows.first(where: { $0.id == flowID }) else {
+            error = "这段文字已不存在，无法打开编辑器。"
+            return
+        }
+        textEditorRequest = TextEditorRequest(flow: latestFlow)
+    }
+
+    @ViewBuilder private func renderFailureActions(_ flow: NoteTextFlow) -> some View {
+        HStack(spacing: 12) {
+            Button("查看/编辑源码") { editFlow(flow) }.accessibilityIdentifier("renderFailureEditSource")
+            Button("复制源码") { UIPasteboard.general.string = flow.source }
+            Button("重新渲染") {
+                compiledRenderer.retry(documentID: document.id, flow: flow) { result in
+                    if case .failure(let failure) = result {
+                        self.error = (failure as? CompiledTextRenderFailure)?.localizedDescription ?? "重新排版失败。"
+                    }
+                }
+            }.accessibilityIdentifier("renderFailureRetry")
+        }.font(.caption)
     }
 }
 
@@ -380,5 +838,152 @@ private struct TextFlowEditor: View {
                     }
                 }
         }
+    }
+}
+
+struct ContentOutlineSnapshot {
+    struct Page: Identifiable {
+        let index: Int
+        let textFlows: [NoteTextFlow]
+        let imageIDs: [String]
+        let hasPDFBackground: Bool
+        let hasHandwriting: Bool
+        var id: Int { index }
+    }
+
+    let title: String
+    let pages: [Page]
+
+    init(document: NoteDocument) {
+        title = document.title
+        let pageCount = max(0, document.pageCount)
+        var flowsByPage = [Int: [NoteTextFlow]]()
+        for flow in document.textFlows where flow.anchorPageIndex >= 0 && flow.anchorPageIndex < pageCount {
+            flowsByPage[flow.anchorPageIndex, default: []].append(flow)
+        }
+        var imageIDsByPage = [Int: [String]]()
+        for image in document.images where image.page >= 0 && image.page < pageCount {
+            imageIDsByPage[image.page, default: []].append(image.id)
+        }
+        let handwritingPages = Self.handwritingPages(strokes: document.strokes, pageCount: pageCount,
+            pageWidth: document.pageWidth, pageHeight: document.pageHeight, pageGap: document.pageGap)
+        pages = (0..<pageCount).map { index in
+            Page(index: index,
+                 textFlows: flowsByPage[index] ?? [],
+                 imageIDs: imageIDsByPage[index] ?? [],
+                 hasPDFBackground: index < document.pdfPageCount,
+                 hasHandwriting: handwritingPages.contains(index))
+        }
+    }
+
+    static func handwritingPages(strokes: [InkStroke], pageCount: Int, pageWidth: Double,
+                                 pageHeight: Double, pageGap: Double) -> Set<Int> {
+        guard pageCount > 0, pageWidth.isFinite, pageWidth > 0, pageHeight.isFinite, pageHeight > 0,
+              pageGap.isFinite, pageGap >= 0 else { return [] }
+        let stride = pageHeight + pageGap
+        guard stride.isFinite, stride > 0 else { return [] }
+        let maximumPageY = Double(pageCount - 1) * stride + pageHeight
+        guard maximumPageY.isFinite else { return [] }
+        var result = Set<Int>()
+        for stroke in strokes {
+            guard !stroke.points.isEmpty else { continue }
+            func visit(_ start: InkPoint, _ end: InkPoint) {
+                guard start.x.isFinite, start.y.isFinite, end.x.isFinite, end.y.isFinite,
+                      max(start.x, end.x) >= 0, min(start.x, end.x) <= pageWidth,
+                      max(start.y, end.y) >= 0, min(start.y, end.y) <= maximumPageY,
+                      result.count < pageCount else { return }
+                let lowerRaw = floor(min(start.y, end.y) / stride) - 1
+                let upperRaw = floor(max(start.y, end.y) / stride) + 1
+                guard lowerRaw.isFinite, upperRaw.isFinite else { return }
+                let lower = Int(max(0, min(Double(pageCount - 1), lowerRaw)))
+                let upper = Int(max(0, min(Double(pageCount - 1), upperRaw)))
+                guard lower <= upper else { return }
+                for page in lower...upper where !result.contains(page) {
+                    let top = Double(page) * stride
+                    let bottom = top + pageHeight
+                    guard top.isFinite, bottom.isFinite else { continue }
+                    if Self.segment((start.x, start.y), (end.x, end.y), intersects: (0, top, pageWidth, bottom)) {
+                        result.insert(page)
+                    }
+                }
+            }
+            if stroke.points.count == 1 {
+                visit(stroke.points[0], stroke.points[0])
+            } else {
+                for (start, end) in zip(stroke.points, stroke.points.dropFirst()) {
+                    visit(start, end)
+                    if result.count == pageCount { return result }
+                }
+            }
+        }
+        return result
+    }
+
+    private static func segment(_ a: (Double, Double), _ b: (Double, Double),
+                                intersects rect: (Double, Double, Double, Double)) -> Bool {
+        let dx = b.0 - a.0, dy = b.1 - a.1
+        guard dx.isFinite, dy.isFinite else { return false }
+        var t0 = 0.0, t1 = 1.0
+        let p = [-dx, dx, -dy, dy]
+        let q = [a.0 - rect.0, rect.2 - a.0, a.1 - rect.1, rect.3 - a.1]
+        for index in 0..<4 {
+            if p[index] == 0 {
+                if q[index] < 0 { return false }
+                continue
+            }
+            let ratio = q[index] / p[index]
+            if !ratio.isFinite { return false }
+            if p[index] < 0 { t0 = max(t0, ratio) } else { t1 = min(t1, ratio) }
+            if t0 > t1 { return false }
+        }
+        return true
+    }
+
+    var markdown: String {
+        var lines = ["# \(title)", "", "> 文字对象按起始页归组；长对象内容可能延伸到后续页面。"]
+        for page in pages {
+            lines.append("")
+            lines.append("## 第 \(page.index + 1) 页 · 文字对象起始页")
+            if page.hasPDFBackground {
+                lines.append("\n> PDF 原文背景；没有提取文字。")
+            }
+            for flow in page.textFlows {
+                lines.append("")
+                if flow.format == "latex" {
+                    let fence = Self.codeFence(for: flow.source)
+                    lines.append("### 公式（LaTeX 源码）")
+                    lines.append("\(fence)latex")
+                    lines.append(flow.source)
+                    lines.append(fence)
+                } else {
+                    lines.append("### 正文（Markdown）")
+                    lines.append(flow.source)
+                }
+            }
+            for _ in page.imageIDs {
+                lines.append("\n- 图片（未添加说明；图片文件未包含在此 Markdown 中）")
+            }
+            if page.hasHandwriting {
+                lines.append("\n> 手写笔迹尚未识别。")
+            }
+            if page.textFlows.isEmpty && page.imageIDs.isEmpty && !page.hasHandwriting && !page.hasPDFBackground {
+                lines.append("\n> 此页没有可导出的文字对象。")
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func codeFence(for source: String) -> String {
+        var longestRun = 0
+        var currentRun = 0
+        for character in source {
+            if character == "`" {
+                currentRun += 1
+                longestRun = max(longestRun, currentRun)
+            } else {
+                currentRun = 0
+            }
+        }
+        return String(repeating: "`", count: max(3, longestRun + 1))
     }
 }

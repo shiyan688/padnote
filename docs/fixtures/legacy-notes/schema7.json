@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 7,
+  "id": "fixture-schema-7",
+  "title": "Schema 7 构造回归样例",
+  "updatedAt": 1700000000007,
+  "pageCount": 2,
+  "strokes": [
+    {
+      "id": "stroke-v7",
+      "color": "#FF17212B",
+      "baseWidth": 2.5,
+      "createdAt": 1700000000007,
+      "points": [
+        {
+          "x": 20,
+          "y": 40,
+          "timestamp": 1700000000007,
+          "pressure": 0.4
+        },
+        {
+          "x": 90,
+          "y": 70,
+          "timestamp": 1700000000017,
+          "pressure": 0.8
+        }
+      ]
+    }
+  ],
+  "pageWidth": 600,
+  "pageHeight": 800,
+  "pageGap": 24,
+  "canvasWidth": 600,
+  "canvasHeight": 800,
+  "viewportScale": 1.1,
+  "viewportZoom": 1.05,
+  "viewportCenterX": 300,
+  "viewportCenterY": 400,
+  "pdfPageCount": 1,
+  "pageStyle": {
+    "paper": "blank",
+    "ratio": "screen",
+    "landscape": false
+  },
+  "textFlows": [
+    {
+      "id": "flow-v7",
+      "format": "markdown",
+      "source": "SCHEMA7_PDF_ANNOTATION",
+      "fontSizeSp": 16,
+      "lineHeight": 1.35,
+      "width": 460,
+      "anchorPageIndex": 1,
+      "anchorXInPage": 50,
+      "anchorYInPage": 90
+    }
+  ],
+  "textBoxes": []
+}
