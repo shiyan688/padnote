@@ -2,7 +2,6 @@ package com.padnote.android;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -116,6 +115,7 @@ public final class VideoAttachmentStoreTest {
         assertTrue(stored.delete());Files.createSymbolicLink(stored.toPath(),source.toPath());
         try{store.openVerified(attached);fail("stored video symlink accepted");}catch(java.io.IOException expected){}
     }
+
 
     @Test public void failedNoteCleanupKeepsFailedFileRecordForRetry() throws Exception {
         File root=temp("padnote-video-cleanup");File src=new File(root,"src");byte[] bytes={8,9};Files.write(src.toPath(),bytes);

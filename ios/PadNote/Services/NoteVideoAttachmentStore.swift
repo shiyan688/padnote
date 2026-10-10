@@ -29,7 +29,7 @@ public struct NoteVideoAttachmentListing: Sendable {
     public let unavailableCount: Int
 }
 
-public struct NoteVideoAttachmentArchiveRecord: Sendable { public let attachment: NoteVideoAttachment; public let fileURL: URL }
+public struct NoteVideoAttachmentArchiveRecord: Sendable { public let attachment: NoteVideoAttachment; public let fileURL: URL; public let metadataURL: URL }
 public struct NoteVideoAttachmentArchiveListing: Sendable { public let records: [NoteVideoAttachmentArchiveRecord]; public let unavailableCount: Int }
 
 public enum NoteVideoAttachmentError: Error, LocalizedError {
@@ -77,7 +77,8 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
     public func associate(noteID: String, taskID: UUID, remoteTaskID: String, sourceRevision: Int,
                          sourceSnapshotSHA256: String, connection: AgentTaskConnectionIdentity,
                          artifact: AgentTaskArtifact, verifiedFile: URL) throws -> NoteVideoAttachment {
-        try Self.processLock.withVideoAttachmentLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.processLock.withVideoAttachmentLock {
             guard !Self.deletedSourceIDs.contains(noteID), validNoteID(noteID), sourceRevision > 0, safeIdentifier(remoteTaskID),
                   Self.isSHA256(sourceSnapshotSHA256), connection.connectionRevision > 0,
                   artifact.mediaType == "video/mp4",
@@ -141,6 +142,7 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
                 if destinationCreated { try? fileManager.removeItem(at: destination) }
                 throw error
             }
+          }
         }
     }
 
@@ -189,7 +191,7 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
     }
 
     /// Enumerates sidecar directories by reading only generated metadata. This also finds attachments whose source note was deleted.
-    public func archiveRecords() throws -> NoteVideoAttachmentArchiveListing {
+    public func archiveRecords(excludingNoteIDs: Set<String> = []) throws -> NoteVideoAttachmentArchiveListing {
         try Self.processLock.withVideoAttachmentLock {
             guard fileManager.fileExists(atPath: root.path) else { return NoteVideoAttachmentArchiveListing(records: [], unavailableCount: 0) }
             try ensureDirectory(root, create: false)
@@ -213,10 +215,12 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
                         let value = try JSONDecoder().decode(NoteVideoAttachment.self, from: Data(contentsOf: metadata))
                         guard valid(value), Self.sha256(Data(value.noteID.utf8)) == directory.lastPathComponent,
                               metadata.lastPathComponent == "\(value.id.uuidString.lowercased()).json" else { throw NoteVideoAttachmentError.invalidMetadata }
+                        let canonicalNoteID = UUID(uuidString: value.noteID)?.uuidString.lowercased() ?? value.noteID
+                        if excludingNoteIDs.contains(canonicalNoteID) { continue }
                         let media = directory.appendingPathComponent(value.fileName)
                         let mediaInfo = try regularSingleLinkFile(media)
                         guard mediaInfo.size == value.sizeBytes else { throw NoteVideoAttachmentError.changedFile }
-                        result.append(NoteVideoAttachmentArchiveRecord(attachment: value, fileURL: media))
+                        result.append(NoteVideoAttachmentArchiveRecord(attachment: value, fileURL: media, metadataURL: metadata))
                     } catch { unavailable += 1 }
                 }
                 let metadataNames = Set(files.filter { $0.pathExtension == "json" }.map(\.lastPathComponent))
@@ -239,7 +243,8 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
     }
 
     public func remove(noteID: String, attachmentID: UUID) throws {
-        try Self.processLock.withVideoAttachmentLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.processLock.withVideoAttachmentLock {
             let directory = try noteDirectory(noteID, create: false)
             let value = try readAll(noteID: noteID, directory: directory).first { $0.id == attachmentID }
             guard let value else { throw NoteVideoAttachmentError.notFound }
@@ -251,11 +256,13 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
                 try fileManager.removeItem(at: file)
             }
             try fileManager.removeItem(at: metadata)
+          }
         }
     }
 
     public func removeAll(noteID: String) throws {
-        try Self.processLock.withVideoAttachmentLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.processLock.withVideoAttachmentLock {
             let directory = try noteDirectory(noteID, create: false)
             guard fileManager.fileExists(atPath: directory.path) else { return }
             let values = try readAll(noteID: noteID, directory: directory)
@@ -271,6 +278,7 @@ public final class NoteVideoAttachmentStore: @unchecked Sendable {
             }
             // Leave the generated directory in place: interrupted copies and unindexed files
             // are not silently erased by a note-wide removal.
+          }
         }
     }
 

@@ -657,7 +657,7 @@ final class LibraryRestoreTransaction {
                 .put("phase", phase).put("groups", groups);
         File temp = new File(root, "journal-"+UUID.randomUUID()+".tmp");
         FileDescriptor tempFd=Os.open(temp.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
-        try (FileOutputStream output = new FileOutputStream(tempFd)) {
+        try (FileOutputStream output = OwnedFdStreams.output(tempFd)) {
             output.write(value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             output.flush(); output.getFD().sync();
         }
@@ -695,7 +695,7 @@ final class LibraryRestoreTransaction {
         value.put("transfer_marker_sha256",transferMarkerSha256);value.put("phase",phase);value.put("groups",rows);
         byte[] bytes=LibraryBackupJson.encode(value);File temp=new File(root,"journal-"+UUID.randomUUID()+".tmp");
         FileDescriptor fd=Os.open(temp.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
-        try(FileOutputStream out=new FileOutputStream(fd)){out.write(bytes);out.flush();out.getFD().sync();}
+        try(FileOutputStream out=OwnedFdStreams.output(fd)){out.write(bytes);out.flush();out.getFD().sync();}
         File target=new File(root,"journal.json");FileDescriptor dir=Os.open(root.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC,0);
         try{Os.fsync(dir);}finally{Os.close(dir);}Os.rename(temp.getAbsolutePath(),target.getAbsolutePath());
         dir=Os.open(root.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC,0);try{Os.fsync(dir);}finally{Os.close(dir);}
@@ -704,7 +704,7 @@ final class LibraryRestoreTransaction {
     private static boolean regularOwned(File file)throws Exception{android.system.StructStat s=Os.lstat(file.getAbsolutePath());return (s.st_mode&OsConstants.S_IFMT)==OsConstants.S_IFREG&&s.st_nlink==1;}
     private static byte[] readNoFollow(File file,int max)throws Exception{
         FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
-        try(FileInputStream in=new FileInputStream(fd);java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){
+        try(FileInputStream in=OwnedFdStreams.input(fd);java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){
             byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1){if(out.size()>max-n)throw new IOException("RESTORE_JOURNAL_LIMIT");out.write(b,0,n);}return out.toByteArray();}
     }
 

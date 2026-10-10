@@ -61,6 +61,16 @@ final class AgentTaskClient {
     Submission submit(AgentTaskStore.Task task, AgentConnectionStore.Config connection)
             throws Exception {
         requireIdentity(task,connection);
+        String requiredCapability=new JSONObject(task.submissionJson).optString("required_capability","");
+        if(!requiredCapability.isEmpty()) {
+            if(!"note_context_bundle".equals(requiredCapability)||
+                    connection.transport!=AgentConnectionStore.Transport.BRIDGE||
+                    connection.kind==AgentConnectionStore.Kind.BUILTIN_VIDEO||
+                    connection.featureMap==null||
+                    !Boolean.TRUE.equals(connection.featureMap.get(requiredCapability))||
+                    !Boolean.TRUE.equals(connection.featureMap.get("task_bundle")))
+                throw new IllegalStateException("目标连接不再支持纸面上下文任务包；本次未发送");
+        }
         if (connection.kind == AgentConnectionStore.Kind.BUILTIN_VIDEO) {
             if (!VideoTaskClient.isVideoBundle(task) || !connection.capabilities.contains("video_task_submission") ||
                     !connection.capabilities.contains("task_bundle"))

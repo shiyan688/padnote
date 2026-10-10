@@ -20,6 +20,10 @@ public struct LibraryBackupPreview: Identifiable {
     public let verifiedBytes: Int64
 }
 
+enum LibraryBackupRestoreInterleavingTestPoint: Equatable {
+    case resourcesPromotedBeforeJournalWrite
+}
+
 public struct LibraryBackupRecoveryOption: Identifiable, Equatable {
     public let transactionID: String
     public let completedGroupCount: Int
@@ -52,6 +56,9 @@ struct RestoreJournal: Codable {
 @MainActor
 public final class LibraryBackupRestoreCoordinator: ObservableObject {
     @Published public private(set) var isWorking = false
+    #if DEBUG
+    var restoreInterleavingTestHook: (@MainActor (LibraryBackupRestoreInterleavingTestPoint) async -> Void)?
+    #endif
     private let library: NoteLibrary
     private let vault: VaultLibrary
     private let videoStore: RestoredVideoAttachmentStore
@@ -65,6 +72,7 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
         self.library = library; self.vault = vault; self.videoStore = videoStore
         self.presetStore = presetStore; self.coverStore = coverStore
         self.journalRoot = journalRoot ?? library.backupTransactionDirectory
+        vault.bind(noteLibrary: library)
     }
 
     public func inspect(_ archive: URL, stagingRoot: URL, cancellation: LibraryBackupCancellationToken? = nil) async throws -> LibraryBackupPreview {
@@ -97,6 +105,13 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
     }
 
     public func rollbackIncompleteRestore(_ transactionID: String, for preview: LibraryBackupPreview, cancellation: LibraryBackupCancellationToken? = nil) async throws {
+        try await NoteGroupCatalogFence.withWriter {
+            try await self.rollbackIncompleteRestoreUnderCatalogWriter(transactionID, for: preview, cancellation: cancellation)
+        }
+    }
+
+    private func rollbackIncompleteRestoreUnderCatalogWriter(_ transactionID: String, for preview: LibraryBackupPreview,
+                                                               cancellation: LibraryBackupCancellationToken?) async throws {
         guard !isWorking else { throw LibraryBackupError.transaction("已有归档操作正在进行") }
         isWorking = true; defer { isWorking = false }
         guard let journal = try LibraryBackupTransactionGate.readJournal(transactionID, in: journalRoot),
@@ -141,6 +156,15 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
 
     public func restore(_ preview: LibraryBackupPreview, selectedNoteItemIDs: Set<String>? = nil,
                         continuingTransactionID: String? = nil, cancellation: LibraryBackupCancellationToken? = nil) async throws {
+        try await NoteGroupCatalogFence.withWriter {
+            try await self.restoreUnderCatalogWriter(preview, selectedNoteItemIDs: selectedNoteItemIDs,
+                continuingTransactionID: continuingTransactionID, cancellation: cancellation)
+        }
+    }
+
+    private func restoreUnderCatalogWriter(_ preview: LibraryBackupPreview, selectedNoteItemIDs: Set<String>?,
+                                           continuingTransactionID: String?,
+                                           cancellation: LibraryBackupCancellationToken?) async throws {
         guard !isWorking else { throw LibraryBackupError.transaction("已有归档操作正在进行") }
         isWorking = true; defer { isWorking = false }
         try FileManager.default.createDirectory(at: journalRoot, withIntermediateDirectories: true)
@@ -224,7 +248,7 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
                 var coverAdded = false
                 do {
                     journal.groupPhases[item.itemID] = "staged"; journal.updatedAt = Date(); try Self.writeJournal(journal, to: journalURL)
-                    try await Self.verifyGroupResources([item.noteResourceID, item.pdfResourceID, item.coverResourceID].compactMap { $0 } + vaultItems.map(\.resourceID) + videoItems.map(\.resourceID), manifest: manifest, directory: preview.staged.directory, cancellation: cancellation)
+                    try await Self.verifyGroupResources([item.noteResourceID, item.pdfResourceID, item.coverResourceID].compactMap { $0 } + vaultItems.map(\.resourceID) + vaultItems.compactMap(\.sourceStorageResourceID) + videoItems.map(\.resourceID), manifest: manifest, directory: preview.staged.directory, cancellation: cancellation)
                     if let coverID = item.coverResourceID, let resource = manifest.resources.first(where: { $0.resourceID == coverID }) {
                         let target = preview.staged.directory.appendingPathComponent(resource.resourceID + ".bin")
                         let store = coverStore
@@ -245,7 +269,8 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
                         guard let restoredID = journal.vaultIDs[entry.itemID] else { throw LibraryBackupError.transaction("知识库恢复ID缺失") }
                         let added = try vault.restoreArchiveEntry(id: restoredID, title: payload.title, markdown: payload.markdown,
                             sourceRevisionMS: payload.sourceRevisionMS, createdAtMS: payload.createdAtMS, sourceNoteID: payload.sourceNoteID,
-                            sourceState: entry.sourceState, linkedNoteID: newID, transactionID: transactionID, groupID: item.itemID)
+                            sourceState: entry.sourceState, linkedNoteID: newID, transactionID: transactionID, groupID: item.itemID,
+                            digitizationMetadata: try LibraryBackupArchive.readVaultDigitizationMetadata(for: entry, manifest: manifest, directory: preview.staged.directory))
                         addedVault.append(added)
                     }
                     for video in videoItems {
@@ -258,6 +283,11 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
                         }.value
                         addedVideos.append(added)
                     }
+                    #if DEBUG
+                    if let hook = restoreInterleavingTestHook {
+                        await hook(.resourcesPromotedBeforeJournalWrite)
+                    }
+                    #endif
                     journal.groupPhases[item.itemID] = "resources_promoted"; journal.updatedAt = Date(); try Self.writeJournal(journal, to: journalURL)
                     let pdf = item.pdfResourceID.flatMap { id in manifest.resources.first(where: { $0.resourceID == id }) }
                         .map { preview.staged.directory.appendingPathComponent($0.resourceID + ".bin") }
@@ -273,20 +303,26 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
                     journal.updatedAt = Date(); try Self.writeJournal(journal, to: journalURL)
                     try library.completeBackupNoteRestore(id: newID, transactionID: transactionID, groupID: item.itemID,
                         expectedNoteSHA256: journal.noteSHA256ByItemID[item.itemID], journalRoot: journalRoot)
-                } catch {
+                } catch let operationError {
                     if !Self.isGroupCompleted(item.itemID, in: journal) {
                         try? library.rollbackBackupNote(id: newID, transactionID: transactionID, groupID: item.itemID, journalRoot: journalRoot)
                         do { try rollbackUncommittedNoteGroup(item, manifest: manifest, journal: journal) }
-                        catch { journal.groupPhases[item.itemID] = "cleanup_failed"; journal.updatedAt = Date(); try? Self.writeJournal(journal, to: journalURL); throw error }
+                        catch {
+                            journal.groupPhases[item.itemID] = "cleanup_failed"; journal.updatedAt = Date()
+                            try? Self.writeJournal(journal, to: journalURL)
+                            // Keep the phase that failed visible to the caller. Stable journal IDs and
+                            // ownership witnesses leave any residue eligible for explicit recovery.
+                            throw operationError
+                        }
                     }
-                    throw error
+                    throw operationError
                 }
             }
             for item in relevantVault where item.noteItemID == nil && !Self.isGroupCompleted(item.itemID, in: journal) {
                 try cancellation?.check()
                 guard let id = journal.vaultIDs[item.itemID] else { throw LibraryBackupError.transaction("知识库恢复ID缺失") }
                 try vault.rollbackPartialArchiveEntry(id: id, transactionID: transactionID, groupID: item.itemID)
-                try await Self.verifyGroupResources([item.resourceID], manifest: manifest, directory: preview.staged.directory, cancellation: cancellation)
+                try await Self.verifyGroupResources([item.resourceID] + [item.sourceStorageResourceID].compactMap { $0 }, manifest: manifest, directory: preview.staged.directory, cancellation: cancellation)
                 guard let descriptor = manifest.resources.first(where: { $0.resourceID == item.resourceID }) else {
                     throw LibraryBackupError.invalidManifest("知识库资源描述缺失")
                 }
@@ -298,7 +334,8 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
                 journal.groupPhases[item.itemID] = "resources_promoted"; journal.updatedAt = Date(); try Self.writeJournal(journal, to: journalURL)
                 _ = try vault.restoreArchiveEntry(id: restoredID, title: payload.title, markdown: payload.markdown,
                     sourceRevisionMS: payload.sourceRevisionMS, createdAtMS: payload.createdAtMS, sourceNoteID: payload.sourceNoteID,
-                    sourceState: item.sourceState, linkedNoteID: nil, transactionID: transactionID, groupID: item.itemID)
+                    sourceState: item.sourceState, linkedNoteID: nil, transactionID: transactionID, groupID: item.itemID,
+                    digitizationMetadata: try LibraryBackupArchive.readVaultDigitizationMetadata(for: item, manifest: manifest, directory: preview.staged.directory))
                 journal.groupPhases[item.itemID] = "committed"; journal.completedGroups.append(item.itemID)
                 journal.updatedAt = Date(); try Self.writeJournal(journal, to: journalURL)
             }
@@ -517,10 +554,12 @@ public final class LibraryBackupRestoreCoordinator: ObservableObject {
         try FileManager.default.removeItem(at: stage)
     }
 
-    private static func writeJournal(_ value: RestoreJournal, to url: URL) throws {
+    static func writeJournal(_ value: RestoreJournal, to url: URL) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(value)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try NoteGroupCatalogFence.withWriter {
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        }
     }
     private static func requirePlainDirectory(_ url: URL) throws {
         var info = stat(); guard lstat(url.path, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { throw LibraryBackupError.unsafeFile }

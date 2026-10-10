@@ -2,6 +2,7 @@ package com.padnote.android;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -18,6 +19,8 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.Collections;
+import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class DigitizationStoreTest {
@@ -77,6 +80,195 @@ public class DigitizationStoreTest {
         assertTrue(published.matches(source));
         assertFalse(published.matches(source("note-resume", "标题", 3, "profile-b")));
         assertFails(() -> store.savePage(one, 1, "旧对象写入"), "已被其他操作更新");
+    }
+
+    @Test public void targetIntentRoundTripsAndLegacyCheckpointsStayUnbound() throws Exception {
+        File root=temporary.newFolder("target-roundtrip");
+        DigitizationStore store=new DigitizationStore(root);
+        DigitizationStore.Source source=source("note-target","T",1,"p");
+        DigitizationStore.Target target=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                "00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000001",
+                "00000000-0000-4000-8000-000000000002","r17-1",
+                repeat('a',64),null,null,123456789L);
+        DigitizationStore.Snapshot captured=store.create(source,"T",123L,target);
+        assertEquals("a locally owned operation UUID is also the durable checkpoint identity",
+                "digitize-"+target.operationId,captured.runId);
+        DigitizationStore.Snapshot reopened=new DigitizationStore(root).load(captured.runId);
+        assertNotNull(reopened.target);
+        assertTrue(target.sameIntent(reopened.target));
+        assertEquals(DigitizationStore.State.PENDING,reopened.state);
+        assertTrue(new String(Files.readAllBytes(new File(root,captured.runId+".json").toPath()),
+                StandardCharsets.UTF_8).contains("\"schemaVersion\":3"));
+
+        DigitizationStore.Snapshot legacy=store.create(source("note-old-target","Old",1,"p"),
+                "Old",456L);
+        DigitizationStore.Snapshot coldLegacy=new DigitizationStore(root).load(legacy.runId);
+        assertNull(coldLegacy.target);
+        assertTrue(new String(Files.readAllBytes(new File(root,legacy.runId+".json").toPath()),
+                StandardCharsets.UTF_8).contains("\"schemaVersion\":1"));
+    }
+
+    @Test public void repeatedCreateReusesOnlyTheExactLocalRunAndFrozenTarget() throws Exception {
+        File root=temporary.newFolder("operation-run-identity");
+        DigitizationStore store=new DigitizationStore(root);
+        DigitizationStore.Source source=source("note-operation-run","T",1,"p");
+        String operationId="00000000-0000-4000-8000-000000000031";
+        DigitizationStore.Target target=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,"00000000-0000-4000-8000-000000000032",
+                "base-revision",repeat('b',64),null,null,123456789L);
+        DigitizationStore.Snapshot created=store.create(source,"T",123L,target);
+        DigitizationStore.Snapshot ready=store.savePage(store.startAttempt(created),0,"exact material bytes");
+
+        DigitizationStore.Snapshot repeated=store.create(source,"T",123L,target);
+        assertEquals(created.runId,repeated.runId);
+        assertEquals("digitize-"+operationId,repeated.runId);
+        assertEquals(ready.revision,repeated.revision);
+        assertEquals(Collections.singletonList("exact material bytes"),repeated.pages);
+        assertEquals(target.groupRevision,repeated.target.groupRevision);
+        assertEquals(target.groupDigest,repeated.target.groupDigest);
+        assertEquals(target.materialId,repeated.target.materialId);
+        String exactMaterial=VaultStore.buildDigitizedMarkdown(repeated.noteId,repeated.title,
+                repeated.totalPages,repeated.sourceUpdatedAt,repeated.pages,
+                repeated.target.publishTimestamp,repeated.target.operationId);
+        assertTrue(exactMaterial.contains("digitization-operation-id: "+repeated.runId.substring(9)+"\n"));
+        assertEquals(1,store.listForNote(source.noteId).size());
+
+        DigitizationStore.Target changedBase=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,target.lineage,target.groupRevision,repeat('c',64),
+                null,null,target.publishTimestamp);
+        assertFails(() -> store.create(source,"T",123L,changedBase),"发布操作 UUID 已绑定");
+        assertFails(() -> store.create(source("note-operation-run","changed title",1,"p"),
+                "changed title",123L,target),"发布操作 UUID 已绑定");
+
+        DigitizationStore.Snapshot cold=new DigitizationStore(root).load(created.runId);
+        assertEquals("digitize-"+operationId,cold.runId);
+        assertTrue(target.sameIntent(cold.target));
+        assertEquals(repeated.pages,cold.pages);
+        assertEquals(exactMaterial,VaultStore.buildDigitizedMarkdown(cold.noteId,cold.title,
+                cold.totalPages,cold.sourceUpdatedAt,cold.pages,cold.target.publishTimestamp,
+                cold.target.operationId));
+    }
+
+    @Test public void preexistingCheckpointRunIdentityIsPreservedOnReentry() throws Exception {
+        File root=temporary.newFolder("operation-run-legacy-id");
+        DigitizationStore store=new DigitizationStore(root);
+        DigitizationStore.Source source=source("note-operation-legacy","T",1,"p");
+        String operationId="00000000-0000-4000-8000-000000000041";
+        DigitizationStore.Target target=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,"00000000-0000-4000-8000-000000000042",
+                "base-revision",repeat('d',64),null,null,123456789L);
+        DigitizationStore.Snapshot captured=store.create(source,"T",123L,target);
+        String oldRunId="digitize-00000000-0000-4000-8000-000000000043";
+        File oldFile=new File(root,captured.runId+".json");
+        File preservedFile=new File(root,oldRunId+".json");
+        String json=new String(Files.readAllBytes(oldFile.toPath()),StandardCharsets.UTF_8)
+                .replace("\"runId\":\""+captured.runId+"\"",
+                        "\"runId\":\""+oldRunId+"\"");
+        assertTrue(!json.equals(new String(Files.readAllBytes(oldFile.toPath()),StandardCharsets.UTF_8)));
+        Files.write(preservedFile.toPath(),json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(oldFile.delete());
+
+        DigitizationStore reopenedStore=new DigitizationStore(root);
+        DigitizationStore.Snapshot oldCheckpoint=reopenedStore.load(oldRunId);
+        assertEquals(oldRunId,oldCheckpoint.runId);
+        assertEquals(operationId,oldCheckpoint.target.operationId);
+        byte[] originalBytes=Files.readAllBytes(preservedFile.toPath());
+        DigitizationStore.Snapshot reentered=reopenedStore.create(source,"T",123L,target);
+        assertEquals("re-entry returns the original checkpoint without rewriting its local ID",
+                oldRunId,reentered.runId);
+        assertArrayEquals("re-entry preserves the existing checkpoint bytes",originalBytes,
+                Files.readAllBytes(preservedFile.toPath()));
+        assertEquals(1,reopenedStore.listForNote(source.noteId).size());
+    }
+
+    @Test public void legacyOperationIdCollisionAcrossNotesFailsClosed() throws Exception {
+        File root=temporary.newFolder("operation-run-cross-note");
+        DigitizationStore store=new DigitizationStore(root);
+        String operationId="00000000-0000-4000-8000-000000000051";
+        DigitizationStore.Source oldSource=source("note-legacy-owner","Old",1,"p");
+        DigitizationStore.Target oldTarget=new DigitizationStore.Target(oldSource.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,"00000000-0000-4000-8000-000000000052",
+                "base-revision",repeat('e',64),null,null,123456789L);
+        DigitizationStore.Snapshot old=store.create(oldSource,"Old",123L,oldTarget);
+        File current=new File(root,old.runId+".json");
+        String oldRunId="digitize-00000000-0000-4000-8000-000000000053";
+        File preserved=new File(root,oldRunId+".json");
+        String json=new String(Files.readAllBytes(current.toPath()),StandardCharsets.UTF_8)
+                .replace("\"runId\":\""+old.runId+"\"","\"runId\":\""+oldRunId+"\"");
+        Files.write(preserved.toPath(),json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(current.delete());
+
+        DigitizationStore.Source otherSource=source("note-new-owner","New",1,"p");
+        DigitizationStore.Target otherTarget=new DigitizationStore.Target(otherSource.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,"00000000-0000-4000-8000-000000000054",
+                "base-revision",repeat('f',64),null,null,123456790L);
+        assertFails(()->store.create(otherSource,"New",123L,otherTarget),
+                "发布操作 UUID 已绑定");
+        assertEquals(1,store.list().size());
+        assertEquals(oldRunId,store.list().get(0).runId);
+    }
+
+    @Test public void duplicateLegacyOperationIdCheckpointsAreAmbiguousAndRejected() throws Exception {
+        File root=temporary.newFolder("operation-run-duplicate-legacy");
+        DigitizationStore store=new DigitizationStore(root);
+        DigitizationStore.Source source=source("note-duplicate-legacy","T",1,"p");
+        String operationId="00000000-0000-4000-8000-000000000061";
+        DigitizationStore.Target target=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                operationId,operationId,"00000000-0000-4000-8000-000000000062",
+                "base-revision",repeat('1',64),null,null,123456789L);
+        DigitizationStore.Snapshot created=store.create(source,"T",123L,target);
+        File current=new File(root,created.runId+".json");
+        String duplicateRunId="digitize-00000000-0000-4000-8000-000000000063";
+        String json=new String(Files.readAllBytes(current.toPath()),StandardCharsets.UTF_8)
+                .replace("\"runId\":\""+created.runId+"\"",
+                        "\"runId\":\""+duplicateRunId+"\"");
+        Files.write(new File(root,duplicateRunId+".json").toPath(),
+                json.getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(2,store.list().size());
+        assertFails(()->store.create(source,"T",123L,target),
+                "发布操作 UUID 已绑定多个检查点");
+    }
+
+    @Test public void explicitTargetBindingIsImmutableAndStaleCheckpointCannotReplaceIt() throws Exception {
+        File root=temporary.newFolder("target-bind-cas");
+        DigitizationStore store=new DigitizationStore(root);
+        DigitizationStore.Source source=source("note-bind","T",1,"p");
+        DigitizationStore.Snapshot unbound=store.create(source,"T",1L);
+        DigitizationStore.Target selected=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                "00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000003",
+                "00000000-0000-4000-8000-000000000004","r4-1",
+                repeat('b',64),null,null,222222222L);
+        DigitizationStore.Snapshot bound=store.bindTarget(unbound,selected);
+        assertTrue(selected.sameIntent(new DigitizationStore(root).load(bound.runId).target));
+        DigitizationStore.Target other=new DigitizationStore.Target(source.noteId,
+                DigitizationStore.TargetKind.GROUP,DigitizationStore.TargetOperation.ADD,
+                "00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000005",
+                selected.lineage,selected.groupRevision,selected.groupDigest,null,null,222222223L);
+        assertFails(()->store.bindTarget(bound,other),"已绑定其他发布目标");
+        assertFails(()->store.bindTarget(unbound,other),"已被其他操作更新");
+        assertTrue(selected.sameIntent(store.load(bound.runId).target));
+    }
+
+    @Test public void frozenPublishTimestampDoesNotDependOnLaterDeviceTimezone() throws Exception {
+        TimeZone original=TimeZone.getDefault();
+        try{
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            String utc=VaultStore.buildDigitizedMarkdown("note-zone","时区样例",1,123L,
+                    Collections.singletonList("page"),1_800_000_000_123L);
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+            String changed=VaultStore.buildDigitizedMarkdown("note-zone","时区样例",1,123L,
+                    Collections.singletonList("page"),1_800_000_000_123L);
+            assertEquals("a resumed checkpoint renders the same stable timestamp",utc,changed);
+        }finally{TimeZone.setDefault(original);}
     }
 
     @Test public void crashRecoveryReturnsOnlyWholeOldOrNewCheckpoint() throws Exception {

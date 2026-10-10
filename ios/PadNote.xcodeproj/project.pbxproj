@@ -4,6 +4,17 @@
 	classes = {};
 	objectVersion = 56;
 	objects = {
+F00100000000000000000001 /* NoteGroupStore.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Services/NoteGroupStore.swift"; sourceTree = "<group>"; };
+F00100000000000000000002 /* NoteGroupStore.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000001; };
+F00100000000000000000003 /* NoteGroupStoreTests.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NoteGroupStoreTests.swift"; sourceTree = "<group>"; };
+F00100000000000000000006 /* NoteGroupFacade.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Services/NoteGroupFacade.swift"; sourceTree = "<group>"; };
+F00100000000000000000008 /* NoteGroupFacadeTests.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NoteGroupFacadeTests.swift"; sourceTree = "<group>"; };
+F00100000000000000000009 /* NoteGroupLegacyCaptureAdapter.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Services/NoteGroupLegacyCaptureAdapter.swift"; sourceTree = "<group>"; };
+F0010000000000000000000A /* NoteGroupLegacyCaptureAdapter.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000009; };
+F00100000000000000000004 /* NoteGroupStoreTests.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000003; };
+F00100000000000000000005 /* NoteGroupFacade.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000006; };
+F00100000000000000000007 /* NoteGroupFacadeTests.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000008; };
+
 00C45FD35CB0F9C5F764F070 /* 00C45FD35CB0F9C5F764F070 */ = {
 		isa = PBXGroup;
 		children = (0A8BEBE211D6065E308B8B5A,B4944A7DC80B6E5E44D3FDA9,E0757F1EC06E75496C42F95E
@@ -311,6 +322,9 @@ B528A804C4CE50AF8FF402F9 /* B528A804C4CE50AF8FF402F9 */ = {
 			B401D0A1C7E84BA18C11A004 /* LibraryBackupRestore.swift in Sources */,
 			FCB71C680896409FB10F57B4 /* MaterialCodec.swift in Sources */,
 			AB708F071D4D4B849D301AE6 /* RestoredVaultMaterialProjection.swift in Sources */,
+			F00100000000000000000002 /* NoteGroupStore.swift in Sources */,
+			F00100000000000000000005 /* NoteGroupFacade.swift in Sources */,
+			F0010000000000000000000A /* NoteGroupLegacyCaptureAdapter.swift in Sources */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
@@ -399,6 +413,8 @@ B528A804C4CE50AF8FF402F9 /* B528A804C4CE50AF8FF402F9 */ = {
 			DAD55FAA7869E8A1E95F33FE /* DAD55FAA7869E8A1E95F33FE */,
 			A080699142ADAF90783868F8 /* A080699142ADAF90783868F8 */,
 			B401D0A1C7E84BA18C11A006 /* LibraryBackupArchiveTests.swift in Sources */,
+			F00100000000000000000004 /* NoteGroupStoreTests.swift in Sources */,
+			F00100000000000000000007 /* NoteGroupFacadeTests.swift in Sources */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
@@ -541,6 +557,8 @@ B401D0A1C7E84BA18C11A006 /* LibraryBackupArchiveTests.swift in Sources */ = { is
 			0AE83E7C5F5ABF366940219C /* 0AE83E7C5F5ABF366940219C */,
 			DFCAAB598645F43E088F4F83 /* DFCAAB598645F43E088F4F83 */,
 			A401D0A1C7E84BA18C11A006 /* LibraryBackupArchiveTests.swift */,
+			F00100000000000000000003 /* NoteGroupStoreTests.swift */,
+			F00100000000000000000008 /* NoteGroupFacadeTests.swift */,
 		);
 		path = PadNoteTests;
 		sourceTree = "<group>";
@@ -1010,6 +1028,9 @@ CF8D0BD4B75E8C2C174692A5 /* CF8D0BD4B75E8C2C174692A5 */ = {
 			A401D0A1C7E84BA18C11A004 /* LibraryBackupRestore.swift */,
 			A2E988695BDD4859B93E2D32 /* MaterialCodec.swift */,
 			21C85EE59F724101A67028A9 /* RestoredVaultMaterialProjection.swift */,
+			F00100000000000000000001 /* NoteGroupStore.swift */,
+			F00100000000000000000006 /* NoteGroupFacade.swift */,
+			F00100000000000000000009 /* NoteGroupLegacyCaptureAdapter.swift */,
 			BCAD17CB13336A47593CDA52 /* BCAD17CB13336A47593CDA52 */,
 			6B49BA14D9B649EA1C624C51 /* 6B49BA14D9B649EA1C624C51 */,
 			9D7A30A4926798C33373D73E /* 9D7A30A4926798C33373D73E */,

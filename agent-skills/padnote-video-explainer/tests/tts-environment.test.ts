@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import {chmod, cp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {access, chmod, cp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import test from 'node:test';
 import {prepareAudio, TtsAdapterError} from '../scripts/prepare-audio.js';
-import {buildTtsChildEnvironment} from '../scripts/tts-environment.js';
+import {buildTtsChildEnvironment, parseTtsProviderEnvironmentNames} from '../scripts/tts-environment.js';
 import {sha256Bytes, sha256File, skillRoot, type JsonObject} from '../scripts/lib.js';
 import type {AudioInputBinding} from '../scripts/validate-audio.js';
 
@@ -41,6 +41,39 @@ test('TTS child environment keeps exact runtime, provider, and scene fields only
     PADNOTE_TTS_SPEED: '1',
     PADNOTE_TTS_OUTPUT: '/tmp/scene-1.wav',
   });
+});
+
+test('explicit provider names admit only selected non-DashScope credentials', () => {
+  const child = buildTtsChildEnvironment({
+    sceneId: 'scene-1', text: 'narration', language: 'en', voiceProfile: 'voice', speed: '1', output: '/tmp/out.wav',
+  }, {
+    PATH: '/fixture/bin', PADNOTE_TTS_ENV_NAMES: 'SERVICE_TOKEN,VOICE_NAME',
+    SERVICE_TOKEN: 'selected-token', VOICE_NAME: 'selected-voice',
+    OTHER_VENDOR_KEY: 'must-not-pass', DASHSCOPE_API_KEY: 'must-not-pass',
+    OPENAI_API_KEY: 'must-not-pass', AWS_SECRET_ACCESS_KEY: 'must-not-pass',
+    NODE_OPTIONS: '--require=/tmp/untrusted.cjs', NODE_PATH: '/tmp/loader',
+    PYTHONPATH: '/tmp/python', LD_PRELOAD: '/tmp/lib.so', DYLD_INSERT_LIBRARIES: '/tmp/lib.dylib',
+    HOME: '/private/home', PADNOTE_TTS_COMMAND: '/private/adapter',
+  });
+  assert.equal(child.SERVICE_TOKEN, 'selected-token');
+  assert.equal(child.VOICE_NAME, 'selected-voice');
+  assert.equal(child.PADNOTE_TTS_ENV_NAMES, 'SERVICE_TOKEN,VOICE_NAME');
+  for (const forbidden of ['OTHER_VENDOR_KEY', 'DASHSCOPE_API_KEY', 'OPENAI_API_KEY',
+    'AWS_SECRET_ACCESS_KEY', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'LD_PRELOAD',
+    'DYLD_INSERT_LIBRARIES', 'HOME', 'PADNOTE_TTS_COMMAND']) {
+    assert.equal(child[forbidden], undefined, `${forbidden} must not reach the selected adapter`);
+  }
+});
+
+test('provider environment names reject wildcard, duplicate, runtime, and loader controls', () => {
+  for (const invalid of ['SERVICE_TOKEN,*', 'SERVICE_TOKEN,SERVICE_TOKEN', 'PATH', 'HOME',
+    'NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PADNOTE_TTS_COMMAND',
+    'BASH_ENV', 'ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'RUBYOPT', 'RUBYLIB',
+    'PERL5OPT', 'PERL5LIB', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH', 'GCONV_PATH',
+    '', 'lowercase', 'A'.repeat(65), Array.from({length: 9}, (_, index) => `TOKEN_${index}`).join(',')]) {
+    assert.throws(() => parseTtsProviderEnvironmentNames(invalid), /unique safe variable names|too long/);
+  }
+  assert.deepEqual(parseTtsProviderEnvironmentNames('SERVICE_TOKEN,VOICE_NAME'), ['SERVICE_TOKEN', 'VOICE_NAME']);
 });
 
 test('audio preparation adapter cannot read unrelated host secrets', async () => {
@@ -146,6 +179,84 @@ test('mixed provider file exposes only DashScope fields to a real adapter child'
   assert.equal(observed.selected.OTHER_SECRET, undefined);
   assert.equal(observed.processOther, undefined);
   assert.equal(observed.processOpenAi, undefined);
+});
+
+test('explicit provider file settings reach the real child while unselected keys stay absent', async t => {
+  const root = resolve(skillRoot(), '.local-output/tests/tts-explicit-provider-file');
+  await rm(root, {recursive: true, force: true});
+  await cp(resolve(skillRoot(), 'tests/fixtures/formula-note'), root, {recursive: true});
+  await mkdir(resolve(root, 'output'), {recursive: true});
+  await cp(resolve(root, 'expected/lesson.ir.json'), resolve(root, 'output/lesson.ir.json'));
+  const providerFile = resolve(root, 'mixed-provider.env');
+  await writeFile(providerFile, [
+    'SERVICE_TOKEN=file-token', 'VOICE_NAME=FileVoice', 'OTHER_VENDOR_KEY=must-not-load',
+    'DASHSCOPE_API_KEY=must-not-load', 'NODE_OPTIONS=--require=/tmp/untrusted.cjs', '',
+  ].join('\n'));
+  const observations = resolve(root, 'observed-provider.json');
+  const adapter = resolve(root, 'provider-file-adapter.mjs');
+  await writeFile(adapter, explicitProviderFileAdapterSource(observations));
+  await chmod(adapter, 0o700);
+  const names = ['PADNOTE_TTS_COMMAND', 'PADNOTE_TTS_ENV_NAMES', 'PADNOTE_TTS_ENV_FILE',
+    'SERVICE_TOKEN', 'VOICE_NAME', 'OTHER_VENDOR_KEY', 'DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'NODE_OPTIONS'];
+  const previous = new Map(names.map(name => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  process.env.PADNOTE_TTS_COMMAND = adapter;
+  process.env.PADNOTE_TTS_ENV_NAMES = 'SERVICE_TOKEN,VOICE_NAME';
+  process.env.PADNOTE_TTS_ENV_FILE = providerFile;
+  process.env.SERVICE_TOKEN = 'direct-token';
+  process.env.OTHER_VENDOR_KEY = 'unselected-host-secret';
+  process.env.DASHSCOPE_API_KEY = 'unselected-dashscope-secret';
+  process.env.OPENAI_API_KEY = 'unselected-openai-secret';
+  process.env.NODE_OPTIONS = '--definitely-not-a-valid-node-option';
+  try {
+    await prepareAudio(root);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const observed = JSON.parse(await readFile(observations, 'utf8')) as {
+    selected: Record<string, string>; unselected?: string; dashscope?: string; openai?: string;
+    nodeOptions?: string; names?: string; envFile?: string;
+  };
+  assert.deepEqual(observed.selected, {SERVICE_TOKEN: 'direct-token', VOICE_NAME: 'FileVoice'});
+  assert.equal(observed.names, 'SERVICE_TOKEN,VOICE_NAME');
+  assert.equal(observed.unselected, undefined);
+  assert.equal(observed.dashscope, undefined);
+  assert.equal(observed.openai, undefined);
+  assert.equal(observed.nodeOptions, undefined);
+  assert.equal(observed.envFile, undefined, 'the mixed dotenv path must not reach a generic adapter');
+  t.after(async () => rm(root, {recursive: true, force: true}));
+});
+
+test('invalid explicit provider config fails before audio checkpoint or adapter launch', async t => {
+  const root = resolve(skillRoot(), '.local-output/tests/tts-invalid-provider-config');
+  await rm(root, {recursive: true, force: true});
+  await cp(resolve(skillRoot(), 'tests/fixtures/formula-note'), root, {recursive: true});
+  await mkdir(resolve(root, 'output'), {recursive: true});
+  await cp(resolve(root, 'expected/lesson.ir.json'), resolve(root, 'output/lesson.ir.json'));
+  const adapter = resolve(root, 'must-not-run.mjs');
+  const marker = resolve(root, 'adapter-ran');
+  await writeFile(adapter, `import {writeFile} from 'node:fs/promises'; await writeFile(${JSON.stringify(marker)}, 'ran');`);
+  const previous = new Map(['PADNOTE_TTS_COMMAND', 'PADNOTE_TTS_ENV_NAMES', 'PADNOTE_TTS_ENV_FILE']
+    .map(name => [name, process.env[name]]));
+  process.env.PADNOTE_TTS_COMMAND = adapter;
+  process.env.PADNOTE_TTS_ENV_NAMES = 'SERVICE_TOKEN';
+  process.env.PADNOTE_TTS_ENV_FILE = resolve(root, 'invalid.env');
+  await writeFile(process.env.PADNOTE_TTS_ENV_FILE, 'not a dotenv assignment\n');
+  try {
+    await assert.rejects(prepareAudio(root), /environment file contains an invalid line/);
+    await assert.rejects(access(resolve(root, 'work/audio-checkpoints')));
+    await assert.rejects(access(marker));
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, {recursive: true, force: true});
+  }
+  t.after(async () => rm(root, {recursive: true, force: true}));
 });
 
 test('provider file parser bounds reads and redacts invalid quoted secrets', async () => {
@@ -330,6 +441,28 @@ wav.writeUInt32LE(dataLength, 40);
 for (let index = 0; index < samples; index += 1) {
   wav.writeInt16LE(Math.round(4000 * Math.sin(2 * Math.PI * 440 * index / sampleRate)), 44 + index * 2);
 }
+await writeFile(process.env.PADNOTE_TTS_OUTPUT, wav);
+`;
+}
+
+function explicitProviderFileAdapterSource(observations: string): string {
+  return `#!/usr/bin/env node
+import {writeFile} from 'node:fs/promises';
+await writeFile(${JSON.stringify(observations)}, JSON.stringify({
+  selected: {SERVICE_TOKEN: process.env.SERVICE_TOKEN, VOICE_NAME: process.env.VOICE_NAME},
+  names: process.env.PADNOTE_TTS_ENV_NAMES, envFile: process.env.PADNOTE_TTS_ENV_FILE,
+  unselected: process.env.OTHER_VENDOR_KEY,
+  dashscope: process.env.DASHSCOPE_API_KEY, openai: process.env.OPENAI_API_KEY,
+  nodeOptions: process.env.NODE_OPTIONS,
+}));
+const sampleRate = 8000, samples = 800, dataLength = samples * 2;
+const wav = Buffer.alloc(44 + dataLength);
+wav.write('RIFF', 0); wav.writeUInt32LE(36 + dataLength, 4); wav.write('WAVEfmt ', 8);
+wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28);
+wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36);
+wav.writeUInt32LE(dataLength, 40);
+for (let index = 0; index < samples; index += 1) wav.writeInt16LE(4000, 44 + index * 2);
 await writeFile(process.env.PADNOTE_TTS_OUTPUT, wav);
 `;
 }

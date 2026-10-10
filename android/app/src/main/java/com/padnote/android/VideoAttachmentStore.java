@@ -1,6 +1,11 @@
 package com.padnote.android;
 
 import android.content.Context;
+import android.os.Process;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructStat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -14,6 +19,8 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
 
 /** App-private, durable associations between a source note and verified video files. */
@@ -88,6 +95,8 @@ final class VideoAttachmentStore {
     /** Installs a verified archive copy without creating a task or connection record. */
     Attachment restoreFromArchive(String localNoteId, LibraryBackupManifest.VideoAttachment source,
                                   File stagedVideo) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+        requireLegacyMutationAllowed(localNoteId);
         synchronized (LOCK) {
             ensureRoot();
             if (source == null || stagedVideo == null || !"verified_local_copy".equals(source.offlineState) ||
@@ -126,6 +135,7 @@ final class VideoAttachmentStore {
                 return restored;
             } catch(Exception error) { if(temp.exists())temp.delete(); throw error; }
         }
+        }
     }
 
     private static String nullable(JSONObject value,String key) {
@@ -136,15 +146,24 @@ final class VideoAttachmentStore {
     private static final long MAX_BYTES=100L*1024L*1024L;
     private static final int MAX_INDEX_BYTES=4*1024*1024, MAX_ENTRIES=4000;
     private final File root, index, trustedParent;
+    private final Context authorityContext;
     private final SourceLookup sources;
 
     VideoAttachmentStore(Context context) {
-        this(new File(context.getFilesDir(),"video-attachments"), id -> {
+        this(context, new File(context.getFilesDir(),"video-attachments"), id -> {
             for (NoteStore.Entry entry:NoteStore.list(context)) if (entry.id.equals(id)) return entry;
             return null;
         });
     }
+    /** Private files-root staging directory for a newly downloaded task artifact. */
+    File downloadStagingDirectory() throws IOException {
+        synchronized (LOCK) { ensureRoot(); return root; }
+    }
     VideoAttachmentStore(File root, SourceLookup sources) {
+        this(null, root, sources);
+    }
+    private VideoAttachmentStore(Context context, File root, SourceLookup sources) {
+        this.authorityContext=context;
         this.root=root; this.index=new File(root,"index.json"); this.sources=sources;
         File parent=root==null?null:root.getParentFile();
         if(parent==null)throw new IllegalArgumentException("视频附件目录不安全");
@@ -157,6 +176,8 @@ final class VideoAttachmentStore {
                       String kind,String transport,String bridgeId,String instanceId,String certSha256,
                       String artifactId,String name,String mediaType,
                       long sizeBytes,String sha256,File verifiedSource) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+        requireLegacyMutationAllowed(noteId);
         synchronized (LOCK) {
             if (sources.find(noteId)==null) throw new IOException("来源笔记已删除，不能关联视频");
             if (!"video/mp4".equals(mediaType)||sizeBytes<=0||sizeBytes>MAX_BYTES||
@@ -203,6 +224,51 @@ final class VideoAttachmentStore {
                 if (promoted && !committed && target.exists()) target.delete();
             }
         }
+        }
+    }
+
+    /** Idempotent legacy publication using the operation's pre-reserved material UUID. */
+    Attachment attach(Attachment requested,File verifiedSource)throws Exception{
+        if(requested==null||verifiedSource==null)throw new IOException("视频附件输入无效");
+        try(LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()){
+            requireLegacyMutationAllowed(requested.noteId);
+            synchronized(LOCK){
+                if(sources.find(requested.noteId)==null)throw new IOException("来源笔记已删除，不能关联视频");
+                try{Attachment.parse(requested.json());}catch(Exception invalid){throw new IOException("视频附件信息无效",invalid);}
+                List<Attachment> existing=readAll();
+                Attachment byId=findById(existing,requested.id);
+                if(byId!=null){
+                    if(!PendingVideoArtifactStore.sameAttachment(byId,requested))throw new IOException("VIDEO_IDENTITY_CONFLICT");
+                    verifyFile(file(byId),byId.sizeBytes,byId.sha256);return byId;
+                }
+                for(Attachment old:existing)if(old.noteId.equals(requested.noteId)&&old.taskId.equals(requested.taskId)
+                        &&old.artifactId.equals(requested.artifactId))
+                    throw new IOException("VIDEO_TASK_ARTIFACT_ALREADY_ASSOCIATED");
+                ensureRoot();File target=file(requested);
+                if(target.exists()){
+                    // The immutable material file can outlive an index write whose fsync/error
+                    // result was ambiguous. Reconcile only an exact size/hash match; never replace it.
+                    verifyFile(target,requested.sizeBytes,requested.sha256);
+                    List<Attachment> reconciled=new ArrayList<>(existing);reconciled.add(requested);
+                    writeAll(reconciled);return requested;
+                }
+                File temp=File.createTempFile(".video-pending-",".part",root);
+                StructStat tempIdentity=ownedTemporaryState(temp);
+                try{
+                    copyVerified(verifiedSource,temp,requested.sizeBytes,requested.sha256);
+                    if(sources.find(requested.noteId)==null)throw new IOException("来源笔记已删除，不能关联视频");
+                    if(target.exists()||!temp.renameTo(target))throw new IOException("无法安全保存视频附件");
+                    List<Attachment> next=new ArrayList<>(existing);next.add(requested);writeAll(next);
+                    verifyFile(target,requested.sizeBytes,requested.sha256);
+                    return requested;
+                }finally{
+                    deleteTemporaryIfStillOwned(temp,tempIdentity);
+                    // A target which appeared after the initial existence check was never created
+                    // by this attempt. Never unlink it. Promoted bytes are also retained when
+                    // index publication is ambiguous so the fixed UUID can be reconciled.
+                }
+            }
+        }
     }
 
     /** Compatibility helper for store-only tests and legacy bridge identities. */
@@ -226,8 +292,22 @@ final class VideoAttachmentStore {
 
     List<Attachment> listForNote(String noteId) throws Exception {
         synchronized (LOCK) {
+            if(authorityContext!=null&&android.os.Build.VERSION.SDK_INT>=27){
+                List<Attachment> group=GroupAuthorityBridge.videoViews(authorityContext,noteId);
+                if(group!=null)return group;
+            }
             List<Attachment> result=new ArrayList<>();
             for (Attachment a:readAll()) if (a.noteId.equals(noteId)) result.add(a);
+            result.sort((a,b)->Long.compare(b.createdAt,a.createdAt));
+            return Collections.unmodifiableList(result);
+        }
+    }
+
+    /** Legacy-only read after the caller has verified that no group marker owns this note. */
+    List<Attachment> listLegacyForNote(String noteId) throws Exception {
+        synchronized (LOCK) {
+            List<Attachment> result=new ArrayList<>();
+            for(Attachment attachment:readAll())if(attachment.noteId.equals(noteId))result.add(attachment);
             result.sort((a,b)->Long.compare(b.createdAt,a.createdAt));
             return Collections.unmodifiableList(result);
         }
@@ -236,14 +316,39 @@ final class VideoAttachmentStore {
     /** Read-only complete index view for archive snapshots, including orphan provenance. */
     List<Attachment> listAllForBackup() throws Exception {
         synchronized (LOCK) {
-            List<Attachment> result = new ArrayList<>(readAll());
+            if(authorityContext==null||android.os.Build.VERSION.SDK_INT<27)return Collections.unmodifiableList(readAll());
+            List<NoteStore.Entry> notes=NoteStore.list(authorityContext);Set<String> managed=new HashSet<>();
+            List<Attachment> result=new ArrayList<>();GroupAuthorityBridge.CatalogReader catalogReader=null;
+            for(NoteStore.Entry note:notes){
+                if(catalogReader==null)catalogReader=GroupAuthorityBridge.catalogReader(authorityContext);
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot snapshot=catalogReader.open(note.id);
+                if(snapshot==null)continue;
+                managed.add(note.id);result.addAll(GroupAuthorityBridge.videoViews(snapshot));
+            }
+            for(Attachment legacy:readAll())if(!managed.contains(legacy.noteId))result.add(legacy);
             result.sort((a,b) -> Long.compare(b.createdAt, a.createdAt));
             return Collections.unmodifiableList(result);
         }
     }
 
+    /** Legacy-only archive rows for a caller that has already pinned group snapshots. */
+    List<Attachment> listLegacyForBackup(Set<String> groupManagedNotes)throws Exception {
+        synchronized(LOCK){
+            List<Attachment> result=new ArrayList<>();for(Attachment row:readAll())
+                if(groupManagedNotes==null||!groupManagedNotes.contains(row.noteId))result.add(row);
+            result.sort((a,b)->Long.compare(b.createdAt,a.createdAt));return Collections.unmodifiableList(result);
+        }
+    }
+
     File openVerified(Attachment attachment) throws Exception {
         synchronized (LOCK) {
+            if(authorityContext!=null&&attachment!=null&&android.os.Build.VERSION.SDK_INT>=27){
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot snapshot=GroupAuthorityBridge.open(authorityContext,attachment.noteId);
+                if(snapshot!=null){
+                    File projected=GroupAuthorityBridge.videoProjection(authorityContext,snapshot,attachment);
+                    verifyFile(projected,attachment.sizeBytes,attachment.sha256);return projected;
+                }
+            }
             Attachment found=findById(readAll(),attachment==null?"":attachment.id);
             if (found==null) throw new IOException("视频附件不存在");
             File file=file(found); verifyFile(file,found.sizeBytes,found.sha256); return file;
@@ -251,12 +356,15 @@ final class VideoAttachmentStore {
     }
 
     void remove(String attachmentId) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
         synchronized (LOCK) {
             List<Attachment> all=readAll(); Attachment found=findById(all,attachmentId);
-            if (found==null) return;
+            if (found==null) { requireNoGroupAttachment(attachmentId); return; }
+            requireLegacyMutationAllowed(found.noteId);
             File target=file(found);
             if (target.exists()&&!target.delete()) throw new IOException("本地视频仍在，关联未移除；请重试");
             all.remove(found); writeAll(all);
+        }
         }
     }
 
@@ -267,6 +375,8 @@ final class VideoAttachmentStore {
     }
 
     void removeForNote(String noteId) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+        requireLegacyMutationAllowed(noteId);
         synchronized (LOCK) {
             List<Attachment> all=readAll(); List<Attachment> keep=new ArrayList<>();
             List<Attachment> failed=new ArrayList<>();
@@ -278,6 +388,22 @@ final class VideoAttachmentStore {
             keep.addAll(failed);
             writeAll(keep);
             if(!failed.isEmpty())throw new IOException("仍有 "+failed.size()+" 个本地视频文件未删除；附件记录已保留以便重试");
+        }
+        }
+    }
+
+    private void requireLegacyMutationAllowed(String noteId) throws Exception {
+        if (authorityContext != null && noteId != null && !noteId.isEmpty())
+            NoteStore.requireNoteMaterialAccess(authorityContext, noteId);
+    }
+
+    private void requireNoGroupAttachment(String attachmentId)throws Exception {
+        if(authorityContext==null||android.os.Build.VERSION.SDK_INT<27)return;
+        for(NoteStore.Entry note:NoteStore.list(authorityContext)){
+            List<Attachment> rows=GroupAuthorityBridge.videoViews(authorityContext,note.id);
+            if(rows==null)continue;
+            for(Attachment row:rows)if(row.id.equals(attachmentId))
+                throw new IOException("GROUP_NOTE_REQUIRES_FULL_REVISION_SAVE");
         }
     }
 
@@ -371,4 +497,23 @@ final class VideoAttachmentStore {
         File parent=file.getParentFile();
         return parent!=null&&file.isFile()&&file.getCanonicalFile().equals(new File(parent.getCanonicalFile(),file.getName()));
     }catch(IOException e){return false;}}
+
+    private static StructStat ownedTemporaryState(File file)throws IOException {
+        try{
+            StructStat state=Os.lstat(file.getAbsolutePath());
+            if(!OsConstants.S_ISREG(state.st_mode)||state.st_uid!=Process.myUid()||state.st_nlink!=1)
+                throw new IOException("VIDEO_TEMP_UNSAFE");
+            return state;
+        }catch(ErrnoException error){throw new IOException("VIDEO_TEMP_UNSAFE",error);}
+    }
+    private static void deleteTemporaryIfStillOwned(File file,StructStat created){
+        if(file==null||created==null)return;
+        try{
+            StructStat current=Os.lstat(file.getAbsolutePath());
+            if(OsConstants.S_ISREG(current.st_mode)&&current.st_uid==created.st_uid&&current.st_nlink==1
+                    &&current.st_dev==created.st_dev&&current.st_ino==created.st_ino
+                    &&(current.st_mode&OsConstants.S_IFMT)==(created.st_mode&OsConstants.S_IFMT))
+                Os.remove(file.getAbsolutePath());
+        }catch(Exception ignored){/* Preserve replaced or unverifiable paths. */}
+    }
 }

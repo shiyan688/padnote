@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.graphics.Bitmap;
+import android.os.Build;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -17,6 +18,8 @@ import android.view.accessibility.AccessibilityWindowInfo;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.padnote.android.streaming.StreamingGroupStore;
 import android.app.UiAutomation;
 
 import org.json.JSONArray;
@@ -26,6 +29,7 @@ import org.junit.runner.RunWith;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -43,6 +47,7 @@ public final class DigitizationControllerTest {
         Context isolated = isolatedContext();
         DigitizationStore store = new DigitizationStore(isolated);
         VaultStore vault = new VaultStore(isolated);
+        DigitizationStore.Target target=vault.captureDigitizationTarget("note-resume-fixture",null);
         AtomicInteger calls = new AtomicInteger();
         AtomicReference<DigitizationController> controller = new AtomicReference<>();
         AtomicReference<NoteCanvasView> canvas = new AtomicReference<>();
@@ -62,7 +67,7 @@ public final class DigitizationControllerTest {
                                 return "离线转写 " + call;
                             });
                     controller.set(value);
-                    value.open(paper, "note-resume-fixture", "恢复样例", "profile-fixture", CONFIG, 123L);
+                    value.open(paper, "note-resume-fixture", "恢复样例", "profile-fixture", CONFIG, 123L,target);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             clickWhenVisible("确认范围并开始");
@@ -76,7 +81,7 @@ public final class DigitizationControllerTest {
             clickWhenVisible("关闭");
             awaitActivityWindowFocus(scenario);
             scenario.onActivity(activity -> controller.get().open(canvas.get(), "note-resume-fixture",
-                    "恢复样例", "profile-fixture", CONFIG, 123L));
+                    "恢复样例", "profile-fixture", CONFIG, 123L,target));
             awaitFocusedDialogText("这份原文已有进度");
             clickWhenVisible("确认范围并继续未完成页");
             await(() -> "COMPLETED".equals(store.findLatest("note-resume-fixture").state.name()));
@@ -95,7 +100,7 @@ public final class DigitizationControllerTest {
                 return idle.get();
             });
             scenario.onActivity(activity -> controller.get().open(canvas.get(), "note-resume-fixture",
-                    "恢复样例", "profile-fixture", CONFIG, 123L));
+                    "恢复样例", "profile-fixture", CONFIG, 123L,target));
             clickWhenVisible("查看已保存的批次（1）");
             assertEquals(4, calls.get());
             scenario.onActivity(activity -> controller.get().close());
@@ -107,6 +112,7 @@ public final class DigitizationControllerTest {
         DigitizationStore store = new DigitizationStore(isolated);
         VaultStore vault = new VaultStore(isolated);
         vault.write("note-cancel-fixture", "取消样例", 1, 1L, java.util.Collections.singletonList("已完成旧内容"));
+        DigitizationStore.Target target=vault.captureDigitizationTarget("note-cancel-fixture",vault.list().get(0));
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicReference<DigitizationController> controller = new AtomicReference<>();
@@ -124,7 +130,7 @@ public final class DigitizationControllerTest {
                                 return "不应保存的晚到结果";
                             });
                     controller.set(value);
-                    value.open(paper(activity, 1), "note-cancel-fixture", "取消样例", "profile-fixture", CONFIG, 2L);
+                    value.open(paper(activity, 1), "note-cancel-fixture", "取消样例", "profile-fixture", CONFIG, 2L,target);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             clickWhenVisible("确认范围并开始");
@@ -147,6 +153,7 @@ public final class DigitizationControllerTest {
         Context isolated = isolatedContext();
         DigitizationStore store = new DigitizationStore(isolated);
         VaultStore vault = new VaultStore(isolated);
+        DigitizationStore.Target target=vault.captureDigitizationTarget("note-busy-fixture",null);
         AtomicInteger calls = new AtomicInteger();
         AtomicReference<DigitizationController> controller = new AtomicReference<>();
         AtomicReference<DigitizationStore.Snapshot> before = new AtomicReference<>();
@@ -159,7 +166,7 @@ public final class DigitizationControllerTest {
                             "note-busy-fixture", "占用样例");
                     DigitizationStore.Source source = DigitizationStore.Source.from(document,
                             "", 1, "profile-fixture", CONFIG.endpoint, CONFIG.model);
-                    DigitizationStore.Snapshot created = store.create(source, "占用样例", 456L);
+                    DigitizationStore.Snapshot created = store.create(source, "占用样例", 456L,target);
                     before.set(created);
                     DigitizationStore.Lease lease = store.acquireLease(created.runId);
                     assertNotNull(lease);
@@ -171,7 +178,7 @@ public final class DigitizationControllerTest {
                     });
                     controller.set(value);
                     value.open(paper, "note-busy-fixture", "占用样例",
-                            "profile-fixture", CONFIG, 456L);
+                            "profile-fixture", CONFIG, 456L,target);
                 } catch (Exception error) {
                     throw new AssertionError(error);
                 }
@@ -198,6 +205,189 @@ public final class DigitizationControllerTest {
         }
     }
 
+    @Test public void groupTargetConflictKeepsCompletedCheckpointAndOriginalToken() throws Exception {
+        org.junit.Assume.assumeTrue(Build.VERSION.SDK_INT>=27);
+        Context isolated=isolatedContext();
+        NoteStore.Entry entry=NoteStore.create(isolated,"目标冲突样例");
+        NoteGroupFacade facade=new NoteGroupFacade(isolated);
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot base=
+                facade.adoptLegacyNote(entry.id,(old,staged)->true);
+        VaultStore vault=new VaultStore(isolated);
+        DigitizationStore.Target target=vault.captureDigitizationTarget(entry.id,null);
+        DigitizationStore store=new DigitizationStore(isolated);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        AtomicReference<DigitizationController> controller=new AtomicReference<>();
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+            scenario.onActivity(activity->{
+                try{
+                    DigitizationController value=new DigitizationController(activity,vault,store,
+                            (config,png,prompt,cancellation)->{
+                                entered.countDown();
+                                assertTrue(release.await(10,TimeUnit.SECONDS));
+                                return "已完成页内容";
+                            });
+                    controller.set(value);
+                    value.open(paper(activity,1),entry.id,"目标冲突样例","profile-fixture",
+                            CONFIG,123L,target);
+                }catch(Exception error){throw new AssertionError(error);}
+            });
+            clickWhenVisible("确认范围并开始");
+            assertTrue("provider fixture entered",entered.await(10,TimeUnit.SECONDS));
+            JSONObject winnerBody=new JSONObject(new String(base.readSmall("body.bin",
+                    (int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX),java.nio.charset.StandardCharsets.UTF_8));
+            winnerBody.put("title","竞争方的新版本");
+            facade.saveEditorRevision(entry.id,base.revision,base.digest,"竞争方的新版本",
+                    NoteJsonCodec.stringify(winnerBody));
+            release.countDown();
+            awaitReadyAndIdle(scenario,controller,store,entry.id);
+            DigitizationStore.Snapshot cold=new DigitizationStore(isolated).findLatest(entry.id);
+            assertEquals(1,cold.completedCount());
+            assertEquals("已完成页内容",cold.pages.get(0));
+            assertEquals(DigitizationStore.State.READY,cold.state);
+            assertNotNull("the stale-CAS refusal must be durably recorded",cold.error);
+            assertTrue("checkpoint retains the original captured group token",target.sameIntent(cold.target));
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot current=facade.openGroup(entry.id);
+            assertNotEquals(base.revision,current.revision);
+            assertTrue("stale publish must not add a legacy or grouped Vault row",vault.list().isEmpty());
+            scenario.onActivity(activity->controller.get().close());
+        }finally{
+            release.countDown();
+            delete(isolated.getFilesDir());
+        }
+    }
+
+    @Test public void sameContentCompetitorWithDifferentOperationCannotCompleteCapturedTarget() throws Exception {
+        org.junit.Assume.assumeTrue(Build.VERSION.SDK_INT>=27);
+        Context isolated=isolatedContext();
+        NoteStore.Entry entry=NoteStore.create(isolated,"同内容竞争样例");
+        VaultStore vault=new VaultStore(isolated);
+        vault.write(entry.id,"同内容竞争样例",1,123L,java.util.Collections.singletonList("initial transcription"));
+        NoteGroupFacade facade=new NoteGroupFacade(isolated);
+        StreamingGroupStore.Snapshot base=facade.adoptLegacyNote(entry.id,(old,staged)->true);
+        VaultStore.VaultNote selected=null;
+        for(VaultStore.VaultNote note:vault.list())if(entry.id.equals(note.noteId)){selected=note;break;}
+        assertNotNull("fixture must expose the adopted existing material",selected);
+        DigitizationStore.Target target=vault.captureDigitizationTarget(entry.id,selected);
+        byte[] selectedBaseBytes=GroupAuthorityBridge.vaultView(base,target.materialId).markdown;
+        assertEquals(DigitizationStore.TargetOperation.REPLACE,target.operation);
+        String competingOperation="00000000-0000-4000-8000-000000000091";
+        String competitor=VaultStore.buildDigitizedMarkdown(entry.id,"同内容竞争样例",1,123L,
+                java.util.Collections.singletonList("same transcription"),target.publishTimestamp,
+                competingOperation);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        AtomicReference<DigitizationController> controller=new AtomicReference<>();
+        DigitizationStore store=new DigitizationStore(isolated);
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+            scenario.onActivity(activity->{
+                try{
+                    DigitizationController value=new DigitizationController(activity,vault,store,
+                            (config,png,prompt,cancellation)->{
+                        entered.countDown();assertTrue(release.await(10,TimeUnit.SECONDS));
+                        return "same transcription";
+                    });
+                    controller.set(value);
+                    value.open(paper(activity,1),entry.id,"同内容竞争样例","profile-fixture",
+                            CONFIG,123L,target);
+                }catch(Exception error){throw new AssertionError(error);}
+            });
+            clickWhenVisible("确认范围并开始");
+            assertTrue("provider fixture entered",entered.await(10,TimeUnit.SECONDS));
+            facade.replaceVaultRevision(entry.id,base.revision,base.digest,target.materialId,
+                    competitor.getBytes(StandardCharsets.UTF_8));
+            release.countDown();
+            awaitReadyAndIdle(scenario,controller,store,entry.id);
+            DigitizationStore.Snapshot ready=store.findLatest(entry.id);
+            assertEquals("same page output does not prove this operation committed",1,ready.completedCount());
+            assertEquals(DigitizationStore.State.READY,ready.state);
+            assertNotNull("the stale-CAS failure must be durably recorded",ready.error);
+            assertTrue(target.sameIntent(ready.target));
+            StreamingGroupStore.Snapshot current=facade.openGroup(entry.id);
+            assertNotEquals(base.revision,current.revision);
+            assertEquals(competitor,new String(GroupAuthorityBridge.vaultView(current,target.materialId).markdown,
+                    StandardCharsets.UTF_8));
+            assertArrayEquals("the selected base remains byte-exact in immutable history",
+                    selectedBaseBytes,GroupAuthorityBridge.vaultView(base,target.materialId).markdown);
+            java.util.List<VaultStore.VaultNote> visible=vault.list();
+            assertEquals("the competing grouped material remains visible",1,visible.size());
+            assertTrue("a grouped conflict cannot create a legacy sidecar",visible.get(0).groupManaged);
+            scenario.onActivity(activity->controller.get().close());
+        }finally{
+            release.countDown();delete(isolated.getFilesDir());
+        }
+    }
+
+    private static void awaitReadyAndIdle(ActivityScenario<MainActivity> scenario,
+            AtomicReference<DigitizationController> controller,DigitizationStore store,String noteId)throws Exception{
+        await(()->{
+            AtomicBoolean idle=new AtomicBoolean(false);
+            scenario.onActivity(activity->idle.set(!controller.get().isBusy()));
+            DigitizationStore.Snapshot cold=store.findLatest(noteId);
+            return idle.get()&&cold!=null&&cold.state==DigitizationStore.State.READY;
+        });
+    }
+
+    @Test public void retryUsesCapturedSourceTimestampAfterSameContentNoteSave() throws Exception {
+        Context isolated=isolatedContext();
+        NoteStore.Entry entry=NoteStore.create(isolated,"来源时间重试样例");
+        JSONObject original=NoteStore.load(isolated,entry.id);
+        VaultStore vault=new VaultStore(isolated);
+        DigitizationStore store=new DigitizationStore(isolated);
+        DigitizationStore.Target target=vault.captureDigitizationTarget(entry.id,null);
+        long capturedSourceTime=original.optLong("updatedAt",entry.updatedAt);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        AtomicReference<DigitizationController> controller=new AtomicReference<>();
+        AtomicReference<JSONObject> capturedDocument=new AtomicReference<>();
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+            scenario.onActivity(activity->{
+                try{
+                    NoteCanvasView paper=new NoteCanvasView(activity);
+                    paper.layout(0,0,800,1100);
+                    paper.loadJsonDocument(original);
+                    capturedDocument.set(paper.toJsonDocument(entry.id,"来源时间重试样例"));
+                    DigitizationController value=new DigitizationController(activity,vault,store,
+                            (config,png,prompt,cancellation)->{
+                        entered.countDown();assertTrue(release.await(10,TimeUnit.SECONDS));
+                        return "captured page";
+                    });
+                    controller.set(value);
+                    value.open(paper,entry.id,"来源时间重试样例","profile-fixture",CONFIG,
+                            capturedSourceTime,target);
+                }catch(Exception error){throw new AssertionError(error);}
+            });
+            clickWhenVisible("确认范围并开始");
+            assertTrue("provider fixture entered",entered.await(10,TimeUnit.SECONDS));
+            await(()->System.currentTimeMillis()>capturedSourceTime);
+            NoteStore.Entry advanced=NoteStore.save(isolated,entry.id,"来源时间重试样例",
+                    NoteJsonCodec.stringify(capturedDocument.get()));
+            assertTrue("same-content save must advance the source timestamp",advanced.updatedAt>capturedSourceTime);
+            JSONObject reopened=NoteStore.load(isolated,entry.id);
+            assertEquals("the source body stayed canonically identical",
+                    DigitizationStore.canonicalSourceFingerprint(capturedDocument.get()),
+                    DigitizationStore.canonicalSourceFingerprint(reopened));
+            release.countDown();
+            await(()->{
+                AtomicBoolean idle=new AtomicBoolean(false);
+                scenario.onActivity(activity->idle.set(!controller.get().isBusy()));
+                DigitizationStore.Snapshot snapshot=store.findLatest(entry.id);
+                return idle.get()&&snapshot!=null&&snapshot.state==DigitizationStore.State.COMPLETED;
+            });
+            DigitizationStore.Snapshot completed=store.findLatest(entry.id);
+            assertEquals(capturedSourceTime,completed.sourceUpdatedAt);
+            assertEquals(1,vault.list().size());
+            String first=vault.read(vault.list().get(0).fileName);
+            String expected=VaultStore.buildDigitizedMarkdown(entry.id,"来源时间重试样例",1,
+                    capturedSourceTime,java.util.Collections.singletonList("captured page"),
+                    target.publishTimestamp,target.operationId);
+            assertEquals("published provenance is frozen at capture",expected,first);
+            String retried=vault.publishDigitization(completed.target,completed.title,completed.totalPages,
+                    completed.sourceUpdatedAt,completed.pages);
+            assertEquals(vault.list().get(0).fileName,retried);
+            assertEquals("an uncertain retry preserves exact bytes",first,vault.read(retried));
+            assertEquals("retry does not create duplicate material",1,vault.list().size());
+            scenario.onActivity(activity->controller.get().close());
+        }finally{release.countDown();delete(isolated.getFilesDir());}
+    }
+
     private static NoteCanvasView paper(Context context, int pages) throws Exception {
         JSONObject document = new JSONObject().put("schemaVersion", 8).put("id", "note-fixture")
                 .put("title", "恢复样例").put("pageWidth", 800).put("pageHeight", 1100)
@@ -212,7 +402,10 @@ public final class DigitizationControllerTest {
         Context base = InstrumentationRegistry.getInstrumentation().getTargetContext();
         File directory = new File(base.getCacheDir(), "digitize-test-" + UUID.randomUUID());
         if (!directory.mkdirs()) throw new IOException("Cannot create fixture directory");
-        return new ContextWrapper(base) { @Override public File getFilesDir() { return directory; } };
+        return new ContextWrapper(base) {
+            @Override public Context getApplicationContext() { return this; }
+            @Override public File getFilesDir() { return directory; }
+        };
     }
     private interface Condition { boolean met() throws Exception; }
     private static void await(Condition condition) throws Exception {

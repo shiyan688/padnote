@@ -1,11 +1,19 @@
 import SwiftUI
 
+private struct VaultDeletionRequest: Identifiable {
+    let id = UUID()
+    let note: VaultNote
+    let groupToken: NoteGroupVersionToken?
+}
+
 struct VaultShelfView: View {
     @EnvironmentObject private var library: NoteLibrary
     @StateObject private var vault = VaultLibrary()
+    @State private var displayedNotes = [VaultNote]()
     @State private var search = ""
     @State private var selected: VaultNote?
-    @State private var deleting: VaultNote?
+    @State private var pendingDeletion: VaultDeletionRequest?
+    @State private var retryableDeletion: VaultDeletionRequest?
     @State private var share: ShareArtifact?
     @State private var showAI = false
     @State private var aiContextSnapshot = ""
@@ -15,7 +23,7 @@ struct VaultShelfView: View {
     @State private var pendingVideoURL: URL?
 
     private var results: [VaultNote] {
-        vault.notes.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.markdown.localizedCaseInsensitiveContains(search) }
+        displayedNotes.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.markdown.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
@@ -25,7 +33,7 @@ struct VaultShelfView: View {
                     Text("知识库").font(.system(size: 28, weight: .bold))
                     Text("把笔记整理成 Markdown，保留公式，并按原文检索。")
                         .font(.system(size: 13)).foregroundStyle(PadTheme.secondary)
-                    if vault.notes.isEmpty {
+                    if displayedNotes.isEmpty {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("让手写内容也能被找到").font(.system(size: 17, weight: .semibold))
                             Text("打开笔记，在右上角菜单选择「整理到知识库」。整本数字化会在你确认后，逐页发送到所配置的模型。已有文字也可以直接保存为 Markdown。")
@@ -57,7 +65,7 @@ struct VaultShelfView: View {
                                         catch { vault.errorMessage = error.localizedDescription }
                                     }
                                     Button("生成视频任务包", systemImage: "film") { videoFormNote = note }
-                                    Button("删除", systemImage: "trash", role: .destructive) { deleting = note }
+                                    Button("删除", systemImage: "trash", role: .destructive) { beginDelete(note) }
                                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                             }.padding(20).background(.white, in: RoundedRectangle(cornerRadius: 18))
                         }
@@ -66,7 +74,7 @@ struct VaultShelfView: View {
             }.background(PadTheme.surface).searchable(text: $search, prompt: "搜索名称与正文")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("电脑 Agent", systemImage: "desktopcomputer") { agentSettings = true } } }
         }
-        .onAppear { vault.reload() }
+        .onAppear { vault.bind(noteLibrary: library); reloadCurrentVault() }
         .sheet(item: $selected) { note in
             NavigationStack {
                 MathTextView(source: note.markdown).padding(24).navigationTitle(note.title)
@@ -80,16 +88,81 @@ struct VaultShelfView: View {
         .sheet(isPresented: $showAI, onDismiss: { aiContextSnapshot = "" }) {
             AIAssistantView(image: nil, noteContext: aiContextSnapshot, allowsInsertion: false) { _ in }
         }
-        .alert("删除格式笔记？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("取消", role: .cancel) { deleting = nil }
+        .alert("删除格式笔记？", isPresented: Binding(get: { pendingDeletion != nil }, set: { _ in })) {
+            Button("取消", role: .cancel) { pendingDeletion = nil; retryableDeletion = nil }
             Button("删除", role: .destructive) {
-                if let deleting { do { try vault.delete(deleting) } catch { vault.errorMessage = error.localizedDescription } }
-                deleting = nil
+                guard let request = pendingDeletion else { return }
+                do {
+                    try vault.delete(request.note, expectedGroupToken: request.groupToken)
+                    pendingDeletion = nil
+                    retryableDeletion = nil
+                    reloadCurrentVault()
+                } catch {
+                    retryableDeletion = request
+                    pendingDeletion = nil
+                    vault.errorMessage = error.localizedDescription
+                }
             }
-        } message: { Text("只删除已整理的 Markdown 快照；原始手写笔记与独立存储的视频附件保留。") }
+        } message: { Text("删除这份整理后的笔记。原始笔记和视频附件会保留。") }
         .alert("知识库操作失败", isPresented: Binding(get: { vault.errorMessage != nil }, set: { if !$0 { vault.errorMessage = nil } })) {
+            if let retryableDeletion {
+                Button("按原版本重试", role: .destructive) {
+                    pendingDeletion = retryableDeletion
+                    self.retryableDeletion = nil
+                    vault.errorMessage = nil
+                }
+            }
             Button("好", role: .cancel) { vault.errorMessage = nil }
         } message: { Text(vault.errorMessage ?? "") }
+    }
+
+    private func reloadCurrentVault() {
+        vault.reload()
+        do {
+            var grouped = [VaultNote]()
+            var groupedOwners = Set<String>()
+            for document in library.notes {
+                guard let session = try library.currentGroupSession(noteID: document.id), session.groupToken != nil else { continue }
+                groupedOwners.insert(document.id.lowercased())
+                grouped += try library.groupedVaultMembers(basedOn: session, journalRoot: vault.backupJournalRoot()).map(\.value)
+            }
+            displayedNotes = grouped + vault.notes.filter { value in
+                let owner = value.archiveOrigin == "restored_archive"
+                    ? (value.archiveLinkedNoteID ?? value.archiveSourceNoteID ?? value.id) : value.id
+                return !groupedOwners.contains(owner.lowercased())
+            }
+            displayedNotes.sort { $0.createdAt > $1.createdAt }
+        } catch {
+            displayedNotes = []
+            vault.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func beginDelete(_ note: VaultNote) {
+        do {
+            let owner = note.archiveOrigin == "restored_archive"
+                ? (note.archiveLinkedNoteID ?? note.archiveSourceNoteID ?? note.id) : note.id
+            let session = try library.currentGroupSession(noteID: owner)
+            let token = session?.groupToken
+            if let session, token != nil {
+                let current = try library.groupedVaultMembers(basedOn: session, journalRoot: vault.backupJournalRoot())
+                guard current.contains(where: { Self.sameVaultRecord($0.value, note) }) else {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+            }
+            pendingDeletion = VaultDeletionRequest(note: note, groupToken: token)
+        } catch {
+            vault.errorMessage = error.localizedDescription
+        }
+    }
+
+    private static func sameVaultRecord(_ lhs: VaultNote, _ rhs: VaultNote) -> Bool {
+        lhs.id == rhs.id && lhs.title == rhs.title && lhs.markdown == rhs.markdown
+            && lhs.sourceUpdatedAt == rhs.sourceUpdatedAt && lhs.createdAt == rhs.createdAt
+            && lhs.archiveOrigin == rhs.archiveOrigin && lhs.archiveSourceNoteID == rhs.archiveSourceNoteID
+            && lhs.archiveLinkedNoteID == rhs.archiveLinkedNoteID && lhs.archiveSourceState == rhs.archiveSourceState
+            && lhs.restoreTransactionID == rhs.restoreTransactionID && lhs.restoreGroupID == rhs.restoreGroupID
+            && lhs.archiveDigitizationMetadata == rhs.archiveDigitizationMetadata
     }
 
 }
@@ -100,6 +173,7 @@ struct DigitizeNoteView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vault = VaultLibrary()
+    @EnvironmentObject private var library: NoteLibrary
     @StateObject private var session = DigitizationSession()
     @State private var prepareTask: Task<Void, Never>?
     @State private var profile: AIProfile?
@@ -227,7 +301,7 @@ struct DigitizeNoteView: View {
         )) {
             Button("好", role: .cancel) { vault.errorMessage = nil }
         } message: { Text(vault.errorMessage ?? "") }
-        .onAppear(perform: prepare)
+        .onAppear { vault.bind(noteLibrary: library); prepare() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { prepareTask?.cancel(); session.pause() }
         }
@@ -260,9 +334,10 @@ struct DigitizeNoteView: View {
     private var existingTextButton: some View {
         Button("仅将已有文字存入知识库（不上传）") {
             do {
+                let token = try library.currentGroupSession(noteID: note.id)?.groupToken
                 let text = note.textFlows.sorted { $0.anchorPageIndex < $1.anchorPageIndex }
                     .map { "## 第 \($0.anchorPageIndex + 1) 页\n\n\($0.source)" }.joined(separator: "\n\n")
-                try vault.save(note: note, markdown: "# \(note.title)\n\n\(text)")
+                try vault.save(note: note, markdown: "# \(note.title)\n\n\(text)", expectedGroupToken: token)
             } catch { vault.errorMessage = error.localizedDescription }
         }.buttonStyle(.bordered).disabled(note.textFlows.isEmpty)
     }
@@ -307,6 +382,14 @@ struct DigitizeNoteView: View {
     private func prepare() {
         prepareTask?.cancel()
         session.loadHistory(noteID: note.id)
+        let capturedGroupToken: NoteGroupVersionToken?
+        do {
+            capturedGroupToken = try library.currentGroupSession(noteID: note.id)?.groupToken
+        }
+        catch {
+            session.blockSending("无法核对当前笔记版本：\(error.localizedDescription)。旧草稿仍可预览或导出。")
+            return
+        }
         let selected = AISettingsStore().requestProfile
         profile = selected
         guard let selected else {
@@ -319,7 +402,8 @@ struct DigitizeNoteView: View {
                 try Task.checkCancellation()
                 let measured = max(note.pageCount, NoteTextLayout.requiredPageCount(note))
                 await session.prepare(document: note, measuredPageCount: measured,
-                                      pdfURL: pdfURL, profile: selected)
+                                      pdfURL: pdfURL, profile: selected,
+                                      groupVersion: capturedGroupToken)
             } catch is CancellationError {} catch {
                 session.blockSending("无法核对当前笔记来源：\(error.localizedDescription)。旧草稿仍可预览或导出。")
             }

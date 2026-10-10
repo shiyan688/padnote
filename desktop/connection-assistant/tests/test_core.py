@@ -18,7 +18,7 @@ from padnote_assistant.bundles import (MAX_ARTIFACT_BYTES, collect_artifacts,
 from padnote_assistant.hermes import HermesClient
 from padnote_assistant.profiles import read_hermes_profile
 from padnote_assistant.security import ValidationError
-from padnote_assistant.state import AuthorizationError, StateError, StateOwnershipError, StateStore
+from padnote_assistant.state import AuthorizationError, ConflictError, StateError, StateOwnershipError, StateStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -267,6 +267,114 @@ class BundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "manifest"):
                 prepare_task_directory(Path(directory), "bridge-task", self._envelope(raw),
                                        base64.b64encode(raw).decode("ascii"), hashlib.sha256(raw).hexdigest())
+
+    @staticmethod
+    def _note_work_bundle() -> tuple[bytes, dict]:
+        content = "Lesson notes and visible conversation context\n".encode("utf-8")
+        paper = b"%PDF-1.7\n% synthetic fixture\n%%EOF\n"
+        rows = []
+        for path, media_type, raw in (("input/content.md", "text/markdown", content),
+                                      ("input/paper.pdf", "application/pdf", paper)):
+            rows.append({"path": path, "media_type": media_type,
+                         "size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        canonical = "".join(f"{row['path']}\0{row['size_bytes']}\0{row['sha256']}\n" for row in rows)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        request = {"schema_version": "1.0", "task_type": "note.work.v1",
+                   "source": {"note_id": "fixture-note-1", "note_revision": 7,
+                              "title": "Physics notes", "entrypoint": "input/content.md",
+                              "bundle_sha256": digest},
+                   "brief": {"instruction": "Explain and prepare a handout",
+                             "preset_id": "shareable_handout",
+                             "style_prompt": "Use clear step-by-step language"}}
+        manifest = {"schema_version": "1.0", "files": rows}
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("request.json", __import__("json").dumps(request))
+            archive.writestr("input/manifest.json", __import__("json").dumps(manifest))
+            archive.writestr("input/content.md", content)
+            archive.writestr("input/paper.pdf", paper)
+            archive.writestr("work/.keep", b"")
+            archive.writestr("output/.keep", b"")
+        envelope = {"client_task_id": "note-task-1", "title": "Work from this paper",
+                    "input": "Use my paper as the source.",
+                    "source": {"note_id": "fixture-note-1", "note_revision": 7},
+                    "required_capability": "note_context_bundle"}
+        return output.getvalue(), envelope
+
+    def test_note_work_bundle_requires_capability_and_preserves_both_files(self):
+        raw, envelope = self._note_work_bundle()
+        envelope.update(bundle_base64=base64.b64encode(raw).decode(),
+                        bundle_sha256=hashlib.sha256(raw).hexdigest())
+        with tempfile.TemporaryDirectory() as directory:
+            task = prepare_task_directory(Path(directory), "note-task-1", envelope,
+                                          envelope["bundle_base64"], envelope["bundle_sha256"])
+            self.assertEqual(b"%PDF-1.7\n% synthetic fixture\n%%EOF\n",
+                             (task / "input/paper.pdf").read_bytes())
+            self.assertIn("Lesson notes", (task / "input/content.md").read_text(encoding="utf-8"))
+        without_capability = dict(envelope)
+        del without_capability["required_capability"]
+        with tempfile.TemporaryDirectory() as directory:
+            with BridgeService(Path(directory)) as service:
+                instance, token, _ = ready_instance(service)
+                with self.assertRaisesRegex(ValidationError, "requires note_context_bundle"):
+                    service.submit_run(instance["instance_id"], token, "note-task-1", without_capability)
+                self.assertEqual({}, service.store.snapshot()["runs"])
+
+    def test_note_work_submission_rechecks_capability_before_record_and_uses_generic_hermes(self):
+        raw, envelope = self._note_work_bundle()
+        envelope.update(bundle_base64=base64.b64encode(raw).decode(),
+                        bundle_sha256=hashlib.sha256(raw).hexdigest())
+        with tempfile.TemporaryDirectory() as directory, BridgeService(Path(directory)) as service:
+            instance, token, _ = ready_instance(service)
+            iid = instance["instance_id"]
+            with self.assertRaisesRegex(ConflictError, "no longer accepts note context"):
+                service.submit_run(iid, token, "note-task-1", envelope)
+            self.assertEqual({}, service.store.snapshot()["runs"])
+            service.store.update_instance_check(
+                iid, health="ready", detail="ready",
+                features={"run_submission": True, "run_status": True, "run_stop": True,
+                          "task_bundle": True, "note_context_bundle": True}, executable=True)
+            self.assertTrue(service.capabilities(iid, token)["features"]["note_context_bundle"])
+            with mock.patch.object(HermesClient, "create_run", return_value={
+                    "id": "hermes-note-run", "status": "running", "session_id": "session-note"}) as create:
+                status, result = service.submit_run(iid, token, "note-task-1", envelope)
+            self.assertEqual(202, status)
+            self.assertEqual("running", result["status"])
+            self.assertEqual(1, create.call_count)
+            upstream_input = create.call_args.args[0]
+            self.assertIn("input/content.md", upstream_input)
+            self.assertIn("input/paper.pdf", upstream_input)
+            self.assertIn("shareable_handout", upstream_input)
+            service.store.update_instance_check(
+                iid, health="ready", detail="capability withdrawn",
+                features={"run_submission": True, "run_status": True, "run_stop": True,
+                          "task_bundle": True, "note_context_bundle": False}, executable=True)
+            with self.assertRaisesRegex(ConflictError, "no longer accepts note context"):
+                service.submit_run(iid, token, "note-task-1", envelope)
+            self.assertEqual(1, create.call_count)
+
+    def test_note_work_upstream_instruction_points_to_markdown_and_pdf_without_provider_lock(self):
+        raw, envelope = self._note_work_bundle()
+        envelope.update(bundle_base64=base64.b64encode(raw).decode(),
+                        bundle_sha256=hashlib.sha256(raw).hexdigest())
+        with tempfile.TemporaryDirectory() as directory:
+            task = prepare_task_directory(Path(directory), "note-task-1", envelope,
+                                          envelope["bundle_base64"], envelope["bundle_sha256"])
+            instruction = BridgeService._upstream_input(envelope, task)
+        self.assertIn("input/content.md", instruction)
+        self.assertIn("input/paper.pdf", instruction)
+        self.assertIn("shareable_handout", instruction)
+        self.assertIn("do not assume a particular model/provider", instruction)
+        self.assertIn("not a built-in video job", instruction)
+
+    def test_capability_field_is_exact_and_only_for_bundled_root_runs(self):
+        with self.assertRaisesRegex(ValidationError, "unsupported"):
+            BridgeService._validate_run_payload(
+                {**run_payload(), "required_capability": "*"}, "client-task-1")
+        with self.assertRaisesRegex(ValidationError, "root task"):
+            BridgeService._validate_run_payload(
+                {**run_payload(), "parent_task_id": "parent-1",
+                 "required_capability": "note_context_bundle"}, "client-task-1")
 
     def test_oversized_artifact_is_rejected_before_hashing(self):
         with tempfile.TemporaryDirectory() as directory:

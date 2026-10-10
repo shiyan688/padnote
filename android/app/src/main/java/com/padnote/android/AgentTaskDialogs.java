@@ -182,14 +182,38 @@ final class AgentTaskDialogs {
                 .setNegativeButton("取消",null).show();
     }
 
+    void sendNoteWork(AgentConnectionStore.Config selected,NoteWorkBundleIO.Frozen frozen,
+                      String title,String input,String noteId) {
+        if(selected==null||!selected.verified()||selected.transport!=AgentConnectionStore.Transport.BRIDGE||
+                selected.featureMap==null||
+                selected.kind==AgentConnectionStore.Kind.BUILTIN_VIDEO||
+                !Boolean.TRUE.equals(selected.featureMap.get("task_bundle"))||
+                !Boolean.TRUE.equals(selected.featureMap.get("note_context_bundle"))||
+                !Boolean.TRUE.equals(selected.featureMap.get("run_submission"))) {
+            toast("目标连接不再支持纸面上下文任务包；本次未发送");return;
+        }
+        worker.execute(()->{
+            final AgentTaskStore.Task task;
+            try{task=tasks.create(selected,title,input,noteId,frozen.noteRevision,
+                    frozen.zip.clone(),"note_context_bundle");}
+            catch(Exception error){main.post(()->toast("无法创建任务（未发送）："+message(error)));return;}
+            main.post(()->submit(task));
+        });
+    }
+
     static String destinationLabel(AgentConnectionStore.Config profile) {
         return AgentTaskDestinationLabel.forProfile(profile);
     }
 
     private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
                                  String noteId,long noteRevision,byte[] bundle) {
+        createAndSubmit(profile,title,input,noteId,noteRevision,bundle,"");
+    }
+
+    private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
+                                 String noteId,long noteRevision,byte[] bundle,String requiredCapability) {
         final AgentTaskStore.Task task;
-        try{task=tasks.create(profile,title,input,noteId,noteRevision,bundle);}
+        try{task=tasks.create(profile,title,input,noteId,noteRevision,bundle,requiredCapability);}
         catch(Exception e){toast("无法创建任务："+message(e));return;}
         submit(task);
     }

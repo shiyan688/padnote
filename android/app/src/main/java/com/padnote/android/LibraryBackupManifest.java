@@ -12,10 +12,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Typed r1 archive manifest. This validates archive metadata and references, not NoteStore payload semantics. */
+/** Typed archive manifest. Update profiles bind source identity to the complete note resource group. */
 public final class LibraryBackupManifest {
     public static final String FORMAT = "com.padnote.library-archive";
-    public static final int FORMAT_VERSION = 1;
+    public static final int FORMAT_VERSION = 2;
     public static final int MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
     public static final int MAX_RESOURCES = 10_000;
     public static final long MAX_ARCHIVE_BYTES = 1_181_116_006L;
@@ -38,10 +38,19 @@ public final class LibraryBackupManifest {
     public final List<VideoAttachment> videoAttachments;
     public final List<CoverPreset> coverPresets;
     public final List<Resource> resources;
+    public final int formatVersion;
+    public final List<ArchiveUpdateProfile> updateProfiles;
 
     public LibraryBackupManifest(long createdAtMs, Producer producer, Scope scope,
             List<Note> notes, List<VaultEntry> vaultEntries, List<VideoAttachment> videoAttachments,
             List<CoverPreset> coverPresets, List<Resource> resources) throws IOException {
+        this(createdAtMs,producer,scope,notes,vaultEntries,videoAttachments,coverPresets,resources,1,Collections.emptyList());
+    }
+
+    public LibraryBackupManifest(long createdAtMs, Producer producer, Scope scope,
+            List<Note> notes, List<VaultEntry> vaultEntries, List<VideoAttachment> videoAttachments,
+            List<CoverPreset> coverPresets, List<Resource> resources, int formatVersion,
+            List<ArchiveUpdateProfile> updateProfiles) throws IOException {
         this.createdAtMs = createdAtMs;
         this.producer = producer;
         this.scope = scope;
@@ -50,6 +59,8 @@ public final class LibraryBackupManifest {
         this.videoAttachments = immutable(videoAttachments);
         this.coverPresets = immutable(coverPresets);
         this.resources = immutable(resources);
+        this.formatVersion=formatVersion;
+        this.updateProfiles=Collections.unmodifiableList(new ArrayList<>(updateProfiles==null?Collections.emptyList():updateProfiles));
         validate();
     }
 
@@ -60,11 +71,12 @@ public final class LibraryBackupManifest {
     public static LibraryBackupManifest parse(byte[] bytes) throws IOException {
         Map<String, Object> top = LibraryBackupJson.object(
                 LibraryBackupJson.parse(bytes, MAX_MANIFEST_BYTES), "MANIFEST_OBJECT");
-        LibraryBackupJson.exactKeys(top, "MANIFEST_FIELDS", "format", "format_version", "created_at_ms",
-                "producer", "scope", "notes", "vault_entries", "video_attachments", "cover_presets", "resources");
         if (!FORMAT.equals(LibraryBackupJson.string(top.get("format"), "FORMAT"))) throw new IOException("FORMAT_UNSUPPORTED");
-        if (LibraryBackupJson.integer(top.get("format_version"), 1, 1, "FORMAT_VERSION") != FORMAT_VERSION)
-            throw new IOException("FORMAT_UNSUPPORTED");
+        int version=(int)LibraryBackupJson.integer(top.get("format_version"),1,FORMAT_VERSION,"FORMAT_VERSION");
+        if(version==1)LibraryBackupJson.exactKeys(top,"MANIFEST_FIELDS","format","format_version","created_at_ms",
+                "producer","scope","notes","vault_entries","video_attachments","cover_presets","resources");
+        else LibraryBackupJson.exactKeys(top,"MANIFEST_FIELDS","format","format_version","created_at_ms",
+                "producer","scope","notes","vault_entries","video_attachments","cover_presets","resources","update_profiles");
         long createdAtMs = LibraryBackupJson.integer(top.get("created_at_ms"), 0, Long.MAX_VALUE, "TIME_INVALID");
 
         Map<String, Object> p = LibraryBackupJson.object(top.get("producer"), "PRODUCER_FIELDS");
@@ -101,7 +113,9 @@ public final class LibraryBackupManifest {
         List<VaultEntry> vaults = new ArrayList<>();
         for (Object value : array(top.get("vault_entries"), "VAULT_ARRAY")) {
             Map<String, Object> row = LibraryBackupJson.object(value, "VAULT_FIELDS");
-            LibraryBackupJson.exactKeys(row, "VAULT_FIELDS", "item_id", "note_item_id", "source_state",
+            if(row.containsKey("source_storage_resource_id"))LibraryBackupJson.exactKeys(row,"VAULT_FIELDS","item_id","note_item_id","source_state",
+                    "source_note_id","source_revision_ms","created_at_ms","resource_id","source_storage_resource_id");
+            else LibraryBackupJson.exactKeys(row, "VAULT_FIELDS", "item_id", "note_item_id", "source_state",
                     "source_note_id", "source_revision_ms", "created_at_ms", "resource_id");
             vaults.add(new VaultEntry(text(row.get("item_id"), 64, "ITEM_ID_INVALID"),
                     nullableText(row.get("note_item_id"), 64, "ITEM_ID_INVALID"),
@@ -109,7 +123,8 @@ public final class LibraryBackupManifest {
                     text(row.get("source_note_id"), 4096, "SOURCE_NOTE_ID"),
                     integer(row, "source_revision_ms", 0, Long.MAX_VALUE),
                     integer(row, "created_at_ms", 0, Long.MAX_VALUE),
-                    text(row.get("resource_id"), 64, "RESOURCE_ID_INVALID")));
+                    text(row.get("resource_id"), 64, "RESOURCE_ID_INVALID"),
+                    row.containsKey("source_storage_resource_id")?text(row.get("source_storage_resource_id"),64,"RESOURCE_ID_INVALID"):null));
         }
 
         List<VideoAttachment> videos = new ArrayList<>();
@@ -171,7 +186,9 @@ public final class LibraryBackupManifest {
                     integer(row, "byte_length", 0, Long.MAX_VALUE), text(row.get("sha256"), 64, "RESOURCE_SHA"),
                     text(row.get("member"), 128, "RESOURCE_MEMBER")));
         }
-        return new LibraryBackupManifest(createdAtMs, producer, scope, notes, vaults, videos, presets, resources);
+        List<ArchiveUpdateProfile> profiles=new ArrayList<>();
+        if(version==2)for(Object profile:array(top.get("update_profiles"),"UPDATE_PROFILE_ARRAY"))profiles.add(ArchiveUpdateProfile.parse(profile));
+        return new LibraryBackupManifest(createdAtMs, producer, scope, notes, vaults, videos, presets, resources,version,profiles);
     }
 
     public byte[] toJsonBytes() throws IOException {
@@ -182,6 +199,7 @@ public final class LibraryBackupManifest {
         if (createdAtMs < 0 || producer == null || scope == null) throw new IOException("MANIFEST_FIELDS");
         if (!("android".equals(producer.platform) || "ios".equals(producer.platform)) || empty(producer.appVersion))
             throw new IOException("PRODUCER_FIELDS");
+        if(formatVersion!=1&&formatVersion!=2)throw new IOException("FORMAT_VERSION");
         if (!"all-selected".equals(scope.notes) || !scope.attachedPdfs || !scope.assignedCovers || !scope.vaultEntries ||
                 !scope.userCoverPresets || !scope.videoAttachments || scope.credentials || scope.connections || scope.taskHistory || scope.inFlightWork)
             throw new IOException("FORBIDDEN_SCOPE");
@@ -215,6 +233,21 @@ public final class LibraryBackupManifest {
             if (!("payload/" + resource.resourceId + ".bin").equals(resource.member)) throw new IOException("RESOURCE_MEMBER");
         }
 
+        if(formatVersion==1){if(!updateProfiles.isEmpty())throw new IOException("UPDATE_PROFILE_VERSION_MISMATCH");}
+        else {
+            if(updateProfiles.size()!=notes.size())throw new IOException("UPDATE_PROFILE_SET_MISMATCH");
+            Map<String,ArchiveUpdateProfile> profilesByNote=new HashMap<>();
+            for(ArchiveUpdateProfile profile:updateProfiles){if(profilesByNote.put(profile.noteItemId,profile)!=null)throw new IOException("UPDATE_PROFILE_DUPLICATE");}
+            for(Note note:notes){ArchiveUpdateProfile profile=profilesByNote.get(note.itemId);Resource body=byResource.get(note.noteResourceId);
+                if(profile==null||!profile.sourceNoteId.equals(note.sourceNoteId)||body==null||!profile.bodySha256.equals(body.sha256))throw new IOException("UPDATE_PROFILE_NOTE_BINDING");
+                String expectedGroup=ArchiveUpdateProfile.groupDigest(note,vaultEntries,videoAttachments,byResource,profile.schemaVersion);
+                if(!expectedGroup.equals(profile.groupSha256))throw new IOException("UPDATE_PROFILE_GROUP_DIGEST");
+                String expectedLineage=java.util.UUID.nameUUIDFromBytes(("PadNote/source-lineage/v2\0"+producer.platform+"\0"+note.sourceNoteId).getBytes(StandardCharsets.UTF_8)).toString();
+                String expectedRevision=java.util.UUID.nameUUIDFromBytes(("PadNote/source-revision/v2\0"+expectedLineage+"\0"+expectedGroup).getBytes(StandardCharsets.UTF_8)).toString();
+                if(!expectedLineage.equals(profile.sourceLineageId)||!expectedRevision.equals(profile.sourceRevisionId))throw new IOException("UPDATE_PROFILE_IDENTITY_BINDING");
+            }
+        }
+
         Map<String, Integer> referenced = new HashMap<>();
         for (Note note : notes) {
             use(note.noteResourceId, "note_document", byResource, referenced);
@@ -228,6 +261,7 @@ public final class LibraryBackupManifest {
             validateSource(entry.sourceState, entry.noteItemId, entry.sourceNoteId, notesById, false);
             if (entry.sourceRevisionMs < 0 || entry.createdAtMs < 0) throw new IOException("TIME_INVALID");
             use(entry.resourceId, "vault_entry_json", byResource, referenced);
+            if(entry.sourceStorageResourceId!=null){if(formatVersion!=2)throw new IOException("VAULT_STORAGE_PROFILE_VERSION");use(entry.sourceStorageResourceId,"vault_storage_markdown",byResource,referenced);}
             vaultsById.put(entry.itemId, entry);
         }
         Map<String, VideoAttachment> videosById = new HashMap<>();
@@ -322,7 +356,7 @@ public final class LibraryBackupManifest {
 
     private Map<String, Object> asJson() {
         Map<String, Object> top = map();
-        top.put("format", FORMAT); top.put("format_version", FORMAT_VERSION); top.put("created_at_ms", createdAtMs);
+        top.put("format", FORMAT); top.put("format_version", formatVersion); top.put("created_at_ms", createdAtMs);
         Map<String, Object> p = map(); p.put("platform", producer.platform); p.put("app_version", producer.appVersion); top.put("producer", p);
         Map<String, Object> s = map(); s.put("notes", scope.notes); s.put("attached_pdfs", scope.attachedPdfs);
         s.put("assigned_covers", scope.assignedCovers); s.put("vault_entries", scope.vaultEntries);
@@ -342,7 +376,9 @@ public final class LibraryBackupManifest {
         for (VaultEntry v : vaultEntries) {
             Map<String, Object> row = map(); row.put("item_id", v.itemId); row.put("note_item_id", v.noteItemId);
             row.put("source_state", v.sourceState); row.put("source_note_id", v.sourceNoteId);
-            row.put("source_revision_ms", v.sourceRevisionMs); row.put("created_at_ms", v.createdAtMs); row.put("resource_id", v.resourceId); vaultRows.add(row);
+            row.put("source_revision_ms", v.sourceRevisionMs); row.put("created_at_ms", v.createdAtMs); row.put("resource_id", v.resourceId);
+            if(formatVersion==2&&v.sourceStorageResourceId!=null)row.put("source_storage_resource_id",v.sourceStorageResourceId);
+            vaultRows.add(row);
         }
         top.put("vault_entries", vaultRows);
         List<Object> videoRows = new ArrayList<>();
@@ -367,6 +403,7 @@ public final class LibraryBackupManifest {
         List<Object> resourceRows = new ArrayList<>();
         for (Resource r : resources) { Map<String, Object> row = map(); row.put("resource_id", r.resourceId); row.put("role", r.role); row.put("media_type", r.mediaType); row.put("byte_length", r.byteLength); row.put("sha256", r.sha256); row.put("member", r.member); resourceRows.add(row); }
         top.put("resources", resourceRows);
+        if(formatVersion==2){List<Object> profiles=new ArrayList<>();for(ArchiveUpdateProfile profile:updateProfiles)try{profiles.add(LibraryBackupJson.parse(profile.toJson().toString().getBytes(StandardCharsets.UTF_8),MAX_MANIFEST_BYTES));}catch(Exception e){throw new IllegalStateException("UPDATE_PROFILE_SERIALIZATION",e);}top.put("update_profiles",profiles);}
         return top;
     }
 
@@ -396,6 +433,7 @@ public final class LibraryBackupManifest {
     private static String roleMedia(String role) {
         switch (role) {
             case "note_document": case "vault_entry_json": return "application/json";
+            case "vault_storage_markdown": return "text/markdown";
             case "pdf_original": return "application/pdf";
             case "assigned_cover_png": case "user_cover_preset_png": return "image/png";
             case "video_attachment_mp4": return "video/mp4";
@@ -408,6 +446,7 @@ public final class LibraryBackupManifest {
             case "pdf_original": return MAX_PDF_BYTES;
             case "assigned_cover_png": case "user_cover_preset_png": return MAX_PNG_BYTES;
             case "vault_entry_json": return MAX_VAULT_BYTES;
+            case "vault_storage_markdown": return MAX_VAULT_BYTES;
             case "video_attachment_mp4": return MAX_VIDEO_BYTES;
             default: return 0;
         }
@@ -443,12 +482,16 @@ public final class LibraryBackupManifest {
         }
     }
     public static final class VaultEntry {
-        public final String itemId, noteItemId, sourceState, sourceNoteId, resourceId;
+        public final String itemId, noteItemId, sourceState, sourceNoteId, resourceId, sourceStorageResourceId;
         public final long sourceRevisionMs, createdAtMs;
         public VaultEntry(String itemId, String noteItemId, String sourceState, String sourceNoteId,
                 long sourceRevisionMs, long createdAtMs, String resourceId) {
+            this(itemId,noteItemId,sourceState,sourceNoteId,sourceRevisionMs,createdAtMs,resourceId,null);
+        }
+        public VaultEntry(String itemId, String noteItemId, String sourceState, String sourceNoteId,
+                long sourceRevisionMs, long createdAtMs, String resourceId,String sourceStorageResourceId) {
             this.itemId=itemId;this.noteItemId=noteItemId;this.sourceState=sourceState;this.sourceNoteId=sourceNoteId;
-            this.sourceRevisionMs=sourceRevisionMs;this.createdAtMs=createdAtMs;this.resourceId=resourceId;
+            this.sourceRevisionMs=sourceRevisionMs;this.createdAtMs=createdAtMs;this.resourceId=resourceId;this.sourceStorageResourceId=sourceStorageResourceId;
         }
     }
     public static final class ConnectionProvenance {

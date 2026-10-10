@@ -10,9 +10,14 @@ import android.graphics.RectF;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.security.MessageDigest;
 import java.io.FileInputStream;
 import java.io.FileDescriptor;
@@ -64,31 +69,191 @@ final class CoverStore {
     }
 
     static boolean has(Context context, String noteId) {
-        try { NoteStore.requireRestoreGroupV2Visible(context,noteId); return coverFile(context, noteId).isFile(); }
+        try { NoteStore.requireRestoreGroupV2Visible(context,noteId);if(android.os.Build.VERSION.SDK_INT>=27){File projection=GroupAuthorityBridge.coverProjectionOrNull(context,noteId);if(projection!=null)return projection.isFile();}return coverFile(context, noteId).isFile(); }
         catch (Exception hidden) { return false; }
     }
 
     /** Writes {@code source} as the note's cover, downscaled, replacing any old one. */
     static void assign(Context context, String noteId, Bitmap source) throws Exception {
-        NoteStore.requireNoteMaterialAccess(context,noteId);
         if (source == null || source.isRecycled()) {
             throw new IllegalArgumentException("封面位图不可用");
         }
-        File file = coverFile(context, noteId);
-        File directory = file.getParentFile();
-        if (directory != null && !directory.exists()) {
-            directory.mkdirs();
+        byte[] encoded = encodeForGroup(source);
+        try (LegacyGroupMutationLock.Lease ignored = LegacyGroupMutationLock.acquire()) {
+            NoteStore.requireNoteMaterialAccess(context, noteId);
+            writeLegacyCoverAtomically(coverFile(context, noteId), encoded);
         }
-        Bitmap scaled = scaleToFit(source, MAX_STORED_WIDTH);
-        FileOutputStream stream = new FileOutputStream(file);
+    }
+
+    /** Encodes a selected bitmap without publishing a legacy sidecar first. */
+    static byte[] encodeForGroup(Bitmap source) throws IOException {
+        if(source==null||source.isRecycled())throw new IllegalArgumentException("COVER_BITMAP_UNAVAILABLE");
+        if(source.getWidth()<=0||source.getHeight()<=0
+                ||(long)source.getWidth()*source.getHeight()>NoteImage.MAX_DOCUMENT_PIXELS)
+            throw new IOException("GROUP_COVER_DIMENSIONS_INVALID");
+        Bitmap scaled=scaleToFit(source,MAX_STORED_WIDTH);
         try {
-            scaled.compress(Bitmap.CompressFormat.PNG, 90, stream);
+            BoundedByteArrayOutputStream output=new BoundedByteArrayOutputStream(
+                    checkedCoverMaxBytes());
+            if(!scaled.compress(Bitmap.CompressFormat.PNG,100,output))
+                throw new IOException("GROUP_COVER_ENCODE_FAILED");
+            byte[] bytes=output.toByteArray();
+            if(bytes.length==0)
+                throw new IOException("GROUP_COVER_SIZE_INVALID");
+            validatePng(bytes);
+            return bytes;
         } finally {
-            stream.close();
-            if (scaled != source) {
-                scaled.recycle();
+            if(scaled!=source)scaled.recycle();
+        }
+    }
+
+    private static int checkedCoverMaxBytes()throws IOException {
+        long maximum=com.padnote.android.streaming.StreamingGroupStore.COVER_MAX;
+        if(maximum<=0||maximum>Integer.MAX_VALUE)throw new IOException("GROUP_COVER_SIZE_LIMIT_INVALID");
+        return (int)maximum;
+    }
+
+    /** Caps allocation while Bitmap.compress is writing, not after its output is complete. */
+    private static final class BoundedByteArrayOutputStream extends OutputStream {
+        private final int maximum;
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream(32 * 1024);
+        BoundedByteArrayOutputStream(int maximum) { this.maximum = maximum; }
+        @Override public void write(int value) throws IOException {
+            requireCapacity(1);
+            bytes.write(value);
+        }
+        @Override public void write(byte[] value, int offset, int length) throws IOException {
+            if (value == null) throw new NullPointerException("value");
+            if (offset < 0 || length < 0 || length > value.length - offset)
+                throw new IndexOutOfBoundsException();
+            requireCapacity(length);
+            bytes.write(value, offset, length);
+        }
+        private void requireCapacity(int incoming) throws IOException {
+            if (incoming > maximum - bytes.size()) throw new IOException("GROUP_COVER_SIZE_INVALID");
+        }
+        byte[] toByteArray() { return bytes.toByteArray(); }
+    }
+
+    private static void writeLegacyCoverAtomically(File target, byte[] png) throws Exception {
+        validatePng(png);
+        File parent=target.getParentFile();
+        if(parent==null||(!parent.isDirectory()&&!parent.mkdirs())||!parent.isDirectory())
+            throw new IOException("COVER_DIRECTORY_UNAVAILABLE");
+        StructStat prior=lstatOrNull(target);
+        requireRegularSingleLink(prior,"COVER_TARGET_UNSAFE");
+
+        File temporary=new File(parent,target.getName()+".tmp-"+UUID.randomUUID());
+        FileDescriptor descriptor=null;
+        StructStat created=null;
+        StructStat synced=null;
+        boolean published=false;
+        try {
+            descriptor=Os.open(temporary.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|
+                    OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
+            created=Os.fstat(descriptor);
+            FileDescriptor transferred=descriptor;
+            descriptor=null;
+            try(FileOutputStream output=OwnedFdStreams.output(transferred)) {
+                output.write(png);
+                output.flush();
+                output.getFD().sync();
+                synced=Os.fstat(output.getFD());
+            }
+            StructStat staged=lstatOrNull(temporary);
+            requireRegularSingleLink(staged,"COVER_TEMP_UNSAFE");
+            if(!sameLegacyObject(created,staged)||synced==null||!sameLegacyState(synced,staged)||staged.st_size!=png.length)
+                throw new IOException("COVER_TEMP_CHANGED");
+            byte[] reopened=readBoundedNoFollow(temporary,
+                    checkedCoverMaxBytes());
+            if(!Arrays.equals(png,reopened))throw new IOException("COVER_TEMP_CONTENT_CHANGED");
+            validatePng(reopened);
+
+            StructStat current=lstatOrNull(target);
+            requireRegularSingleLink(current,"COVER_TARGET_UNSAFE");
+            if(!sameLegacyState(prior,current))throw new IOException("COVER_TARGET_CHANGED");
+            Os.rename(temporary.getAbsolutePath(),target.getAbsolutePath());
+            published=true;
+            syncParent(target);
+        } finally {
+            if(descriptor!=null)try{Os.close(descriptor);}catch(Exception ignored){}
+            if(!published&&created!=null) {
+                try {
+                    StructStat leftover=lstatOrNull(temporary);
+                    if(sameLegacyObject(created,leftover))Os.remove(temporary.getAbsolutePath());
+                } catch(Exception ignored) { }
             }
         }
+    }
+
+    private static byte[] readBoundedNoFollow(File file,int maximum)throws Exception {
+        StructStat before=lstatOrNull(file);
+        requireRegularSingleLink(before,"COVER_TEMP_UNSAFE");
+        if(before.st_size<0||before.st_size>maximum)throw new IOException("COVER_TEMP_SIZE_INVALID");
+        FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|
+                AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
+        try(FileInputStream input=OwnedFdStreams.input(fd);
+            ByteArrayOutputStream output=new ByteArrayOutputStream((int)before.st_size)) {
+            StructStat opened=Os.fstat(input.getFD());
+            if(!sameLegacyState(before,opened))throw new IOException("COVER_TEMP_CHANGED");
+            byte[] buffer=new byte[8192];int total=0;
+            for(int count;(count=input.read(buffer))!=-1;) {
+                if(count>maximum-total)throw new IOException("COVER_TEMP_SIZE_INVALID");
+                output.write(buffer,0,count);total+=count;
+            }
+            StructStat after=Os.fstat(input.getFD());
+            if(total!=before.st_size||!sameLegacyState(before,after)||
+                    !sameLegacyState(before,lstatOrNull(file)))
+                throw new IOException("COVER_TEMP_CHANGED");
+            return output.toByteArray();
+        }
+    }
+
+    private static StructStat lstatOrNull(File file)throws IOException {
+        try{return Os.lstat(file.getAbsolutePath());}
+        catch(android.system.ErrnoException error) {
+            if(error.errno==OsConstants.ENOENT)return null;
+            throw new IOException("COVER_PATH_CHECK_FAILED");
+        }
+    }
+
+    private static void requireRegularSingleLink(StructStat stat,String error)throws IOException {
+        if(stat!=null&&(!OsConstants.S_ISREG(stat.st_mode)||stat.st_nlink!=1))throw new IOException(error);
+    }
+
+    private static boolean sameLegacyObject(StructStat first,StructStat second) {
+        if(first==null||second==null)return first==second;
+        return first.st_dev==second.st_dev&&first.st_ino==second.st_ino&&
+                first.st_mode==second.st_mode&&first.st_nlink==second.st_nlink;
+    }
+
+    private static boolean sameLegacyState(StructStat first,StructStat second) {
+        if(first==null||second==null)return first==second;
+        return sameLegacyObject(first,second)&&first.st_size==second.st_size&&
+                first.st_mtime==second.st_mtime&&first.st_ctime==second.st_ctime;
+    }
+
+    private static void syncParent(File file)throws Exception {
+        FileDescriptor directory=Os.open(file.getParentFile().getAbsolutePath(),
+                OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC,0);
+        try{Os.fsync(directory);}finally{Os.close(directory);}
+    }
+
+    /** Requires a decodable bounded PNG before it can become a committed group member. */
+    static void validatePng(byte[] bytes) throws IOException {
+        if(bytes==null||bytes.length==0
+                ||bytes.length>com.padnote.android.streaming.StreamingGroupStore.COVER_MAX)
+            throw new IOException("GROUP_COVER_SIZE_INVALID");
+        BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;
+        BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);
+        if(bounds.outWidth<=0||bounds.outHeight<=0||!"image/png".equals(bounds.outMimeType)
+                ||bounds.outWidth>MAX_STORED_WIDTH
+                ||(long)bounds.outWidth*bounds.outHeight>NoteImage.MAX_DOCUMENT_PIXELS)
+            throw new IOException("GROUP_COVER_PNG_INVALID");
+        BitmapFactory.Options sample=new BitmapFactory.Options();sample.inSampleSize=4;
+        Bitmap decoded=BitmapFactory.decodeByteArray(bytes,0,bytes.length,sample);
+        if(decoded==null)throw new IOException("GROUP_COVER_PNG_INVALID");
+        decoded.recycle();
     }
 
     /** Promotes a byte-exact, already archive-validated PNG to a new note without re-encoding. */
@@ -128,7 +293,7 @@ final class CoverStore {
         if((link.st_mode&OsConstants.S_IFMT)!=OsConstants.S_IFREG||link.st_nlink!=1||link.st_size!=size)return false;
         MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;byte[] buffer=new byte[16*1024];
         FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
-        try(FileInputStream in=new FileInputStream(fd)){int n;while((n=in.read(buffer))!=-1){total+=n;if(total>size)return false;digest.update(buffer,0,n);}StructStat after=Os.fstat(in.getFD());return total==size&&after.st_dev==link.st_dev&&after.st_ino==link.st_ino&&after.st_size==link.st_size&&hex(digest.digest()).equals(sha256);}
+        try(FileInputStream in=OwnedFdStreams.input(fd)){int n;while((n=in.read(buffer))!=-1){if(total>size-n)return false;total+=n;digest.update(buffer,0,n);}StructStat after=Os.fstat(in.getFD());return total==size&&after.st_dev==link.st_dev&&after.st_ino==link.st_ino&&after.st_size==link.st_size&&hex(digest.digest()).equals(sha256);}
     }
 
     static void rollbackRestoredRaw(Context context,String noteId,String sha256,LibraryRestoreGroupV2.Lease lease,
@@ -177,18 +342,32 @@ final class CoverStore {
 
     private static String hex(byte[] bytes){StringBuilder out=new StringBuilder();for(byte b:bytes)out.append(String.format(Locale.ROOT,"%02x",b&255));return out.toString();}
 
-    static void remove(Context context, String noteId) {
-        try { NoteStore.requireNoteMaterialAccess(context,noteId); } catch (Exception hidden) { return; }
-        File file = coverFile(context, noteId);
-        if (file.isFile()) {
-            file.delete();
+    /** Checked legacy sidecar removal for an explicit user action. */
+    static void removeChecked(Context context,String noteId)throws Exception {
+        try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()) {
+            NoteStore.requireNoteMaterialAccess(context,noteId);
+            File file=coverFile(context,noteId);
+            StructStat existing=lstatOrNull(file);
+            if(existing==null)return;
+            requireRegularSingleLink(existing,"COVER_TARGET_UNSAFE");
+            if(!sameLegacyState(existing,lstatOrNull(file)))throw new IOException("COVER_TARGET_CHANGED");
+            Os.remove(file.getAbsolutePath());
+            syncParent(file);
         }
+    }
+
+    /** Best-effort compatibility entrypoint for existing note-delete callers. */
+    static void remove(Context context,String noteId) {
+        try{removeChecked(context,noteId);}catch(Exception ignored){}
     }
 
     /** Decodes a cover sampled near {@code targetWidth} to keep the shelf smooth. */
     static Bitmap load(Context context, String noteId, int targetWidth) {
         try { NoteStore.requireRestoreGroupV2Visible(context,noteId); } catch (Exception hidden) { return null; }
-        File file = coverFile(context, noteId);
+        File file;
+        try {file=android.os.Build.VERSION.SDK_INT>=27?GroupAuthorityBridge.coverProjectionOrNull(context,noteId):null;
+            if(file==null)file=coverFile(context,noteId);}
+        catch(Exception invalidGroup){return null;}
         if (!file.isFile()) {
             return null;
         }

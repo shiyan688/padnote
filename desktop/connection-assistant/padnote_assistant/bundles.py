@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import io
 import json
 import os
 import stat
@@ -15,13 +16,11 @@ from .security import ValidationError, canonical_json
 from .windows_files import WindowsSafeOpenError, open_regular_file as _open_windows_regular
 
 
-ALLOWED_BUNDLE_PATHS = {
-    "request.json",
-    "input/manifest.json",
-    "input/content.md",
-    "work/.keep",
-    "output/.keep",
+VIDEO_BUNDLE_PATHS = {
+    "request.json", "input/manifest.json", "input/content.md", "work/.keep", "output/.keep",
 }
+NOTE_WORK_BUNDLE_PATHS = VIDEO_BUNDLE_PATHS | {"input/paper.pdf"}
+ALLOWED_BUNDLE_PATHS = NOTE_WORK_BUNDLE_PATHS
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_EXPANDED_BYTES = 32 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
@@ -68,6 +67,54 @@ def _safe_zip_name(name: str) -> str:
     if normalized not in ALLOWED_BUNDLE_PATHS:
         raise ValidationError("task bundle contains an unsupported entry")
     return normalized
+
+
+def task_bundle_type(bundle_base64: str, bundle_sha256: str) -> str:
+    """Read the bounded request header before creating a durable run record."""
+    if not isinstance(bundle_base64, str) or not isinstance(bundle_sha256, str):
+        raise ValidationError("task bundle requires base64 data and SHA-256")
+    try:
+        raw = base64.b64decode(bundle_base64, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValidationError("task bundle is not valid base64") from error
+    if len(raw) > MAX_BUNDLE_BYTES or not hmac.compare_digest(
+            hashlib.sha256(raw).hexdigest(), bundle_sha256.lower()):
+        raise ValidationError("task bundle size or SHA-256 is invalid")
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_BUNDLE_ENTRIES:
+                raise ValidationError("task bundle contains too many entries")
+            seen: set[str] = set()
+            total = 0
+            request_bytes = None
+            for info in infos:
+                name = _safe_zip_name(info.filename)
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if name in seen or info.is_dir() or stat.S_ISLNK(mode):
+                    raise ValidationError("task bundle contains duplicate or unsafe entries")
+                seen.add(name)
+                total += info.file_size
+                if total > MAX_EXPANDED_BYTES:
+                    raise ValidationError("expanded task bundle is too large")
+                if name == "request.json":
+                    if info.file_size > 64 * 1024:
+                        raise ValidationError("task bundle request is too large")
+                    request_bytes = archive.read(info)
+            if seen not in (VIDEO_BUNDLE_PATHS, NOTE_WORK_BUNDLE_PATHS) or request_bytes is None:
+                raise ValidationError("task bundle is missing a required entry")
+    except zipfile.BadZipFile as error:
+        raise ValidationError("task bundle is not a valid ZIP") from error
+    try:
+        request = json.loads(request_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValidationError("task bundle request schema is invalid") from error
+    task_type = request.get("task_type") if isinstance(request, dict) else None
+    if not isinstance(task_type, str) or not task_type or len(task_type) > 100:
+        raise ValidationError("task bundle task_type is invalid")
+    if (task_type == "note.work.v1") != (seen == NOTE_WORK_BUNDLE_PATHS):
+        raise ValidationError("task bundle entries do not match task_type")
+    return task_type
 
 
 def prepare_task_directory(tasks_root: Path, task_id: str, request_payload: dict[str, Any],
@@ -218,7 +265,7 @@ def _extract_bundle(archive_path: Path, destination: Path) -> None:
                         raise ValidationError("task bundle entry ended unexpectedly")
                     output.write(chunk)
                     remaining -= len(chunk)
-        if seen != ALLOWED_BUNDLE_PATHS:
+        if seen not in (VIDEO_BUNDLE_PATHS, NOTE_WORK_BUNDLE_PATHS):
             raise ValidationError("task bundle is missing a required entry")
 
 
@@ -239,7 +286,16 @@ def _validate_bundle_documents(destination: Path, envelope: dict[str, Any]) -> N
             or source.get("note_revision") != outer_source["note_revision"]:
         raise ValidationError("task bundle source does not match the submitted note revision")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != "1.0" \
-            or not isinstance(manifest.get("files"), list) or len(manifest["files"]) != 1:
+            or not isinstance(manifest.get("files"), list):
+        raise ValidationError("task bundle manifest is invalid")
+    if task_type == "note.work.v1":
+        if envelope.get("required_capability") != "note_context_bundle":
+            raise ValidationError("note.work.v1 requires note_context_bundle capability")
+        _validate_note_work_bundle(destination, request, manifest, source, outer_source)
+        return
+    if envelope.get("required_capability") is not None:
+        raise ValidationError("required_capability is only valid for note.work.v1")
+    if len(manifest["files"]) != 1:
         raise ValidationError("task bundle manifest is invalid")
     entry = manifest["files"][0]
     content = destination / "input/content.md"
@@ -249,6 +305,58 @@ def _validate_bundle_documents(destination: Path, envelope: dict[str, Any]) -> N
     raw = content.read_bytes()
     if entry.get("size_bytes") != len(raw) or entry.get("sha256") != hashlib.sha256(raw).hexdigest():
         raise ValidationError("task bundle content does not match its manifest")
+
+
+def _validate_note_work_bundle(destination: Path, request: dict[str, Any], manifest: dict[str, Any],
+                               source: dict[str, Any], outer_source: dict[str, Any]) -> None:
+    entries = manifest["files"]
+    expected = [("input/content.md", "text/markdown"), ("input/paper.pdf", "application/pdf")]
+    if len(entries) != len(expected):
+        raise ValidationError("note.work.v1 manifest must contain Markdown and PDF")
+    canonical_lines: list[str] = []
+    for entry, (expected_path, expected_type) in zip(entries, expected):
+        if not isinstance(entry, dict) or set(entry) != {"path", "media_type", "size_bytes", "sha256"} \
+                or entry.get("path") != expected_path or entry.get("media_type") != expected_type:
+            raise ValidationError("note.work.v1 manifest entry is invalid")
+        size, digest = entry.get("size_bytes"), entry.get("sha256")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 \
+                or not isinstance(digest, str) or len(digest) != 64 \
+                or any(char not in "0123456789abcdef" for char in digest):
+            raise ValidationError("note.work.v1 manifest size or digest is invalid")
+        raw = (destination / expected_path).read_bytes()
+        if size != len(raw) or digest != hashlib.sha256(raw).hexdigest():
+            raise ValidationError("note.work.v1 file does not match its manifest")
+        if expected_path.endswith(".md"):
+            try:
+                raw.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValidationError("note.work.v1 Markdown is not UTF-8") from error
+        elif b"%PDF-" not in raw[:1024]:
+            raise ValidationError("note.work.v1 paper.pdf is not a PDF document")
+        canonical_lines.append(f"{expected_path}\0{size}\0{digest}\n")
+    if not isinstance(source, dict) or set(source) != {
+            "note_id", "note_revision", "title", "entrypoint", "bundle_sha256"}:
+        raise ValidationError("note.work.v1 source metadata is invalid")
+    if source.get("note_id") != outer_source["note_id"] \
+            or source.get("note_revision") != outer_source["note_revision"]:
+        raise ValidationError("note.work.v1 source does not match the submitted note revision")
+    title = source.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title) > 256 \
+            or source.get("entrypoint") != "input/content.md":
+        raise ValidationError("note.work.v1 title or entrypoint is invalid")
+    expected_digest = hashlib.sha256("".join(canonical_lines).encode("utf-8")).hexdigest()
+    if source.get("bundle_sha256") != expected_digest:
+        raise ValidationError("note.work.v1 canonical bundle digest is invalid")
+    brief = request.get("brief")
+    if not isinstance(brief, dict) or set(brief) - {"instruction", "preset_id", "style_prompt"} \
+            or not {"instruction", "preset_id"}.issubset(brief):
+        raise ValidationError("note.work.v1 brief is invalid")
+    for name, limit in (("instruction", 16000), ("preset_id", 120), ("style_prompt", 12000)):
+        value = brief.get(name)
+        if name == "style_prompt" and value is None:
+            continue
+        if not isinstance(value, str) or not value.strip() or len(value) > limit:
+            raise ValidationError(f"note.work.v1 {name} is invalid")
 
 
 def _remove_tree(root: Path) -> None:

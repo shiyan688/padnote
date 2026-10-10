@@ -41,8 +41,9 @@ public struct LibraryBackupManifest: Codable, Equatable {
         }
     }
     public struct Vault: Codable, Equatable {
-        public let itemID: String; public let noteItemID: String?; public let sourceState: String; public let sourceNoteID: String; public let sourceRevisionMS: Int64; public let createdAtMS: Int64; public let resourceID: String
-        enum CodingKeys: String, CodingKey { case itemID="item_id", noteItemID="note_item_id", sourceState="source_state", sourceNoteID="source_note_id", sourceRevisionMS="source_revision_ms", createdAtMS="created_at_ms", resourceID="resource_id" }
+        public let itemID: String; public let noteItemID: String?; public let sourceState: String; public let sourceNoteID: String; public let sourceRevisionMS: Int64; public let createdAtMS: Int64; public let resourceID: String; public let sourceStorageResourceID: String?
+        enum CodingKeys: String, CodingKey { case itemID="item_id", noteItemID="note_item_id", sourceState="source_state", sourceNoteID="source_note_id", sourceRevisionMS="source_revision_ms", createdAtMS="created_at_ms", resourceID="resource_id", sourceStorageResourceID="source_storage_resource_id" }
+        public init(itemID:String,noteItemID:String?,sourceState:String,sourceNoteID:String,sourceRevisionMS:Int64,createdAtMS:Int64,resourceID:String,sourceStorageResourceID:String?=nil) { self.itemID=itemID;self.noteItemID=noteItemID;self.sourceState=sourceState;self.sourceNoteID=sourceNoteID;self.sourceRevisionMS=sourceRevisionMS;self.createdAtMS=createdAtMS;self.resourceID=resourceID;self.sourceStorageResourceID=sourceStorageResourceID }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(itemID, forKey: .itemID)
@@ -50,6 +51,7 @@ public struct LibraryBackupManifest: Codable, Equatable {
             try c.encode(sourceState, forKey: .sourceState); try c.encode(sourceNoteID, forKey: .sourceNoteID)
             try c.encode(sourceRevisionMS, forKey: .sourceRevisionMS); try c.encode(createdAtMS, forKey: .createdAtMS)
             try c.encode(resourceID, forKey: .resourceID)
+            if let sourceStorageResourceID { try c.encode(sourceStorageResourceID, forKey: .sourceStorageResourceID) }
         }
     }
     public struct ConnectionProvenance: Codable, Equatable {
@@ -89,9 +91,16 @@ public struct LibraryBackupManifest: Codable, Equatable {
     }
     public struct CoverPreset: Codable, Equatable { public let itemID: String; public let displayName: String; public let resourceID: String; enum CodingKeys: String, CodingKey { case itemID="item_id", displayName="display_name", resourceID="resource_id" } }
     public struct Resource: Codable, Equatable { public let resourceID: String; public let role: String; public let mediaType: String; public let byteLength: Int64; public let sha256: String; public let member: String; enum CodingKeys: String, CodingKey { case resourceID="resource_id", role, mediaType="media_type", byteLength="byte_length", sha256, member } }
-    public let format = "com.padnote.library-archive"; public let formatVersion = 1; public let createdAtMS: Int64; public let producer: [String:String]; public let scope = Scope(); public var notes:[Note]; public var vaultEntries:[Vault]; public var videoAttachments:[Video]; public var coverPresets:[CoverPreset]; public var resources:[Resource]
-    enum CodingKeys:String,CodingKey { case format, formatVersion="format_version", createdAtMS="created_at_ms", producer, scope, notes, vaultEntries="vault_entries", videoAttachments="video_attachments", coverPresets="cover_presets", resources }
+    public struct UpdateProfile: Codable, Equatable {
+        public struct Timestamp: Codable, Equatable { public let pointer:String; public let kind:String; public let valueBits:String; enum CodingKeys:String,CodingKey { case pointer,kind,valueBits="value_bits" } }
+        public let schemaVersion:Int; public let noteItemID:String; public let sourceNoteID:String; public let sourceLineageID:String; public let sourceRevisionID:String; public let groupSHA256:String; public let bodySHA256:String; public let timestamps:[Timestamp]
+        enum CodingKeys:String,CodingKey { case schemaVersion="schema_version",noteItemID="note_item_id",sourceNoteID="source_note_id",sourceLineageID="source_lineage_id",sourceRevisionID="source_revision_id",groupSHA256="group_sha256",bodySHA256="body_sha256",timestamps }
+    }
+    public let format = "com.padnote.library-archive"; public var formatVersion:Int = 1; public let createdAtMS: Int64; public let producer: [String:String]; public let scope = Scope(); public var notes:[Note]; public var vaultEntries:[Vault]; public var videoAttachments:[Video]; public var coverPresets:[CoverPreset]; public var resources:[Resource]; public var updateProfiles:[UpdateProfile] = []
+    enum CodingKeys:String,CodingKey { case format, formatVersion="format_version", createdAtMS="created_at_ms", producer, scope, notes, vaultEntries="vault_entries", videoAttachments="video_attachments", coverPresets="cover_presets", resources,updateProfiles="update_profiles" }
     public init(createdAtMS:Int64,producer:[String:String],notes:[Note],vaultEntries:[Vault],videoAttachments:[Video],coverPresets:[CoverPreset],resources:[Resource]) { self.createdAtMS=createdAtMS;self.producer=producer;self.notes=notes;self.vaultEntries=vaultEntries;self.videoAttachments=videoAttachments;self.coverPresets=coverPresets;self.resources=resources }
+    public init(from decoder:Decoder)throws { let c=try decoder.container(keyedBy:CodingKeys.self);self.createdAtMS=try c.decode(Int64.self,forKey:.createdAtMS);self.producer=try c.decode([String:String].self,forKey:.producer);self.notes=try c.decode([Note].self,forKey:.notes);self.vaultEntries=try c.decode([Vault].self,forKey:.vaultEntries);self.videoAttachments=try c.decode([Video].self,forKey:.videoAttachments);self.coverPresets=try c.decode([CoverPreset].self,forKey:.coverPresets);self.resources=try c.decode([Resource].self,forKey:.resources);self.formatVersion=try c.decode(Int.self,forKey:.formatVersion);self.updateProfiles=try c.decodeIfPresent([UpdateProfile].self,forKey:.updateProfiles) ?? [] }
+    public func encode(to encoder:Encoder)throws { var c=encoder.container(keyedBy:CodingKeys.self);try c.encode(format,forKey:.format);try c.encode(formatVersion,forKey:.formatVersion);try c.encode(createdAtMS,forKey:.createdAtMS);try c.encode(producer,forKey:.producer);try c.encode(scope,forKey:.scope);try c.encode(notes,forKey:.notes);try c.encode(vaultEntries,forKey:.vaultEntries);try c.encode(videoAttachments,forKey:.videoAttachments);try c.encode(coverPresets,forKey:.coverPresets);try c.encode(resources,forKey:.resources);if formatVersion==2 { try c.encode(updateProfiles,forKey:.updateProfiles) } }
 }
 
 /// Independent r1 ZIP implementation. It uses fixed generated member names and streams payloads to/from files.
@@ -123,6 +132,7 @@ public enum LibraryBackupArchive {
         let archiveID=try checkedIdentity(archive);guard archiveID.size<=maxArchiveBytes else{throw LibraryBackupError.sizeLimit("归档超过 1.1 GiB")};try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false)
         do{let(fd,before)=try openRead(archive);defer{_ = Darwin.close(fd)};let input=FileHandle(fileDescriptor:fd,closeOnDealloc:false);let entries=try readCentral(input,archiveSize:archiveID.size);guard entries.count>0,entries.count<=maxResources+1,let me=entries.first(where:{$0.name=="manifest.json"}),me.expanded<=UInt32(maxManifestBytes) else{throw LibraryBackupError.invalidArchive("manifest缺失或条目超限")};let md=try readMember(input,me,output:nil,limit:Int64(maxManifestBytes),archiveSize:archiveID.size);try validateManifestJSON(md);let manifest=try JSONDecoder().decode(LibraryBackupManifest.self,from:md);try validate(manifest:manifest);let expected=Set(["manifest.json"]+manifest.resources.map { $0.member });guard Set(entries.map(\.name))==expected else{throw LibraryBackupError.invalidArchive("ZIP成员与manifest不匹配")};var total:Int64=0
             for r in manifest.resources{try cancellation?.check();guard let e=entries.first(where:{$0.name==r.member}),Int64(e.expanded)==r.byteLength else{throw LibraryBackupError.invalidArchive("资源长度声明不匹配")};total+=Int64(e.expanded);guard total<=maxExpandedBytes else{throw LibraryBackupError.sizeLimit("解压总量超过1GiB")};let target=directory.appendingPathComponent(r.resourceID+".bin");let(outFD,_)=try openCreate(target);let out=FileHandle(fileDescriptor:outFD,closeOnDealloc:false);_ = try readMember(input,e,output:out,limit:roleLimit(r.role),archiveSize:archiveID.size,cancellation:cancellation);try out.synchronize();try out.close();let actual=try hashFile(target);guard actual.size==r.byteLength,actual.sha256==r.sha256 else{throw LibraryBackupError.invalidArchive("资源摘要不匹配")}}
+            if manifest.formatVersion == 2 { try validateProfilePayloads(manifest:manifest,directory:directory) }
             guard try identity(fd)==before,try checkedIdentity(archive)==before else{throw LibraryBackupError.sourceChanged};return StagedArchive(manifest:manifest,directory:directory,archiveSHA256:try hashFile(archive).sha256)
         }catch{try? FileManager.default.removeItem(at:directory);throw error}
     }
@@ -144,6 +154,7 @@ public enum LibraryBackupArchive {
         try validateManifestJSON(data)
         let manifest = try JSONDecoder().decode(LibraryBackupManifest.self, from: data)
         try validate(manifest: manifest)
+        if manifest.formatVersion == 2 { try validateProfilePayloads(manifest:manifest,directory:directory) }
         return manifest
     }
 
@@ -262,7 +273,10 @@ public enum LibraryBackupArchive {
         let videoKeys: Set<String> = ["item_id", "note_item_id", "source_state", "origin_kind", "source_note_id", "source_revision_ms", "source_revision_precision_ms", "source_bundle_sha256", "task_payload_sha256", "digest_kind", "offline_state", "task_id", "remote_task_id", "connection_provenance", "artifact_id", "display_name", "media_type", "byte_length", "sha256", "created_at_ms", "resource_id"]
         let coverKeys: Set<String> = ["item_id", "display_name", "resource_id"]
         let resourceKeys: Set<String> = ["resource_id", "role", "media_type", "byte_length", "sha256", "member"]
-        let doc = try object(root, "manifest"); try exact(doc, topKeys, "manifest")
+        let doc = try object(root, "manifest")
+        guard let versionNumber=doc["format_version"] as? NSNumber else { throw LibraryBackupError.invalidManifest("格式版本无效") }
+        let version=versionNumber.intValue
+        if version == 2 { try exact(doc, topKeys.union(["update_profiles"]), "manifest") } else { try exact(doc, topKeys, "manifest") }
         guard (doc["format"] as? String) == "com.padnote.library-archive" else { throw LibraryBackupError.invalidManifest("格式无效") }
         let producer = try object(doc["producer"], "producer")
         try exact(producer, Set(["platform", "app_version"]), "producer")
@@ -271,7 +285,7 @@ public enum LibraryBackupArchive {
             throw LibraryBackupError.invalidManifest("producer 无效")
         }
         try integer(doc, "format_version"); try integer(doc, "created_at_ms")
-        guard (doc["format_version"] as? NSNumber)?.intValue == 1 else { throw LibraryBackupError.invalidManifest("格式版本无效") }
+        guard version == 1 || version == 2 else { throw LibraryBackupError.invalidManifest("格式版本无效") }
         let scope = try object(doc["scope"], "scope"); try exact(scope, scopeKeys, "scope")
         guard scope["notes"] as? String == "all-selected" else { throw LibraryBackupError.invalidManifest("笔记范围无效") }
         let expectedScope: [String: Bool] = ["attached_pdfs": true, "assigned_covers": true, "credentials": false,
@@ -282,7 +296,14 @@ public enum LibraryBackupArchive {
         }
         let notes = try records(doc["notes"], noteKeys, "note")
         for row in notes { try integer(row, "source_revision_ms"); try integer(row, "note_schema_version") }
-        let vault = try records(doc["vault_entries"], vaultKeys, "vault")
+        guard let vaultAny=doc["vault_entries"] as? [Any] else { throw LibraryBackupError.invalidManifest("vault列表无效") }
+        let vault = try vaultAny.map { value -> [String:Any] in
+            let row=try object(value,"vault")
+            let keys=Set(row.keys)
+            if version == 2 && keys.contains("source_storage_resource_id") { try exact(row,vaultKeys.union(["source_storage_resource_id"]),"vault") }
+            else { try exact(row,vaultKeys,"vault") }
+            return row
+        }
         for row in vault { try integer(row, "source_revision_ms"); try integer(row, "created_at_ms") }
         let videos = try records(doc["video_attachments"], videoKeys, "video")
         for row in videos {
@@ -295,10 +316,27 @@ public enum LibraryBackupArchive {
         _ = try records(doc["cover_presets"], coverKeys, "cover preset")
         let resources = try records(doc["resources"], resourceKeys, "resource")
         for row in resources { try integer(row, "byte_length") }
+        if version == 2 {
+            let profiles=try records(doc["update_profiles"],Set(["schema_version","note_item_id","source_note_id","source_lineage_id","source_revision_id","group_sha256","body_sha256","timestamps"]),"update profile")
+            for profile in profiles {
+                try integer(profile,"schema_version")
+                guard [1,2].contains((profile["schema_version"] as? NSNumber)?.intValue ?? -1),
+                      let timestamps=profile["timestamps"] as? [Any] else { throw LibraryBackupError.invalidManifest("update profile版本或时间列表无效") }
+                for value in timestamps {
+                    let time=try object(value,"update timestamp")
+                    try exact(time,Set(["pointer","kind","value_bits"]),"update timestamp")
+                    guard let pointer=time["pointer"] as? String,pointer.hasPrefix("/"),
+                          let kind=time["kind"] as? String,["i64","f64"].contains(kind),
+                          let bits=time["value_bits"] as? String,bits.range(of:"^[0-9]{1,20}$",options:.regularExpression) != nil,
+                          UInt64(bits) != nil else { throw LibraryBackupError.invalidManifest("update profile时间值无效") }
+                }
+            }
+            guard profiles.count == notes.count else { throw LibraryBackupError.invalidManifest("update profile数量不匹配") }
+        }
     }
 
     public static func validate(manifest: LibraryBackupManifest) throws {
-        guard manifest.format == "com.padnote.library-archive", manifest.formatVersion == 1,
+        guard manifest.format == "com.padnote.library-archive", [1,2].contains(manifest.formatVersion),
               manifest.createdAtMS >= 0, Set(manifest.producer.keys) == Set(["platform", "app_version"]),
               ["ios", "android"].contains(manifest.producer["platform"] ?? ""),
               let appVersion = manifest.producer["app_version"], !appVersion.isEmpty, appVersion.utf8.count <= 128,
@@ -310,10 +348,22 @@ public enum LibraryBackupArchive {
               Set(manifest.resources.map(\.resourceID)).count == manifest.resources.count else {
             throw LibraryBackupError.invalidManifest("资源数量或ID无效")
         }
+        if manifest.formatVersion == 1 && !manifest.updateProfiles.isEmpty { throw LibraryBackupError.invalidManifest("v1不能包含update profile") }
+        if manifest.formatVersion == 2 {
+            guard manifest.updateProfiles.count == manifest.notes.count,
+                  Set(manifest.updateProfiles.map(\.noteItemID)).count == manifest.updateProfiles.count else { throw LibraryBackupError.invalidManifest("update profile集合无效") }
+            for profile in manifest.updateProfiles {
+                guard [1,2].contains(profile.schemaVersion), let note=manifest.notes.first(where:{$0.itemID==profile.noteItemID}),
+                      profile.sourceNoteID==note.sourceNoteID, profile.groupSHA256.isSHA, profile.bodySHA256.isSHA,
+                      UUID(uuidString:profile.sourceLineageID) != nil, UUID(uuidString:profile.sourceRevisionID) != nil,
+                      profile.timestamps.count <= 20_000 else { throw LibraryBackupError.invalidManifest("update profile绑定无效") }
+                for timestamp in profile.timestamps { guard timestamp.pointer.hasPrefix("/"), ["i64","f64"].contains(timestamp.kind), UInt64(timestamp.valueBits) != nil else { throw LibraryBackupError.invalidManifest("update profile时间值无效") } }
+            }
+        }
         let expectedMedia: [String: String] = [
             "note_document": "application/json", "pdf_original": "application/pdf",
             "assigned_cover_png": "image/png", "vault_entry_json": "application/json",
-            "user_cover_preset_png": "image/png", "video_attachment_mp4": "video/mp4"
+            "user_cover_preset_png": "image/png", "video_attachment_mp4": "video/mp4", "vault_storage_markdown":"text/markdown"
         ]
         var sum: Int64 = 0
         var resourceIDs = Set<String>()
@@ -352,6 +402,7 @@ public enum LibraryBackupArchive {
                   validOpaqueID(vault.sourceNoteID), vault.sourceRevisionMS >= 0, vault.createdAtMS >= 0,
                   ["linked_note", "source_deleted", "source_not_selected", "independent"].contains(vault.sourceState),
                   has(manifest, vault.resourceID, "vault_entry_json"),
+                  (vault.sourceStorageResourceID == nil || (manifest.formatVersion == 2 && has(manifest,vault.sourceStorageResourceID!,"vault_storage_markdown"))),
                   (vault.sourceState == "linked_note" ? vault.noteItemID != nil : vault.noteItemID == nil),
                   vault.noteItemID.map({ notesByID[$0] != nil }) ?? (vault.sourceState != "linked_note") else {
                 throw LibraryBackupError.invalidManifest("Vault引用无效")
@@ -405,7 +456,7 @@ public enum LibraryBackupArchive {
             }
         }
         let references = manifest.notes.flatMap { [$0.noteResourceID] + [$0.pdfResourceID, $0.coverResourceID].compactMap { $0 } }
-            + manifest.vaultEntries.map(\.resourceID) + manifest.videoAttachments.map(\.resourceID)
+            + manifest.vaultEntries.flatMap { [$0.resourceID] + [$0.sourceStorageResourceID].compactMap{$0} } + manifest.videoAttachments.map(\.resourceID)
             + manifest.coverPresets.map(\.resourceID)
         guard references.count == resourceIDs.count, Set(references).count == references.count,
               Set(references) == resourceIDs else {
@@ -416,7 +467,133 @@ public enum LibraryBackupArchive {
         !value.isEmpty && value.utf8.count <= 512 && value.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
     }
     private static func has(_ m:LibraryBackupManifest,_ id:String,_ role:String)->Bool{m.resources.contains{$0.resourceID==id && $0.role==role}}
-    private static func roleLimit(_ role:String)->Int64{switch role{case"note_document":return maxNoteBytes;case"pdf_original":return maxPDFBytes;case"assigned_cover_png","user_cover_preset_png":return maxPNGBytes;case"vault_entry_json":return maxVaultBytes;case"video_attachment_mp4":return maxVideoBytes;default:return -1}}
+    private static func javaNameUUID(_ value:String)->String { var bytes=Array(Insecure.MD5.hash(data:Data(value.utf8)));bytes[6]=(bytes[6]&0x0f)|0x30;bytes[8]=(bytes[8]&0x3f)|0x80;let h=bytes.map{String(format:"%02x",$0)}.joined();return "\(h.prefix(8))-\(h.dropFirst(8).prefix(4))-\(h.dropFirst(12).prefix(4))-\(h.dropFirst(16).prefix(4))-\(h.dropFirst(20))" }
+    private static func profileResourceLine(_ role:String,_ id:String,_ manifest:LibraryBackupManifest)throws->String { guard let r=manifest.resources.first(where:{$0.resourceID==id}) else {throw LibraryBackupError.invalidManifest("profile资源缺失")};return "\(role)\0\(id)\0\(r.byteLength)\0\(r.sha256)\0\n" }
+    private static func profileMaterialLine(_ kind:String,_ item:String,_ source:String,_ revision:Int64,_ resourceID:String,_ manifest:LibraryBackupManifest)throws->String { guard let r=manifest.resources.first(where:{$0.resourceID==resourceID}) else {throw LibraryBackupError.invalidManifest("profile资源缺失")};return "\(kind)\0\(item)\0\(source)\0\(revision)\0\(r.byteLength)\0\(r.sha256)\n" }
+    private static func profileGroupDigest(note:LibraryBackupManifest.Note,manifest:LibraryBackupManifest,schema:Int)throws->String {
+        var fixed="note\0\(note.itemID)\0\(note.sourceNoteID)\0\(note.schemaVersion)\0\n"
+        fixed += try profileResourceLine("body",note.noteResourceID,manifest)
+        if let pdf=note.pdfResourceID { fixed += try profileResourceLine("pdf",pdf,manifest) } else { fixed += "pdf\0absent\n" }
+        if let cover=note.coverResourceID { fixed += try profileResourceLine("cover",cover,manifest) } else { fixed += "cover\0absent\n" }
+        var linked=[String]()
+        for row in manifest.vaultEntries where row.noteItemID==note.itemID && row.sourceState=="linked_note" {
+            linked.append(try profileMaterialLine("vault",row.itemID,row.sourceNoteID,row.sourceRevisionMS,row.resourceID,manifest))
+            if let storageID=row.sourceStorageResourceID { linked.append(try profileMaterialLine("vault_storage",row.itemID,row.sourceNoteID,row.sourceRevisionMS,storageID,manifest));if schema>=2,let storage=manifest.resources.first(where:{$0.resourceID==storageID}) { linked.append("archive-v2-android-vault-material-uuid/v1\0\(row.itemID)\0\(row.sourceNoteID)\0\(storageID)\0\(storage.sha256)\n") } }
+        }
+        for row in manifest.videoAttachments where row.noteItemID==note.itemID && row.sourceState=="linked_note" { linked.append(try profileMaterialLine("video",row.itemID,row.sourceNoteID,row.sourceRevisionMS,row.resourceID,manifest)) }
+        return SHA256.hash(data:Data(("PadNote/ArchiveNoteGroup/v2\n"+fixed+linked.sorted().joined()).utf8)).map{String(format:"%02x",$0)}.joined()
+    }
+    private static func validateProfilePayloads(manifest:LibraryBackupManifest,directory:URL)throws {
+        for row in manifest.vaultEntries {
+            guard let storageID = row.sourceStorageResourceID else { continue }
+            let storageData = try readSmallFile(directory.appendingPathComponent(storageID + ".bin"), maximumBytes: maxVaultBytes)
+            _ = try validateVaultStorage(data: storageData, row: row, directory: directory)
+        }
+        for profile in manifest.updateProfiles {
+            guard let note=manifest.notes.first(where:{$0.itemID==profile.noteItemID}),let bodyResource=manifest.resources.first(where:{$0.resourceID==note.noteResourceID}) else {throw LibraryBackupError.invalidManifest("profile笔记缺失")}
+            let bodyURL=directory.appendingPathComponent(note.noteResourceID+".bin"),bodyData=try readSmallFile(bodyURL,maximumBytes:maxNoteBytes)
+            guard SHA256.hash(data:bodyData).map({String(format:"%02x",$0)}).joined()==profile.bodySHA256,profile.bodySHA256==bodyResource.sha256 else {throw LibraryBackupError.invalidManifest("profile正文摘要不匹配")}
+            let group=try profileGroupDigest(note:note,manifest:manifest,schema:profile.schemaVersion)
+            let lineage=javaNameUUID("PadNote/source-lineage/v2\0\(manifest.producer["platform"] ?? "")\0\(note.sourceNoteID)")
+            let revision=javaNameUUID("PadNote/source-revision/v2\0\(lineage)\0\(group)")
+            guard group==profile.groupSHA256,lineage==profile.sourceLineageID,revision==profile.sourceRevisionID else {throw LibraryBackupError.invalidManifest("profile来源摘要或身份映射无效")}
+            guard let object=try JSONSerialization.jsonObject(with:bodyData) as? [String:Any],object["id"] as? String==note.sourceNoteID,
+                  let updated=object["updatedAt"] as? NSNumber,CFGetTypeID(updated) != CFBooleanGetTypeID(),floor(updated.doubleValue)==Double(note.sourceRevisionMS) else {throw LibraryBackupError.invalidManifest("profile来源笔记不匹配")}
+            let expectedTimes=try captureProfileTimes(object)
+            guard expectedTimes==profile.timestamps.sorted(by:{$0.pointer<$1.pointer}) else {throw LibraryBackupError.invalidManifest("profile时间来源不匹配")}
+            for row in manifest.vaultEntries where row.noteItemID==note.itemID && row.sourceState=="linked_note" {
+                guard let storageID=row.sourceStorageResourceID else {continue}
+                if profile.schemaVersion>=2 { let material="archive-v2-android-vault-material-uuid/v1\0\(lineage)\0\(revision)\0\(row.itemID)\0\(row.sourceNoteID)\0\(storageID)\0\(manifest.resources.first(where:{$0.resourceID==storageID})?.sha256 ?? "")";_ = javaNameUUID(material) }
+            }
+            for row in manifest.videoAttachments where row.noteItemID==note.itemID && row.sourceState=="linked_note" { _ = javaNameUUID("PadNote/archive-material/v2\0\(lineage)\0\(row.itemID)") }
+        }
+    }
+    /// Generates a fresh copy-bound v2 projection. These fields describe the copied archive only;
+    /// they are never local IDs or authorization to overwrite an existing note.
+    static func makeCopiedUpdateProfile(note: LibraryBackupManifest.Note, manifest: LibraryBackupManifest,
+                                        bodyData: Data) throws -> LibraryBackupManifest.UpdateProfile {
+        guard let bodyResource = manifest.resources.first(where: { $0.resourceID == note.noteResourceID }),
+              SHA256.hash(data: bodyData).map({ String(format: "%02x", $0) }).joined() == bodyResource.sha256,
+              let document = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+              document["id"] as? String == note.sourceNoteID,
+              let updatedAt = document["updatedAt"] as? NSNumber, CFGetTypeID(updatedAt) != CFBooleanGetTypeID(),
+              updatedAt.doubleValue.isFinite, floor(updatedAt.doubleValue) == Double(note.sourceRevisionMS) else {
+            throw LibraryBackupError.sourceChanged
+        }
+        let group = try profileGroupDigest(note: note, manifest: manifest, schema: 2)
+        let lineage = javaNameUUID("PadNote/source-lineage/v2\0\(manifest.producer["platform"] ?? "")\0\(note.sourceNoteID)")
+        let revision = javaNameUUID("PadNote/source-revision/v2\0\(lineage)\0\(group)")
+        return LibraryBackupManifest.UpdateProfile(schemaVersion: 2, noteItemID: note.itemID,
+            sourceNoteID: note.sourceNoteID, sourceLineageID: lineage, sourceRevisionID: revision,
+            groupSHA256: group, bodySHA256: bodyResource.sha256, timestamps: try captureProfileTimes(document))
+    }
+
+    private static func captureProfileTimes(_ document:[String:Any])throws->[LibraryBackupManifest.UpdateProfile.Timestamp] {
+        var out=[LibraryBackupManifest.UpdateProfile.Timestamp]()
+        func capture(_ object:[String:Any],_ key:String,_ pointer:String)throws {
+            guard let number=object[key] as? NSNumber,CFGetTypeID(number) != CFBooleanGetTypeID() else {throw LibraryBackupError.invalidManifest("profile时间缺失")}
+            let type=String(cString:number.objCType)
+            if ["c","s","i","q","l","C","S","I","Q","L"].contains(type) {
+                let signed=number.int64Value
+                out.append(.init(pointer:pointer,kind:"i64",valueBits:String(UInt64(bitPattern:signed))))
+            } else {
+                let value=number.doubleValue;guard value.isFinite else {throw LibraryBackupError.invalidManifest("profile时间无效")}
+                out.append(.init(pointer:pointer,kind:"f64",valueBits:String(value.bitPattern)))
+            }
+        }
+        try capture(document,"updatedAt","/updatedAt")
+        guard let strokes=document["strokes"] as? [[String:Any]] else {throw LibraryBackupError.invalidManifest("profile笔画无效")}
+        for (i,stroke) in strokes.enumerated() { try capture(stroke,"createdAt","/strokes/\(i)/createdAt");guard let points=stroke["points"] as? [[String:Any]] else {throw LibraryBackupError.invalidManifest("profile点数据无效")};for (j,point) in points.enumerated(){try capture(point,"timestamp","/strokes/\(i)/points/\(j)/timestamp")} }
+        return out.sorted(by:{$0.pointer<$1.pointer})
+    }
+    static func readVaultDigitizationMetadata(for row: LibraryBackupManifest.Vault, manifest: LibraryBackupManifest,
+                                               directory: URL) throws -> VaultDigitizationMetadata? {
+        guard let storageID = row.sourceStorageResourceID else { return nil }
+        guard let descriptor = manifest.resources.first(where: {
+            $0.resourceID == storageID && $0.role == "vault_storage_markdown"
+        }) else { throw LibraryBackupError.invalidManifest("Vault来源资源描述缺失") }
+        let data = try readSmallFile(directory.appendingPathComponent(storageID + ".bin"), maximumBytes: maxVaultBytes)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard Int64(data.count) == descriptor.byteLength, digest == descriptor.sha256 else {
+            throw LibraryBackupError.sourceChanged
+        }
+        return try validateVaultStorage(data: data, row: row, directory: directory)
+    }
+
+    private static func validateVaultStorage(data:Data,row:LibraryBackupManifest.Vault,directory:URL)throws -> VaultDigitizationMetadata? {
+        guard let text=String(data:data,encoding:.utf8) else {throw LibraryBackupError.invalidManifest("Vault Markdown编码无效")}
+        guard text.hasPrefix("---\n"),let separator=text.range(of:"\n---\n",options:[],range:text.index(text.startIndex,offsetBy:4)..<text.endIndex) else {throw LibraryBackupError.invalidManifest("Vault Markdown头部无效")}
+        let head=String(text[text.index(text.startIndex,offsetBy:4)..<separator.lowerBound]);let lines=head.components(separatedBy:"\n");guard lines.count<20 else {throw LibraryBackupError.invalidManifest("Vault Markdown头部无效")}
+        var fields=[String:String]();for line in lines {guard let split=line.range(of:": ") else {throw LibraryBackupError.invalidManifest("Vault Markdown头部无效")};let key=String(line[..<split.lowerBound]),value=String(line[split.upperBound...]);guard ["title","note-id","pages","digitized","digitized-epoch","source-modified","digitization-operation-id"].contains(key),fields[key]==nil else {throw LibraryBackupError.invalidManifest("Vault Markdown头部无效")};fields[key]=value}
+        let requiredFields=Set(["title","note-id","pages","digitized","digitized-epoch","source-modified"])
+        let presentFields=Set(fields.keys)
+        guard requiredFields.isSubset(of:presentFields),presentFields.subtracting(requiredFields).isSubset(of:Set(["digitization-operation-id"])),fields["note-id"]==row.sourceNoteID,
+              (fields["pages"] ?? "").range(of:"^[0-9]+$",options:.regularExpression) != nil,
+              (fields["digitized-epoch"] ?? "").range(of:"^[0-9]+$",options:.regularExpression) != nil,
+              (fields["source-modified"] ?? "").range(of:"^[0-9]+$",options:.regularExpression) != nil,
+              Int32(fields["pages"] ?? "") != nil,Int64(fields["source-modified"] ?? "") == row.sourceRevisionMS,Int64(fields["digitized-epoch"] ?? "") == row.createdAtMS else {throw LibraryBackupError.invalidManifest("Vault Markdown来源不匹配")}
+        if let operationID=fields["digitization-operation-id"] {
+            guard isCanonicalLowercaseUUID(operationID) else {throw LibraryBackupError.invalidManifest("Vault Markdown操作来源无效")}
+        }
+        let metadata = VaultDigitizationMetadata(pages: fields["pages"]!, digitized: fields["digitized"]!,
+            digitizedEpoch: fields["digitized-epoch"]!, sourceModified: fields["source-modified"]!,
+            operationID: fields["digitization-operation-id"])
+        guard metadata.isValid(sourceRevisionMS: row.sourceRevisionMS, createdAtMS: row.createdAtMS) else {
+            throw LibraryBackupError.invalidManifest("Vault Markdown数字化来源无效")
+        }
+        let payloadData=try readSmallFile(directory.appendingPathComponent(row.resourceID+".bin"),maximumBytes:maxVaultBytes)
+        guard let payload=try JSONSerialization.jsonObject(with:payloadData) as? [String:Any],Set(payload.keys)==Set(["schema_version","title","markdown","source_note_id","source_revision_ms","created_at_ms"]),
+              (payload["schema_version"] as? NSNumber)?.intValue==1,payload["title"] as? String==fields["title"],payload["source_note_id"] as? String==row.sourceNoteID,
+              payload["source_revision_ms"] as? Int64==row.sourceRevisionMS,payload["created_at_ms"] as? Int64==row.createdAtMS else {throw LibraryBackupError.invalidManifest("Vault Markdown正文绑定无效")}
+        let markdown=payload["markdown"] as? String ?? "",rawBody=String(text[separator.upperBound...]);guard markdown==rawBody else {throw LibraryBackupError.invalidManifest("Vault Markdown正文不一致")}
+        return metadata
+    }
+    private static func isCanonicalLowercaseUUID(_ value:String)->Bool {
+        guard value.range(of:"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",options:.regularExpression) != nil,
+              let parsed=UUID(uuidString:value) else {return false}
+        return parsed.uuidString.lowercased()==value
+    }
+    private static func roleLimit(_ role:String)->Int64{switch role{case"note_document":return maxNoteBytes;case"pdf_original":return maxPDFBytes;case"assigned_cover_png","user_cover_preset_png":return maxPNGBytes;case"vault_entry_json","vault_storage_markdown":return maxVaultBytes;case"video_attachment_mp4":return maxVideoBytes;default:return -1}}
     private static func validID(_ v:String,_ p:String)->Bool{v.range(of:"^\(p)-[0-9a-f]{32}$",options:.regularExpression) != nil}
     private static func safeMember(_ v:String)->Bool{v=="manifest.json" || (v.hasPrefix("payload/r-") && v.hasSuffix(".bin") && !v.contains("..") && !v.contains("\\") && !v.contains("\0") && !v.hasPrefix("/"))}
 

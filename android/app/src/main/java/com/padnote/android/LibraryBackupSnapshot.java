@@ -2,6 +2,7 @@ package com.padnote.android;
 
 import android.content.Context;
 import android.graphics.BitmapFactory;
+import android.os.Build;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
@@ -68,6 +69,18 @@ final class LibraryBackupSnapshot implements AutoCloseable {
 
     static LibraryBackupSnapshot create(Context context, Set<String> selectedNoteIds,
                                          Cancellation cancellation, Progress progress) throws Exception {
+        return create(context,selectedNoteIds,cancellation,progress,false);
+    }
+
+    /** Explicit full-update package builder; ordinary backups keep the existing copy-only format. */
+    static LibraryBackupSnapshot createForManualUpdate(Context context,Set<String> selectedNoteIds,
+                                         Cancellation cancellation,Progress progress)throws Exception {
+        return create(context,selectedNoteIds,cancellation,progress,true);
+    }
+
+    private static LibraryBackupSnapshot create(Context context, Set<String> selectedNoteIds,
+                                         Cancellation cancellation, Progress progress,
+                                         boolean includeUpdateProfiles) throws Exception {
         if (context == null || selectedNoteIds == null)
             throw new IllegalArgumentException("SNAPSHOT_INPUT_INVALID");
         File parent = new File(context.getFilesDir(), "library-backup");
@@ -88,6 +101,7 @@ final class LibraryBackupSnapshot implements AutoCloseable {
         List<Issue> issues = new ArrayList<>();
         Map<String, File> files = new LinkedHashMap<>();
         Map<String, String> noteItems = new HashMap<>();
+        Map<String, com.padnote.android.streaming.StreamingGroupStore.Snapshot> groupSnapshots=new HashMap<>();
         long[] total = {0};
         try {
             File notesDirectory = new File(context.getFilesDir(), NoteStore.notesDirectoryName());
@@ -95,16 +109,31 @@ final class LibraryBackupSnapshot implements AutoCloseable {
             List<NoteStore.Entry> shelf = NoteStore.list(context);
             Map<String, NoteStore.Entry> byId = new HashMap<>();
             for (NoteStore.Entry entry : shelf) byId.put(entry.id, entry);
+            if(Build.VERSION.SDK_INT>=27){
+                GroupAuthorityBridge.CatalogReader catalogReader=null;
+                for(NoteStore.Entry entry:shelf){
+                if(catalogReader==null)catalogReader=GroupAuthorityBridge.catalogReader(context);
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot group=catalogReader.open(entry.id);
+                if(group!=null)groupSnapshots.put(entry.id,group);
+                }
+            }
             List<String> ids = new ArrayList<>(selectedNoteIds);
             Collections.sort(ids);
             for (String noteId : ids) {
                 checkCancelled(cancellation);
                 NoteStore.Entry entry = byId.get(noteId);
                 if (entry == null) throw new IOException("NOTE_SELECTION_CHANGED");
-                JSONObject document = NoteStore.load(context, noteId);
-                byte[] noteBytes = readRegular(NoteStore.noteFileForBackup(context, noteId),
-                        LibraryBackupManifest.MAX_NOTE_BYTES);
-                JSONObject exactDocument = new JSONObject(new String(noteBytes, StandardCharsets.UTF_8));
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot group=groupSnapshots.get(noteId);
+                JSONObject document;
+                byte[] noteBytes;
+                if(group!=null){
+                    noteBytes=group.readSmall("body.bin",(int)LibraryBackupManifest.MAX_NOTE_BYTES);
+                    document=NotePrecisionJsonParser.parseObject(strictUtf8(noteBytes));
+                }else{
+                    document=NoteStore.load(context,noteId);
+                    noteBytes=readRegular(NoteStore.noteFileForBackup(context,noteId),LibraryBackupManifest.MAX_NOTE_BYTES);
+                }
+                JSONObject exactDocument = NotePrecisionJsonParser.parseObject(strictUtf8(noteBytes));
                 NoteStore.validateDocument(exactDocument);
                 if (!noteId.equals(exactDocument.optString("id")) ||
                         exactDocument.optLong("updatedAt", -1) != document.optLong("updatedAt", -2))
@@ -118,17 +147,19 @@ final class LibraryBackupSnapshot implements AutoCloseable {
 
                 String pdfResource = null;
                 if (exactDocument.optInt("pdfPageCount", 0) > 0) {
-                    File pdf = NoteStore.pdfFile(context, noteId);
+                    File pdf=group==null?NoteStore.pdfFile(context,noteId):GroupAuthorityBridge.memberProjectionOrNull(context,group,"pdf.bin",LibraryBackupManifest.MAX_PDF_BYTES);
+                    if(pdf==null)throw new IOException("PDF_SOURCE_MISSING");
                     CopyResult copied = addFile(stage, pdf, "pdf_original", "application/pdf",
                             LibraryBackupManifest.MAX_PDF_BYTES, resources, files, total);
-                    JSONObject checked = PdfNoteIO.pdfDocument(copied.file, entry.title);
+                    JSONObject checked = PdfNoteIO.pdfDocument(copied.file, exactDocument.optString("title",entry.title));
                     if (checked.optInt("pdfPageCount", -1) != exactDocument.optInt("pdfPageCount", -2))
                         throw new IOException("PDF_PAGE_COUNT_MISMATCH");
                     pdfResource = copied.resourceId;
                 }
                 String coverResource = null;
-                File cover = CoverStore.coverFile(notesDirectory, noteId);
-                if (existsNoFollow(cover)) {
+                File cover=group==null?CoverStore.coverFile(notesDirectory,noteId):GroupAuthorityBridge.memberProjectionOrNull(context,group,"cover.bin",LibraryBackupManifest.MAX_PNG_BYTES);
+                if (group!=null&&group.memberSizes().containsKey("cover.bin")||group==null&&existsNoFollow(cover)) {
+                    if(cover==null)throw new IOException("COVER_SOURCE_MISSING");
                     CopyResult copied = addFile(stage, cover, "assigned_cover_png", "image/png",
                             LibraryBackupManifest.MAX_PNG_BYTES, resources, files, total);
                     checkPng(copied.file);
@@ -143,13 +174,24 @@ final class LibraryBackupSnapshot implements AutoCloseable {
             File vaultDirectory = new File(context.getFilesDir(), "vault");
             ensurePrivateDirectory(context.getFilesDir(), vaultDirectory);
             VaultStore vaultStore = new VaultStore(vaultDirectory);
-            for (VaultStore.VaultNote source : vaultStore.listForBackupStrict()) {
+            Set<String> groupManagedNotes=new HashSet<>(groupSnapshots.keySet());
+            List<VaultStore.VaultNote> vaultSources=new ArrayList<>();Map<String,byte[]> groupVaultBytes=new HashMap<>();
+            for(Map.Entry<String,com.padnote.android.streaming.StreamingGroupStore.Snapshot> entry:groupSnapshots.entrySet()){
+                for(GroupAuthorityBridge.VaultView view:GroupAuthorityBridge.vaultViews(entry.getValue())){
+                    vaultSources.add(new VaultStore.VaultNote(view.fileName,view.noteId,view.title,view.pageCount,view.digitizedAt,view.sourceModifiedAt));
+                    groupVaultBytes.put(view.fileName,view.markdown.clone());
+                }
+            }
+            vaultSources.addAll(vaultStore.listLegacyForBackupStrict(groupManagedNotes));
+            vaultSources.sort((a,b)->Long.compare(b.digitizedAt,a.digitizedAt));
+            for (VaultStore.VaultNote source : vaultSources) {
                 checkCancelled(cancellation);
                 boolean exists = currentNotes.containsKey(source.noteId);
                 boolean selected = noteItems.containsKey(source.noteId);
                 String state = selected ? "linked_note" : (exists ? "source_not_selected" : "source_deleted");
                 String noteItemId = selected ? noteItems.get(source.noteId) : null;
-                String markdown = strictUtf8(readRegular(vaultStore.fileForBackup(source.fileName),
+                byte[] groupMarkdown=groupVaultBytes.get(source.fileName);
+                String markdown = strictUtf8(groupMarkdown!=null?groupMarkdown:readRegular(vaultStore.fileForBackup(source.fileName),
                         LibraryBackupManifest.MAX_VAULT_BYTES));
                 String body = vaultBody(markdown);
                 Map<String, Object> payload = new LinkedHashMap<>();
@@ -162,23 +204,33 @@ final class LibraryBackupSnapshot implements AutoCloseable {
                 byte[] payloadBytes = LibraryBackupJson.encode(payload);
                 String resourceId = addBytes(stage, "vault_entry_json", "application/json",
                         payloadBytes, resources, files, total);
+                String sourceStorageResourceId=includeUpdateProfiles
+                        ?addBytes(stage,"vault_storage_markdown","text/markdown",markdown.getBytes(StandardCharsets.UTF_8),resources,files,total)
+                        :null;
                 String itemId = id('v');
                 vaults.add(new LibraryBackupManifest.VaultEntry(itemId, noteItemId, state,
                         source.noteId, Math.max(0L, source.sourceModifiedAt),
-                        Math.max(0L, source.digitizedAt), resourceId));
+                        Math.max(0L, source.digitizedAt), resourceId,sourceStorageResourceId));
                 if (selected) addReference(notes, noteItemId, itemId, true);
             }
 
             VideoAttachmentStore attachmentStore = new VideoAttachmentStore(context);
-            for (VideoAttachmentStore.Attachment attachment : attachmentStore.listAllForBackup()) {
+            List<VideoAttachmentStore.Attachment> videoSources=new ArrayList<>();
+            for(com.padnote.android.streaming.StreamingGroupStore.Snapshot group:groupSnapshots.values())
+                videoSources.addAll(GroupAuthorityBridge.videoViews(group));
+            videoSources.addAll(attachmentStore.listLegacyForBackup(groupManagedNotes));
+            videoSources.sort((a,b)->Long.compare(b.createdAt,a.createdAt));
+            for (VideoAttachmentStore.Attachment attachment : videoSources) {
                 checkCancelled(cancellation);
                 boolean exists = currentNotes.containsKey(attachment.noteId);
                 boolean selected = noteItems.containsKey(attachment.noteId);
                 boolean independent = "independent".equals(attachment.sourceState);
-                String state = independent ? "independent" :
-                        (selected ? "linked_note" : (exists ? "source_not_selected" : "source_deleted"));
-                String noteItemId = independent ? null : (selected ? noteItems.get(attachment.noteId) : null);
-                File verified = attachmentStore.openVerified(attachment);
+                boolean detached="source_deleted".equals(attachment.sourceState)||"source_not_selected".equals(attachment.sourceState);
+                String state=independent?"independent":(detached?attachment.sourceState:
+                        (selected?"linked_note":(exists?"source_not_selected":"source_deleted")));
+                String noteItemId="linked_note".equals(state)&&selected?noteItems.get(attachment.noteId):null;
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot group=groupSnapshots.get(attachment.noteId);
+                File verified=group==null?attachmentStore.openVerified(attachment):GroupAuthorityBridge.videoProjection(context,group,attachment);
                 CopyResult copied = addFile(stage, verified, "video_attachment_mp4", "video/mp4",
                         LibraryBackupManifest.MAX_VIDEO_BYTES, resources, files, total);
                 if (copied.length != attachment.sizeBytes || !copied.sha256.equals(attachment.sha256))
@@ -200,7 +252,7 @@ final class LibraryBackupSnapshot implements AutoCloseable {
             }
 
             File presetDirectory = context.getDir("covers", Context.MODE_PRIVATE);
-            ensurePrivateDirectory(context.getFilesDir(), presetDirectory);
+            ensurePrivateDirectory(contextPrivateDirectoryParent(context,presetDirectory), presetDirectory);
             File[] presetFiles = presetDirectory.listFiles();
             if (presetFiles != null) {
                 java.util.Arrays.sort(presetFiles);
@@ -222,9 +274,13 @@ final class LibraryBackupSnapshot implements AutoCloseable {
                 throw new IOException("SNAPSHOT_EMPTY");
             String appVersion = context.getPackageManager().getPackageInfo(
                     context.getPackageName(), 0).versionName;
+            LibraryBackupManifest.Producer producer=new LibraryBackupManifest.Producer("android",appVersion);
+            List<ArchiveUpdateProfile> updateProfiles=new ArrayList<>();
+            if(includeUpdateProfiles)for(LibraryBackupManifest.Note note:notes)updateProfiles.add(ArchiveUpdateProfile.create(note,
+                    producer.platform,notes,vaults,videos,resources,files));
             LibraryBackupManifest manifest = new LibraryBackupManifest(System.currentTimeMillis(),
-                    new LibraryBackupManifest.Producer("android", appVersion),
-                    LibraryBackupManifest.Scope.allSelected(), notes, vaults, videos, presets, resources);
+                    producer, LibraryBackupManifest.Scope.allSelected(), notes, vaults, videos, presets, resources,
+                    includeUpdateProfiles?LibraryBackupManifest.FORMAT_VERSION:1,updateProfiles);
             checkCancelled(cancellation);
             return new LibraryBackupSnapshot(manifest, files, stage, issues, total[0]);
         } catch (Exception error) {
@@ -339,6 +395,7 @@ final class LibraryBackupSnapshot implements AutoCloseable {
             case "pdf_original": return LibraryBackupManifest.MAX_PDF_BYTES;
             case "assigned_cover_png": case "user_cover_preset_png": return LibraryBackupManifest.MAX_PNG_BYTES;
             case "vault_entry_json": return LibraryBackupManifest.MAX_VAULT_BYTES;
+            case "vault_storage_markdown": return LibraryBackupManifest.MAX_VAULT_BYTES;
             case "video_attachment_mp4": return LibraryBackupManifest.MAX_VIDEO_BYTES;
             default: throw new IOException("RESOURCE_ROLE_INVALID");
         }
@@ -348,6 +405,7 @@ final class LibraryBackupSnapshot implements AutoCloseable {
         if (source == null || destination == null)
             throw new IOException("SNAPSHOT_RESOURCE_CREATE_FAILED");
         FileDescriptor descriptor = null;
+        Throwable failure = null;
         try {
             StructStat link = Os.lstat(source.getAbsolutePath());
             if (!regular(link) || link.st_nlink != 1 || link.st_size < 0 || link.st_size > maximum)
@@ -359,11 +417,13 @@ final class LibraryBackupSnapshot implements AutoCloseable {
                     before.st_size < 0 || before.st_size > maximum) throw new IOException("SOURCE_FILE_CHANGED");
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             long count = 0;
-            try (FileInputStream input = new FileInputStream(descriptor)) {
+            FileDescriptor transfer = descriptor;
+            descriptor = null;
+            try (FileInputStream input = OwnedFdStreams.input(transfer)) {
                 FileDescriptor outputDescriptor = Os.open(destination.getAbsolutePath(),
                         OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_EXCL |
                                 AndroidFileCompat.O_CLOEXEC | OsConstants.O_NOFOLLOW, 0600);
-                try (FileOutputStream output = new FileOutputStream(outputDescriptor)) {
+                try (FileOutputStream output = OwnedFdStreams.output(outputDescriptor)) {
                 byte[] buffer = new byte[32768];
                 int read;
                 while ((read = input.read(buffer)) != -1) {
@@ -380,12 +440,21 @@ final class LibraryBackupSnapshot implements AutoCloseable {
                 }
             }
             return new CopyResult(destination, count, hex(digest.digest()));
-        } catch (Exception error) {
+        } catch (Exception | Error error) {
+            failure = error;
             try {
                 StructStat stat = Os.lstat(destination.getAbsolutePath());
                 if (regular(stat) && stat.st_nlink == 1) Os.remove(destination.getAbsolutePath());
             } catch (Exception ignored) { }
             throw error;
+        } finally {
+            if (descriptor != null) {
+                try { Os.close(descriptor); }
+                catch (android.system.ErrnoException closeError) {
+                    IOException wrapped = new IOException("SOURCE_FD_CLOSE_FAILED", closeError);
+                    if (failure != null) failure.addSuppressed(wrapped); else throw wrapped;
+                }
+            }
         }
     }
 
@@ -396,7 +465,7 @@ final class LibraryBackupSnapshot implements AutoCloseable {
             throw new IOException("SOURCE_FILE_UNSAFE");
         FileDescriptor descriptor = Os.open(source.getAbsolutePath(), OsConstants.O_RDONLY |
                 AndroidFileCompat.O_CLOEXEC | OsConstants.O_NOFOLLOW, 0);
-        try (FileInputStream input = new FileInputStream(descriptor);
+        try (FileInputStream input = OwnedFdStreams.input(descriptor);
              java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream((int) link.st_size)) {
             StructStat before = Os.fstat(input.getFD());
             if (!sameIdentity(link, before) || !regular(before) || before.st_nlink != 1)
@@ -461,6 +530,17 @@ final class LibraryBackupSnapshot implements AutoCloseable {
         if (!regularDirectory(root) || !directory.getCanonicalFile().equals(
                 new File(trustedParent.getCanonicalFile(), directory.getName())))
             throw new IOException("BACKUP_DIRECTORY_UNSAFE");
+    }
+
+    /** `Context.getDir` is under the app data root on Android; isolated fixture contexts may
+     * deliberately place it as a child of their private files root. Accept only those two
+     * exact owned roots, then retain the existing lstat and canonical-child checks. */
+    private static File contextPrivateDirectoryParent(Context context,File directory)throws IOException {
+        File childParent=directory.getCanonicalFile().getParentFile();
+        if(childParent==null)throw new IOException("BACKUP_DIRECTORY_UNSAFE");
+        File[] allowed={context.getDataDir(),context.getFilesDir()};
+        for(File root:allowed)if(root!=null&&childParent.equals(root.getCanonicalFile()))return root;
+        throw new IOException("BACKUP_DIRECTORY_UNSAFE");
     }
 
     private static boolean existsNoFollow(File file) throws IOException {

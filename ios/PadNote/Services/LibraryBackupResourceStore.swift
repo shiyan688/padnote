@@ -193,7 +193,7 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
         root = directory ?? LibraryBackupUITestPaths.directory("restored-videos", fallback: fallback)
         self.journalRoot = journalRoot ?? LibraryBackupTransactionGate.defaultJournalRoot
     }
-    public func listing() throws -> [RestoredVideoAttachment] {
+    public func listing(excludingNoteIDs: Set<String> = []) throws -> [RestoredVideoAttachment] {
         guard fm.fileExists(atPath: root.path) else { return [] }
         try UserCoverPresetStore.requireDirectoryForResources(root)
         let urls = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
@@ -214,8 +214,10 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
                     throw LibraryBackupError.invalidManifest("恢复视频记录无效")
                 }
                 guard value.byteLength > 0, value.byteLength <= LibraryBackupArchive.maxVideoBytes else { throw LibraryBackupError.invalidManifest("恢复视频大小无效") }
-                _ = try LibraryBackupArchive.validateRegularSource(root.appendingPathComponent(value.fileName), maximumBytes: LibraryBackupArchive.maxVideoBytes)
                 allValues.append(value)
+                let canonicalNoteID = value.noteID.map { UUID(uuidString: $0)?.uuidString.lowercased() ?? $0 }
+                if let canonicalNoteID, excludingNoteIDs.contains(canonicalNoteID) { continue }
+                _ = try LibraryBackupArchive.validateRegularSource(root.appendingPathComponent(value.fileName), maximumBytes: LibraryBackupArchive.maxVideoBytes)
                 if LibraryBackupTransactionGate.isVisible(originKind: value.originKind,
                     transactionID: value.restoreTransactionID, groupID: value.restoreGroupID, kind: "video",
                     localID: value.id.uuidString.lowercased(), in: journalRoot) { values.append(value) }
@@ -228,7 +230,8 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
     }
     @discardableResult public func restore(from stagedMP4: URL, descriptor: LibraryBackupManifest.Video, newNoteID: String?,
                                            transactionID: String? = nil, attachmentID: UUID? = nil, groupID: String? = nil, cancellation: LibraryBackupCancellationToken? = nil) throws -> RestoredVideoAttachment {
-        try Self.lock.withBackupLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.lock.withBackupLock {
             guard descriptor.mediaType == "video/mp4", descriptor.originKind == "computer_task" || descriptor.originKind == "restored_archive",
                   descriptor.byteLength > 0, descriptor.byteLength <= LibraryBackupArchive.maxVideoBytes,
                   let digest = try? LibraryBackupArchive.hashFile(stagedMP4), digest.size == descriptor.byteLength,
@@ -250,6 +253,7 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
             do { try UserCoverPresetStore.writeResourceMetadata(value, to: meta) }
             catch { try? fm.removeItem(at: target); throw error }
             return value
+          }
         }
     }
     public func fileURL(for value: RestoredVideoAttachment) throws -> URL {
@@ -259,14 +263,23 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
         guard actual.size == current.byteLength, actual.sha256 == current.sha256 else { throw LibraryBackupError.sourceChanged }
         return file
     }
+    public func metadataURL(for value: RestoredVideoAttachment) throws -> URL {
+        guard let current = try listing().first(where: { $0.id == value.id }) else { throw LibraryBackupError.transaction("找不到恢复视频") }
+        let metadata = root.appendingPathComponent("\(current.id.uuidString.lowercased()).json")
+        _ = try LibraryBackupArchive.validateRegularSource(metadata, maximumBytes: 64 * 1024)
+        return metadata
+    }
     public func remove(_ value: RestoredVideoAttachment) throws {
+        try NoteGroupCatalogFence.withWriter {
         let current = try listing().first { $0.id == value.id }
         guard let current else { throw LibraryBackupError.transaction("找不到恢复视频") }
         let file = root.appendingPathComponent(current.fileName), meta = root.appendingPathComponent("\(current.id.uuidString.lowercased()).json")
         try fm.removeItem(at: file); try fm.removeItem(at: meta)
+        }
     }
     func rollbackPartial(id: UUID, transactionID: String, groupID: String, expectedSHA256: String) throws {
-        try Self.lock.withBackupLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.lock.withBackupLock {
             let stem = id.uuidString.lowercased()
             guard expectedSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else { throw LibraryBackupError.unsafeFile }
             let meta = root.appendingPathComponent(stem + ".json"), file = root.appendingPathComponent(stem + ".mp4")
@@ -283,11 +296,13 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
                 try fm.removeItem(at: file)
             }
             if current != nil { try fm.removeItem(at: meta) }
+          }
         }
     }
 
     func rollback(_ value: RestoredVideoAttachment, transactionID: String) throws {
-        try Self.lock.withBackupLock {
+        try NoteGroupCatalogFence.withWriter {
+          try Self.lock.withBackupLock {
             let meta = root.appendingPathComponent("\(value.id.uuidString.lowercased()).json")
             _ = try LibraryBackupArchive.validateRegularSource(meta, maximumBytes: 64 * 1024)
             let current = try JSONDecoder().decode(RestoredVideoAttachment.self, from: LibraryBackupArchive.readSmallFile(meta, maximumBytes: 64 * 1024))
@@ -295,6 +310,7 @@ public final class RestoredVideoAttachmentStore: @unchecked Sendable {
             let file = root.appendingPathComponent(current.fileName)
             _ = try LibraryBackupArchive.validateRegularSource(file, maximumBytes: LibraryBackupArchive.maxVideoBytes)
             try fm.removeItem(at: file); try fm.removeItem(at: meta)
+          }
         }
     }
 }

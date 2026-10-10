@@ -396,6 +396,140 @@ final class AgentTests: XCTestCase {
         let entry = try XCTUnwrap((manifest["files"] as? [[String: Any]])?.first)
         XCTAssertEqual(entry["path"] as? String, "input/content.md")
         XCTAssertEqual(files["input/content.md"], Data("# 内容\n\n$x^2$".utf8))
+        let legacyBundlePayload = try AgentTaskPayload(title: "微积分", input: "Explain the lesson",
+            source: AgentTaskSource(noteID: "note-1", noteRevision: 1), bundle: data)
+        XCTAssertNil(legacyBundlePayload.requiredCapability, "legacy video payloads keep the optional paper capability absent")
+    }
+
+    func testPaperTaskBundleBindsCompletePDFAndOrderedReadableContext() throws {
+        XCTAssertEqual(PaperTaskPreset.findGapsAndPractice.rawValue, "find_gaps_and_practice")
+        XCTAssertEqual(PaperTaskPreset.explainerVideo.rawValue, "explain_video")
+        let markdown = "# 函数与图像\n\n第 1 页：函数先增后减。\n\n## 本笔记中较早纸面版本的 AI 交流\n\n### 用户\n这里是同一笔记的历史提问。"
+        let pdf = Data("%PDF-1.7\nfixture-page-content\n%%EOF".utf8)
+        let archive = try PaperTaskBundleIO.make(noteID: "note-paper-1", noteRevision: 42,
+            title: "函数与图像", markdown: markdown, pdf: pdf,
+            instruction: "找理解漏洞并出练习", presetID: PaperTaskPreset.findGapsAndPractice.rawValue,
+            stylePrompt: PaperTaskVideoStyle.stepByStep.prompt)
+        XCTAssertLessThanOrEqual(archive.count, PaperTaskBundleIO.maximumArchiveBytes)
+        let files = try unzipStored(archive)
+        XCTAssertEqual(Set(files.keys), Set([
+            "request.json", "input/manifest.json", "input/content.md", "input/paper.pdf", "work/.keep", "output/.keep"
+        ]))
+        XCTAssertEqual(files["input/content.md"], Data(markdown.utf8))
+        XCTAssertEqual(files["input/paper.pdf"], pdf)
+
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(files["request.json"])) as? [String: Any])
+        XCTAssertEqual(request["schema_version"] as? String, "1.0")
+        XCTAssertEqual(request["task_type"] as? String, "note.work.v1")
+        XCTAssertNil(request["required_capability"], "capability is carried by the outer task payload, not duplicated in the task schema")
+        let source = try XCTUnwrap(request["source"] as? [String: Any])
+        XCTAssertEqual(source["note_id"] as? String, "note-paper-1")
+        XCTAssertEqual(source["note_revision"] as? Int, 42)
+        XCTAssertEqual(source["entrypoint"] as? String, "input/content.md")
+        let brief = try XCTUnwrap(request["brief"] as? [String: Any])
+        XCTAssertEqual(brief["preset_id"] as? String, PaperTaskPreset.findGapsAndPractice.rawValue)
+        XCTAssertEqual(brief["style_prompt"] as? String, PaperTaskVideoStyle.stepByStep.prompt)
+
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(files["input/manifest.json"])) as? [String: Any])
+        XCTAssertEqual(manifest["schema_version"] as? String, "1.0")
+        let rows = try XCTUnwrap(manifest["files"] as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["path"] as? String }, ["input/content.md", "input/paper.pdf"])
+        for (index, pair) in zip(rows, ["input/content.md", "input/paper.pdf"]).enumerated() {
+            let (row, path) = pair
+            let data = try XCTUnwrap(files[path])
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            XCTAssertEqual(row["media_type"] as? String, index == 0 ? "text/markdown" : "application/pdf")
+            XCTAssertEqual(row["size_bytes"] as? Int, data.count)
+            XCTAssertEqual(row["sha256"] as? String, digest)
+        }
+        let canonical = rows.map { row in
+            "\(row["path"] as! String)\0\(row["size_bytes"] as! Int)\0\(row["sha256"] as! String)\n"
+        }.joined()
+        let bundleDigest = SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(source["bundle_sha256"] as? String, bundleDigest)
+
+        let noStyleArchive = try PaperTaskBundleIO.make(noteID: "note-paper-1", noteRevision: 42,
+            title: "函数与图像", markdown: markdown, pdf: pdf,
+            instruction: "生成可分享讲解视频", presetID: PaperTaskPreset.explainerVideo.rawValue,
+            stylePrompt: "  \n ")
+        let noStyleFiles = try unzipStored(noStyleArchive)
+        let noStyleRequest = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(noStyleFiles["request.json"])) as? [String: Any])
+        let noStyleBrief = try XCTUnwrap(noStyleRequest["brief"] as? [String: Any])
+        XCTAssertNil(noStyleBrief["style_prompt"], "an empty optional style is omitted from the wire request")
+    }
+
+    func testPaperTaskBundleRejectsInvalidAndOversizedPaperBeforePackaging() throws {
+        XCTAssertThrowsError(try PaperTaskBundleIO.make(noteID: "note", noteRevision: 1, title: "Paper",
+            markdown: "context", pdf: Data("not a PDF".utf8), instruction: "help", presetID: "continue")) { error in
+            XCTAssertEqual(error as? PaperTaskBundleError, .invalidPDF)
+        }
+        let oversizedPDF = Data("%PDF-1.7\n".utf8) + Data(repeating: 0x41, count: PaperTaskBundleIO.maximumExpandedBytes)
+        XCTAssertThrowsError(try PaperTaskBundleIO.make(noteID: "note", noteRevision: 1, title: "Paper",
+            markdown: "context", pdf: oversizedPDF, instruction: "help", presetID: "continue")) { error in
+            XCTAssertEqual(error as? PaperTaskBundleError, .tooLarge)
+        }
+        let archiveOversizedPDF = Data("%PDF-1.7\n".utf8) + Data(repeating: 0x41, count: PaperTaskBundleIO.maximumArchiveBytes)
+        XCTAssertThrowsError(try PaperTaskBundleIO.make(noteID: "note", noteRevision: 1, title: "Paper",
+            markdown: "context", pdf: archiveOversizedPDF, instruction: "help", presetID: "continue")) { error in
+            XCTAssertEqual(error as? PaperTaskBundleError, .tooLarge)
+        }
+    }
+
+    func testPaperTaskCapabilityIsCheckedWhenCreatingAndSubmitting() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokens = MemoryTokenStore()
+        let connections = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let initial = try connections.create(name: "Study Mac", kind: .hermes, endpoint: "https://fixture.test",
+            token: "fixture-token", transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let baseCapabilities = ["run_submission": true, "task_bundle": true]
+        XCTAssertTrue(connections.applyProbeSuccess(id: initial.id, revision: initial.revision, capabilities: baseCapabilities))
+        let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("paper-task-capability-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: taskRoot) }
+        let tasks = AgentTaskStore(fileURL: taskRoot)
+        var requestCount = 0
+        let session = fixtureSession { _ in
+            requestCount += 1
+            return FixtureResponse(status: 202, json: ["task_id": "unexpected", "status": "running", "instance_id": "instance-1"])
+        }
+        let service = AgentTaskService(connectionStore: connections, taskStore: tasks,
+            client: AgentTaskClient(session: session))
+        let payload = try AgentTaskPayload(title: "Paper", input: "Use attached paper",
+            source: AgentTaskSource(noteID: "note", noteRevision: 1), bundle: Data("zip".utf8),
+            requiredCapability: "note_context_bundle")
+        XCTAssertThrowsError(try AgentTaskPayload(title: "Paper", input: "Use attached paper",
+            source: AgentTaskSource(noteID: "note", noteRevision: 1), bundle: Data("zip".utf8),
+            requiredCapability: "another_capability")) { error in
+            XCTAssertEqual(error as? AgentTaskError, .invalidPayload)
+        }
+        XCTAssertThrowsError(try AgentTaskPayload(title: "Paper", input: "Use attached paper",
+            source: AgentTaskSource(noteID: "note", noteRevision: 1), requiredCapability: "note_context_bundle")) { error in
+            XCTAssertEqual(error as? AgentTaskError, .invalidPayload)
+        }
+
+        XCTAssertThrowsError(try service.create(connectionID: initial.id, payload: payload)) { error in
+            XCTAssertEqual(error as? AgentTaskError, .capabilityUnavailable("note_context_bundle"))
+        }
+
+        let supported = baseCapabilities.merging(["note_context_bundle": true]) { _, new in new }
+        XCTAssertTrue(connections.applyProbeSuccess(id: initial.id, revision: initial.revision, capabilities: supported))
+        let local = try service.create(connectionID: initial.id, payload: payload)
+        XCTAssertEqual(local.payload.requiredCapability, "note_context_bundle")
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: local.payload.canonicalData) as? [String: Any])
+        XCTAssertEqual(wire["required_capability"] as? String, "note_context_bundle")
+
+        XCTAssertTrue(connections.applyProbeSuccess(id: initial.id, revision: initial.revision, capabilities: baseCapabilities))
+        do {
+            _ = try await service.submit(id: local.id)
+            XCTFail("a removed context capability must prevent a persisted task from being submitted")
+        } catch let error as AgentTaskError {
+            XCTAssertEqual(error, .capabilityUnavailable("note_context_bundle"))
+        }
+        XCTAssertEqual(requestCount, 0, "capability loss must be caught before an HTTP request")
+
+        let legacy = try AgentTaskPayload(title: "Legacy", input: "Text only", source: AgentTaskSource(noteID: "note", noteRevision: 1))
+        let legacyWire = try XCTUnwrap(JSONSerialization.jsonObject(with: legacy.canonicalData) as? [String: Any])
+        XCTAssertNil(legacyWire["required_capability"], "old task envelopes keep their optional wire field absent")
     }
 
     func testLegacySingleConnectionMigratesOnceWithoutDeletingRollbackCredential() throws {

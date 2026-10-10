@@ -5,6 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 import copy
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .bundles import (
     prepare_followup_directory,
     prepare_task_directory,
     public_artifacts,
+    task_bundle_type,
 )
 from .hermes import CredentialVault, HermesClient, HermesError, normalize_run
 from .secure_store import BuiltinCredentialVault, SecureStoreError
@@ -431,6 +433,7 @@ class BridgeService:
                 "task_bundle": operations, "artifacts": True,
                 "video_revision": False, "video_operations": operations,
                 "video_production": operations, "video_task_submission": operations,
+                "note_context_bundle": False,
             })
             return {"object": "padnote.agent.capabilities", "protocol_version": 1,
                     "bridge_id": self.store.bridge_id, "instance_id": instance_id,
@@ -446,6 +449,10 @@ class BridgeService:
                     for key in ("run_submission", "run_status", "run_stop", "run_approval_response"):
                         features[key] = False
                 features["task_bundle"] = available
+                features["note_context_bundle"] = bool(
+                    available and instance["kind"] == "hermes"
+                    and features.get("task_bundle") is True
+                    and features.get("run_submission") is True)
                 features["artifacts"] = True
                 # Candidate install is not yet recoverable as a versioned commit.
                 # Keep the feature closed for every provider, including direct API callers.
@@ -1310,11 +1317,21 @@ class BridgeService:
                    payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         clean = self._validate_run_payload(payload, idempotency_key)
         with self._authorized_connection(instance_id, bearer) as connection:
+            if clean.get("bundle_base64") is not None:
+                bundle_type = task_bundle_type(clean["bundle_base64"], clean["bundle_sha256"])
+                if bundle_type == "note.work.v1" and clean.get("required_capability") != "note_context_bundle":
+                    raise ValidationError("note.work.v1 requires note_context_bundle capability")
+                if bundle_type != "note.work.v1" and clean.get("required_capability") is not None:
+                    raise ValidationError("required_capability is only valid for note.work.v1")
             with self._operation_lock("instance:" + instance_id):
                 instance = self.store.get_instance(instance_id)
                 if instance["kind"] == "hermes":
                     self._hermes(instance_id)
+                    if clean.get("required_capability") == "note_context_bundle":
+                        self._require_note_context_capability(instance_id, instance)
                 elif instance["kind"] == "builtin_video":
+                    if clean.get("required_capability") == "note_context_bundle":
+                        raise ValidationError("The selected Agent cannot accept note context bundles")
                     if not self._builtin_video_operations_available(instance_id, instance):
                         raise ConflictError("Built-in video engine is unavailable")
                     if clean.get("parent_task_id") or not clean.get("bundle_base64") \
@@ -1648,6 +1665,15 @@ class BridgeService:
             raise ValidationError("invalid Hermes key")
         return hashlib.sha256(b"padnote-hermes-key-v1\x00" + value.encode("utf-8")).hexdigest()
 
+    def _require_note_context_capability(self, instance_id: str, instance: dict[str, Any]) -> None:
+        features = instance.get("features") if isinstance(instance.get("features"), dict) else {}
+        if instance.get("kind") != "hermes" or instance.get("retired_at") \
+                or instance.get("executable") is not True or not self.vault.has(instance_id) \
+                or features.get("note_context_bundle") is not True \
+                or features.get("task_bundle") is not True \
+                or features.get("run_submission") is not True:
+            raise ConflictError("The selected Agent no longer accepts note context bundles")
+
     @staticmethod
     def _validate_run_payload(payload: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -1656,7 +1682,7 @@ class BridgeService:
         if validate_identifier(idempotency_key, "Idempotency-Key") != client_task_id:
             raise ValidationError("Idempotency-Key must equal client_task_id")
         allowed_fields = {"client_task_id", "title", "input", "source", "bundle_base64",
-                          "bundle_sha256", "parent_task_id"}
+                          "bundle_sha256", "parent_task_id", "required_capability"}
         if set(payload) - allowed_fields:
             raise ValidationError("request contains unsupported fields")
         parent_task_id = None
@@ -1675,6 +1701,11 @@ class BridgeService:
         revision = source.get("note_revision")
         if not isinstance(revision, (str, int)) or len(str(revision)) > 120:
             raise ValidationError("invalid note_revision")
+        required_capability = payload.get("required_capability")
+        if required_capability is not None and required_capability != "note_context_bundle":
+            raise ValidationError("required_capability is unsupported")
+        if required_capability is not None and (parent_task_id or "bundle_base64" not in payload):
+            raise ValidationError("required_capability is valid only for a bundled root task")
         clean = {
             "client_task_id": client_task_id,
             "title": title,
@@ -1683,6 +1714,8 @@ class BridgeService:
         }
         if parent_task_id:
             clean["parent_task_id"] = parent_task_id
+        if required_capability is not None:
+            clean["required_capability"] = required_capability
         if "bundle_base64" in payload or "bundle_sha256" in payload:
             clean["bundle_base64"] = payload.get("bundle_base64")
             clean["bundle_sha256"] = validate_text(payload.get("bundle_sha256"), "bundle_sha256", 64)
@@ -1701,6 +1734,28 @@ class BridgeService:
                 f"PadNote follow-up workspace: {task_dir}\n"
                 "Write only this turn's deliverables under output/. The reference snapshot belongs to the parent turn. "
                 "This path instruction is a workflow boundary, not an operating-system sandbox."
+            )
+        if payload.get("required_capability") == "note_context_bundle":
+            try:
+                request = json.loads((task_dir / "request.json").read_text(encoding="utf-8"))
+                brief, source = request["brief"], request["source"]
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+                raise ValidationError("note.work.v1 instructions are unavailable") from error
+            style = brief.get("style_prompt")
+            style_text = f"\nStyle guidance: {style}" if style else ""
+            return (
+                "This is a generic note-context task selected by the user. Read both immutable source files "
+                "before acting: input/content.md (authored text and visible AI conversation context) and "
+                "input/paper.pdf (the complete paper, including handwriting).\n"
+                f"User instruction: {brief['instruction']}\nPreset intent: {brief['preset_id']}"
+                f"{style_text}\nSource note: {source['title']} "
+                f"(id {source['note_id']}, revision {source['note_revision']}).\n"
+                "Choose tools and providers according to the user's request and available capabilities; do not "
+                "assume a particular model/provider or incur paid usage without user approval. This is not a "
+                "built-in video job.\n\n"
+                f"PadNote task workspace: {task_dir}\n"
+                "Write deliverable files under output/. This path instruction is a workflow boundary, not an "
+                "operating-system sandbox."
             )
         return (
             f"{payload['title']}\n\n{payload['input']}\n\n"

@@ -145,6 +145,27 @@ public final class AgentProtocolTest {
                 new String(captured.get().body, StandardCharsets.UTF_8));
     }
 
+    @Test public void notePaperSubmissionRechecksRequiredCapabilityBeforeAnyRequest() throws Exception {
+        String id="padnote-cccccccccccccccccccccccccccccccc";
+        String payload="{\"client_task_id\":\""+id+"\",\"input\":\"go\",\"required_capability\":\"note_context_bundle\"}";
+        AgentTaskStore.Task task=new AgentTaskStore.Task(id,"connection-a",7L,
+                "https://bridge.test",AgentConnectionStore.Kind.HERMES,
+                AgentConnectionStore.Transport.BRIDGE,"credential-a","bridge-a","agent-a",
+                "Paper task","Bridge","note-a",4L,payload,
+                AgentTaskStore.sha256(payload.getBytes(StandardCharsets.UTF_8)),"",
+                AgentTaskStore.Status.SUBMITTING,"","","","","",Collections.emptyList(),1L,1L);
+        java.util.Map<String,Boolean> missing=new java.util.HashMap<>();
+        missing.put("task_bundle",true);missing.put("run_submission",true);
+        AgentConnectionStore.Config changed=new AgentConnectionStore.Config("connection-a","Bridge",
+                AgentConnectionStore.Kind.HERMES,"https://bridge.test","token","credential-a",
+                AgentConnectionStore.Transport.BRIDGE,"bridge-a","agent-a","",7L,1L,
+                Arrays.asList("task_bundle","run_submission"),missing);
+        final int[] requests={0};
+        try{new AgentTaskClient(request->{requests[0]++;throw new AssertionError("must not request");}).submit(task,changed);fail();}
+        catch(IllegalStateException expected){assertTrue(expected.getMessage().contains("纸面上下文"));}
+        assertEquals("capability drift must fail before network",0,requests[0]);
+    }
+
     @Test public void followupSubmissionUsesPersistedParentAndRejectsWrongLineage() throws Exception {
         AgentConnectionStore.Config connection = config(Arrays.asList("run_submission"));
         String id="padnote-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

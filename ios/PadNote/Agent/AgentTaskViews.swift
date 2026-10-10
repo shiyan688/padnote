@@ -312,6 +312,7 @@ public struct AgentTaskDetailView: View {
                         Section("结果") { Text(output).textSelection(.enabled) }
                     }
                     if task.connection.transport == .bridge,
+                       task.payload.requiredCapability != "note_context_bundle",
                        task.payload.bundleBase64 != nil, task.remoteTaskID != nil {
                         Section("视频任务包") {
                             NavigationLink {
@@ -546,9 +547,14 @@ public struct AgentTaskDetailView: View {
     private func loadNoteVideoAttachments() {
         guard let task else { return }
         do {
-            let listing = try NoteVideoAttachmentStore().listing(noteID: task.payload.source.noteID)
-            noteVideoAttachments = listing.attachments
-            unavailableVideoAttachmentCount = listing.unavailableCount
+            if let session = try noteLibrary.currentGroupSession(noteID: task.payload.source.noteID) {
+                noteVideoAttachments = try noteLibrary.groupedVideoAttachments(basedOn: session)
+                unavailableVideoAttachmentCount = 0
+            } else {
+                let listing = try NoteVideoAttachmentStore().listing(noteID: task.payload.source.noteID)
+                noteVideoAttachments = listing.attachments
+                unavailableVideoAttachmentCount = listing.unavailableCount
+            }
         } catch { self.error = "无法读取本地视频附件：\(error.localizedDescription)" }
     }
 
@@ -556,11 +562,19 @@ public struct AgentTaskDetailView: View {
         guard let task, task.status == .completed,
               noteLibrary.notes.contains(where: { $0.id == task.payload.source.noteID }),
               let remoteTaskID = task.remoteTaskID, let bundleSHA256 = task.payload.bundleSHA256 else { return }
+        let capturedSession: NoteGroupEditorSession?
+        do { capturedSession = try noteLibrary.currentGroupSession(noteID: task.payload.source.noteID) }
+        catch { self.error = error.localizedDescription; return }
         working = true
         Task { @MainActor in
             do {
                 let verifiedURL = try await service.download(id: task.id, artifact: artifact)
-                let store = NoteVideoAttachmentStore()
+                let operationRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+                    "note-video-stage-\(UUID().uuidString.lowercased())", isDirectory: true)
+                try FileManager.default.createDirectory(at: operationRoot, withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700])
+                defer { try? FileManager.default.removeItem(at: operationRoot) }
+                let store = NoteVideoAttachmentStore(directory: operationRoot)
                 let connection = task.connection
                 let noteID = task.payload.source.noteID
                 let taskID = task.id
@@ -568,11 +582,26 @@ public struct AgentTaskDetailView: View {
                 let sourceDigest = bundleSHA256
                 let remoteID = remoteTaskID
                 let attachment: NoteVideoAttachment = try await Task.detached(priority: .utility) {
-                    try store.associate(noteID: noteID, taskID: taskID, remoteTaskID: remoteID,
-                        sourceRevision: revision, sourceSnapshotSHA256: sourceDigest,
-                        connection: connection, artifact: artifact, verifiedFile: verifiedURL)
+                    try NoteGroupCatalogFence.withWriter {
+                        try store.associate(noteID: noteID, taskID: taskID, remoteTaskID: remoteID,
+                            sourceRevision: revision, sourceSnapshotSHA256: sourceDigest,
+                            connection: connection, artifact: artifact, verifiedFile: verifiedURL)
+                    }
                 }.value
-                noteVideoAttachments = (try? store.attachments(noteID: noteID)) ?? [attachment]
+                if let capturedSession {
+                    let record = try store.archiveRecords().records.first { $0.attachment == attachment }
+                    guard let record else { throw NoteVideoAttachmentError.invalidMetadata }
+                    _ = try noteLibrary.publishGroupedVideo(attachment, stagedVideoURL: record.fileURL,
+                        stagedMetadataURL: record.metadataURL, basedOn: capturedSession)
+                    noteVideoAttachments = try noteLibrary.groupedVideoAttachments(
+                        basedOn: noteLibrary.currentGroupSession(noteID: noteID) ?? capturedSession)
+                } else {
+                    let legacyStore = NoteVideoAttachmentStore()
+                    _ = try noteLibrary.associateLegacyVideo(legacyStore, noteID: noteID, taskID: taskID,
+                        remoteTaskID: remoteID, sourceRevision: revision, sourceSnapshotSHA256: sourceDigest,
+                        connection: connection, artifact: artifact, verifiedFile: verifiedURL)
+                    noteVideoAttachments = (try? legacyStore.listing(noteID: noteID).attachments) ?? [attachment]
+                }
                 self.error = nil
             } catch let operationError { self.error = operationError.localizedDescription }
             working = false
@@ -958,10 +987,16 @@ struct NoteVideoAttachmentShelf: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var noteLibrary: NoteLibrary
     @State private var attachments: [NoteVideoAttachment] = []
+    @State private var restoredAttachments: [NoteGroupRestoredVideoMember] = []
     @State private var unavailableCount = 0
     @State private var playing: LocalAttachmentVideo?
     @State private var sharing: ShareArtifact?
     @State private var removing: NoteVideoAttachment?
+    @State private var removingRestored: RestoredVideoAttachment?
+    @State private var pendingRemoval: NoteVideoAttachment?
+    @State private var pendingRestoredRemoval: RestoredVideoAttachment?
+    @State private var pendingGroupSession: NoteGroupEditorSession?
+    @State private var pendingWasGrouped = false
     @State private var error: String?
     private let store = NoteVideoAttachmentStore()
 
@@ -1000,8 +1035,22 @@ struct NoteVideoAttachmentShelf: View {
                                 .accessibilityIdentifier("playNoteVideo-\(item.id.uuidString.lowercased())")
                             Button("分享") { open(item, sharing: true) }.buttonStyle(.borderless)
                                 .accessibilityIdentifier("shareNoteVideo-\(item.id.uuidString.lowercased())")
-                            Button("移除", role: .destructive) { removing = item }.buttonStyle(.borderless)
+                            Button("移除", role: .destructive) { beginRemove(item) }.buttonStyle(.borderless)
                                 .accessibilityIdentifier("removeNoteVideo-\(item.id.uuidString.lowercased())")
+                        }
+                    }.padding(.vertical, 6)
+                }
+                ForEach(restoredAttachments, id: \.attachment.id) { item in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(item.attachment.displayName).font(.headline)
+                        Text("恢复的视频 · \(ByteCountFormatter.string(fromByteCount: item.attachment.byteLength, countStyle: .file)) · SHA-256 已记录")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("来源笔记：\(item.attachment.sourceNoteID)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("播放") { playing = LocalAttachmentVideo(url: item.videoURL) }.buttonStyle(.borderless)
+                            Button("分享") { sharing = ShareArtifact(url: item.videoURL) }.buttonStyle(.borderless)
+                            Button("移除", role: .destructive) { beginRemove(item.attachment) }.buttonStyle(.borderless)
                         }
                     }.padding(.vertical, 6)
                 }
@@ -1009,12 +1058,20 @@ struct NoteVideoAttachmentShelf: View {
             .navigationTitle("笔记视频")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .task { reload() }
-            .alert("移除本地视频？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
-                Button("取消", role: .cancel) { removing = nil }
-                Button("移除", role: .destructive) { removeSelected() }
+            .alert("移除本地视频？", isPresented: Binding(get: { removing != nil || removingRestored != nil }, set: {
+                if !$0 {
+                    removing = nil; removingRestored = nil
+                }
+            })) {
+                Button("取消", role: .cancel) { clearPendingRemoval() }
+                Button("移除", role: .destructive) {
+                    removing = nil; removingRestored = nil
+                    removeSelected()
+                }
             } message: { Text("只删除这份本地 MP4 与附件关联记录。电脑任务和笔记正文不受影响。") }
             .alert("附件操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("好", role: .cancel) { error = nil }
+                Button("取消移除", role: .cancel) { error = nil; clearPendingRemoval() }
+                Button("重试") { error = nil; removeSelected() }
             } message: { Text(error ?? "") }
             .sheet(item: $playing) { item in VerifiedLocalVideoPlayer(url: item.url) }
             .sheet(item: $sharing) { ShareSheet(url: $0.url) }
@@ -1023,28 +1080,80 @@ struct NoteVideoAttachmentShelf: View {
 
     private func reload() {
         do {
-            let listing = try store.listing(noteID: noteID)
-            attachments = listing.attachments
-            unavailableCount = listing.unavailableCount
+            if let session = try noteLibrary.currentGroupSession(noteID: noteID) {
+                attachments = try noteLibrary.groupedVideoAttachments(basedOn: session)
+                restoredAttachments = try noteLibrary.groupedRestoredVideoMembers(basedOn: session)
+                unavailableCount = 0
+            } else {
+                let listing = try store.listing(noteID: noteID)
+                attachments = listing.attachments
+                restoredAttachments = []
+                unavailableCount = listing.unavailableCount
+            }
         } catch { self.error = error.localizedDescription }
     }
 
     private func open(_ attachment: NoteVideoAttachment, sharing: Bool) {
         Task {
             do {
-                let url = try await Task.detached(priority: .utility) {
-                    try store.fileURL(noteID: noteID, attachmentID: attachment.id)
-                }.value
+                let session = try await MainActor.run { try noteLibrary.currentGroupSession(noteID: noteID) }
+                let url: URL
+                if let session {
+                    url = try await MainActor.run { try noteLibrary.groupedVideoFileURL(attachmentID: attachment.id, basedOn: session) }
+                } else {
+                    url = try await Task.detached(priority: .utility) { try store.fileURL(noteID: noteID, attachmentID: attachment.id) }.value
+                }
                 if sharing { self.sharing = ShareArtifact(url: url) }
                 else { playing = LocalAttachmentVideo(url: url) }
             } catch { self.error = error.localizedDescription }
         }
     }
 
+    private func beginRemove(_ attachment: NoteVideoAttachment) {
+        do {
+            pendingGroupSession = try noteLibrary.currentGroupSession(noteID: noteID)
+            pendingWasGrouped = pendingGroupSession != nil
+            pendingRemoval = attachment; pendingRestoredRemoval = nil
+            removing = attachment
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func beginRemove(_ attachment: RestoredVideoAttachment) {
+        do {
+            pendingGroupSession = try noteLibrary.currentGroupSession(noteID: noteID)
+            pendingWasGrouped = pendingGroupSession != nil
+            pendingRemoval = nil; pendingRestoredRemoval = attachment
+            removingRestored = attachment
+        } catch { self.error = error.localizedDescription }
+    }
+
     private func removeSelected() {
-        guard let removing else { return }
-        do { try store.remove(noteID: noteID, attachmentID: removing.id); self.removing = nil; reload() }
-        catch { self.error = error.localizedDescription; self.removing = nil }
+        guard pendingRemoval != nil || pendingRestoredRemoval != nil else { return }
+        do {
+            if let attachment = pendingRemoval {
+                if pendingWasGrouped {
+                    guard let pendingGroupSession else { throw NoteGroupStoreError.compareAndSwapConflict }
+                    _ = try noteLibrary.removeGroupedVideo(attachmentID: attachment.id, basedOn: pendingGroupSession)
+                } else {
+                    try noteLibrary.removeLegacyVideo(store, noteID: noteID, attachmentID: attachment.id)
+                }
+            } else if let restored = pendingRestoredRemoval {
+                if pendingWasGrouped {
+                    guard let pendingGroupSession else { throw NoteGroupStoreError.compareAndSwapConflict }
+                    _ = try noteLibrary.removeGroupedVideo(attachmentID: restored.id, basedOn: pendingGroupSession)
+                } else {
+                    let restoredStore = RestoredVideoAttachmentStore()
+                    try NoteGroupCatalogFence.withWriter { try restoredStore.remove(restored) }
+                }
+            }
+            clearPendingRemoval(); error = nil; reload()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func clearPendingRemoval() {
+        removing = nil; removingRestored = nil
+        pendingRemoval = nil; pendingRestoredRemoval = nil
+        pendingGroupSession = nil; pendingWasGrouped = false
     }
 }
 
@@ -1057,6 +1166,322 @@ private enum AgentTaskArtifactPresentation: Identifiable {
         switch self {
         case .share(let url): return "share:\(url.path)"
         case .video(let url): return "video:\(url.path)"
+        }
+    }
+}
+
+
+struct PaperWorkflowView: View {
+    private struct PreparedSend {
+        let archive: Data
+        let markdown: String
+        let pdfBytes: Int
+        let textBytes: Int
+        let revision: Int
+        let noteID: String
+        let title: String
+        let pageCount: Int
+        let presetTitle: String
+        let instruction: String
+        let stylePrompt: String?
+        let aiTurnCount: Int
+        let targetID: UUID
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    let note: NoteDocument
+    let prepareVerifiedExport: @MainActor (NoteDocument) async throws -> PaperWorkflowExport
+
+    @State private var connections: [AgentConnectionProfile] = []
+    @State private var connectionID: UUID?
+    @State private var presetID = PaperTaskPreset.continueAsRequested.rawValue
+    @State private var instruction = PaperTaskPreset.continueAsRequested.instruction
+    @State private var stylePrompt = PaperTaskVideoStyle.clearLecture.prompt
+    @State private var aiTurns: [AIVisibleTurn] = []
+    @State private var aiLoadWarning: String?
+    @State private var aiConversationExists = false
+    @State private var aiConversationMatchesCurrentDocument = true
+    @State private var loadedAIConversationDigest: String?
+    @State private var omitUnavailableAIContext = false
+    @State private var prepared: PreparedSend?
+    @State private var previewing = false
+    @State private var sending = false
+    @State private var shareArtifact: ShareArtifact?
+    @State private var localTaskID: UUID?
+    @State private var sent = false
+    @State private var showSentTaskDetail = false
+    @State private var error: String?
+
+    private var selectedProfile: AgentConnectionProfile? {
+        connections.first { $0.id == connectionID }
+    }
+    private var selectedPreset: PaperTaskPreset {
+        PaperTaskPreset(rawValue: presetID) ?? .continueAsRequested
+    }
+    private var canUseVideoStyle: Bool { selectedPreset == .explainerVideo }
+    private var canPrepare: Bool {
+        !previewing && !sending && selectedProfile != nil &&
+        !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (aiLoadWarning == nil || omitUnavailableAIContext) && localTaskID == nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("当前纸面") {
+                    LabeledContent("笔记", value: note.title)
+                    LabeledContent("页数", value: "\(note.pageCount)")
+                    LabeledContent("正文文字", value: "\(note.textFlows.count) 个文字对象")
+                    Button("分享整份纸面 PDF", systemImage: "square.and.arrow.up") { sharePDF() }
+                        .disabled(previewing || sending)
+                    Text("分享和发送都使用当前整份纸面。PDF 包含手写、页面背景、导入页面与 AI 排版文字；提取文本只作辅助上下文。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("交给电脑 Agent") {
+                    if connections.isEmpty {
+                        Text("没有已验证且同时支持任务包与纸面上下文的电脑 Agent。请在设置中完成 Bridge 配对和能力检查。")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("目标电脑", selection: $connectionID) {
+                            ForEach(connections) { profile in Text(profile.name).tag(Optional(profile.id)) }
+                        }
+                    }
+                    Picker("任务", selection: $presetID) {
+                        ForEach(PaperTaskPreset.allCases) { preset in Text(preset.title).tag(preset.id) }
+                    }
+                    TextField("给 Agent 的任务要求", text: $instruction, axis: .vertical)
+                        .lineLimit(3...7)
+                    if canUseVideoStyle {
+                        Picker("讲解风格", selection: $stylePrompt) {
+                            ForEach(PaperTaskVideoStyle.allCases) { style in Text(style.rawValue).tag(style.prompt) }
+                        }
+                        TextField("自定义讲解风格（可留空）", text: $stylePrompt, axis: .vertical)
+                            .lineLimit(2...6)
+                        Text("视频预设只是交给所选 Agent 的任务意图；模型与配音工具由你或 Agent 决定，并按已授权范围和既有审阅流程处理。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if aiLoadWarning == nil {
+                        Text(aiConversationExists
+                            ? (aiConversationMatchesCurrentDocument
+                                ? "将附上这本笔记中与当前内容版本匹配的 AI 交流（\(aiTurns.count) 条）。"
+                                : "将附上这本笔记中较早纸面版本的 AI 交流（\(aiTurns.count) 条），并标明其版本不同。")
+                            : "这本笔记没有可附加的已保存 AI 交流；将发送纸面和正文。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(aiLoadWarning!).font(.caption).foregroundStyle(.orange)
+                        Toggle("继续发送纸面与正文，不包含无法验证的 AI 交流", isOn: $omitUnavailableAIContext)
+                            .accessibilityIdentifier("paperWorkflowOmitUnavailableAI")
+                    }
+                    Button(previewing ? "正在生成完整预览…" : "生成发送预览", systemImage: "doc.text.magnifyingglass") {
+                        preparePreview()
+                    }.disabled(!canPrepare)
+                }
+                if let prepared, let selectedProfile, prepared.targetID == selectedProfile.id {
+                    Section("发送前确认") {
+                        LabeledContent("接收电脑", value: selectedProfile.name)
+                        LabeledContent("范围", value: "仅此笔记 · \(prepared.pageCount) 页")
+                        LabeledContent("任务", value: prepared.presetTitle)
+                        Text(prepared.instruction).font(.callout)
+                        if let style = prepared.stylePrompt { LabeledContent("讲解风格", value: style) }
+                        DisclosureGroup("查看完整正文与本笔记 AI 交流") {
+                            Text(prepared.markdown)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        LabeledContent("PDF", value: ByteCountFormatter.string(fromByteCount: Int64(prepared.pdfBytes), countStyle: .file))
+                        LabeledContent("正文", value: ByteCountFormatter.string(fromByteCount: Int64(prepared.textBytes), countStyle: .file))
+                        if prepared.aiTurnCount > 0 {
+                            LabeledContent("AI 交流", value: "\(prepared.aiTurnCount) 条\(aiConversationMatchesCurrentDocument ? "" : " · 较早纸面版本")")
+                        } else if aiLoadWarning != nil && omitUnavailableAIContext {
+                            LabeledContent("AI 交流", value: "未包含（已按你的选择继续）")
+                        }
+                        LabeledContent("任务包", value: ByteCountFormatter.string(fromByteCount: Int64(prepared.archive.count), countStyle: .file))
+                        Button(sending ? "正在提交…" : "确认并发送", systemImage: "paperplane.fill") { sendPreparedTask() }
+                            .disabled(sending || localTaskID != nil)
+                            .accessibilityIdentifier("paperWorkflowConfirmSend")
+                        Text("只发送上面显示的这本笔记和选定任务；不包含其他笔记、知识库条目或连接凭据。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let localTaskID {
+                    Section("电脑任务") {
+                        NavigationLink(sent ? "查看电脑任务" : "查看已保存的任务或处理提交结果") {
+                            AgentTaskDetailView(taskID: localTaskID)
+                        }
+                        if !sent {
+                            Text("任务已在本地保存。提交若结果不明，不会自动重试；请打开任务详情核对后再按原任务编号继续。")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
+            }
+            .navigationTitle("分享与交给电脑 Agent")
+            .navigationDestination(isPresented: $showSentTaskDetail) {
+                if let localTaskID { AgentTaskDetailView(taskID: localTaskID) }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+            }
+            .task { loadConnections(); loadAIContext() }
+            .onChange(of: presetID) { _, value in
+                instruction = PaperTaskPreset(rawValue: value)?.instruction ?? PaperTaskPreset.continueAsRequested.instruction
+                prepared = nil
+            }
+            .onChange(of: instruction) { _, _ in prepared = nil }
+            .onChange(of: stylePrompt) { _, _ in prepared = nil }
+            .onChange(of: connectionID) { _, _ in prepared = nil }
+            .sheet(item: $shareArtifact) { ShareSheet(url: $0.url) }
+        }
+    }
+
+    private func loadConnections() {
+        let store = AgentConnectionStore()
+        connections = store.profiles().filter(Self.supportsPaperContext)
+        let preferred = store.defaultProfileID().flatMap { id in connections.first(where: { $0.id == id })?.id }
+        connectionID = preferred ?? connections.first?.id
+    }
+
+    private static func supportsPaperContext(_ profile: AgentConnectionProfile) -> Bool {
+        profile.connected && profile.kind == .hermes && profile.transport == .bridge &&
+        profile.capabilities["run_submission"] == true &&
+        profile.capabilities["task_bundle"] == true &&
+        profile.capabilities["note_context_bundle"] == true &&
+        profile.capabilities["builtinVideo"] != true && profile.capabilities["builtin_video"] != true
+    }
+
+    private func loadAIContext() {
+        do {
+            guard let record = try AIConversationStore().load(noteID: note.id) else { return }
+            aiConversationExists = true
+            loadedAIConversationDigest = record.expectedDocumentDigest
+            if let digest = try? AIConversationDigest.document(note) {
+                aiConversationMatchesCurrentDocument = record.expectedDocumentDigest == digest
+            } else {
+                aiConversationMatchesCurrentDocument = false
+            }
+            aiTurns = record.visibleTurns.filter { $0.role == "user" || $0.role == "assistant" }
+        } catch let failure {
+            aiConversationExists = true
+            aiLoadWarning = "无法验证这本笔记的 AI 交流（\(failure.localizedDescription)）。它不会被静默省略；如仍要继续，请明确选择仅发送纸面与正文。"
+        }
+    }
+
+    private func sharePDF() {
+        previewing = true
+        error = nil
+        Task { @MainActor in
+            defer { previewing = false }
+            do {
+                let export = try await prepareVerifiedExport(note)
+                guard export.pdf.starts(with: Data("%PDF-".utf8)) else { throw PaperTaskBundleError.invalidPDF }
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("PadNote-paper-\(UUID().uuidString).pdf")
+                try export.pdf.write(to: url, options: .atomic)
+                shareArtifact = ShareArtifact(url: url)
+            } catch let failure { self.error = failure.localizedDescription }
+        }
+    }
+
+    private func preparePreview() {
+        guard let target = selectedProfile, Self.supportsPaperContext(target) else {
+            error = "所选电脑当前未验证所需能力，请重新检查连接。"; return
+        }
+        previewing = true
+        error = nil
+        prepared = nil
+        Task { @MainActor in
+            defer { previewing = false }
+            do {
+                let export = try await prepareVerifiedExport(note)
+                let exportedDigest = try AIConversationDigest.document(export.document)
+                let conversationMatches = loadedAIConversationDigest == nil || loadedAIConversationDigest == exportedDigest
+                aiConversationMatchesCurrentDocument = conversationMatches
+                let markdown = try Self.readableContext(note: export.document, turns: aiTurns,
+                    conversationMatchesCurrentDocument: conversationMatches)
+                let revision = try Self.noteRevision(export.document)
+                let cleanStylePrompt = stylePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                let style = canUseVideoStyle && !cleanStylePrompt.isEmpty ? cleanStylePrompt : nil
+                let archive = try PaperTaskBundleIO.make(
+                    noteID: export.document.id, noteRevision: revision, title: export.document.title,
+                    markdown: markdown, pdf: export.pdf, instruction: instruction,
+                    presetID: presetID, stylePrompt: style
+                )
+                prepared = PreparedSend(archive: archive, markdown: markdown, pdfBytes: export.pdf.count, textBytes: Data(markdown.utf8).count,
+                    revision: revision, noteID: export.document.id, title: export.document.title,
+                    pageCount: export.document.pageCount, presetTitle: selectedPreset.title, instruction: instruction,
+                    stylePrompt: style, aiTurnCount: aiTurns.count, targetID: target.id)
+            } catch let failure { self.error = failure.localizedDescription }
+        }
+    }
+
+    private static func noteRevision(_ note: NoteDocument) throws -> Int {
+        let milliseconds = note.updatedAt / 1000
+        guard milliseconds.isFinite, milliseconds >= 0, milliseconds < Double(Int.max) else {
+            throw PaperTaskBundleError.invalidInput
+        }
+        return max(1, Int(milliseconds))
+    }
+
+    private static func readableContext(note: NoteDocument, turns: [AIVisibleTurn],
+                                        conversationMatchesCurrentDocument: Bool) throws -> String {
+        var sections = ["# \(note.title)", "来源：当前整份纸面 · \(note.pageCount) 页",
+                        "本文的 PDF 保留完整页面视觉内容；以下文字用于检索和交流，不代表从手写或 PDF 中 OCR 提取。", "## 页面文字对象"]
+        let orderedFlows = note.textFlows.enumerated().sorted {
+            if $0.element.anchorPageIndex != $1.element.anchorPageIndex {
+                return $0.element.anchorPageIndex < $1.element.anchorPageIndex
+            }
+            return $0.offset < $1.offset
+        }
+        if orderedFlows.isEmpty { sections.append("（当前笔记没有独立文字对象；请以随附完整 PDF 为准。）") }
+        for (_, flow) in orderedFlows {
+            sections.append("### 第 \(flow.anchorPageIndex + 1) 页 · \(flow.format)")
+            sections.append(flow.source)
+        }
+        if !turns.isEmpty {
+            sections.append(conversationMatchesCurrentDocument
+                ? "## 本笔记中与当前内容版本匹配的 AI 交流"
+                : "## 本笔记中较早纸面版本的 AI 交流（作为历史学习上下文，不代表当前纸面）")
+            for turn in turns {
+                let role = turn.role == "user" ? "用户" : "AI"
+                sections.append("### \(role)\n\(turn.content)")
+            }
+        }
+        let result = sections.joined(separator: "\n\n")
+        guard Data(result.utf8).count <= PaperTaskBundleIO.maximumExpandedBytes else {
+            throw PaperTaskBundleError.tooLarge
+        }
+        return result
+    }
+
+    private func sendPreparedTask() {
+        guard !sending, localTaskID == nil,
+              let prepared, prepared.targetID == connectionID,
+              let profile = selectedProfile, Self.supportsPaperContext(profile) else {
+            error = "发送预览已过期或电脑能力发生变化，请重新生成预览。"; return
+        }
+        sending = true
+        error = nil
+        Task { @MainActor in
+            defer { sending = false }
+            do {
+                let payload = try AgentTaskPayload(
+                    title: "纸面任务：\(prepared.title)",
+                    input: "请按任务包中的 note.work.v1 请求，结合随附整份纸面 PDF、正文和本笔记交流完成任务。",
+                    source: AgentTaskSource(noteID: prepared.noteID, noteRevision: prepared.revision),
+                    bundle: prepared.archive, requiredCapability: "note_context_bundle"
+                )
+                let service = AgentTaskService()
+                let local = try service.create(connectionID: profile.id, payload: payload)
+                localTaskID = local.id
+                let submitted = try await service.submit(id: local.id)
+                sent = submitted.status != .failed && submitted.status != .interrupted
+                if sent {
+                    showSentTaskDetail = true
+                } else {
+                    error = submitted.error ?? "电脑任务未能启动，请打开任务详情查看。"
+                }
+            } catch let failure { self.error = failure.localizedDescription }
         }
     }
 }

@@ -516,6 +516,7 @@ class HermesClient:
         run_stop = raw_features.get("run_stop") is True and endpoint("run_stop", "POST", "/v1/runs/{run_id}/stop")
         run_approval = raw_features.get("run_approval_response") is True and endpoint(
             "run_approval", "POST", "/v1/runs/{run_id}/approval")
+        executable = run_submission and run_status and run_stop
         features = {
             "run_submission": run_submission,
             "run_status": run_status,
@@ -523,8 +524,8 @@ class HermesClient:
             "run_approval_response": run_approval,
             "task_bundle": True,
             "artifacts": True,
+            "note_context_bundle": executable,
         }
-        executable = run_submission and run_status and run_stop
         if executable:
             return CapabilityResult("ready", "Hermes task API is available", features, True)
         missing = [name for name in ("run_submission", "run_status", "run_stop") if not features[name]]

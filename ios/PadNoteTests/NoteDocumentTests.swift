@@ -12,6 +12,10 @@ final class NoteDocumentTests: XCTestCase {
     func testSchemaEightRoundTripPreservesInkPressureAndTime() throws {
         var note = NoteDocument(title: "Calculus", pageStyle: PageStyle(paper: "grid", ratio: "a4", landscape: true))
         note.updatedAt = 1_725_000_000_123
+        note.viewportZoom = 1.0
+        note.viewportScale = 0.8700000047683716
+        note.authorPageEditSerial = 9_007_199_254_740_993
+        note.authorPageTopologySerial = 9_007_199_254_741_127
         note.strokes = [InkStroke(id: "stroke-1", color: "#80123456", baseWidth: 3.25, createdAt: 42,
                                   highlighter: true, points: [InkPoint(x: 1.5, y: 2.5, pressure: 0.17, timestamp: 99)])]
         note.textFlows = [NoteTextFlow(id: "flow-1", format: "markdown", source: "# title", fontSizeSp: 18,
@@ -20,9 +24,129 @@ final class NoteDocumentTests: XCTestCase {
         XCTAssertEqual(decoded, note)
         XCTAssertEqual(decoded.strokes[0].points[0].pressure, 0.17)
         XCTAssertEqual(decoded.strokes[0].points[0].timestamp, 99)
+        XCTAssertEqual(decoded.viewportScale, 0.8700000047683716)
+        XCTAssertEqual(decoded.viewportZoom, 1.0, "Preserving Android absolute scale must not change iPad's zoom interpretation")
 
         note.strokes[0].points[0].pressure = 2.5
         XCTAssertEqual(try NoteDocument.decode(try note.encoded()).strokes[0].points[0].pressure, 2.5)
+    }
+
+    func testAndroidAuthorPageSerialsSurviveCanonicalRoundTripWithoutBecomingAuthority() throws {
+        let json = #"{"schemaVersion":8,"id":"android-note","title":"synthetic","updatedAt":123,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"authorPageEditSerial":9007199254740993,"authorPageTopologySerial":9007199254741127}"#.data(using: .utf8)!
+        let decoded = try NoteDocument.decode(json)
+        XCTAssertEqual(decoded.authorPageEditSerial, 9_007_199_254_740_993)
+        XCTAssertEqual(decoded.authorPageTopologySerial, 9_007_199_254_741_127)
+
+        let encoded = try decoded.encoded()
+        let encodedText = String(decoding: encoded, as: UTF8.self)
+        XCTAssertTrue(encodedText.contains("\"authorPageEditSerial\":9007199254740993"))
+        XCTAssertTrue(encodedText.contains("\"authorPageTopologySerial\":9007199254741127"))
+        XCTAssertEqual(try NoteDocument.decode(encoded), decoded)
+
+        let legacy = try NoteDocument.decode(#"{"schemaVersion":8,"id":"legacy","title":"legacy","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[]}"#.data(using: .utf8)!)
+        XCTAssertNil(legacy.authorPageEditSerial, "Absent source fields remain absent for older documents")
+        XCTAssertNil(legacy.authorPageTopologySerial)
+        XCTAssertNil(legacy.viewportScale)
+        let legacyEncoded = String(decoding: try legacy.encoded(), as: UTF8.self)
+        XCTAssertFalse(legacyEncoded.contains("authorPageEditSerial"))
+        XCTAssertFalse(legacyEncoded.contains("authorPageTopologySerial"))
+        XCTAssertFalse(legacyEncoded.contains("viewportScale"))
+
+        for invalidValue in ["-1", "1.5", "9223372036854774784"] {
+            let malformed = #"{"schemaVersion":8,"id":"bad","title":"bad","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"authorPageEditSerial":__VALUE__}"#.replacingOccurrences(of: "__VALUE__", with: invalidValue).data(using: .utf8)!
+            XCTAssertThrowsError(try NoteDocument.decode(malformed), "Invalid serial must not be silently reset or rounded")
+        }
+        for invalidScale in ["null", "\"0.87\"", "0.44", "4.01", "1e400"] {
+            let malformed = #"{"schemaVersion":8,"id":"bad","title":"bad","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"viewportScale":__VALUE__}"#.replacingOccurrences(of: "__VALUE__", with: invalidScale).data(using: .utf8)!
+            XCTAssertThrowsError(try NoteDocument.decode(malformed), "Present scale must be a finite canonical Android Float writer value in [Double(Float(0.45)), 4]")
+        }
+        let minimumAndroidWireScale = Double(Float(0.45))
+        XCTAssertEqual(minimumAndroidWireScale, 0.44999998807907104, "Pin the exact Float-to-Double JSON lower-bound value")
+        let minimumJSON = #"{"schemaVersion":8,"id":"min-scale","title":"min-scale","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"viewportZoom":1.25,"viewportScale":\#(minimumAndroidWireScale)}"#.data(using: .utf8)!
+        let minimumDecoded = try NoteDocument.decode(minimumJSON)
+        XCTAssertEqual(minimumDecoded.viewportScale, minimumAndroidWireScale,
+                       "Android's canonical Float minimum must survive its Double JSON representation")
+        XCTAssertEqual(minimumDecoded.viewportZoom, 1.25,
+                       "Keeping viewportScale must not change iPad's existing viewportZoom precedence")
+        XCTAssertNoThrow(try minimumDecoded.encoded())
+
+        let maximumJSON = #"{"schemaVersion":8,"id":"max-scale","title":"max-scale","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"viewportScale":4}"#.data(using: .utf8)!
+        XCTAssertEqual(try NoteDocument.decode(maximumJSON).viewportScale, 4.0)
+
+        let belowMinimum = minimumAndroidWireScale.nextDown
+        let belowMinimumJSON = #"{"schemaVersion":8,"id":"below-min-scale","title":"below-min-scale","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[],"viewportScale":\#(belowMinimum)}"#.data(using: .utf8)!
+        XCTAssertThrowsError(try NoteDocument.decode(belowMinimumJSON),
+                             "The immediately lower Double is not a value produced by Android's Float clamp")
+        var belowMinimumDocument = minimumDecoded
+        belowMinimumDocument.viewportScale = belowMinimum
+        XCTAssertThrowsError(try belowMinimumDocument.encoded(),
+                             "Encoding must apply the same exact lower boundary as decoding")
+    }
+
+    func testAndroidShelfRetirementMetadataSurvivesOrdinarySaveAndColdReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var note = NoteDocument(title: "Imported retired note")
+        note.shelfState = "retired"
+        note.shelfRetiredAt = 9_007_199_254_740_993 // 2^53 + 1 must remain an exact Int64.
+        let encoded = try note.encoded()
+        XCTAssertTrue(String(decoding: encoded, as: UTF8.self).contains("\"_padnoteShelfRetiredAt\":9007199254740993"))
+        let decoded = try NoteDocument.decode(encoded)
+        XCTAssertEqual(decoded.shelfState, "retired")
+        XCTAssertEqual(decoded.shelfRetiredAt, .some(Int64(9_007_199_254_740_993)))
+
+        let library = NoteLibrary(directory: root)
+        try library.save(decoded)
+        let reopened = NoteLibrary(directory: root)
+        guard let saved = reopened.notes.first else { return XCTFail("saved note missing") }
+        XCTAssertEqual(reopened.notes.map(\.id), [note.id], "portable Android shelf metadata does not hide an iPad note")
+        XCTAssertEqual(saved.shelfState, "retired")
+        XCTAssertEqual(saved.shelfRetiredAt, .some(Int64(9_007_199_254_740_993)))
+        let session = try reopened.openEditorSession(noteID: saved.id)
+        var edited = session.document
+        edited.title = "Edited while retaining imported system metadata"
+        _ = try reopened.save(edited, basedOn: session)
+        let cold = NoteLibrary(directory: root).notes.first
+        XCTAssertEqual(cold?.shelfState, "retired")
+        XCTAssertEqual(cold?.shelfRetiredAt, .some(Int64(9_007_199_254_740_993)))
+
+        let ordinary = try NoteDocument(title: "No shelf metadata").encoded()
+        let ordinaryDecoded = try NoteDocument.decode(ordinary)
+        XCTAssertNil(ordinaryDecoded.shelfState, "both fields absent remains backward compatible")
+        XCTAssertNil(ordinaryDecoded.shelfRetiredAt)
+
+        let baseObject = try XCTUnwrap(JSONSerialization.jsonObject(with: ordinary) as? [String: Any])
+        func rejects(_ mutate: ([String: Any]) -> [String: Any], file: StaticString = #filePath, line: UInt = #line) throws {
+            let malformed = try JSONSerialization.data(withJSONObject: mutate(baseObject))
+            XCTAssertThrowsError(try NoteDocument.decode(malformed), file: file, line: line)
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = NSNull(); value["_padnoteShelfRetiredAt"] = NSNull(); return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = NSNull(); return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = "retired"; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfRetiredAt"] = 123; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = 7; value["_padnoteShelfRetiredAt"] = 123; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = "retired"; value["_padnoteShelfRetiredAt"] = "123"; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = "retired"; value["_padnoteShelfRetiredAt"] = 123.5; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = "active"; value["_padnoteShelfRetiredAt"] = 123; return value
+        }
+        try rejects { object in
+            var value = object; value["_padnoteShelfState"] = "retired"; value["_padnoteShelfRetiredAt"] = 0; return value
+        }
     }
 
     func testLegacyTextBoxesMigrateToOneFlowPerFlowID() throws {
@@ -83,6 +207,14 @@ final class NoteDocumentTests: XCTestCase {
                     to: noteRoot.appendingPathComponent("\(note.id).pdf"))
             }
             try library.save(note)
+            // Legacy fixture identities are intentionally non-UUID strings. They must remain
+            // editable through the ordinary editor session while foundation group IDs stay UUID-only.
+            let legacySession = try library.openEditorSession(noteID: note.id)
+            XCTAssertNil(legacySession.groupToken, "A legacy ID must not create or claim a group")
+            var edited = legacySession.document
+            edited.title += " edited"
+            _ = try library.save(edited, basedOn: legacySession)
+            note = edited
             note.schemaVersion = 8
             let reopened = NoteLibrary(directory: noteRoot)
             XCTAssertEqual(reopened.notes.first, note, "schema \(version) must survive canonical save and cold reopen")
@@ -277,7 +409,7 @@ final class NoteDocumentTests: XCTestCase {
         XCTAssertFalse(stalePersisted)
         let newestPersisted = try await reopened.persistRegisteredDraft(note, revision: next)
         XCTAssertTrue(newestPersisted)
-        await reopened.markCanonicalSaved(noteID: note.id, revision: 7)
+        try await reopened.markCanonicalSaved(noteID: note.id, revision: 7)
         XCTAssertEqual(reopened.pendingDraft(noteID: note.id)?.revision, 8)
         XCTAssertEqual(NoteLibrary(directory: root).pendingDraft(noteID: note.id)?.document.title, "Revision 8")
     }
@@ -295,6 +427,47 @@ final class NoteDocumentTests: XCTestCase {
         let reopened = NoteLibrary(directory: root)
         XCTAssertTrue(reopened.notes.isEmpty)
         XCTAssertNil(reopened.pendingDraft(noteID: note.id))
+    }
+
+    func testCancelledCaptureReleasesLeaseAndPreservesPersistedEditorDraftForRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("capture-draft-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        var canonical = NoteDocument(title: "Original canonical note")
+        try library.save(canonical)
+
+        let firstRevision = library.nextDraftRevision(noteID: canonical.id)
+        var firstDraft = canonical; firstDraft.title = "Persisted pending edit"; firstDraft.updatedAt += 1
+        let firstSaved = try await library.persistRegisteredDraft(firstDraft, revision: firstRevision)
+        XCTAssertTrue(firstSaved)
+        let secondRevision = library.nextDraftRevision(noteID: canonical.id)
+        var secondDraft = firstDraft; secondDraft.title = "Edit attempted during capture"; secondDraft.updatedAt += 1
+
+        do {
+            try await NoteGroupCatalogFence.withCapture { () async throws -> Void in
+                do {
+                    _ = try await library.persistRegisteredDraft(secondDraft, revision: secondRevision)
+                    XCTFail("A draft writer must reject while catalog capture holds its lease")
+                } catch {
+                    XCTAssertEqual(error as? NoteGroupCatalogFenceError, .snapshotInProgress)
+                }
+                throw CancellationError()
+            }
+            XCTFail("The capture cancellation should propagate")
+        } catch is CancellationError { }
+
+        let coldDraft = try XCTUnwrap(NoteLibrary(directory: root).pendingDraft(noteID: canonical.id))
+        XCTAssertEqual(coldDraft.revision, firstRevision)
+        XCTAssertEqual(coldDraft.document.title, "Persisted pending edit",
+                       "The rejected newer write must not overwrite or discard the cold-readable draft")
+        let secondSaved = try await library.persistRegisteredDraft(secondDraft, revision: secondRevision)
+        XCTAssertTrue(secondSaved, "Cancellation must release the capture lease so the user can retry")
+        let retried = try XCTUnwrap(NoteLibrary(directory: root).pendingDraft(noteID: canonical.id))
+        XCTAssertEqual(retried.revision, secondRevision)
+        XCTAssertEqual(retried.document.title, "Edit attempted during capture")
+        canonical.title = "Original canonical note"
+        XCTAssertEqual(NoteLibrary(directory: root).notes.first?.title, canonical.title,
+                       "Draft retry must not silently commit over the canonical note")
     }
 
     func testImportUsesUniqueIDsAndRecoversBackup() throws {

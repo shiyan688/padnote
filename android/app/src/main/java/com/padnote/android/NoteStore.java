@@ -1,6 +1,9 @@
 package com.padnote.android;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.os.Build;
+import android.os.SystemClock;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
@@ -25,6 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+import com.padnote.android.streaming.StreamingGroupStore;
 
 final class NoteStore {
     interface StoredFileValidator {
@@ -92,6 +97,116 @@ final class NoteStore {
     private static final String UNSAVED_SUFFIX = ".unsaved.json";
     static final int MAX_NOTE_BYTES = 50 * 1024 * 1024;
 
+    /** Debug-only, content-free progress for diagnosing a shelf list that has not rendered. */
+    private static final AtomicLong LIST_DIAGNOSTIC_SEQUENCE=new AtomicLong();
+    private static volatile long latestListDiagnosticAttempt;
+    private static volatile ListDiagnostic listDiagnostic=new ListDiagnostic(0,"IDLE",-1,0,0,0,0,0,0,"",-1,null);
+    /** Per-list only; never shared across readers, contexts, or concurrent list attempts. */
+    static final class CatalogProfile implements StreamingGroupStore.ReadDiagnostics {
+        final long attempt;
+        // The owning list thread is the only writer; volatile fields serve concurrent diagnostic readers.
+        volatile long legacyGateWaitNs,noteStoreMonitorWaitNs,indexNs,migrationNs,reconciliationNs,projectionNs,sortNs;
+        volatile long noteFilesSeen,noteFilesEligible,readerConstructionAttempts,readerConstructors,readerConstructionFailures,readerConstructorNs;
+        volatile long lookupsStarted,lookupsCompleted,lookupsFailed,lookupElapsedNs,markerScans,markerScanFailures,markerEntries,markerBytes,markerScanNs;
+        volatile long markerRecordReads,markerRecordBytes;
+        volatile long groupVerifications,groupVerificationFailures,groupVerificationNs;
+        volatile long objectFullHashes,objectFullHashBytes,objectFullHashNs,objectWitnessRechecks,objectWitnessNs;
+        volatile String activeStage="";volatile long activeStageStartedNs;
+        CatalogProfile(long attempt){this.attempt=attempt;}
+        void beginStage(String key){activeStage=key;activeStageStartedNs=System.nanoTime();}
+        void stage(String key,long ns){long value=Math.max(0,ns);switch(key){case "legacy_gate_wait_ns":legacyGateWaitNs+=value;break;case "note_store_monitor_wait_ns":noteStoreMonitorWaitNs+=value;break;case "load_index_ns":indexNs+=value;break;case "migration_ns":migrationNs+=value;break;case "reconciliation_ns":reconciliationNs+=value;break;case "projection_ns":projectionNs+=value;break;case "sort_ns":sortNs+=value;break;default:break;}if(key.equals(activeStage)){activeStage="";activeStageStartedNs=0;}}
+        void finishActiveStage(){String key=activeStage;if(!key.isEmpty())stage(key,Math.max(0,System.nanoTime()-activeStageStartedNs));}
+        void noteFile(boolean eligible){noteFilesSeen++;if(eligible)noteFilesEligible++;}
+        void readerConstruction(long ns,boolean success){readerConstructionAttempts++;if(success)readerConstructors++;else readerConstructionFailures++;readerConstructorNs+=Math.max(0,ns);}
+        @Override public void lookupStarted(){lookupsStarted++;}
+        @Override public void markerScan(long entries,long bytes,long ns,boolean complete){markerScans++;markerEntries+=Math.max(0,entries);markerBytes+=Math.max(0,bytes);markerScanNs+=Math.max(0,ns);if(!complete)markerScanFailures++;}
+        @Override public void markerRecordRead(long bytes){markerRecordReads++;markerRecordBytes+=Math.max(0,bytes);}
+        @Override public void groupVerification(long ns,boolean complete){groupVerifications++;groupVerificationNs+=Math.max(0,ns);if(!complete)groupVerificationFailures++;}
+        @Override public void objectVerification(long bytes,long ns,boolean witness){if(witness){objectWitnessRechecks++;objectWitnessNs+=Math.max(0,ns);}else{objectFullHashes++;objectFullHashBytes+=Math.max(0,bytes);objectFullHashNs+=Math.max(0,ns);}}
+        @Override public void lookupFinished(long ns,boolean complete){if(complete)lookupsCompleted++;else lookupsFailed++;lookupElapsedNs+=Math.max(0,ns);}
+        JSONObject json()throws Exception {
+            return new JSONObject().put("profile_schema","catalog-profile-v1").put("attempt",attempt)
+                    .put("active_stage",activeStage).put("active_stage_elapsed_ns",activeStageStartedNs==0?0:Math.max(0,System.nanoTime()-activeStageStartedNs))
+                    .put("legacy_gate_wait_ns",legacyGateWaitNs).put("note_store_monitor_wait_ns",noteStoreMonitorWaitNs)
+                    .put("load_index_ns",indexNs).put("migration_ns",migrationNs).put("reconciliation_ns",reconciliationNs)
+                    .put("projection_ns",projectionNs).put("sort_ns",sortNs)
+                    .put("note_files_seen",noteFilesSeen).put("note_files_eligible",noteFilesEligible)
+                    .put("reader_construction_attempts",readerConstructionAttempts).put("reader_constructors",readerConstructors)
+                    .put("reader_construction_failures",readerConstructionFailures).put("reader_constructor_ns",readerConstructorNs)
+                    .put("lookups_started",lookupsStarted).put("lookups_completed",lookupsCompleted).put("lookups_failed",lookupsFailed).put("lookup_elapsed_ns",lookupElapsedNs)
+                    .put("marker_scans",markerScans).put("marker_scan_failures",markerScanFailures)
+                    .put("marker_entries_examined",markerEntries).put("marker_bytes_read",markerBytes).put("marker_entry_scan_ns",markerScanNs)
+                    .put("marker_record_reads",markerRecordReads).put("marker_record_bytes",markerRecordBytes)
+                    .put("group_verifications",groupVerifications).put("group_verification_failures",groupVerificationFailures)
+                    .put("group_verification_ns",groupVerificationNs)
+                    .put("object_full_hashes",objectFullHashes).put("object_full_hash_bytes",objectFullHashBytes)
+                    .put("object_full_hash_ns",objectFullHashNs).put("object_witness_rechecks",objectWitnessRechecks)
+                    .put("object_witness_recheck_ns",objectWitnessNs);
+        }
+    }
+    private static final class ListDiagnostic {
+        final long attempt,startedAt,terminalElapsedMs;final String stage,errorCode;final int total,visited,groupReads,rejected,groupReaderInstances,reconcileReaderInstances;
+        final CatalogProfile profile;
+        ListDiagnostic(long attempt,String stage,int total,int visited,int groupReads,int rejected,int groupReaderInstances,
+                int reconcileReaderInstances,long startedAt,String errorCode,long terminalElapsedMs,CatalogProfile profile){
+            this.attempt=attempt;this.stage=stage;this.total=total;this.visited=visited;this.groupReads=groupReads;
+            this.rejected=rejected;this.groupReaderInstances=groupReaderInstances;this.reconcileReaderInstances=reconcileReaderInstances;
+            this.startedAt=startedAt;this.errorCode=errorCode;this.terminalElapsedMs=terminalElapsedMs;this.profile=profile;
+        }
+    }
+    private static boolean isDebuggable(Context context){
+        return context!=null&&(context.getApplicationInfo().flags&ApplicationInfo.FLAG_DEBUGGABLE)!=0;
+    }
+    /** Package-visible for the deterministic instrumentation interleave; list() keeps the returned instance locally. */
+    static synchronized CatalogProfile beginListDiagnostic(Context context,long startedAt){
+        if(!isDebuggable(context))return null;
+        long attempt=LIST_DIAGNOSTIC_SEQUENCE.incrementAndGet();latestListDiagnosticAttempt=attempt;
+        CatalogProfile profile=new CatalogProfile(attempt);
+        listDiagnostic=new ListDiagnostic(attempt,"WAIT_LEGACY_GATE",-1,0,0,0,0,0,startedAt,"",-1,profile);
+        return profile;
+    }
+    private static synchronized void recordListDiagnostic(Context context,CatalogProfile profile,String stage,int total,int visited,
+            int groupReads,int rejected,long startedAt,String errorCode){
+        long attempt=profile==null?0:profile.attempt;
+        if(profile!=null&&("COMPLETE".equals(stage)||"FAILED".equals(stage)))profile.finishActiveStage();
+        if(attempt==0||!isDebuggable(context)||attempt!=latestListDiagnosticAttempt)return;
+        ListDiagnostic previous=listDiagnostic;
+        if(previous.attempt!=attempt||previous.profile!=profile)return;
+        String safeError=errorCode!=null&&errorCode.matches("[A-Z][A-Z0-9_]{0,79}")?errorCode:"";
+        long terminalElapsedMs=("COMPLETE".equals(stage)||"FAILED".equals(stage))?Math.max(0,SystemClock.elapsedRealtime()-startedAt):-1;
+        listDiagnostic=new ListDiagnostic(attempt,stage,total,visited,groupReads,rejected,previous.groupReaderInstances,
+                previous.reconcileReaderInstances,startedAt,safeError,terminalElapsedMs,profile);
+    }
+    private static synchronized void recordListReaderCreated(Context context,long attempt){
+        if(attempt==0||!isDebuggable(context)||attempt!=latestListDiagnosticAttempt)return;
+        ListDiagnostic d=listDiagnostic;
+        if(d.attempt==attempt)listDiagnostic=new ListDiagnostic(d.attempt,d.stage,d.total,d.visited,d.groupReads,d.rejected,
+                d.groupReaderInstances+1,d.reconcileReaderInstances,d.startedAt,d.errorCode,d.terminalElapsedMs,d.profile);
+    }
+    private static synchronized void recordListReconcileReaderCreated(Context context,long attempt){
+        if(attempt==0||!isDebuggable(context)||attempt!=latestListDiagnosticAttempt)return;
+        ListDiagnostic d=listDiagnostic;
+        if(d.attempt==attempt)listDiagnostic=new ListDiagnostic(d.attempt,d.stage,d.total,d.visited,d.groupReads,d.rejected,
+                d.groupReaderInstances,d.reconcileReaderInstances+1,d.startedAt,d.errorCode,d.terminalElapsedMs,d.profile);
+    }
+    static String listDiagnosticForTest(Context context){
+        if(!isDebuggable(context))return "{}";
+        ListDiagnostic d=listDiagnostic;
+        CatalogProfile profile=d.profile;
+        try{return new JSONObject().put("attempt",d.attempt).put("stage",d.stage).put("total",d.total)
+                .put("visited",d.visited).put("group_lookups",d.groupReads).put("group_reader_instances",d.groupReaderInstances)
+                .put("reconcile_reader_instances",d.reconcileReaderInstances)
+                .put("rejected",d.rejected).put("elapsed_ms",diagnosticElapsedMs(d.startedAt,d.terminalElapsedMs,SystemClock.elapsedRealtime()))
+                .put("error_code",d.errorCode)
+                .put("profile",profile!=null&&profile.attempt==d.attempt?profile.json():new JSONObject())
+                .toString();}
+        catch(Exception impossible){return "{}";}
+    }
+    static long diagnosticElapsedMs(long startedAt,long terminalElapsedMs,long now){
+        if(terminalElapsedMs>=0)return terminalElapsedMs;
+        return startedAt==0?0:Math.max(0,now-startedAt);
+    }
+
     private static final StoredFileValidator NOTE_VALIDATOR = value ->
             validateDocument(new JSONObject(value));
     private static final StoredFileValidator INDEX_VALIDATOR = value ->
@@ -102,25 +217,89 @@ final class NoteStore {
     /** Directory name for sibling files such as note covers (see CoverStore). */
     static String notesDirectoryName() { return NOTES_DIRECTORY; }
 
-    static synchronized List<Entry> list(Context context) throws Exception {
+    static  List<Entry> list(Context context) throws Exception {
+        final long startedAt=SystemClock.elapsedRealtime();
+        final CatalogProfile profile=beginListDiagnostic(context,startedAt);
+        final long attempt=profile==null?0:profile.attempt;
+        final long operationStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("legacy_gate_wait_ns");
+        int total=-1,visited=0,groupReads=0,rejected=0;String lastErrorCode="";
+        ReconcileCatalogReader catalogReader=Build.VERSION.SDK_INT>=27
+                ?new ReconcileCatalogReader(context,attempt,profile):null;
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            final long gateAcquired=System.nanoTime();if(profile!=null)profile.stage("legacy_gate_wait_ns",gateAcquired-operationStarted);
+            recordListDiagnostic(context,profile,"WAIT_NOTE_STORE_MONITOR",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+            final long monitorWaitStarted=System.nanoTime();
+            if(profile!=null)profile.beginStage("note_store_monitor_wait_ns");
+            synchronized (NoteStore.class) {
+        final long monitorAcquired=System.nanoTime();if(profile!=null)profile.stage("note_store_monitor_wait_ns",monitorAcquired-monitorWaitStarted);
+        recordListDiagnostic(context,profile,"LOAD_INDEX",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+        long stageStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("load_index_ns");
         JSONObject index = loadIndex(context);
+        if(profile!=null)profile.stage("load_index_ns",System.nanoTime()-stageStarted);
+        recordListDiagnostic(context,profile,"MIGRATE_LEGACY",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+        stageStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("migration_ns");
         migrateLegacyIfNeeded(context, index);
-        if (reconcileIndex(context, index)) saveIndex(context, index);
+        if(profile!=null)profile.stage("migration_ns",System.nanoTime()-stageStarted);
+        recordListDiagnostic(context,profile,"RECONCILE_INDEX",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+        stageStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("reconciliation_ns");
+        if (reconcileIndex(context, index,attempt,profile,catalogReader)) saveIndex(context, index);
+        if(profile!=null)profile.stage("reconciliation_ns",System.nanoTime()-stageStarted);
         List<Entry> entries = new ArrayList<>();
-        for (Entry entry : entriesFromIndex(index)) {
+        List<Entry> indexedEntries=entriesFromIndex(index);total=indexedEntries.size();
+        recordListDiagnostic(context,profile,"ITERATE_INDEX",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+        stageStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("projection_ns");
+        for (Entry entry : indexedEntries) {
+            recordListDiagnostic(context,profile,"RESTORE_OWNER",total,visited,groupReads,rejected,startedAt,lastErrorCode);
             try {
                 RestoreOwner owner = readRestoreOwner(context, entry.id);
-                if ((owner == null || "committed".equals(owner.state)) && restoreGroupVisible(context, entry.id)) entries.add(entry);
+                recordListDiagnostic(context,profile,"RESTORE_VISIBILITY",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+                if ((owner == null || "committed".equals(owner.state)) && restoreGroupVisible(context, entry.id)) {
+                    if(Build.VERSION.SDK_INT>=27){
+                        groupReads++;
+                        recordListDiagnostic(context,profile,"GROUP_MARKER_AND_FULL_VERIFY",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+                        StreamingGroupStore.Store.ShelfMetadata authoritative=catalogReader.shelfMetadataIfManaged(entry.id);
+                        if(authoritative!=null){
+                            if(authoritative.retired)throw new IllegalStateException("GROUP_NOTE_RETIRED");
+                            entries.add(entryFromShelfMetadata(authoritative,entry));visited++;continue;
+                        }
+                    }
+                    entries.add(entry);
+                }
             } catch (Exception invalidRestoreMarker) {
                 // Keep an untrusted imported row out of the shelf without blocking valid notes.
                 // listRecovery() reports the affected note; its files and marker remain untouched.
+                rejected++;
+                String error=invalidRestoreMarker.getMessage();
+                lastErrorCode=error!=null&&error.matches("[A-Z][A-Z0-9_]{0,79}")?error:"OTHER";
             }
+            visited++;
+            recordListDiagnostic(context,profile,"ENTRY_COMPLETE",total,visited,groupReads,rejected,startedAt,lastErrorCode);
         }
+        if(profile!=null)profile.stage("projection_ns",System.nanoTime()-stageStarted);
+        recordListDiagnostic(context,profile,"SORT",total,visited,groupReads,rejected,startedAt,lastErrorCode);
+        stageStarted=System.nanoTime();
+        if(profile!=null)profile.beginStage("sort_ns");
         Collections.sort(entries, (first, second) -> Long.compare(second.updatedAt, first.updatedAt));
+        if(profile!=null)profile.stage("sort_ns",System.nanoTime()-stageStarted);
+        recordListDiagnostic(context,profile,"COMPLETE",total,visited,groupReads,rejected,startedAt,lastErrorCode);
         return entries;
+    
+            }
+        } catch(Exception error) {
+            String message=error.getMessage();String errorCode=message!=null&&message.matches("[A-Z][A-Z0-9_]{0,79}")?message:"OTHER";
+            recordListDiagnostic(context,profile,"FAILED",total,visited,groupReads,rejected,startedAt,errorCode);
+            throw error;
+        }
     }
 
-    static synchronized Entry create(Context context, String requestedTitle) throws Exception {
+    static  Entry create(Context context, String requestedTitle) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         JSONObject index = loadIndex(context);
         migrateLegacyIfNeeded(context, index);
         String id = "note-" + UUID.randomUUID().toString().replace("-", "");
@@ -132,23 +311,44 @@ final class NoteStore {
         upsertEntry(index, entry);
         saveIndex(context, index);
         return entry;
+    
+            }
+        }
+}
+
+    static JSONObject load(Context context,String noteId)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
+                RestoreOwner owner = readRestoreOwner(context, noteId);
+                if ((owner != null && "pending".equals(owner.state)) || !restoreGroupVisible(context,noteId))
+                    throw new IllegalStateException("RESTORE_NOTE_PENDING");
+                if(Build.VERSION.SDK_INT>=27){JSONObject authoritative=GroupAuthorityBridge.bodyIfManaged(context,noteId);
+                    if(authoritative!=null)return authoritative;}
+                return loadLegacyDocumentAfterCatalogAbsence(context,noteId);
+            }
+        }
+    }
+    /** Called only after the same locked full-catalog inventory proved no group marker exists. */
+    private static JSONObject loadLegacyDocumentAfterCatalogAbsence(Context context,String noteId)throws Exception {
+        File file=noteFile(context,noteId);recoverAtomicFile(file,NOTE_VALIDATOR);
+        if(!file.exists())throw new IllegalStateException("笔记文件不存在");
+        String value=readFile(file);NOTE_VALIDATOR.validate(value);return new JSONObject(value);
+    }
+    private static Entry entryFromShelfMetadata(StreamingGroupStore.Store.ShelfMetadata metadata,Entry fallback) {
+        String fallbackTitle=fallback==null?"恢复的笔记":fallback.title;
+        long fallbackUpdated=fallback==null?0:fallback.updatedAt;
+        int fallbackPages=fallback==null?1:fallback.pageCount;
+        String title=normalizeTitle(metadata.titlePresent?metadata.title:fallbackTitle,fallbackTitle);
+        return new Entry(metadata.localId,title,metadata.updatedAtPresent?metadata.updatedAt:fallbackUpdated,
+                metadata.strokeCount,metadata.pageCount>=1?metadata.pageCount:fallbackPages);
     }
 
-    static synchronized JSONObject load(Context context, String noteId) throws Exception {
-        RestoreOwner owner = readRestoreOwner(context, noteId);
-        if ((owner != null && "pending".equals(owner.state)) || !restoreGroupVisible(context,noteId))
-            throw new IllegalStateException("RESTORE_NOTE_PENDING");
-        File file = noteFile(context, noteId);
-        recoverAtomicFile(file, NOTE_VALIDATOR);
-        if (!file.exists()) throw new IllegalStateException("笔记文件不存在");
-        String value = readFile(file);
-        NOTE_VALIDATOR.validate(value);
-        return new JSONObject(value);
-    }
-
-    static synchronized Entry save(Context context, String noteId, String requestedTitle,
+    static  Entry save(Context context, String noteId, String requestedTitle,
                                    String documentJson) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         requireNotPendingRestore(context, noteId);
+        requireNoteMaterialAccess(context,noteId);
         requireWithinLimit(documentJson);
         JSONObject document = new JSONObject(documentJson);
         validateDocument(document);
@@ -178,11 +378,38 @@ final class NoteStore {
         }
         clearRecoveryDraft(context, noteId);
         return entry;
+    
+            }
+        }
+}
+
+    static Entry rename(Context context,String noteId,String requestedTitle)throws Exception {
+        return rename(context,noteId,requestedTitle,null,null);
     }
 
-    static synchronized Entry rename(Context context, String noteId, String requestedTitle)
-            throws Exception {
+    static Entry rename(Context context,String noteId,String requestedTitle,
+                        String expectedGroupRevision,String expectedGroupDigest)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         requireNotPendingRestore(context, noteId);
+        if(Build.VERSION.SDK_INT>=27){
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(context,noteId);
+            if(managed!=null){
+                if(expectedGroupRevision==null||expectedGroupDigest==null)
+                    throw new IOException("GROUP_NOTE_REQUIRES_FULL_REVISION_SAVE");
+                new NoteGroupFacade(context).renameGroup(noteId,expectedGroupRevision,
+                        expectedGroupDigest,requestedTitle);
+                JSONObject renamed=load(context,noteId);
+                JSONArray strokes=renamed.optJSONArray("strokes");
+                return new Entry(noteId,renamed.optString("title","未命名笔记"),renamed.optLong("updatedAt"),
+                        strokes==null?0:strokes.length(),Math.max(1,renamed.optInt("pageCount",1)));
+            }
+        }
+        if(expectedGroupRevision!=null||expectedGroupDigest!=null)
+            throw new IOException("BASE_CAS_CONFLICT");
+        // Keep the legacy writer guard on the legacy path. Group-backed notes
+        // have already taken the token-bound whole-revision branch above.
+        requireNoteMaterialAccess(context,noteId);
         JSONObject document = load(context, noteId);
         String title = normalizeTitle(requestedTitle, "未命名笔记");
         long now = System.currentTimeMillis();
@@ -197,10 +424,36 @@ final class NoteStore {
         upsertEntry(index, entry);
         saveIndex(context, index);
         return entry;
+    
+            }
+        }
+}
+
+    static void delete(Context context,String noteId)throws Exception {
+        delete(context,noteId,null,null);
     }
 
-    static synchronized void delete(Context context, String noteId) throws Exception {
+    /** Returns true when a managed group was retired without deleting its immutable history. */
+    static boolean delete(Context context,String noteId,String expectedGroupRevision,
+                          String expectedGroupDigest)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         requireNotPendingRestore(context, noteId);
+        if(Build.VERSION.SDK_INT>=27){
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(context,noteId);
+            if(managed!=null){
+                if(expectedGroupRevision==null||expectedGroupDigest==null)
+                    throw new IOException("GROUP_NOTE_REQUIRES_FULL_REVISION_SAVE");
+                new NoteGroupFacade(context).retireGroup(noteId,expectedGroupRevision,
+                        expectedGroupDigest);
+                return true;
+            }
+        }
+        if(expectedGroupRevision!=null||expectedGroupDigest!=null)
+            throw new IOException("BASE_CAS_CONFLICT");
+        // The non-destructive group tombstone path is token-bound above; all
+        // legacy deletion and sidecar cleanup stays behind this guard.
+        requireNoteMaterialAccess(context,noteId);
         JSONObject index = loadIndex(context);
         File target = noteFile(context, noteId);
         File tombstone = new File(target.getParentFile(), target.getName() + ".deleted");
@@ -220,15 +473,26 @@ final class NoteStore {
         deleteFileFamily(recoveryDraftFile(context, noteId));
         File owner = restoreOwnerFile(context, noteId);
         if (owner.exists()) { Os.remove(owner.getAbsolutePath()); syncParent(owner); }
-    }
+        return false;
+    
+            }
+        }
+}
 
-    static synchronized Entry importDocument(Context context, JSONObject imported,
+    static  Entry importDocument(Context context, JSONObject imported,
                                              String fallbackTitle) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         return importDocument(context, imported, fallbackTitle, null);
-    }
+    
+            }
+        }
+}
 
-    static synchronized Entry importDocument(Context context, JSONObject imported,
+    static  Entry importDocument(Context context, JSONObject imported,
                                              String fallbackTitle, File pdfSource) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateDocument(imported);
         requireWithinLimit(imported.toString());
         if (imported.optInt("pdfPageCount", 0) > 0 && pdfSource == null) {
@@ -264,18 +528,28 @@ final class NoteStore {
             // can expose it for manual recovery rather than pretending import succeeded.
             throw error;
         }
-    }
+    
+            }
+        }
+}
 
     /** Imports a validated archive copy under a pre-journaled local ID for idempotent restore. */
-    static synchronized Entry restoreDocumentWithId(Context context, JSONObject imported,
+    static  Entry restoreDocumentWithId(Context context, JSONObject imported,
                                                      String fallbackTitle, File pdfSource,
                                                      String localId) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         return restoreDocumentWithId(context, imported, fallbackTitle, pdfSource, localId, false);
-    }
+    
+            }
+        }
+}
 
-    static synchronized Entry restoreDocumentWithId(Context context, JSONObject imported,
+    static  Entry restoreDocumentWithId(Context context, JSONObject imported,
                                                      String fallbackTitle, File pdfSource,
                                                      String localId, boolean allowIdenticalPromotedPdf) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);
         validateDocument(imported);
         if (imported.optInt("pdfPageCount", 0) > 0 && pdfSource == null)
@@ -293,10 +567,15 @@ final class NoteStore {
                 System.currentTimeMillis());
         return restorePreparedDocument(context, restored, pdfSource, allowIdenticalPromotedPdf,
                 null, null, null, null, null);
-    }
+    
+            }
+        }
+}
 
-    static synchronized JSONObject prepareRestoredDocument(JSONObject imported, String fallbackTitle,
+    static  JSONObject prepareRestoredDocument(JSONObject imported, String fallbackTitle,
                                                              String localId, long updatedAt) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);
         validateDocument(imported);
         JSONObject restored = new JSONObject(NoteJsonCodec.stringify(imported));
@@ -305,11 +584,16 @@ final class NoteStore {
         validateDocument(restored);
         requireWithinLimit(restored.toString());
         return restored;
-    }
+    
+            }
+        }
+}
 
-    static synchronized Entry restorePreparedDocument(Context context, JSONObject restored,
+    static  Entry restorePreparedDocument(Context context, JSONObject restored,
             File pdfSource, boolean allowIdenticalPromotedPdf, String transactionId, String groupId,
             String expectedNoteSha, String expectedPdfSha, String expectedCoverSha) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         String localId = restored.optString("id", "");
         validateNoteId(localId);
         validateDocument(restored);
@@ -356,10 +640,15 @@ final class NoteStore {
             }
             throw error;
         }
-    }
+    
+            }
+        }
+}
 
-    static synchronized void beginRestoreOwnership(Context context, String transactionId, String groupId,
+    static  void beginRestoreOwnership(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);
         if (transactionId == null || !transactionId.matches("[0-9a-fA-F-]{36}") ||
                 groupId == null || !groupId.matches("i-[0-9a-f]{32}") ||
@@ -375,15 +664,20 @@ final class NoteStore {
         JSONObject value = restoreOwnerJson(transactionId, groupId, localId, noteSha, updatedAt, pdfSha, coverSha, "pending");
         byte[] bytes = value.toString().getBytes(StandardCharsets.UTF_8);
         FileDescriptor fd = Os.open(marker.getAbsolutePath(), OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW, 0600);
-        try (FileOutputStream out = new FileOutputStream(fd)) { out.write(bytes); out.flush(); out.getFD().sync(); }
+        try (FileOutputStream out = OwnedFdStreams.output(fd)) { out.write(bytes); out.flush(); out.getFD().sync(); }
         syncParent(marker);
-    }
+    
+            }
+        }
+}
 
     /** Adds the v2 group visibility reference before the v1-compatible note owner reservation. */
-    static synchronized void beginRestoreOwnershipV2(Context context, String transactionId, String sourceGroupId,
+    static  void beginRestoreOwnershipV2(Context context, String transactionId, String sourceGroupId,
             String groupId, String memberId, String localId, String noteSha, long updatedAt,
             String pdfSha, String coverSha, String sourcePayloadSha, String semanticBindingSha,
             String storageBindingSha) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);
         if(groupId==null||!groupId.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")||
                 memberId==null||!memberId.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
@@ -394,40 +688,66 @@ final class NoteStore {
         if(existing==null){
             ensureRestoreTargetUnused(context,localId);
             FileDescriptor fd=Os.open(marker.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
-            try(FileOutputStream out=new FileOutputStream(fd)){out.write(expected);out.flush();out.getFD().sync();}syncParent(marker);
+            try(FileOutputStream out=OwnedFdStreams.output(fd)){out.write(expected);out.flush();out.getFD().sync();}syncParent(marker);
         } else {
             byte[] actual=readNoFollow(marker,4096);if(!MessageDigest.isEqual(sha256(expected).getBytes(StandardCharsets.US_ASCII),sha256(actual).getBytes(StandardCharsets.US_ASCII)))throw new IOException("RESTORE_V2_OWNER_CHANGED");
         }
         String old=restoreOwnerState(context,localId);
         if(old==null)beginRestoreOwnership(context,transactionId,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha);
         else requireRestoreOwner(context,transactionId,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,old);
-    }
+    
+            }
+        }
+}
 
-    static synchronized void requireRestoreGroupV2Visible(Context context,String localId)throws Exception {
+    static  void requireRestoreGroupV2Visible(Context context,String localId)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         if(!restoreGroupVisible(context,localId))throw new IllegalStateException("RESTORE_NOTE_PENDING");
-    }
-    static synchronized void verifyRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String groupId,
+    
+            }
+        }
+}
+    static  void verifyRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String groupId,
             String memberId,String localId,String noteSha,long updatedAt,String pdfSha,String coverSha,
             String sourcePayloadSha,String semanticBindingSha,String storageBindingSha,String expectedState)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         File reference=restoreV2ReferenceFile(context,localId);
         byte[] expected=restoreV2ReferenceBytes(tx,groupId,memberId,localId,sourcePayloadSha,semanticBindingSha,storageBindingSha);
         if(!MessageDigest.isEqual(sha256(expected).getBytes(StandardCharsets.US_ASCII),
                 sha256(readNoFollow(reference,4096)).getBytes(StandardCharsets.US_ASCII)))throw new IOException("RESTORE_V2_OWNER_CHANGED");
         requireRestoreOwner(context,tx,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,expectedState);
-    }
-    static synchronized void verifyRestoreV2MemberAbsent(Context context,String localId,LibraryRestoreGroupV2.Kind kind)throws Exception {
+    
+            }
+        }
+}
+    static  void verifyRestoreV2MemberAbsent(Context context,String localId,LibraryRestoreGroupV2.Kind kind)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);File note=noteFile(context,localId),pdf=pdfFile(context,localId),cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(kind==LibraryRestoreGroupV2.Kind.NOTE){verifyRestoreV2Absent(context,localId);return;}
         File target=kind==LibraryRestoreGroupV2.Kind.PDF?pdf:kind==LibraryRestoreGroupV2.Kind.ASSIGNED_COVER?cover:null;
         if(target==null||lstatOrNull(target)!=null)throw new IOException("RESTORE_V2_RESIDUE");
-    }
-    static synchronized void requireNoteMaterialAccess(Context context,String localId)throws Exception {
+    
+            }
+        }
+}
+    static  void requireNoteMaterialAccess(Context context,String localId)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         requireNotPendingRestore(context,localId);
-    }
+        if(Build.VERSION.SDK_INT>=27)GroupAuthorityBridge.requireLegacyWriteAllowed(context,localId);
+    
+            }
+        }
+}
 
-    static synchronized Entry restorePreparedDocumentV2(Context context,JSONObject restored,File pdfSource,
+    static  Entry restorePreparedDocumentV2(Context context,JSONObject restored,File pdfSource,
             String transactionId,String sourceGroupId,String localId,String noteSha,long updatedAt,
             String pdfSha,String coverSha)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         String state=restoreOwnerState(context,localId);
         if("pending".equals(state))return restorePreparedDocument(context,restored,pdfSource,true,transactionId,sourceGroupId,noteSha,pdfSha,coverSha);
         if(!"committed".equals(state))throw new IOException("RESTORE_V2_OWNER_MISSING");
@@ -436,21 +756,36 @@ final class NoteStore {
         if(!fileHasSha(note,noteSha)||(pdfSha!=null&&!fileHasSha(pdf,pdfSha))||(pdfSha==null&&lstatOrNull(pdf)!=null))throw new IOException("RESTORE_V2_CONTENT_CHANGED");
         for(Entry entry:entriesFromIndex(loadIndex(context)))if(entry.id.equals(localId))return entry;
         throw new IOException("RESTORE_V2_INDEX_MISSING");
-    }
-    static synchronized void finishRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String localId,
+    
+            }
+        }
+}
+    static  void finishRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String localId,
             String noteSha,long updatedAt,String pdfSha,String coverSha)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         finishRestoreOwnershipV2(context,tx,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,null);
-    }
-    static synchronized void finishRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String localId,
+    
+            }
+        }
+}
+    static  void finishRestoreOwnershipV2(Context context,String tx,String sourceGroupId,String localId,
             String noteSha,long updatedAt,String pdfSha,String coverSha,RestoreCommitFault fault)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         String state=restoreOwnerState(context,localId);
         if("pending".equals(state))commitRestoreOwnership(context,tx,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,fault);
         else requireRestoreOwner(context,tx,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,"committed");
-    }
+    
+            }
+        }
+}
 
-    static synchronized void rollbackRestoreOwnershipV2(Context context,String transactionId,String sourceGroupId,
+    static  void rollbackRestoreOwnershipV2(Context context,String transactionId,String sourceGroupId,
             String groupId,String memberId,String localId,String noteSha,long updatedAt,String pdfSha,String coverSha,
             String sourcePayloadSha,String semanticBindingSha,String storageBindingSha)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         File ref=restoreV2ReferenceFile(context,localId);byte[] expected=restoreV2ReferenceBytes(transactionId,groupId,memberId,localId,sourcePayloadSha,semanticBindingSha,storageBindingSha);
         byte[] actual=readNoFollow(ref,4096);if(!MessageDigest.isEqual(sha256(expected).getBytes(StandardCharsets.US_ASCII),sha256(actual).getBytes(StandardCharsets.US_ASCII)))throw new IOException("RESTORE_V2_OWNER_CHANGED");
         String ownerState=restoreOwnerState(context,localId);
@@ -458,44 +793,79 @@ final class NoteStore {
         rollbackOwnedRestore(context,transactionId,sourceGroupId,localId,noteSha,updatedAt,pdfSha,coverSha,ownerState);
         StructStat current=lstatOrNull(ref);if(current==null||!OsConstants.S_ISREG(current.st_mode)||current.st_nlink!=1||!MessageDigest.isEqual(sha256(expected).getBytes(StandardCharsets.US_ASCII),sha256(readNoFollow(ref,4096)).getBytes(StandardCharsets.US_ASCII)))throw new IOException("RESTORE_V2_OWNER_CHANGED");
         Os.remove(ref.getAbsolutePath());syncParent(ref);
-    }
-    static synchronized void verifyRestoreV2Absent(Context context,String localId)throws Exception {
+    
+            }
+        }
+}
+    static  void verifyRestoreV2Absent(Context context,String localId)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         File note=noteFile(context,localId),pdf=pdfFile(context,localId),cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(lstatOrNull(note)!=null||lstatOrNull(pdf)!=null||lstatOrNull(cover)!=null||lstatOrNull(restoreOwnerFile(context,localId))!=null||lstatOrNull(restoreV2ReferenceFile(context,localId))!=null)throw new IOException("RESTORE_V2_RESIDUE");
         for(Entry entry:entriesFromIndex(loadIndex(context)))if(entry.id.equals(localId))throw new IOException("RESTORE_V2_RESIDUE");
-    }
-    static synchronized boolean restoreV2ReferenceAbsent(Context context,String localId)throws Exception {
+    
+            }
+        }
+}
+    static  boolean restoreV2ReferenceAbsent(Context context,String localId)throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         return lstatOrNull(restoreV2ReferenceFile(context,localId))==null;
-    }
+    
+            }
+        }
+}
 
-    static synchronized String restoreOwnerState(Context context,String localId)throws Exception{
+    static  String restoreOwnerState(Context context,String localId)throws Exception{
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         RestoreOwner owner=readRestoreOwner(context,localId);return owner==null?null:owner.state;
-    }
+    
+            }
+        }
+}
 
-    static synchronized void ensureRestoreTargetUnused(Context context,String localId)throws Exception{
+    static  void ensureRestoreTargetUnused(Context context,String localId)throws Exception{
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         validateNoteId(localId);File note=noteFile(context,localId),pdf=pdfFile(context,localId),owner=restoreOwnerFile(context,localId);
         File cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(note.exists()||pdf.exists()||cover.exists()||owner.exists())throw new IOException("RESTORE_TARGET_EXISTS");
         for(Entry entry:entriesFromIndex(loadIndex(context)))if(entry.id.equals(localId))throw new IOException("RESTORE_TARGET_EXISTS");
-    }
+    
+            }
+        }
+}
 
-    static synchronized void requireRestoreOwner(Context context, String transactionId, String groupId,
+    static  void requireRestoreOwner(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha, String state) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         RestoreOwner owner = readRestoreOwner(context, localId);
         if (owner == null || !owner.matches(transactionId, groupId, localId, noteSha, updatedAt, pdfSha, coverSha) ||
                 !state.equals(owner.state)) throw new IOException("RESTORE_OWNER_MISMATCH");
-    }
+    
+            }
+        }
+}
 
-    static synchronized void commitRestoreOwnership(Context context, String transactionId, String groupId,
+    static  void commitRestoreOwnership(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         commitRestoreOwnership(context, transactionId, groupId, localId, noteSha, updatedAt, pdfSha, coverSha, null);
-    }
+    
+            }
+        }
+}
 
     interface RestoreCommitFault { void afterTemporarySynced() throws Exception; }
 
-    static synchronized void commitRestoreOwnership(Context context, String transactionId, String groupId,
+    static  void commitRestoreOwnership(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha,
         RestoreCommitFault fault) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         StructStat pendingIdentity=requireExactRestoreOwner(context,transactionId,groupId,localId,noteSha,updatedAt,pdfSha,coverSha,"pending");
         if (!fileHasSha(noteFile(context, localId), noteSha)) throw new IOException("RESTORE_NOTE_HASH_MISMATCH");
         if (pdfSha != null && !fileHasSha(pdfFile(context, localId), pdfSha)) throw new IOException("RESTORE_PDF_HASH_MISMATCH");
@@ -509,7 +879,7 @@ final class NoteStore {
         StructStat publishIdentity;
         if (tempStat == null) {
             FileDescriptor fd = Os.open(temp.getAbsolutePath(), OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW, 0600);
-            try (FileOutputStream out = new FileOutputStream(fd)) {
+            try (FileOutputStream out = OwnedFdStreams.output(fd)) {
                 out.write(restoreOwnerJson(transactionId,groupId,localId,noteSha,updatedAt,pdfSha,coverSha,"committed").toString().getBytes(StandardCharsets.UTF_8));
                 out.flush(); out.getFD().sync();
             }
@@ -533,14 +903,24 @@ final class NoteStore {
             if (coverSha != null && !fileHasSha(cover, coverSha)) throw new IOException("RESTORE_COVER_HASH_MISMATCH");
             Os.rename(temp.getAbsolutePath(), marker.getAbsolutePath()); syncParent(marker);
         }
-    }
+    
+            }
+        }
+}
 
-    static synchronized void rollbackPendingRestore(Context context, String transactionId, String groupId,
+    static  void rollbackPendingRestore(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         rollbackOwnedRestore(context,transactionId,groupId,localId,noteSha,updatedAt,pdfSha,coverSha,"pending");
-    }
-    private static synchronized void rollbackOwnedRestore(Context context, String transactionId, String groupId,
+    
+            }
+        }
+}
+    private static  void rollbackOwnedRestore(Context context, String transactionId, String groupId,
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha,String ownerState) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
         File ownerMarker=restoreOwnerFile(context,localId);
         try(LibraryBackupArchive.SafeFiles.PublishLock ignored=new LibraryBackupArchive.AndroidSafeFiles().lockPublish(ownerMarker)){
         StructStat ownerIdentity=requireExactRestoreOwner(context,transactionId,groupId,localId,noteSha,updatedAt,pdfSha,coverSha,ownerState);
@@ -573,7 +953,10 @@ final class NoteStore {
             throw new IOException("RESTORE_OWNER_CHANGED");
         Os.remove(ownerMarker.getAbsolutePath());syncParent(ownerMarker);
         }
-    }
+    
+            }
+        }
+}
 
     private static JSONObject restoreOwnerJson(String tx,String group,String id,String noteSha,long updatedAt,
             String pdfSha,String coverSha,String state)throws Exception{
@@ -659,7 +1042,7 @@ final class NoteStore {
     private static byte[] readNoFollow(File file,int limit)throws Exception{
         StructStat before=regularStat(file);if(before.st_size>limit)throw new IOException("RESTORE_OWNER_LIMIT");
         FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
-        try(FileInputStream in=new FileInputStream(fd);java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){
+        try(FileInputStream in=OwnedFdStreams.input(fd);java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()){
             StructStat opened=Os.fstat(fd);if(!sameFileStat(before,opened))throw new IOException("RESTORE_OWNER_CHANGED");
             byte[] b=new byte[4096];int n;while((n=in.read(b))!=-1){if(out.size()>limit-n)throw new IOException("RESTORE_OWNER_LIMIT");out.write(b,0,n);}
             if(!sameFileStat(opened,Os.fstat(fd))||!sameFileStat(opened,regularStat(file)))throw new IOException("RESTORE_OWNER_CHANGED");return out.toByteArray();}
@@ -673,7 +1056,7 @@ final class NoteStore {
     }
     private static long hashFile(File file,java.security.MessageDigest digest)throws Exception{
         StructStat before=regularStat(file);FileDescriptor fd=Os.open(file.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
-        try(FileInputStream in=new FileInputStream(fd)){StructStat opened=Os.fstat(fd);if(!sameFileStat(before,opened))throw new IOException("RESTORE_FILE_CHANGED");
+        try(FileInputStream in=OwnedFdStreams.input(fd)){StructStat opened=Os.fstat(fd);if(!sameFileStat(before,opened))throw new IOException("RESTORE_FILE_CHANGED");
             long total=0;byte[] buffer=new byte[32*1024];int n;while((n=in.read(buffer))!=-1){total+=n;if(total>PdfNoteIO.MAX_PDF_BYTES)throw new IOException("RESTORE_FILE_TOO_LARGE");digest.update(buffer,0,n);}
             if(!sameFileStat(opened,Os.fstat(fd))||!sameFileStat(opened,regularStat(file)))throw new IOException("RESTORE_FILE_CHANGED");return total;}
     }
@@ -685,45 +1068,68 @@ final class NoteStore {
         return readLimited(input, MAX_NOTE_BYTES);
     }
 
-    static synchronized List<RecoveryEntry> listRecovery(Context context) throws Exception {
-        File[] files = notesDirectory(context).listFiles();
+    static  List<RecoveryEntry> listRecovery(Context context) throws Exception {
+        final File[] files;
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
+                File directory=notesDirectory(context);
+                files=directory.listFiles();
+            }
+        }
         List<RecoveryEntry> result = new ArrayList<>();
         if (files == null) return result;
         for (File file : files) {
+            if(Thread.currentThread().isInterrupted())throw new InterruptedException("recovery_scan_cancelled");
+            RecoveryEntry entry;
+            // Hold the legacy mutation gate only for one candidate. This scan is
+            // passive, and a shelf save/rename/delete should run between files.
+            try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+                synchronized (NoteStore.class) {
+                    if(Thread.currentThread().isInterrupted())throw new InterruptedException("recovery_scan_cancelled");
+                    entry=recoveryEntryForFile(context,file);
+                }
+            }
+            if(entry!=null)result.add(entry);
+        }
+        result.sort((first, second) -> Long.compare(second.file.lastModified(), first.file.lastModified()));
+        return result;
+    }
+
+    private static RecoveryEntry recoveryEntryForFile(Context context,File file) throws Exception {
             String name = file.getName();
-            if (!file.isFile()) continue;
+            if (!file.isFile()) return null;
             if (name.endsWith(UNSAVED_SUFFIX)) {
                 String noteId = name.substring(0, name.length() - UNSAVED_SUFFIX.length());
-                result.add(new RecoveryEntry(noteId, "未完成保存", file, true));
+                return new RecoveryEntry(noteId, "未完成保存", file, true);
             } else if (name.contains(".corrupt-") ||
                     (name.endsWith(".json") && !isReadableNote(file))) {
-                result.add(new RecoveryEntry(noteIdFromRecoveryName(name),
-                        "无法读取的原始文件", file, false));
+                return new RecoveryEntry(noteIdFromRecoveryName(name),
+                        "无法读取的原始文件", file, false);
             } else if (name.endsWith(".json")) {
                 try {
                     JSONObject document = new JSONObject(readFile(file));
                     String noteId = name.substring(0, name.length() - 5);
                     try {
                         RestoreOwner owner=readRestoreOwner(context,noteId);
-                        if(owner!=null&&"pending".equals(owner.state))continue;
+                        if(owner!=null&&"pending".equals(owner.state))return null;
                     } catch(Exception invalidRestoreMarker) {
-                        result.add(new RecoveryEntry(noteId,"导入状态需要检查",file,false));
-                        continue;
+                        return new RecoveryEntry(noteId,"导入状态需要检查",file,false);
                     }
                     if (document.optInt("pdfPageCount", 0) > 0 &&
                             !pdfFile(context, noteId).isFile()) {
-                        result.add(new RecoveryEntry(noteId, "PDF 原文缺失", file, false));
+                        return new RecoveryEntry(noteId, "PDF 原文缺失", file, false);
                     }
                 } catch (Exception ignored) {
                     // Invalid JSON was already added by the branch above.
                 }
             }
-        }
-        result.sort((first, second) -> Long.compare(second.file.lastModified(), first.file.lastModified()));
-        return result;
-    }
+        return null;
+}
 
-    static synchronized Entry restoreDraft(Context context, String noteId) throws Exception {
+    static  Entry restoreDraft(Context context, String noteId) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
+        requireNoteMaterialAccess(context,noteId);
         File draft = recoveryDraftFile(context, noteId);
         if (!draft.isFile()) throw new IllegalStateException("未保存副本不存在");
         String value = readFile(draft);
@@ -736,11 +1142,20 @@ final class NoteStore {
             quarantineInvalidCandidates(target, NOTE_VALIDATOR);
         }
         return save(context, noteId, document.optString("title", "恢复的笔记"), value);
-    }
+    
+            }
+        }
+}
 
-    static synchronized void clearRecoveryDraft(Context context, String noteId) throws Exception {
+    static  void clearRecoveryDraft(Context context, String noteId) throws Exception {
+        try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
+        requireNoteMaterialAccess(context,noteId);
         deleteFileFamily(recoveryDraftFile(context, noteId));
-    }
+    
+            }
+        }
+}
 
     private static JSONObject emptyDocument(String id, String title, long now) throws Exception {
         return new JSONObject().put("schemaVersion", 8).put("id", id).put("title", title)
@@ -851,12 +1266,29 @@ final class NoteStore {
     }
 
     static File pdfFile(Context context, String noteId) throws Exception {
+        if(Build.VERSION.SDK_INT>=27){File projection=GroupAuthorityBridge.pdfProjectionOrNull(context,noteId);if(projection!=null)return projection;}
         return new File(noteFile(context, noteId).getParentFile(), noteId + ".pdf");
     }
 
     /** Private source path for the library snapshot reader; noteId is validated first. */
     static File noteFileForBackup(Context context, String noteId) throws Exception {
+        if(Build.VERSION.SDK_INT>=27){JSONObject body=GroupAuthorityBridge.bodyIfManaged(context,noteId);if(body!=null)return GroupAuthorityBridge.bodyProjection(context,noteId);}
         return noteFile(context, noteId);
+    }
+
+    /** Reads an optional PDF page count without string or fractional-number coercion. */
+    static int pdfPageCountOrZero(JSONObject document) {
+        if (!document.has("pdfPageCount")) return 0;
+        Object value = document.opt("pdfPageCount");
+        if (!(value instanceof Number)) throw new IllegalArgumentException("PDF 页面元数据必须是整数");
+        final int pages;
+        try {
+            pages = new java.math.BigDecimal(value.toString()).intValueExact();
+        } catch (NumberFormatException | ArithmeticException invalidNumber) {
+            throw new IllegalArgumentException("PDF 页面元数据必须是整数", invalidNumber);
+        }
+        if (pages < 0 || pages > 500) throw new IllegalArgumentException("PDF 页面元数据无效");
+        return pages;
     }
 
     static void validateDocument(JSONObject document) throws Exception {
@@ -868,8 +1300,8 @@ final class NoteStore {
         if (strokes == null) throw new IllegalArgumentException("笔记缺少 strokes 数据");
         int pages = document.optInt("pageCount", 1);
         if (pages < 1 || pages > 500) throw new IllegalArgumentException("笔记页数必须在 1–500 之间");
-        int pdfPages = document.optInt("pdfPageCount", 0);
-        if (pdfPages < 0 || pdfPages > pages || (pdfPages > 0 && version < 7)) {
+        int pdfPages = pdfPageCountOrZero(document);
+        if (pdfPages > pages || (pdfPages > 0 && version < 7)) {
             throw new IllegalArgumentException("PDF 页面元数据无效");
         }
         JSONArray boxes = document.optJSONArray("textBoxes");
@@ -1102,25 +1534,72 @@ final class NoteStore {
         entriesFromIndex(index);
     }
 
-    private static boolean reconcileIndex(Context context, JSONObject index) throws Exception {
+    private static final class ReconcileCatalogReader {
+        private final Context context;private final long attempt;private final CatalogProfile profile;private GroupAuthorityBridge.CatalogReader reader;
+        private Exception failure;private boolean attempted;
+        ReconcileCatalogReader(Context context,long attempt,CatalogProfile profile){this.context=context;this.attempt=attempt;this.profile=profile;}
+        void prepare(Set<String> requestedLocalIds)throws Exception {
+            if(attempted){if(failure!=null)throw failure;return;}
+            attempted=true;long started=System.nanoTime();
+            try {
+                reader=GroupAuthorityBridge.catalogReader(context,profile);
+                if(profile!=null)profile.readerConstruction(System.nanoTime()-started,true);
+                recordListReaderCreated(context,attempt);recordListReconcileReaderCreated(context,attempt);
+                reader.prepareVisibleCatalog(requestedLocalIds);
+            } catch(Exception unavailable) {
+                failure=unavailable;
+                if(reader==null&&profile!=null)profile.readerConstruction(System.nanoTime()-started,false);
+                throw unavailable;
+            }
+        }
+        StreamingGroupStore.Store.ShelfMetadata shelfMetadataIfManaged(String noteId)throws Exception {
+            prepare(Collections.singleton(noteId));return reader.shelfMetadataIfManaged(noteId);
+        }
+    }
+
+    private static boolean reconcileIndex(Context context,JSONObject index,long attempt,CatalogProfile profile,
+            ReconcileCatalogReader reader)throws Exception {
         List<Entry> entries = entriesFromIndex(index);
         Map<String, Entry> byId = new LinkedHashMap<>();
         for (Entry entry : entries) byId.put(entry.id, entry);
         File[] files = notesDirectory(context).listFiles((directory, name) ->
                 name.endsWith(".json") && !name.endsWith(UNSAVED_SUFFIX));
+        Set<String> requestedLocalIds=new HashSet<>();
+        for(Entry entry:entries)requestedLocalIds.add(entry.id);
+        if(files!=null)for(File file:files){String id=file.getName().substring(0,file.getName().length()-5);if(id.matches("[A-Za-z0-9_-]+"))requestedLocalIds.add(id);}
+        if(reader!=null)try{reader.prepare(requestedLocalIds);}catch(Exception catalogUnavailable){
+            String code=catalogUnavailable.getMessage();
+            if(code!=null&&code.matches("VISIBLE_CATALOG_(REQUEST|MARKER|RESULT)_BUDGET"))throw catalogUnavailable;
+            // Per-note invalid groups remain isolated; the reader remembers this error and never
+            // treats a failed inventory as legacy absence.
+        }
         if (files == null) return false;
         boolean changed = false;
         for (File file : files) {
             String id = file.getName().substring(0, file.getName().length() - 5);
-            if (!id.matches("[A-Za-z0-9_-]+")) continue;
+            boolean eligible=id.matches("[A-Za-z0-9_-]+");if(profile!=null)profile.noteFile(eligible);
+            if (!eligible) continue;
             try {
-                JSONObject document = load(context, id);
-                Entry recovered = new Entry(id,
-                        normalizeTitle(document.optString("title"), "恢复的笔记"),
-                        document.optLong("updatedAt", file.lastModified()),
-                        document.getJSONArray("strokes").length(),
-                        Math.max(1, document.optInt("pageCount", 1)));
                 Entry known = byId.get(id);
+                Entry recovered;
+                if(reader!=null&&Build.VERSION.SDK_INT>=27){
+                    RestoreOwner owner=readRestoreOwner(context,id);
+                    if((owner!=null&&"pending".equals(owner.state))||!restoreGroupVisible(context,id))throw new IllegalStateException("RESTORE_NOTE_PENDING");
+                    StreamingGroupStore.Store.ShelfMetadata summary=reader.shelfMetadataIfManaged(id);
+                    if(summary!=null){if(summary.retired)throw new IllegalStateException("GROUP_NOTE_RETIRED");
+                        Entry fallback=new Entry(id,"恢复的笔记",file.lastModified(),0,1);recovered=entryFromShelfMetadata(summary,fallback);}
+                    else {
+                        JSONObject document=loadLegacyDocumentAfterCatalogAbsence(context,id);
+                        recovered=new Entry(id,normalizeTitle(document.optString("title"),"恢复的笔记"),
+                                document.optLong("updatedAt",file.lastModified()),document.getJSONArray("strokes").length(),
+                                Math.max(1,document.optInt("pageCount",1)));
+                    }
+                } else {
+                    JSONObject document=load(context,id);
+                    recovered=new Entry(id,normalizeTitle(document.optString("title"),"恢复的笔记"),
+                            document.optLong("updatedAt",file.lastModified()),document.getJSONArray("strokes").length(),
+                            Math.max(1,document.optInt("pageCount",1)));
+                }
                 if (known == null || known.updatedAt != recovered.updatedAt ||
                         !known.title.equals(recovered.title) || known.pageCount != recovered.pageCount ||
                         known.strokeCount != recovered.strokeCount) {

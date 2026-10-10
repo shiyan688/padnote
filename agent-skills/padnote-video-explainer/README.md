@@ -1,21 +1,22 @@
 # PadNote Video Explainer
 
-Local AgentSkills-compatible worker for PadNote `video.explain.v1` tasks. Its native built-in path asks Qwen to author a schema-constrained initial storyboard, waits for exact storyboard approval and a separate explicit paid-production authorization, then uses Qwen TTS and local Revideo rendering to produce an MP4, SRT captions, cover image, render manifest, QA report, and final result manifest.
+An AgentSkills-compatible worker for PadNote `video.explain.v1` tasks. It turns an Agent-authored Lesson IR into an offline storyboard and, after explicit approval and real scene audio, a Revideo MP4, captions, thumbnail, QA report, and result manifest.
 
-The native engine does not connect to OpenClaw, Hermes, Codex, or a remote PadNote service. Qwen storyboard/TTS calls go directly to the official Alibaba Model Studio API using the user's own key supplied transiently by the host. It does not generate PPTX.
+The invoking user or Agent selects the model and speech tool. The Skill supports native Agent TTS, an explicitly configured adapter, or compatible real audio already supplied for the task. It does not provide a universal model/provider picker. The dedicated Qwen adapter is an optional Qwen-only path; see [its adapter guide](references/qwen-adapter.md) only when that path is deliberately enabled.
 
-## Requirements and install
+The worker does not connect to PadNote, OpenClaw, Hermes, or a paid TTS vendor by itself. Those systems can pass the shared file contract from outside. It does not generate PPTX.
+
+## Requirements
 
 - Linux x64, Node.js `>=22.22.0`, npm, and enough disk for Puppeteer's Chromium cache.
 - `npm ci` from this directory. The lock file is authoritative.
-- Dependencies and caches remain in `node_modules/` and `.local-cache/`; both are ignored by Git.
-- Generated tasks and samples remain in `.local-output/`, also ignored by Git.
+- Dependencies and caches remain in `node_modules/` and `.local-cache/`; generated tasks and samples remain in `.local-output/`.
 
-On Windows, storyboard and rendering select Puppeteer's bundled `chrome-headless-shell`. Windows launch arguments keep Chromium's normal sandbox defaults and use its normal multi-process model; they do not add `--no-sandbox`, `--disable-setuid-sandbox`, `--no-zygote`, or `--single-process`. Linux and macOS retain their existing browser selection and launch arguments.
-
-Revideo telemetry is disabled by the render command. Rendering serves only a local Vite endpoint; no scene loads an external runtime resource.
+Rendering disables Revideo telemetry and uses a local Vite endpoint. Scenes do not load external runtime resources.
 
 ## Two-stage command line
+
+Validate the request and create the storyboard:
 
 ```bash
 npm run validate:request -- /absolute/task-root
@@ -23,81 +24,40 @@ npm run validate:ir -- /absolute/task-root
 npm run storyboard -- /absolute/task-root --revision 1
 ```
 
-After the user approves revision 1:
+After the user approves revision 1, persist approval:
 
 ```bash
 npm run task:approve -- /absolute/task-root --revision 1
+```
+
+Choose exactly one audio path. For the selected Agent's own TTS or compatible audio already supplied for the task:
+
+```bash
+npm run audio:index -- /absolute/task-root
+```
+
+For an explicitly selected external adapter:
+
+```bash
 export PADNOTE_TTS_COMMAND=/absolute/path/to/your-tts-adapter
 npm run audio:prepare -- /absolute/task-root
+```
+
+After the chosen path has produced and validated per-scene WAV files, render and verify:
+
+```bash
 npm run render -- /absolute/task-root --approval approve --revision 1
 npm run validate:result -- /absolute/task-root
 ```
 
-`storyboard`, `audio:prepare`, and `render` now share `work/task-state.json`, an
-append-only metadata event log, and one execution lock. Approval is bound to the
-review revision plus the Lesson IR/review digests and is consumed once. To run
-adapter TTS and rendering in one guarded process, use `npm run task --
-/absolute/task-root run` after `task:approve`. Inspect or cancel with:
+`storyboard`, `audio:prepare`, and `render` share `work/task-state.json`, an append-only metadata event log, and one execution lock. Approval binds the review revision and Lesson IR/review digests and is consumed once. For a single guarded process, use `npm run task -- /absolute/task-root run` after approval. Inspect or cancel the original task with `npm run task:status -- /absolute/task-root` or `npm run task:cancel -- /absolute/task-root`.
 
-```bash
-npm run task:status -- /absolute/task-root
-npm run task:cancel -- /absolute/task-root
-```
+If a possibly charged call has an uncertain outcome, the worker does not repeat it automatically. Inspect the original provider and task state before explicitly authorizing a supported retry. A cancelled task is terminal.
 
-A crash records or recovers to `interrupted`/`failed`; it never automatically
-repeats a possibly charged TTS call. After inspecting provider/output state, an
-operator may explicitly authorize one retry with `task:approve ...
---retry-uncertain`. A cancelled task is terminal and cannot be revived.
+The selected audio path must produce one non-silent 16-bit PCM WAV per scene. The backend derives actual duration and file digests from closed files. See [the provider-neutral TTS contract](references/tts-contract.md). Fixture audio is synthetic test data, not a TTS fallback or completed narration.
 
-The TTS adapter is the only provider-specific layer. API keys stay in provider-specific environment variables; never put them in `request.json`. See `references/tts-contract.md` for the exact adapter environment.
+## Agent hosts
 
-For DashScope Qwen TTS, use the included `scripts/dashscope-tts.mjs` executable
-with Node 22.22+ on `PATH`. Set `PADNOTE_TTS_COMMAND` to its absolute path and
-`PADNOTE_TTS_ENV_FILE` to your private dotenv file. Required settings are
-`DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, `DASHSCOPE_TTS_MODEL`, and
-`DASHSCOPE_TTS_VOICE`; optional language and instruction settings use the
-`DASHSCOPE_TTS_LANGUAGE`, `DASHSCOPE_TTS_INSTRUCTIONS`, and
-`DASHSCOPE_TTS_OPTIMIZE_INSTRUCTIONS` variables. Do not commit the dotenv file.
-The adapter downloads provider WAV audio over HTTPS; `audio:prepare` validates
-PCM format, non-silence, and actual duration using the existing worker contract.
-It uses the configured voice/instructions, not the request's abstract voice profile
-or speed. `DASHSCOPE_TTS_GAP_MS` is not consumed; no extra silence is appended.
-The worker passes the adapter only the documented scene fields, a small runtime
-allowlist, and the exact DashScope settings above. Other host secrets and
-unrecognized `PADNOTE_*` values are not inherited. The bundled adapter parses a
-dotenv file without sourcing it and selects only its documented DashScope names;
-other provider entries stay unavailable. Adapters for another provider require
-an explicit code-reviewed allowlist update.
-API reference: https://www.alibabacloud.com/help/en/model-studio/non-realtime-tts-user-guide
+Expose this directory as the `padnote-video-explainer` Skill in the chosen AgentSkills host. When Hermes is the host, read [Hermes-specific guidance](references/hermes.md); provider and TTS selection remain in Hermes configuration. The PadNote repository also documents its integration side in `../../docs/VIDEO_AGENT_CONTRACT.md`.
 
-An Agent with a native TTS tool, including Hermes, reads narration from the
-approved snapshot recorded in `work/task-state.json`, writes one
-`work/audio/<scene-id>.wav` per scene, and then runs `npm run audio:index --
-/absolute/task-root`. Hermes-specific execution instructions are in
-`references/hermes.md`.
-
-Repository-only fixture flow:
-
-```bash
-npm run task:approve -- /absolute/task-root --revision 1
-npm run audio:fixture -- /absolute/task-root --fixture-audio
-npm run render -- /absolute/task-root --approval approve --revision 1 --allow-fixture-audio
-```
-
-Fixture audio is synthetic test audio and must never be presented as narration or a real TTS integration.
-
-## External Agent entrypoint
-
-Install or expose this directory as the `padnote-video-explainer` Agent Skill. OpenClaw, Hermes, or another AgentSkills host should invoke `SKILL.md`, mount/provide one standard task root, and execute the commands above from this directory.
-
-## Native built-in engine protocol
-
-The desktop host launches exactly `node --import tsx <skill-root>/scripts/builtin-engine.ts` with no arguments. It writes one bounded UTF-8 JSON request (maximum 64 KiB) to stdin and reads one JSON object from stdout (maximum 1 MiB). A provider key is accepted only in transient stdin memory and is never written to task files, environment variables, arguments, logs, or engine output. The host discards stderr and validates operation receipts against its own operation/attempt ledger.
-
-Supported paid engine actions are `storyboard` and `produce`. `storyboard` is initial-storyboard only and calls Qwen once using either explicitly configured `json_object` mode with local full-schema validation or explicitly configured supported `json_schema` mode. It never retries a dispatched provider request. `produce` requires a prior exact persisted approval plus its own operation bound to the approved revision, cursor, review and Lesson IR hashes, and `allow_cloud_tts: true`. It performs Qwen TTS and local rendering inside the same leased execution, validates the completed result, and returns a receipt plus bounded local artifact descriptors. `approve` remains a separate host operation and never starts paid work. A provider outcome that may have been dispatched is returned as unknown; callers must reconcile read-only and must not replay it automatically.
-
-The engine validates official Alibaba HTTPS hosts and rejects redirects, unbounded responses, unsupported TTS settings, oversized narration, and untrusted audio hosts. A local preflight checks render dependencies, approved snapshots, scene count and narration budgets before consuming approval or dispatching TTS. Native mode does not expose storyboard revision as a product action.
-
-Provider request contracts are based on Alibaba's [Qwen structured output guide](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output) and [Qwen-TTS API reference](https://www.alibabacloud.com/help/en/model-studio/qwen-tts-api). JSON Object mode includes the required JSON prompt keyword and local schema validation; JSON Schema mode is sent only for the currently documented supported model series. The TTS adapter uses the documented `services/aigc/multimodal-generation/generation` contract and fetches only trusted `dashscope-result-*.oss-*.aliyuncs.com` WAV URLs.
-
-The portable executable interface is contained in this directory. The PadNote repository also documents its integration side in `../../docs/VIDEO_AGENT_CONTRACT.md`. Schemas are in `schemas/`; committed examples are in `tests/fixtures/`.
+Schemas are in `schemas/`; committed examples are in `tests/fixtures/`.

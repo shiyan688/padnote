@@ -157,6 +157,8 @@ public struct PageStyle: Codable, Equatable {
 
 public struct NoteDocument: Codable, Identifiable, Equatable {
     public static let maximumEncodedBytes = 50 * 1024 * 1024
+    /// Java serializes this Float boundary as its exact Double value (0.44999998807907104).
+    private static let minimumAndroidViewportScale = Double(Float(0.45))
     public var schemaVersion: Int
     public var id: String
     public var title: String
@@ -174,6 +176,18 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public var viewportZoom: Double
     public var viewportCenterX: Double
     public var viewportCenterY: Double
+    /// Android's absolute canvas scale, kept separately from `viewportZoom`.
+    /// iPad continues to use viewportZoom for its own presentation; Android clamps
+    /// this source value to `Double(Float(0.45))...4` when restoring the canvas; persisted output stays in that range.
+    public var viewportScale: Double?
+    /// Android's persisted author-edit counters. They are content-history metadata,
+    /// not authority for cross-device update or compare-and-swap decisions.
+    public var authorPageEditSerial: Int64?
+    public var authorPageTopologySerial: Int64?
+    /// Android shelf system metadata carried by the portable note JSON. This does not
+    /// grant retirement authority or change ordinary iPad visibility.
+    public var shelfState: String?
+    public var shelfRetiredAt: Int64?
 
     public init(schemaVersion: Int = 8, id: String = UUID().uuidString,
                 title: String = "未命名笔记", updatedAt: Double = NoteDocument.nowMillis(),
@@ -182,7 +196,10 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
                 pageTopologyRevision: Int = 0,
                 textFlows: [NoteTextFlow] = [], images: [NoteImage] = [],
                 pageStyle: PageStyle = PageStyle(), viewportZoom: Double = 1,
-                viewportCenterX: Double = 384, viewportCenterY: Double = 543) {
+                viewportCenterX: Double = 384, viewportCenterY: Double = 543,
+                viewportScale: Double? = nil,
+                authorPageEditSerial: Int64? = nil, authorPageTopologySerial: Int64? = nil,
+                shelfState: String? = nil, shelfRetiredAt: Int64? = nil) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.title = title
@@ -200,6 +217,11 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         self.viewportZoom = viewportZoom
         self.viewportCenterX = viewportCenterX
         self.viewportCenterY = viewportCenterY
+        self.viewportScale = viewportScale
+        self.authorPageEditSerial = authorPageEditSerial
+        self.authorPageTopologySerial = authorPageTopologySerial
+        self.shelfState = shelfState
+        self.shelfRetiredAt = shelfRetiredAt
     }
 
     public init(title: String, pageStyle: PageStyle = PageStyle()) {
@@ -220,6 +242,13 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         guard (0...1_000_000_000).contains(pageTopologyRevision) else {
             throw NoteDocumentError.malformed("Invalid page topology revision")
         }
+        if shelfState == nil && shelfRetiredAt == nil {
+            // Older notes have no shelf system metadata.
+        } else if shelfState == "retired", let shelfRetiredAt, shelfRetiredAt > 0 {
+            // Preserve the recognized state without interpreting it as iPad group authority.
+        } else {
+            throw NoteDocumentError.malformed("Invalid shelf retirement metadata")
+        }
         if pdfPageCount > 0 && schemaVersion < 7 { throw NoteDocumentError.malformed("PDF metadata requires schema version 7 or newer") }
         try checkPositive(pageWidth, "pageWidth")
         try checkPositive(pageHeight, "pageHeight")
@@ -228,6 +257,15 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         guard viewportZoom > 0 && viewportZoom <= 100 else { throw NoteDocumentError.malformed("Invalid viewport zoom") }
         try checkFinite(viewportCenterX, "viewportCenterX")
         try checkFinite(viewportCenterY, "viewportCenterY")
+        if let viewportScale, !viewportScale.isFinite || !(Self.minimumAndroidViewportScale...4.0).contains(viewportScale) {
+            throw NoteDocumentError.malformed("Invalid viewportScale")
+        }
+        for (name, serial) in [("authorPageEditSerial", authorPageEditSerial),
+                               ("authorPageTopologySerial", authorPageTopologySerial)] {
+            if let serial, serial < 0 || serial > Int64.max - 1024 {
+                throw NoteDocumentError.malformed("Invalid \(name)")
+            }
+        }
         guard ["blank", "ruled", "grid", "dotted"].contains(pageStyle.paper.lowercased()) else { throw NoteDocumentError.malformed("Invalid paper style") }
         guard ["screen", "a4"].contains(pageStyle.ratio.lowercased()) else { throw NoteDocumentError.malformed("Invalid page ratio") }
 
@@ -314,6 +352,8 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, title, updatedAt, canvasWidth, canvasHeight, pageWidth, pageHeight, pageGap, pageCount, pdfPageCount, pageTopologyRevision
         case viewportScale, viewportZoom, viewportCenterX, viewportCenterY, strokes, textFlows, textBoxes, images, pageStyle
+        case authorPageEditSerial, authorPageTopologySerial
+        case _padnoteShelfState, _padnoteShelfRetiredAt
     }
 
     private struct LegacyTextBox: Decodable {
@@ -373,6 +413,34 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         viewportZoom = decodedZoom ?? decodedScale ?? 1
         viewportCenterX = try c.decodeIfPresent(Double.self, forKey: .viewportCenterX) ?? pageWidth / 2
         viewportCenterY = try c.decodeIfPresent(Double.self, forKey: .viewportCenterY) ?? pageHeight / 2
+        viewportScale = c.contains(.viewportScale) ? try c.decode(Double.self, forKey: .viewportScale) : nil
+        if let viewportScale, !viewportScale.isFinite || !(Self.minimumAndroidViewportScale...4.0).contains(viewportScale) {
+            throw NoteDocumentError.malformed("Invalid viewportScale")
+        }
+        authorPageEditSerial = c.contains(.authorPageEditSerial)
+            ? try c.decode(Int64.self, forKey: .authorPageEditSerial) : nil
+        authorPageTopologySerial = c.contains(.authorPageTopologySerial)
+            ? try c.decode(Int64.self, forKey: .authorPageTopologySerial) : nil
+        for (name, serial) in [("authorPageEditSerial", authorPageEditSerial),
+                               ("authorPageTopologySerial", authorPageTopologySerial)] {
+            if let serial, serial < 0 || serial > Int64.max - 1024 {
+                throw NoteDocumentError.malformed("Invalid \(name)")
+            }
+        }
+        let hasShelfState = c.contains(._padnoteShelfState)
+        let hasShelfRetiredAt = c.contains(._padnoteShelfRetiredAt)
+        guard hasShelfState == hasShelfRetiredAt else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath,
+                debugDescription: "Shelf retirement metadata must contain both fields"))
+        }
+        if hasShelfState {
+            // `decode`, rather than `decodeIfPresent`, deliberately rejects JSON null.
+            shelfState = try c.decode(String.self, forKey: ._padnoteShelfState)
+            shelfRetiredAt = try c.decode(Int64.self, forKey: ._padnoteShelfRetiredAt)
+        } else {
+            shelfState = nil
+            shelfRetiredAt = nil
+        }
         if schemaVersion >= 5 {
             guard c.contains(.textFlows) else { throw NoteDocumentError.malformed("Note is missing textFlows data") }
             textFlows = try c.decodeIfPresent([NoteTextFlow].self, forKey: .textFlows) ?? []
@@ -418,6 +486,11 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         try c.encode(strokes, forKey: .strokes); try c.encode(textFlows, forKey: .textFlows); try c.encode(images, forKey: .images)
         try c.encode(pageStyle, forKey: .pageStyle); try c.encode(viewportZoom, forKey: .viewportZoom)
         try c.encode(viewportCenterX, forKey: .viewportCenterX); try c.encode(viewportCenterY, forKey: .viewportCenterY)
+        try c.encodeIfPresent(viewportScale, forKey: .viewportScale)
+        try c.encodeIfPresent(authorPageEditSerial, forKey: .authorPageEditSerial)
+        try c.encodeIfPresent(authorPageTopologySerial, forKey: .authorPageTopologySerial)
+        try c.encodeIfPresent(shelfState, forKey: ._padnoteShelfState)
+        try c.encodeIfPresent(shelfRetiredAt, forKey: ._padnoteShelfRetiredAt)
         // Android's older readers use these aliases while migrating to pages.
         try c.encode(pageWidth, forKey: .canvasWidth); try c.encode(pageHeight, forKey: .canvasHeight)
         try c.encode([String](), forKey: .textBoxes)

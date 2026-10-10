@@ -391,7 +391,8 @@ final class DigitizationTests: XCTestCase {
     func testLatePrepareCannotReplaceNewRecipientAndHistorySurvivesNoProfile() async throws {
         try await withTemporaryDirectoryAsync { directory in
             let store = DigitizationCheckpointStore(directory: directory)
-            let document = note(pageCount: 1)
+            let document = NoteDocument(id: UUID().uuidString.lowercased(), title: "group checkpoint",
+                                        updatedAt: 100, pageCount: 1)
             let oldProfile = profile(id: "slow")
             let newProfile = profile(id: "current", model: "vision-current")
             let source = try store.identity(document: document, measuredPageCount: 1,
@@ -430,6 +431,54 @@ final class DigitizationTests: XCTestCase {
         }
     }
 
+    func testDigitizationCheckpointPersistsCapturedGroupVersion() throws {
+        try withTemporaryDirectory { directory in
+            let store = DigitizationCheckpointStore(directory: directory)
+            let document = NoteDocument(id: UUID().uuidString.lowercased(), title: "group checkpoint",
+                                        updatedAt: 100, pageCount: 1)
+            let profile = profile(id: "group-bound")
+            let token = NoteGroupVersionToken(localNoteID: document.id.lowercased(),
+                lineageID: UUID().uuidString.lowercased(), revisionID: UUID().uuidString.lowercased(),
+                groupSHA256: String(repeating: "a", count: 64))
+            let identity = try store.identity(document: document, measuredPageCount: 1, pdfURL: nil,
+                                              profile: profile, groupVersion: token)
+            let checkpoint = try store.create(document: document, identity: identity, pdfURL: nil)
+            let reopened = try XCTUnwrap(store.loadAll(noteID: document.id).first { $0.id == checkpoint.id })
+            XCTAssertEqual(reopened.source.groupVersion, token)
+            XCTAssertEqual(reopened.source, identity)
+            XCTAssertEqual(checkpoint.state, .partial)
+        }
+    }
+
+    func testLegacyDigitizationCheckpointWithoutGroupVersionDoesNotAutoRebind() throws {
+        try withTemporaryDirectory { directory in
+            let store = DigitizationCheckpointStore(directory: directory)
+            let document = NoteDocument(id: UUID().uuidString.lowercased(), title: "legacy checkpoint",
+                                        updatedAt: 100, pageCount: 1)
+            let profile = profile(id: "group-bound")
+            let legacyIdentity = try store.identity(document: document, measuredPageCount: 1,
+                                                    pdfURL: nil, profile: profile)
+            let legacyCheckpoint = try store.create(document: document, identity: legacyIdentity, pdfURL: nil)
+            let legacyJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+                directory.appendingPathComponent("batch-\(legacyCheckpoint.id).json"))) as? [String: Any])
+            let legacySource = try XCTUnwrap(legacyJSON["source"] as? [String: Any])
+            XCTAssertNil(legacySource["groupVersion"],
+                "Legacy identity encoding must not invent a version token")
+            let reopenedLegacy = try XCTUnwrap(store.loadAll(noteID: document.id).first { $0.id == legacyCheckpoint.id })
+            XCTAssertNil(reopenedLegacy.source.groupVersion,
+                "Pre-group checkpoint JSON without groupVersion must remain readable as a legacy identity")
+            let currentToken = NoteGroupVersionToken(localNoteID: document.id,
+                lineageID: UUID().uuidString.lowercased(), revisionID: UUID().uuidString.lowercased(),
+                groupSHA256: String(repeating: "b", count: 64))
+            let groupedIdentity = try store.identity(document: document, measuredPageCount: 1, pdfURL: nil,
+                                                     profile: profile, groupVersion: currentToken)
+            XCTAssertNotEqual(legacyIdentity, groupedIdentity,
+                "A pre-group checkpoint has no approval token and must not match a grouped session")
+            XCTAssertEqual(reopenedLegacy.state, .partial,
+                "An incompatible old checkpoint remains available in its original state")
+        }
+    }
+
     @MainActor
     func testCorruptCheckpointVisibleAndPartialCannotOverwriteVault() throws {
         try withTemporaryDirectory { directory in
@@ -451,6 +500,50 @@ final class DigitizationTests: XCTestCase {
             XCTAssertThrowsError(try vault.publishDigitization(note: document, checkpoint: partial))
             XCTAssertEqual("EXISTING_COMPLETE", vault.notes.first?.markdown)
             XCTAssertTrue(partial.markdown().contains("未完成的数字化草稿"))
+        }
+    }
+
+    @MainActor
+    func testBoundVaultSavePreservesAndReopensOpaqueLegacyID() throws {
+        try withTemporaryDirectory { directory in
+            let library = NoteLibrary(directory: directory.appendingPathComponent("notes", isDirectory: true))
+            let vaultDirectory = directory.appendingPathComponent("vault", isDirectory: true)
+            let journalRoot = directory.appendingPathComponent("journals", isDirectory: true)
+            let vault = VaultLibrary(directory: vaultDirectory, journalRoot: journalRoot)
+            vault.bind(noteLibrary: library)
+            let document = NoteDocument(id: "legacy-opaque-note/42", title: "Opaque legacy ID", updatedAt: 123)
+            let saved = try vault.save(note: document, markdown: "unchanged legacy markdown")
+            XCTAssertEqual(saved.id, document.id, "Legacy IDs are preserved exactly; no group UUID is invented")
+
+            let reopened = VaultLibrary(directory: vaultDirectory, journalRoot: journalRoot)
+            reopened.bind(noteLibrary: library)
+            XCTAssertEqual(reopened.notes.first(where: { $0.id == document.id })?.markdown,
+                           "unchanged legacy markdown")
+            XCTAssertEqual(try reopened.backupColdRead(for: saved), saved)
+        }
+    }
+
+    @MainActor
+    func testBoundVaultSaveRejectsCapturedTokenForOpaqueLegacyIDWithoutMutation() throws {
+        try withTemporaryDirectory { directory in
+            let library = NoteLibrary(directory: directory.appendingPathComponent("notes", isDirectory: true))
+            let vault = VaultLibrary(directory: directory.appendingPathComponent("vault", isDirectory: true),
+                                     journalRoot: directory.appendingPathComponent("journals", isDirectory: true))
+            vault.bind(noteLibrary: library)
+            let document = NoteDocument(id: "legacy-opaque-note/43", title: "Opaque legacy ID", updatedAt: 124)
+            let saved = try vault.save(note: document, markdown: "approved legacy markdown")
+            let sidecar = try vault.backupSourceURL(for: saved)
+            let before = try Data(contentsOf: sidecar)
+            let token = NoteGroupVersionToken(localNoteID: UUID().uuidString.lowercased(),
+                lineageID: UUID().uuidString.lowercased(), revisionID: UUID().uuidString.lowercased(),
+                groupSHA256: String(repeating: "a", count: 64))
+
+            XCTAssertThrowsError(try vault.save(note: document, markdown: "must not downgrade", expectedGroupToken: token)) {
+                XCTAssertEqual($0 as? NoteGroupStoreError, .compareAndSwapConflict)
+            }
+            XCTAssertEqual(try Data(contentsOf: sidecar), before,
+                           "A stale or inapplicable token must never downgrade to a legacy write")
+            XCTAssertEqual(try vault.backupColdRead(for: saved), saved)
         }
     }
 

@@ -574,7 +574,7 @@ public final class LibraryBackupSnapshotInstrumentedTest {
         Context context=null;
         try{
             FileDescriptor fd=Os.open(source.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600);
-            try(FileOutputStream output=new FileOutputStream(fd)){output.write(0);output.getFD().sync();}
+            try(FileOutputStream output=OwnedFdStreams.output(fd)){output.write(0);output.getFD().sync();}
             StructStat sourceParent=Os.lstat(source.getParentFile().getAbsolutePath());
             StructStat destinationParent=Os.lstat(destination.getParentFile().getAbsolutePath());
             logMode("link-source-parent",source.getParentFile());

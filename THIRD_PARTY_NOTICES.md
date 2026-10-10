@@ -43,3 +43,7 @@ The local PadNote connection assistant includes the unmodified Python QR encoder
 - Vendored `qrcodegen.py` SHA-256: `b089855caf16185c61421ea4927c1b213cf9468940d71fa8ab11ef83662dcc84`
 
 The source and complete license are preserved under `desktop/connection-assistant/vendor/`.
+
+## AndroidX Core 1.13.1
+
+PadNote Android uses `androidx.core:core:1.13.1` under Apache License 2.0. The complete Apache-2.0 license text is included at `docs/licenses/ANDROIDX-CORE-1.13.1-APACHE-2.0.txt`. Upstream project: https://github.com/androidx/androidx.

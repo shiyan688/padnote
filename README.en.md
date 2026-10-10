@@ -1,67 +1,68 @@
 # PadNote
 
-**Think with AI, through handwriting and drawing.**
+**Think on the page, then share it with a computer agent.**
 
-A calculation, an unfamiliar passage, or an unfinished sketch can start a conversation. PadNote brings handwriting, reading, and AI discussion onto the same page: select a question, ask a follow-up, keep the useful answer, and continue writing.
+PadNote is an open-source tablet notebook for handwriting, drawing, and AI-assisted learning. On Android, you can work with handwriting and AI in the same note, share the complete page as a PDF, or send the current note's frozen PDF and readable context to a paired Hermes assistant on your local network.
 
-Our long-term goal is a better tablet interface for Agents. Express an idea in words and drawings, review the result, annotate it, and continue the conversation. Handwritten notes are the starting point.
+[Android beta.10](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.10) · [Beta.10 test guide](docs/BETA10_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-Android · iPad · Your choice of model · Local notes · MIT
+## Learn on the page
 
-[Downloads](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.9) · [Desktop connection assistant](desktop/connection-assistant/README.md) · [Report an issue](https://github.com/shiyan688/padnote/issues) · [中文](README.md)
+Write, draw, zoom, and continue an AI conversation in the current note. Useful answers can stay editable on the page. Share the complete note as a PDF with its pages, background, handwriting, and readable text.
 
-## Keep the answer on the page
+You can also hand the current note to a paired computer agent. Before sending, review the target, task, and included material: the note PDF, readable text, and conversation available from that same note. PadNote does not treat a PDF as recognized text or include other notes or a knowledge base.
 
-- Select handwriting or other content, confirm what will be sent, and ask a question. Allow AI to write into the note when useful.
-- Edit the result: text keeps Markdown source, formulas keep LaTeX, and diagrams use Mermaid. Move the content and keep annotating it.
-- Read long answers across pages. Zoom preserves the text layout. Android PDF export includes page text, handwriting, and annotations.
-- Keep notes locally, with multiple pages, PDF import, images, selection, highlighting, undo/redo, and a local Markdown knowledge library.
+| Area | Current scope |
+| --- | --- |
+| Note taking | Android multi-page notes, handwriting and editing, zoom, PDF import and export |
+| AI learning | Continue a conversation in the current note using a service you configure |
+| Sharing | Export the complete note as a PDF through Android's share sheet |
+| Computer agent | Send the current note and readable context to a paired Hermes assistant that supports note tasks |
+| Task presets | Continue work, make a shareable handout, find learning gaps and make exercises, or request a shareable explainer video |
 
-Each user supplies their own model endpoint, model name, and API key, and pays their own provider. AI requests send the confirmed content to that service. There is no automatic cloud sync; existing formulas and diagrams can render locally.
+You or your selected agent choose the model, speech synthesis, and video tools. PadNote does not require Qwen or tie video tasks to one provider. Generic files can be saved to the device and shared from a file manager; in-app play, save, and share actions are available for video files.
 
-## Send a note to your own computer
+## Android beta.10
 
-The source preview includes a desktop connection assistant. On the same Wi-Fi, generate a pairing code on the computer, scan or paste it on the tablet, then approve the device on the computer. Save multiple connections with separate permissions for each Agent and device. No PadNote server is required.
+The beta.10 debug APK supports Android 7.0 / API 24 and later. It uses the beta.9 signing certificate and can update an existing beta.9 installation. Back up important notes before installing.
 
-- **Existing Hermes:** use your computer's installation and model configuration to send text or note task bundles, check progress, handle approvals, and retrieve files. See the [Windows / WSL2 guide](docs/HERMES_CONNECTION.md).
-- **Built-in video workflow:** send a text snapshot to your computer. Your own Qwen API key generates a storyboard; after reviewing and approving it, separately authorize speech generation. The computer renders and returns video, subtitles, and a cover. “Built-in” describes the workflow supplied by the assistant, not a Qwen model running on the tablet.
+- [Download the Android APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.10/PadNote-Android-0.18.0-beta.10-debug.apk)
+- [Download the test kit](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.10/PadNote-beta10-test-kit.zip)
+- [Release assets and checksums](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.10)
 
-The assistant retains the Agent's long-term credentials. The tablet receives revocable device credentials. Transfers check paths, sizes, and hashes; the Agent's computer tools still use its own permissions and approval settings. OpenClaw currently has detection and setup guidance only. Codex is not connected yet.
+This is a debug test build, not a Play Store release. Real Windows/WSL, tablet, and Hermes task testing is still needed.
 
-These flows are still being validated. Real Hermes, native Windows distribution, WSL2 networking, and physical tablets have not completed acceptance testing. Video inputs currently focus on text snapshots; full handwriting and original-image bundles remain work in progress. Read the notes for the specific Release you download.
+## Computer assistant
 
-## Install or build
+The assistant runs on your computer and connects PadNote to a Hermes installation you already use. It does not include Hermes, models, credentials, or video runtimes. See the [test guide](docs/BETA10_TESTING.md) for Windows/WSL networking requirements.
 
-Android requires Android 7.0 / API 24 or newer. Download the [PadNote Android beta 9 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.9/PadNote-Android-0.18.0-beta.9-debug.apk) or read the [beta 9 release notes](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.9). The beta package and the original 0.17.5 mainline use different package names and can coexist. Export and import notes to move between them.
+OpenClaw currently provides discovery and setup guidance only; its note-task workflow is not connected. Codex is not connected to note tasks. iPad source code is available, but there is no installable signed IPA, TestFlight, or App Store build.
 
-Beta.9 uses a debug signing certificate. Back up important notes before installation and check the SHA-256 on the release page. Attachment migration depends on the export format; automatic cloud sync is not provided. Beta.9 includes the local-storage failure fix for Agent task submission and details: a failed connection read shows an unsent task, keeps the selected Agent, and avoids a stuck submission or a details crash. It uses the same package and signing certificate as beta.8 for in-place upgrades. The original beta.8 download remains available.
+## Build from source
 
-For Android, install JDK 17 or newer, Android SDK Platform 35, and Build Tools 34/35. Set `JAVA_HOME` and `ANDROID_SDK_ROOT`, then run:
+Clone the repository:
 
 ```sh
 git clone https://github.com/shiyan688/padnote.git
 cd padnote
+```
+
+### Android
+
+Install JDK 17, Android SDK Platform 35, Build Tools 35.0.0, and NDK 29.0.14206865. Set `JAVA_HOME` and `ANDROID_SDK_ROOT` (or `ANDROID_HOME`), then run:
+
+```sh
 tools/build-android-apk.sh
 ```
 
-iPad requires iPadOS 17 or newer. Current `main` source includes the complete native iPad client. Open `ios/PadNote.xcodeproj` in Xcode and run the PadNote scheme on a simulator; a physical device requires your own Apple Development Team. There is no installable IPA, App Store, or TestFlight release. See the [iPad build guide](ios/README.md) for validation scope and limits. The iPad source update does not change the beta.9 Android APK or establish complete feature parity between platforms.
+The repository includes the Gradle Wrapper. The first build downloads Gradle and dependencies.
 
-## Contribute
+### iPad
 
-Include your device, OS, app version, steps, and expected result in an Issue. For model-related failures, add the model name and a redacted error. Do not upload API keys or private notes.
+Open `ios/PadNote.xcodeproj` in Xcode, select the `PadNote` scheme and an iPad Simulator, then run. For a physical device, select your Apple Development Team under Signing & Capabilities. There is currently no installable signed IPA.
 
-| Directory | Contents |
-| --- | --- |
-| `android/` | Android app and tests |
-| `ios/` | iPad app and tests |
-| `desktop/connection-assistant/` | Local desktop assistant |
-| `agent-skills/` | Video workflow and contracts |
-| `docs/` | Connection, AI permissions, and file-format documentation |
-| `tools/` | Build and validation tools |
-| `entry/` | Early HarmonyOS prototype |
-
-Run Android unit tests with `cd android && ./gradlew :app:testDebugUnitTest`. Emulator tests do not replace physical stylus, file-picker, or real Agent testing.
+See the [iPad README](ios/README.md) for details.
 
 ## License
 
-The original Android and iPad code uses [MIT](LICENSE), including permission for commercial use and closed-source derivatives. Keep the copyright and license notices. The video Agent subproject remains Apache-2.0. Third-party components retain their own licenses; see [license scope](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+The Android and iPad applications use the [MIT License](LICENSE). The video-agent subproject remains under Apache-2.0; third-party components retain their own licenses. See [licensing details](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).

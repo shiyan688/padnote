@@ -30,6 +30,46 @@ import java.util.UUID;
 final class DigitizationStore {
     enum State { PENDING, READY, COMPLETED, CANCELLED, FAILED }
 
+    enum TargetKind { GROUP, LEGACY }
+    enum TargetOperation { ADD, REPLACE }
+
+    /** Explicit, immutable destination intent captured before any provider work starts. */
+    static final class Target {
+        final String noteId;
+        final TargetKind kind;
+        final TargetOperation operation;
+        final String operationId;
+        final String materialId;
+        final String lineage;
+        final String groupRevision;
+        final String groupDigest;
+        final String legacyFileName;
+        final String legacyBaseSha256;
+        final long publishTimestamp;
+
+        Target(String noteId, TargetKind kind, TargetOperation operation, String operationId,
+               String materialId,
+               String lineage, String groupRevision, String groupDigest, String legacyFileName,
+               String legacyBaseSha256, long publishTimestamp) {
+            this.noteId=noteId;this.kind=kind;this.operation=operation;this.operationId=operationId;
+            this.materialId=materialId;
+            this.lineage=lineage;this.groupRevision=groupRevision;this.groupDigest=groupDigest;
+            this.legacyFileName=legacyFileName;this.legacyBaseSha256=legacyBaseSha256;
+            this.publishTimestamp=publishTimestamp;
+        }
+
+        boolean sameIntent(Target other) {
+            return other!=null&&noteId.equals(other.noteId)&&kind==other.kind
+                    &&operation==other.operation&&equal(operationId,other.operationId)
+                    &&equal(materialId,other.materialId)
+                    &&equal(lineage,other.lineage)&&equal(groupRevision,other.groupRevision)
+                    &&equal(groupDigest,other.groupDigest)&&equal(legacyFileName,other.legacyFileName)
+                    &&equal(legacyBaseSha256,other.legacyBaseSha256)
+                    &&publishTimestamp==other.publishTimestamp;
+        }
+        private static boolean equal(String a,String b){return a==null?b==null:a.equals(b);}
+    }
+
     enum WriteStage { TEMP_SYNCED, OLD_VERSION_BACKED_UP, NEW_VERSION_PROMOTED }
 
     interface WriteFaultInjector { void after(WriteStage stage) throws Exception; }
@@ -123,13 +163,14 @@ final class DigitizationStore {
         final long updatedAt;
         final String error;
         final String vaultFileName;
+        final Target target;
 
         Snapshot(String runId, String noteId, String title, int totalPages,
                  List<String> pages, State state, long revision, int attempt, int inFlightPage,
                  long sourceUpdatedAt, String sourceFingerprint, String pdfSha256,
                  String profileId, String endpointDisplay, String model,
                  String recipientIdentitySha256, long createdAt, long updatedAt,
-                 String error, String vaultFileName) {
+                 String error, String vaultFileName, Target target) {
             this.runId = runId;
             this.noteId = noteId;
             this.title = title;
@@ -150,6 +191,7 @@ final class DigitizationStore {
             this.updatedAt = updatedAt;
             this.error = error;
             this.vaultFileName = vaultFileName;
+            this.target = target;
         }
 
         boolean matches(Source source) {
@@ -241,18 +283,74 @@ final class DigitizationStore {
 
     synchronized Snapshot create(Source source, String title, long sourceUpdatedAt)
             throws Exception {
+        return create(source,title,sourceUpdatedAt,null);
+    }
+
+    synchronized Snapshot create(Source source, String title, long sourceUpdatedAt, Target target)
+            throws Exception {
         synchronized (GLOBAL_LOCK) {
             if (source == null) throw new IllegalArgumentException("缺少数字化来源");
+            if(target!=null)validateTarget(source.noteId,target);
+            // A locally captured publication UUID is the checkpoint identity too. This
+            // makes the exported operation header traceable to the exact durable run,
+            // while the frozen target still carries its original CAS base/material.
+            String runId=target==null?"digitize-"+UUID.randomUUID().toString()
+                    :"digitize-"+target.operationId;
+            if(target!=null){
+                // Older checkpoints may already have a different local runId. Search
+                // every readable local checkpoint before choosing the deterministic path;
+                // an operation UUID must not be reused across notes or ambiguous copies.
+                List<Snapshot> sameOperation=new ArrayList<>();
+                for(Snapshot existing:list())if(existing.target!=null
+                        &&target.operationId.equals(existing.target.operationId))sameOperation.add(existing);
+                if(sameOperation.size()>1)
+                    throw new IllegalStateException("发布操作 UUID 已绑定多个检查点");
+                if(sameOperation.size()==1){
+                    Snapshot existing=sameOperation.get(0);
+                    if(existing.matches(source)&&existing.title.equals(safeTitle(title))
+                            &&existing.sourceUpdatedAt==Math.max(0,sourceUpdatedAt)
+                            &&existing.target.sameIntent(target))return existing;
+                    throw new IllegalStateException("发布操作 UUID 已绑定其他检查点或目标");
+                }
+                File bound=runFile(runId);
+                recover(bound);
+                if(bound.isFile()){
+                    Snapshot existing=requireRunId(readBounded(bound,MAX_RUN_BYTES),runId);
+                    if(existing.matches(source)&&existing.title.equals(safeTitle(title))
+                            &&existing.sourceUpdatedAt==Math.max(0,sourceUpdatedAt)
+                            &&existing.target!=null&&existing.target.sameIntent(target))
+                        return existing;
+                    throw new IllegalStateException("发布操作 UUID 已绑定其他检查点或目标");
+                }
+            }
             long now = System.currentTimeMillis();
             List<String> pages = new ArrayList<>();
             for (int index = 0; index < source.totalPages; index++) pages.add(null);
-            Snapshot snapshot = new Snapshot("digitize-" + UUID.randomUUID().toString(),
+            Snapshot snapshot = new Snapshot(runId,
                     source.noteId, safeTitle(title), source.totalPages, pages, State.PENDING,
                     1, 0, -1, Math.max(0, sourceUpdatedAt), source.sourceFingerprint,
                     source.pdfSha256, source.profileId, source.endpointDisplay, source.model,
-                    source.recipientIdentitySha256, now, now, "", "");
+                    source.recipientIdentitySha256, now, now, "", "", target);
             persist(snapshot);
             return snapshot;
+        }
+    }
+
+    /** Explicitly binds an old tokenless checkpoint only after destination selection. */
+    synchronized Snapshot bindTarget(Snapshot snapshot,Target target)throws Exception {
+        synchronized(GLOBAL_LOCK){
+            Snapshot current=requireCurrent(snapshot);
+            validateTarget(current.noteId,target);
+            if(current.state==State.COMPLETED)throw new IllegalStateException("已发布检查点不能更换目标");
+            if(current.target!=null&&!current.target.sameIntent(target))
+                throw new IllegalStateException("检查点已绑定其他发布目标");
+            if(current.target!=null)return current;
+            Snapshot next=new Snapshot(current.runId,current.noteId,current.title,current.totalPages,
+                    current.pages,current.state,current.revision+1,current.attempt,current.inFlightPage,
+                    current.sourceUpdatedAt,current.sourceFingerprint,current.pdfSha256,current.profileId,
+                    current.endpointDisplay,current.model,current.recipientIdentitySha256,current.createdAt,
+                    System.currentTimeMillis(),current.error,current.vaultFileName,target);
+            persist(next);return next;
         }
     }
 
@@ -280,6 +378,21 @@ final class DigitizationStore {
                     if (snapshot.noteId.equals(noteId)) result.add(snapshot);
                 } catch (Exception ignored) {
                     // listCorrupt() exposes the retained entry to the UI.
+                }
+            }
+            result.sort((a, b) -> Long.compare(b.updatedAt, a.updatedAt));
+            return result;
+        }
+    }
+
+    /** Returns every readable checkpoint, including older files with random local IDs. */
+    synchronized List<Snapshot> list() {
+        synchronized (GLOBAL_LOCK) {
+            List<Snapshot> result = new ArrayList<>();
+            for (File file : runTargets()) {
+                try { result.add(load(runIdFromFile(file))); }
+                catch (Exception ignored) {
+                    // listCorrupt() exposes unreadable entries; they cannot establish identity.
                 }
             }
             result.sort((a, b) -> Long.compare(b.updatedAt, a.updatedAt));
@@ -426,6 +539,8 @@ final class DigitizationStore {
                 || !current.recipientIdentitySha256.equals(supplied.recipientIdentitySha256)) {
             throw new IllegalStateException("数字化检查点身份不一致");
         }
+        if(!sameTarget(current.target,supplied.target))
+            throw new IllegalStateException("数字化检查点目标意图不一致");
         return current;
     }
 
@@ -437,7 +552,7 @@ final class DigitizationStore {
                 inFlightPage, current.sourceUpdatedAt, current.sourceFingerprint, current.pdfSha256,
                 current.profileId, current.endpointDisplay, current.model,
                 current.recipientIdentitySha256, current.createdAt, System.currentTimeMillis(),
-                error, vaultFileName);
+                error, vaultFileName,current.target);
         persist(next);
         return next;
     }
@@ -453,7 +568,8 @@ final class DigitizationStore {
     private JSONObject encode(Snapshot snapshot) throws Exception {
         JSONArray pages = new JSONArray();
         for (String page : snapshot.pages) pages.put(page == null ? JSONObject.NULL : page);
-        return new JSONObject().put("schemaVersion", 1).put("runId", snapshot.runId)
+        JSONObject json=new JSONObject().put("schemaVersion", snapshot.target==null?1
+                :snapshot.target.operationId==null?2:3).put("runId", snapshot.runId)
                 .put("noteId", snapshot.noteId).put("title", snapshot.title)
                 .put("state", snapshot.state.name()).put("revision", snapshot.revision)
                 .put("attempt", snapshot.attempt).put("createdAt", snapshot.createdAt)
@@ -466,6 +582,8 @@ final class DigitizationStore {
                 .put("recipientIdentitySha256", snapshot.recipientIdentitySha256)
                 .put("pages", pages).put("error", snapshot.error)
                 .put("vaultFileName", snapshot.vaultFileName);
+        if(snapshot.target!=null)json.put("target",encodeTarget(snapshot.target));
+        return json;
     }
 
     private static Snapshot decodeStatic(String value) throws Exception {
@@ -485,8 +603,63 @@ final class DigitizationStore {
                 json.getString("profileId"), json.getString("endpoint"),
                 json.getString("model"), json.getString("recipientIdentitySha256"),
                 json.getLong("createdAt"), json.getLong("updatedAt"),
-                json.optString("error"), json.optString("vaultFileName"));
+                json.optString("error"), json.optString("vaultFileName"),
+                json.has("target")&&!json.isNull("target")?decodeTarget(json.getJSONObject("target")):null);
     }
+
+    private static JSONObject encodeTarget(Target target)throws Exception {
+        JSONObject value=new JSONObject().put("noteId",target.noteId).put("kind",target.kind.name())
+                .put("operation",target.operation.name()).put("publishTimestamp",target.publishTimestamp);
+        putNullable(value,"operationId",target.operationId);
+        putNullable(value,"materialId",target.materialId);putNullable(value,"lineage",target.lineage);
+        putNullable(value,"groupRevision",target.groupRevision);putNullable(value,"groupDigest",target.groupDigest);
+        putNullable(value,"legacyFileName",target.legacyFileName);putNullable(value,"legacyBaseSha256",target.legacyBaseSha256);
+        return value;
+    }
+
+    private static Target decodeTarget(JSONObject value)throws Exception {
+        if(value==null)throw new IllegalArgumentException("发布目标缺失");
+        return new Target(value.getString("noteId"),TargetKind.valueOf(value.getString("kind")),
+                TargetOperation.valueOf(value.getString("operation")),nullable(value,"operationId"),
+                nullable(value,"materialId"),
+                nullable(value,"lineage"),nullable(value,"groupRevision"),nullable(value,"groupDigest"),
+                nullable(value,"legacyFileName"),nullable(value,"legacyBaseSha256"),value.getLong("publishTimestamp"));
+    }
+
+    private static void validateTarget(String noteId,Target target)throws Exception {
+        if(target==null||!noteId.equals(target.noteId)||target.kind==null
+                ||target.operation==null||target.publishTimestamp<=0)
+            throw new IllegalArgumentException("发布目标身份无效");
+        if(target.operationId!=null&&!canonicalUuid(target.operationId))
+            throw new IllegalArgumentException("发布操作 ID 无效");
+        if(target.kind==TargetKind.GROUP){
+            if(target.operationId==null||target.materialId==null||!canonicalUuid(target.materialId)
+                    ||target.operation==TargetOperation.ADD&&!target.operationId.equals(target.materialId)
+                    ||target.lineage==null||target.lineage.isEmpty()
+                    ||target.groupRevision==null||target.groupRevision.isEmpty()
+                    ||target.groupDigest==null||!target.groupDigest.matches("[a-f0-9]{64}")
+                    ||target.legacyFileName!=null||target.legacyBaseSha256!=null)
+                throw new IllegalArgumentException("组发布目标无效");
+        }else if(target.kind==TargetKind.LEGACY){
+            if(target.lineage!=null||target.groupRevision!=null||target.groupDigest!=null
+                    ||target.materialId!=null
+                    ||target.operation==TargetOperation.REPLACE
+                    &&(target.operationId==null||!safeFileName(target.legacyFileName)||target.legacyBaseSha256==null
+                    ||!target.legacyBaseSha256.matches("[a-f0-9]{64}"))
+                    ||target.operation==TargetOperation.ADD
+                    &&(target.operationId==null||target.legacyFileName==null
+                    ||!safeFileName(target.legacyFileName)||target.legacyBaseSha256!=null
+                    ||!legacyDigitizationFileName(noteId,target.operationId).equals(target.legacyFileName)))
+                throw new IllegalArgumentException("旧式知识库目标无效");
+        }else throw new IllegalArgumentException("发布目标类型无效");
+    }
+
+    private static boolean canonicalUuid(String value){
+        try{return UUID.fromString(value).toString().equals(value);}catch(Exception invalid){return false;}
+    }
+    private static boolean sameTarget(Target a,Target b){return a==null?b==null:a.sameIntent(b);}
+    private static void putNullable(JSONObject o,String key,String value)throws Exception{o.put(key,value==null?JSONObject.NULL:value);}
+    private static String nullable(JSONObject o,String key)throws Exception{return o.isNull(key)?null:o.getString(key);}
 
     private static void validateStored(String value) throws Exception {
         if (!withinBytes(value, MAX_RUN_BYTES)) {
@@ -496,7 +669,15 @@ final class DigitizationStore {
     }
 
     private static void validateJson(JSONObject json) throws Exception {
-        if (json.optInt("schemaVersion", 0) != 1) throw new IllegalArgumentException("检查点版本无效");
+        int schema=json.optInt("schemaVersion",0);
+        if (schema != 1 && schema != 2 && schema != 3) throw new IllegalArgumentException("检查点版本无效");
+        if(schema==1&&json.has("target"))throw new IllegalArgumentException("旧版检查点目标字段无效");
+        if(schema==2||schema==3){
+            if(!json.has("target")||json.isNull("target"))throw new IllegalArgumentException("新检查点缺少发布目标");
+            Target target=decodeTarget(json.getJSONObject("target"));
+            if(schema==3&&target.operationId==null)throw new IllegalArgumentException("新检查点缺少发布操作 ID");
+            validateTarget(json.getString("noteId"),target);
+        }
         validateRunId(json.getString("runId"));
         requireIdentifier(json.getString("noteId"), "笔记 ID");
         requireText(json.getString("title"), "标题", 200);
@@ -536,6 +717,8 @@ final class DigitizationStore {
         if (state == State.COMPLETED && json.optString("vaultFileName").isEmpty()) {
             throw new IllegalArgumentException("已发布检查点缺少知识库文件");
         }
+        if(state==State.COMPLETED&&schema==2&&!json.has("target"))
+            throw new IllegalArgumentException("已发布检查点缺少目标意图");
         if ((state == State.READY || state == State.COMPLETED) && inFlightPage != -1) {
             throw new IllegalArgumentException("已完成检查点仍有未确认请求");
         }
@@ -775,6 +958,12 @@ final class DigitizationStore {
     private static String sha256(String value) throws Exception {
         return hex(MessageDigest.getInstance("SHA-256")
                 .digest(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    static String legacyDigitizationFileName(String noteId,String operationId)throws Exception {
+        if(noteId==null||operationId==null||!canonicalUuid(operationId))
+            throw new IllegalArgumentException("数字化目标名称无效");
+        return "digitize-"+sha256(noteId)+"-"+operationId+".md";
     }
 
     private static String hex(byte[] bytes) {

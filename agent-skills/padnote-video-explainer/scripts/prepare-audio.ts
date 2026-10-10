@@ -20,7 +20,7 @@ import {
 } from './validate-audio.js';
 import {validateIr} from './validate-ir.js';
 import {validateRequest} from './validate-request.js';
-import {buildTtsChildEnvironment} from './tts-environment.js';
+import {buildTtsChildEnvironment, loadSelectedTtsProviderEnvironment} from './tts-environment.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +67,10 @@ export async function prepareAudio(
   const command = options.adapterCommand ?? process.env.PADNOTE_TTS_COMMAND;
   if (!command) throw new TtsNotConfiguredError();
   if (!isAbsolute(command)) throw new Error('PADNOTE_TTS_COMMAND must be an absolute executable path');
+  const hostEnvironment = options.adapterEnvironment ?? process.env;
+  // Resolve a generic provider's explicitly selected settings once, before
+  // creating any per-scene started checkpoint or launching a paid adapter.
+  const selectedProviderEnvironment = await loadSelectedTtsProviderEnvironment(hostEnvironment);
   const request = options.requestObject ?? await validateRequest(taskRoot);
   const ir = options.irObject ?? await validateIr(taskRoot, options.irPath);
   const audioDir = resolve(taskRoot, 'work/audio');
@@ -126,7 +130,7 @@ export async function prepareAudio(
         speed: String(request.voice.speed),
         output,
         idempotencyKey: inputDigest,
-      }, options.adapterEnvironment ?? process.env);
+      }, hostEnvironment, selectedProviderEnvironment);
     if (options.adapterInput) childEnv.PADNOTE_TTS_INPUT_MODE = 'stdin';
     const childOptions = {
       env: childEnv,

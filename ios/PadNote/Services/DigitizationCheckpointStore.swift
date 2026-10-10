@@ -67,6 +67,42 @@ struct DigitizationSourceIdentity: Codable, Equatable {
     let pdfFingerprint: String?
     let measuredPageCount: Int
     let recipient: DigitizationRecipientIdentity
+    /// Captured when this batch is opened. Nil is reserved for pre-group legacy batches.
+    let groupVersion: NoteGroupVersionToken?
+
+    init(noteID: String, noteFingerprint: String, pdfFingerprint: String?, measuredPageCount: Int,
+         recipient: DigitizationRecipientIdentity, groupVersion: NoteGroupVersionToken? = nil) {
+        self.noteID = noteID
+        self.noteFingerprint = noteFingerprint
+        self.pdfFingerprint = pdfFingerprint
+        self.measuredPageCount = measuredPageCount
+        self.recipient = recipient
+        self.groupVersion = groupVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case noteID, noteFingerprint, pdfFingerprint, measuredPageCount, recipient, groupVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        noteID = try values.decode(String.self, forKey: .noteID)
+        noteFingerprint = try values.decode(String.self, forKey: .noteFingerprint)
+        pdfFingerprint = try values.decodeIfPresent(String.self, forKey: .pdfFingerprint)
+        measuredPageCount = try values.decode(Int.self, forKey: .measuredPageCount)
+        recipient = try values.decode(DigitizationRecipientIdentity.self, forKey: .recipient)
+        groupVersion = try values.decodeIfPresent(NoteGroupVersionToken.self, forKey: .groupVersion)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(noteID, forKey: .noteID)
+        try values.encode(noteFingerprint, forKey: .noteFingerprint)
+        try values.encodeIfPresent(pdfFingerprint, forKey: .pdfFingerprint)
+        try values.encode(measuredPageCount, forKey: .measuredPageCount)
+        try values.encode(recipient, forKey: .recipient)
+        try values.encodeIfPresent(groupVersion, forKey: .groupVersion)
+    }
 }
 
 struct DigitizationPageResult: Codable, Equatable, Identifiable {
@@ -233,8 +269,11 @@ final class DigitizationCheckpointStore {
     }
 
     func identity(document: NoteDocument, measuredPageCount: Int, pdfURL: URL?,
-                  profile: AIProfile) throws -> DigitizationSourceIdentity {
+                  profile: AIProfile, groupVersion: NoteGroupVersionToken? = nil) throws -> DigitizationSourceIdentity {
         let checked = try document.validated()
+        guard Self.groupVersion(groupVersion, matches: checked.id) else {
+            throw DigitizationError.invalidSource("当前知识库版本无效，请重新打开笔记后再开始数字化。")
+        }
         guard (1...500).contains(measuredPageCount) else {
             throw DigitizationError.invalidSource("数字化页数必须在 1–500 页之间。")
         }
@@ -252,7 +291,7 @@ final class DigitizationCheckpointStore {
             noteFingerprint: DigitizationHash.data(content),
             pdfFingerprint: pdfFingerprint,
             measuredPageCount: measuredPageCount,
-            recipient: try DigitizationRecipientIdentity(profile: profile)
+            recipient: try DigitizationRecipientIdentity(profile: profile), groupVersion: groupVersion
         )
     }
 
@@ -571,6 +610,9 @@ final class DigitizationCheckpointStore {
                   components.host != nil else { return false }
             return true
         }
+        guard Self.groupVersion(value.source.groupVersion, matches: value.source.noteID) else {
+            throw DigitizationError.invalidSource("数字化检查点的知识库版本无效。")
+        }
         guard value.version == DigitizationCheckpoint.schemaVersion,
               UUID(uuidString: value.id) != nil,
               expectedBatchID == nil || value.id == expectedBatchID,
@@ -631,6 +673,20 @@ final class DigitizationCheckpointStore {
                     && value.publishedAt.map { $0 >= value.createdAt && $0 <= value.updatedAt } == true) else {
             throw DigitizationError.damagedCheckpoint
         }
+    }
+
+    fileprivate static func groupVersion(_ token: NoteGroupVersionToken?, matches noteID: String) -> Bool {
+        guard let token else { return true }
+        let digest = try? NSRegularExpression(pattern: "^[0-9a-f]{64}$")
+        func isDigest(_ value: String) -> Bool {
+            guard let digest else { return false }
+            return digest.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil
+        }
+        guard let canonicalNoteID = try? NoteGroupFacade.foundationUUID(noteID),
+              token.localNoteID == canonicalNoteID,
+              [token.lineageID, token.revisionID].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+              isDigest(token.groupSHA256) else { return false }
+        return true
     }
 
     private func leaseKey(batchID: String) -> String {
@@ -718,14 +774,20 @@ final class DigitizationSession: ObservableObject {
     }
 
     func prepare(document: NoteDocument, measuredPageCount: Int, pdfURL: URL?,
-                 profile: AIProfile) async {
+                 profile: AIProfile, groupVersion: NoteGroupVersionToken? = nil) async {
         loadHistory(noteID: document.id)
         let preparationToken = beginPreparation()
         preparing = true; status = "正在检查可恢复草稿…"
         do {
             let identityBuilder = self.identityBuilder
             let source = try await Task.detached(priority: .userInitiated) {
-                try identityBuilder(document, measuredPageCount, pdfURL, profile)
+                let base = try identityBuilder(document, measuredPageCount, pdfURL, profile)
+                guard DigitizationCheckpointStore.groupVersion(groupVersion, matches: document.id) else {
+                    throw DigitizationError.invalidSource("当前知识库版本无效，请重新打开笔记后再开始数字化。")
+                }
+                return DigitizationSourceIdentity(noteID: base.noteID, noteFingerprint: base.noteFingerprint,
+                    pdfFingerprint: base.pdfFingerprint, measuredPageCount: base.measuredPageCount,
+                    recipient: base.recipient, groupVersion: groupVersion)
             }.value
             guard preparationID == preparationToken else { return }
             identity = source

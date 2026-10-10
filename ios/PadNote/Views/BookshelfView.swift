@@ -10,13 +10,17 @@ struct BookshelfView: View {
     @State private var settings = false
     @State private var agentSettings = false
     @State private var openedNote: NoteDocument?
+    @State private var openedSession: NoteGroupEditorSession?
     @State private var pendingCreatedNote: NoteDocument?
     @State private var renaming: NoteDocument?
+    @State private var renameSession: NoteGroupEditorSession?
     @State private var newTitle = ""
     @State private var deleting: NoteDocument?
+    @State private var deleteSession: NoteGroupEditorSession?
     @State private var sharing: ShareArtifact?
     @State private var error: String?
     @State private var coverNote: NoteDocument?
+    @State private var coverSession: NoteGroupEditorSession?
     @State private var showingRecovery = false
     @State private var coverRefresh = UUID()
     private let coverStore = NoteCoverStore()
@@ -77,7 +81,7 @@ struct BookshelfView: View {
                                         .font(.headline).foregroundStyle(.orange)
                                     ForEach(library.pendingDrafts) { draft in
                                         Button {
-                                            openedNote = draft.document
+                                            openDraft(draft)
                                         } label: {
                                             HStack {
                                                 VStack(alignment: .leading) {
@@ -137,47 +141,71 @@ struct BookshelfView: View {
         .sheet(isPresented: $showingRecovery) { NoteRecoveryListView().environmentObject(library) }
         .sheet(item: $coverNote) { note in
             NoteCoverPicker { image in
-                if let image { try coverStore.assign(noteID: note.id, image: image) }
-                else { coverStore.remove(noteID: note.id) }
+                if let session = coverSession, session.groupToken != nil {
+                    let data = try image.map { try NoteCoverStore.encodedPNG($0) }
+                    coverSession = try library.saveCoverPNG(data, basedOn: session)
+                } else if let image {
+                    try coverStore.assign(noteID: note.id, image: image)
+                } else {
+                    try coverStore.remove(noteID: note.id)
+                }
                 coverRefresh = UUID()
             }
         }
-        .fullScreenCover(item: $openedNote) { note in
-            NoteEditorView(note: note).environmentObject(library)
+        .fullScreenCover(item: $openedNote, onDismiss: { openedSession = nil }) { note in
+            NoteEditorView(note: note, session: openedSession).environmentObject(library)
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .pdf, .zip], allowsMultipleSelection: false) { result in
             do {
                 guard let url = try result.get().first else { return }
                 let note = try url.pathExtension.lowercased() == "pdf"
                     ? library.importPDF(from: url) : library.importNote(from: url)
+                openedSession = nil
                 openedNote = note
             } catch { self.error = error.localizedDescription }
         }
-        .alert("重命名笔记", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+        .alert("重命名笔记", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil; renameSession = nil } })) {
             TextField("名称", text: $newTitle)
-            Button("取消", role: .cancel) { renaming = nil }
+            Button("取消", role: .cancel) { renaming = nil; renameSession = nil }
             Button("保存") {
                 guard var note = renaming else { return }
                 let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !title.isEmpty {
                     note.title = title; note.updatedAt = Date().timeIntervalSince1970 * 1000
-                    do { try library.save(note) } catch { self.error = error.localizedDescription }
+                    do {
+                        if let session = renameSession, session.groupToken != nil {
+                            renameSession = try library.save(note, basedOn: session)
+                        } else {
+                            try library.save(note)
+                        }
+                    } catch { self.error = error.localizedDescription }
                 }
                 renaming = nil
+                renameSession = nil
             }
         }
-        .alert("删除这本笔记？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("取消", role: .cancel) { deleting = nil }
+        .alert("删除这本笔记？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil; deleteSession = nil } })) {
+            Button("取消", role: .cancel) { deleting = nil; deleteSession = nil }
             Button("删除", role: .destructive) {
                 guard let note = deleting else { return }
                 do {
-                    try AIConversationStore().clearNote(noteID: note.id)
-                    try library.delete(note)
-                    coverStore.remove(noteID: note.id)
+                    if let session = deleteSession, session.groupToken != nil {
+                        _ = try library.delete(note, basedOn: session)
+                    } else {
+                        if let session = deleteSession { _ = try library.delete(note, basedOn: session) }
+                        else { try library.delete(note) }
+                        try AIConversationStore().clearNote(noteID: note.id)
+                        try coverStore.remove(noteID: note.id)
+                    }
                 } catch { self.error = error.localizedDescription }
                 deleting = nil
+                deleteSession = nil
             }
-        } message: { Text("将从此 iPad 移除笔记和原始 PDF。已关联的视频保存在独立附件目录中，不会随笔记自动删除；来源删除后也不能再为该笔记新建视频关联。已创建的电脑任务仍保留，可单独导出。") }
+        } message: {
+            Text(deleteSession?.groupToken != nil
+                 ? "删除后，笔记将不再显示在书架中。原文件和历史版本会保留。"
+                 : "将从此 iPad 移除笔记和原始 PDF。已关联的视频保存在独立附件目录中，不会随笔记自动删除；来源删除后也不能再为该笔记新建视频关联。已创建的电脑任务仍保留，可单独导出。")
+        }
         .alert("无法完成操作", isPresented: Binding(get: { error != nil || library.errorMessage != nil }, set: { if !$0 { error = nil; library.errorMessage = nil } })) {
             Button("好", role: .cancel) { error = nil; library.errorMessage = nil }
         } message: { Text(error ?? library.errorMessage ?? "") }
@@ -207,10 +235,15 @@ struct BookshelfView: View {
     }
 
     private func noteCard(_ note: NoteDocument) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { openedNote = library.pendingDraft(noteID: note.id)?.document ?? note } label: {
+        let session = library.editorSessionIfLoaded(noteID: note.id)
+        let grouped = session?.groupToken != nil
+        let groupCoverURL = session?.members.first(where: { $0.record.role == .cover })?.url
+        let groupPDFURL = session?.members.first(where: { $0.record.role == .pdf })?.url
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { openNote(note) } label: {
                 VStack(alignment: .leading, spacing: 16) {
-                    NoteCoverView(note: note, pdfURL: library.pdfURL(for: note), refresh: coverRefresh)
+                    NoteCoverView(note: note, pdfURL: groupPDFURL ?? (grouped ? nil : library.pdfURL(for: note)),
+                                  groupCoverURL: groupCoverURL, groupBacked: grouped, refresh: coverRefresh)
                         .frame(height: 200).clipped()
                     Text(note.title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
                         .padding(.horizontal, 20)
@@ -225,19 +258,60 @@ struct BookshelfView: View {
                     .font(.system(size: 12)).foregroundStyle(PadTheme.secondary)
                 Spacer(minLength: 4)
                 Menu {
-                    Button("重命名", systemImage: "pencil") { newTitle = note.title; renaming = note }
+                    Button("重命名", systemImage: "pencil") { beginRename(note) }
                     Button("导出笔记", systemImage: "square.and.arrow.up") {
                         do { sharing = ShareArtifact(url: try library.exportURL(for: note)) }
                         catch { self.error = error.localizedDescription }
                     }
-                    Button("封面", systemImage: "photo") { coverNote = note }
-                    Button("删除", systemImage: "trash", role: .destructive) { deleting = note }
+                    Button("封面", systemImage: "photo") { beginCoverEdit(note) }
+                    Button("删除", systemImage: "trash", role: .destructive) { beginDelete(note) }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
             }.padding(.horizontal, 20).padding(.bottom, 8)
         }
         .background(.white, in: RoundedRectangle(cornerRadius: 20))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(PadTheme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func beginRename(_ note: NoteDocument) {
+        do {
+            let session = try library.openEditorSession(noteID: note.id)
+            renameSession = session
+            newTitle = session.document.title
+            renaming = session.document
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func beginDelete(_ note: NoteDocument) {
+        do {
+            let session = try library.openEditorSession(noteID: note.id)
+            deleteSession = session
+            deleting = session.document
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func beginCoverEdit(_ note: NoteDocument) {
+        do {
+            coverSession = try library.openEditorSession(noteID: note.id)
+            coverNote = coverSession?.document ?? note
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func openNote(_ note: NoteDocument) {
+        do {
+            if let draft = library.pendingDraft(noteID: note.id) { openDraft(draft); return }
+            let session = try library.openEditorSession(noteID: note.id)
+            openedSession = session.groupToken == nil ? nil : session
+            openedNote = session.document
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func openDraft(_ draft: NotePendingDraft) {
+        do {
+            let session = try library.openEditorSession(for: draft)
+            openedSession = session.groupToken == nil ? nil : session
+            openedNote = session.document
+        } catch { self.error = error.localizedDescription }
     }
 }
 
@@ -279,6 +353,8 @@ private struct NoteRecoveryListView: View {
 struct NoteCoverView: View {
     let note: NoteDocument
     let pdfURL: URL?
+    let groupCoverURL: URL?
+    let groupBacked: Bool
     let refresh: UUID
     private let coverStore = NoteCoverStore()
     @State private var image: UIImage?
@@ -294,7 +370,15 @@ struct NoteCoverView: View {
                 PaperPreview(style: note.pageStyle).padding(24)
             }
         }.task(id: "\(note.updatedAt)-\(refresh.uuidString)") {
-            customCover = coverStore.load(noteID: note.id, maxEdge: 640)
+            if groupBacked {
+                if let groupCoverURL, let bytes = try? Data(contentsOf: groupCoverURL) {
+                    customCover = try? NoteCoverStore.decode(bytes, maxEdge: 640)
+                } else {
+                    customCover = nil
+                }
+            } else {
+                customCover = coverStore.load(noteID: note.id, maxEdge: 640)
+            }
             guard customCover == nil else { return }
             image = NoteRenderer.renderPage(document: note, page: 0, pdfURL: pdfURL, maxEdge: 440)
             var cover = note

@@ -1,6 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct PaperWorkflowExport {
+    let document: NoteDocument
+    let pdf: Data
+}
+
 struct NoteAISourceSnapshot: Identifiable {
     let id = UUID()
     let image: UIImage?
@@ -35,6 +40,7 @@ struct NoteEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var document: NoteDocument
+    @State private var groupSession: NoteGroupEditorSession?
     @StateObject private var canvas = CanvasController()
     @StateObject private var vault = VaultLibrary()
     @ObservedObject private var compiledRenderer = CompiledTextRenderer.shared
@@ -56,6 +62,7 @@ struct NoteEditorView: View {
     @State private var contentOutlineCopied = false
     @State private var pendingContentOutlineAction: PendingContentOutlineAction?
     @State private var sharing: ShareArtifact?
+    @State private var showPaperWorkflow = false
     @State private var showImageImport = false
     @State private var showDigitize = false
     @State private var showWidth = false
@@ -71,15 +78,19 @@ struct NoteEditorView: View {
     private let videoTaskStore: AgentTaskStore
     private let videoTaskService: AgentTaskService?
 
-    init(note: NoteDocument, videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
+    init(note: NoteDocument, session: NoteGroupEditorSession? = nil, videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
          videoTaskStore: AgentTaskStore = AgentTaskStore(), videoTaskService: AgentTaskService? = nil) {
-        _document = State(initialValue: note)
+        _document = State(initialValue: session?.document ?? note)
+        _groupSession = State(initialValue: session)
         self.videoConnectionStore = videoConnectionStore
         self.videoTaskStore = videoTaskStore
         self.videoTaskService = videoTaskService
     }
 
-    private var pdfURL: URL? { library.pdfURL(for: document) }
+    private var pdfURL: URL? {
+        if let session = groupSession, let pdf = session.members.first(where: { $0.record.role == .pdf }) { return pdf.url }
+        return groupSession == nil ? library.pdfURL(for: document) : nil
+    }
     private let colors = ["#FF1F2933", "#FF285EA8", "#FFB23A30", "#FF2F805B", "#FF74509A"]
 
     var body: some View {
@@ -163,6 +174,7 @@ struct NoteEditorView: View {
                             exportEditableSnapshot()
                         }
                         Button("导出 PDF", systemImage: "doc.richtext") { exportPDF() }
+                        Button("分享与交给电脑 Agent", systemImage: "paperplane") { showPaperWorkflow = true }
                         Button("整理到知识库", systemImage: "text.book.closed") { showDigitize = true }
                         Button("生成视频", systemImage: "film") { beginVideoEntry() }
                         Button("查看已关联视频", systemImage: "play.rectangle") { showingVideoAttachments = true }
@@ -193,6 +205,11 @@ struct NoteEditorView: View {
         .sheet(isPresented: $showPages) { pageManager }
         .sheet(isPresented: $showContentOutline, onDismiss: contentOutlineDidDismiss) { contentOutline }
         .sheet(isPresented: $showDigitize) { DigitizeNoteView(note: document, pdfURL: pdfURL) }
+        .sheet(isPresented: $showPaperWorkflow) {
+            PaperWorkflowView(note: document) { expected in
+                try await prepareVerifiedPaperExport(for: expected)
+            }
+        }
         .sheet(item: $videoSource) { source in
             VideoTaskExportView(note: source, sourceIsStale: videoSourceIsStale,
                 connectionStore: videoConnectionStore, taskStore: videoTaskStore, service: videoTaskService) { _ in }
@@ -591,14 +608,18 @@ struct NoteEditorView: View {
                 showSaveActions = true
                 return
             }
-            vault.reload()
-            guard let source = vault.notes.first(where: { $0.id == document.id }) else {
-                error = "还没有已整理的文字材料。接下来会打开逐页整理流程；确认发布完整结果后，再从这里创建视频任务。"
-                showDigitize = true
-                return
+            do {
+                let entries = try resolvedEditorVaultSnapshot()
+                guard let source = try library.editorVaultEntry(forCurrentNoteID: document.id, in: entries) else {
+                    error = "还没有已整理的文字材料。接下来会打开逐页整理流程；确认发布完整结果后，再从这里创建视频任务。"
+                    showDigitize = true
+                    return
+                }
+                videoSourceIsStale = source.sourceUpdatedAt + 1000 < document.updatedAt
+                videoSource = source
+            } catch {
+                self.error = "无法安全读取当前知识库内容：\(error.localizedDescription)"
             }
-            videoSourceIsStale = source.sourceUpdatedAt + 1000 < document.updatedAt
-            videoSource = source
         }
     }
 
@@ -623,7 +644,8 @@ struct NoteEditorView: View {
         pendingDraft?.cancel()
         pendingDraft = Task { @MainActor in
             do {
-                let persisted = try await library.persistRegisteredDraft(snapshot, revision: revision)
+                let persisted = try await library.persistRegisteredDraft(snapshot, revision: revision,
+                                                                         baseGroupToken: groupSession?.groupToken)
                 guard !Task.isCancelled, persisted, editRevision == revision else { return }
                 persistedDraftRevision = revision
             } catch is CancellationError {
@@ -650,7 +672,8 @@ struct NoteEditorView: View {
         var draftError: Error?
         do {
             library.registerDraftRevision(noteID: snapshot.id, revision: revision)
-            if try await library.persistRegisteredDraft(snapshot, revision: revision), editRevision == revision {
+            if try await library.persistRegisteredDraft(snapshot, revision: revision,
+                                                        baseGroupToken: groupSession?.groupToken), editRevision == revision {
                 persistedDraftRevision = revision
             }
         } catch { draftError = error }
@@ -659,8 +682,12 @@ struct NoteEditorView: View {
             return false
         }
         do {
-            try library.save(snapshot)
-            await library.markCanonicalSaved(noteID: snapshot.id, revision: revision)
+            if let session = groupSession {
+                groupSession = try library.save(snapshot, basedOn: session)
+            } else {
+                try library.save(snapshot)
+            }
+            try await library.markCanonicalSaved(noteID: snapshot.id, revision: revision)
             guard editRevision == revision else { savePhase = .dirty; return false }
             persistedDraftRevision = 0
             lastSavedAt = Date()
@@ -693,10 +720,16 @@ struct NoteEditorView: View {
         let note = document
         let page = canvas.currentPage
         let bounds = canvas.selectionBounds
-        let entries = vault.notes.map {
-                NoteToolVaultEntry(id: $0.id, title: $0.title, markdown: $0.markdown,
-                                   sourceRevision: $0.sourceUpdatedAt)
+        let entries: [NoteToolVaultEntry]
+        do {
+            entries = try resolvedEditorVaultSnapshot().map {
+                NoteToolVaultEntry(id: $0.value.id, title: $0.value.title, markdown: $0.value.markdown,
+                                   sourceRevision: $0.value.sourceUpdatedAt)
             }
+        } catch {
+            self.error = "无法安全读取知识库内容，AI 助手未打开：\(error.localizedDescription)"
+            return
+        }
         let sourcePDF = pdfURL
         Task { @MainActor in
             let digest = await Task.detached { sourcePDF.flatMap { try? AIConversationDigest.file($0) } }.value
@@ -705,6 +738,10 @@ struct NoteEditorView: View {
                 selectionBounds: bounds, vaultEntries: entries, pdfDigest: digest)
             showAI = true
         }
+    }
+
+    private func resolvedEditorVaultSnapshot() throws -> [NoteLibrary.EditorVaultEntry] {
+        try library.editorVaultSnapshot(using: vault, currentNoteID: document.id)
     }
 
     private func closeAI() {
@@ -747,6 +784,25 @@ struct NoteEditorView: View {
     private func locateAIToolMutation(_ mutation: NoteAIMutation) {
         guard let page = mutation.targetPages(in: document).first else { return }
         canvas.goToPage(page)
+    }
+
+    @MainActor
+    private func prepareVerifiedPaperExport(for expected: NoteDocument) async throws -> PaperWorkflowExport {
+        guard expected.id == document.id else { throw PaperWorkflowExportError.changedDocument }
+        canvas.onFinishTextEditing?()
+        await Task.yield()
+        let editingSnapshot = document
+        guard await saveCurrentRevision() else { throw PaperWorkflowExportError.saveFailed }
+        guard pdfContentMatches(editingSnapshot, document), editingSnapshot.title == document.title else {
+            throw PaperWorkflowExportError.changedDocument
+        }
+        let snapshot = document
+        let compiledText = try await CompiledTextRenderer.shared.prepareExportSnapshot(document: snapshot)
+        guard pdfContentMatches(snapshot, document), snapshot.title == document.title else {
+            throw PaperWorkflowExportError.changedDocument
+        }
+        let bytes = try NoteRenderer.exportVerifiedPDF(document: snapshot, pdfURL: pdfURL, compiledText: compiledText)
+        return PaperWorkflowExport(document: snapshot, pdf: bytes)
     }
 
     private func exportPDF() {

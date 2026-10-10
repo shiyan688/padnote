@@ -13,7 +13,7 @@ import java.util.zip.*;
 import static org.junit.Assert.*;
 
 public class PdfNoteIOTest {
-    @Rule public TemporaryFolder temporary = new TemporaryFolder(new File("build"));
+    @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private Context context() {
         return new ContextWrapper(null) {
             @Override public File getFilesDir() { return temporary.getRoot(); }

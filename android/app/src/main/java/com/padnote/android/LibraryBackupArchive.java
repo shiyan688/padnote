@@ -25,9 +25,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.Set;
 import java.util.UUID;
+import padnote.material.StorageAdapter;
 import java.util.zip.CRC32;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
@@ -62,18 +64,21 @@ public final class LibraryBackupArchive {
         private final String archiveSha256;
         private final Map<String, File> resources;
         private final SafeFiles files;
+        private final FileIdentity directoryIdentity;
+        private final Map<File,FileIdentity> previewScratch = new HashMap<>();
         private boolean transferred;
         private boolean closed;
         private String transactionId;
         private String transferMarkerSha256;
 
         private StagedArchive(File directory, LibraryBackupManifest manifest, String archiveSha256,
-                Map<String, File> resources, SafeFiles files) {
+                Map<String, File> resources, SafeFiles files) throws IOException {
             this.directory = directory;
             this.manifest = manifest;
             this.archiveSha256 = archiveSha256;
             this.resources = Collections.unmodifiableMap(new HashMap<>(resources));
             this.files = files;
+            this.directoryIdentity = files.inspect(directory, true);
         }
         public LibraryBackupManifest manifest() { return manifest; }
         public File resourceFile(String resourceId) throws IOException {
@@ -84,6 +89,146 @@ public final class LibraryBackupArchive {
         public Map<String, File> resourceFiles() { return resources; }
         public String archiveSha256() { return archiveSha256; }
         public File directory() { return directory; }
+
+        /**
+         * Copies a staged member into a disposable, mode-0600 child of this private stage.
+         * The source is opened through SafeFiles (no-follow, same descriptor identity), and the
+         * complete byte count and digest are checked before the copy can be read by a caller.
+         */
+        public synchronized File createVerifiedPreviewCopy(String resourceId,long expectedSize,
+                String expectedSha256)throws IOException {
+            requirePreviewStage();
+            File source=resources.get(resourceId);
+            return createVerifiedPreviewCopy(source,expectedSize,expectedSha256);
+        }
+
+        /** File overload accepts only the exact File object registered by this stage. */
+        public synchronized File createVerifiedPreviewCopy(File source,long expectedSize,
+                String expectedSha256)throws IOException {
+            requirePreviewStage();
+            FileIdentity registeredScratch=source==null?null:previewScratch.get(source);
+            if(source==null||(!resources.containsValue(source)&&registeredScratch==null))throw new IOException("PREVIEW_RESOURCE_INVALID");
+            if(source==null||expectedSize<0||expectedSha256==null
+                    ||!expectedSha256.matches("[0-9a-f]{64}"))throw new IOException("PREVIEW_RESOURCE_INVALID");
+            File scratch=new File(directory,".preview-"+UUID.randomUUID().toString().toLowerCase(Locale.ROOT));
+            FileIdentity created=null;Throwable primary=null;
+            try {
+                MessageDigest digest=LibraryBackupArchive.digest();long count=0;byte[] buffer=new byte[CHUNK];
+                try(Seekable input=files.openRead(source);FileOutputStream output=files.createExclusive(scratch)) {
+                    FileIdentity opened=input.openedIdentity();
+                    if(!opened.equals(input.currentPathIdentity())||opened.directory||opened.links!=1
+                            ||opened.size!=expectedSize)throw new IOException("PREVIEW_SOURCE_IDENTITY_CHANGED");
+                    if(registeredScratch!=null&&!registeredScratch.equals(opened))throw new IOException("PREVIEW_SOURCE_IDENTITY_CHANGED");
+                    created=files.inspect(scratch,false);
+                    if(created.directory||created.links!=1)throw new IOException("PREVIEW_SCRATCH_INVALID");
+                    while(count<expectedSize) {
+                        int n=(int)Math.min(buffer.length,expectedSize-count);
+                        input.readFully(count,buffer,0,n);digest.update(buffer,0,n);output.write(buffer,0,n);count+=n;
+                    }
+                    if(!opened.equals(input.openedIdentity())||!opened.equals(input.currentPathIdentity())
+                            ||count!=expectedSize||!hex(digest.digest()).equals(expectedSha256))
+                        throw new IOException("PREVIEW_SOURCE_HASH_MISMATCH");
+                    output.flush();output.getFD().sync();
+                }
+                requirePreviewStage();
+                verifyPreviewScratch(scratch,expectedSize,expectedSha256);
+                previewScratch.put(scratch,files.inspect(scratch,false));
+                return scratch;
+            } catch(IOException|RuntimeException|Error failure) {
+                primary=failure;
+                if(created!=null)try{if(files.matchesFile(scratch,created))files.unlink(scratch);}
+                    catch(IOException cleanup){failure.addSuppressed(cleanup);}
+                throw failure;
+            }
+        }
+
+        /** Creates a private, identity-tracked scratch member for a derived preview payload. */
+        public synchronized File createPreviewScratch(byte[] bytes,String expectedSha256)throws IOException {
+            requirePreviewStage();
+            if(bytes==null||bytes.length>MAX_EXPANDED_BYTES||expectedSha256==null
+                    ||!hex(digest().digest(bytes)).equals(expectedSha256))throw new IOException("PREVIEW_SCRATCH_INPUT_INVALID");
+            File scratch=new File(directory,".preview-"+UUID.randomUUID().toString().toLowerCase(Locale.ROOT));
+            FileIdentity created=null;
+            try {
+                try(FileOutputStream output=files.createExclusive(scratch)) {
+                    created=files.inspect(scratch,false);output.write(bytes);output.flush();output.getFD().sync();
+                }
+                verifyPreviewScratch(scratch,bytes.length,expectedSha256);
+                FileIdentity complete=files.inspect(scratch,false);
+                if(complete.links!=1||complete.size!=bytes.length)throw new IOException("PREVIEW_SCRATCH_INVALID");
+                previewScratch.put(scratch,complete);return scratch;
+            } catch(IOException|RuntimeException|Error failure) {
+                if(created!=null)try{if(files.matchesFile(scratch,created))files.unlink(scratch);}
+                    catch(IOException cleanup){failure.addSuppressed(cleanup);}
+                throw failure;
+            }
+        }
+
+        /** Emits only a completely reverified disposable copy, never bytes from an unverified archive path. */
+        public synchronized void copyVerifiedPreviewFile(File scratch,long expectedSize,String expectedSha256,
+                java.io.OutputStream destination)throws IOException {
+            requirePreviewStage();
+            if(scratch==null||destination==null||!directory.equals(scratch.getAbsoluteFile().getParentFile())
+                    ||!scratch.getName().matches("\\.preview-[0-9a-f-]{36}")
+                    ||expectedSize<0||expectedSha256==null)throw new IOException("PREVIEW_SCRATCH_INVALID");
+            FileIdentity owned=previewScratch.get(scratch);
+            if(owned==null)throw new IOException("PREVIEW_SCRATCH_NOT_OWNED");
+            verifyPreviewScratch(scratch,expectedSize,expectedSha256);
+            try(Seekable input=files.openRead(scratch)) {
+                FileIdentity opened=input.openedIdentity();
+                if(!owned.equals(opened)||opened.directory||opened.links!=1||opened.size!=expectedSize
+                        ||!opened.equals(input.currentPathIdentity()))throw new IOException("PREVIEW_SCRATCH_CHANGED");
+                MessageDigest digest=LibraryBackupArchive.digest();byte[] buffer=new byte[CHUNK];long count=0;
+                while(count<expectedSize) {
+                    int n=(int)Math.min(buffer.length,expectedSize-count);
+                    input.readFully(count,buffer,0,n);digest.update(buffer,0,n);count+=n;
+                }
+                if(count!=expectedSize||!hex(digest.digest()).equals(expectedSha256)
+                        ||!opened.equals(input.openedIdentity())||!opened.equals(input.currentPathIdentity()))
+                    throw new IOException("PREVIEW_SCRATCH_HASH_MISMATCH");
+                digest=LibraryBackupArchive.digest();count=0;
+                while(count<expectedSize) {
+                    int n=(int)Math.min(buffer.length,expectedSize-count);
+                    input.readFully(count,buffer,0,n);digest.update(buffer,0,n);destination.write(buffer,0,n);count+=n;
+                }
+                if(count!=expectedSize||!hex(digest.digest()).equals(expectedSha256)
+                        ||!opened.equals(input.openedIdentity())||!opened.equals(input.currentPathIdentity()))
+                    throw new IOException("PREVIEW_SCRATCH_CHANGED_DURING_COPY");
+            }
+        }
+
+        /** Deletes only a disposable scratch file still matching its private-stage identity. */
+        public synchronized void discardPreviewCopy(File scratch)throws IOException {
+            if(scratch==null||!directory.equals(scratch.getAbsoluteFile().getParentFile())
+                    ||!scratch.getName().matches("\\.preview-[0-9a-f-]{36}"))
+                throw new IOException("PREVIEW_SCRATCH_INVALID");
+            FileIdentity expected=previewScratch.get(scratch);
+            if(expected==null)throw new IOException("PREVIEW_SCRATCH_NOT_OWNED");
+            try { FileIdentity current=files.inspect(scratch,false);if(!expected.equals(current)||current.links!=1)throw new IOException("PREVIEW_SCRATCH_INVALID");files.unlink(scratch);previewScratch.remove(scratch); }
+            catch(IOException missing) { if(scratch.exists())throw missing; }
+        }
+
+        private void verifyPreviewScratch(File scratch,long expectedSize,String expectedSha256)throws IOException {
+            FileIdentity path=files.inspect(scratch,false);
+            if(path.directory||path.links!=1||path.size!=expectedSize)throw new IOException("PREVIEW_SCRATCH_INVALID");
+            MessageDigest digest=LibraryBackupArchive.digest();long count=0;byte[] buffer=new byte[CHUNK];
+            try(Seekable input=files.openRead(scratch)) {
+                FileIdentity opened=input.openedIdentity();
+                if(!path.equals(opened))throw new IOException("PREVIEW_SCRATCH_CHANGED");
+                while(count<expectedSize){int n=(int)Math.min(buffer.length,expectedSize-count);input.readFully(count,buffer,0,n);digest.update(buffer,0,n);count+=n;}
+                if(count!=expectedSize||!hex(digest.digest()).equals(expectedSha256)
+                        ||!opened.equals(input.openedIdentity())||!opened.equals(input.currentPathIdentity()))
+                    throw new IOException("PREVIEW_SCRATCH_HASH_MISMATCH");
+            }
+        }
+
+        private void requirePreviewStage()throws IOException {
+            if(closed||transferred)throw new IOException("PREVIEW_STAGE_UNAVAILABLE");
+            FileIdentity current=files.inspect(directory,true);
+            if(current.device!=directoryIdentity.device||current.inode!=directoryIdentity.inode
+                    ||!current.directory||current.links!=directoryIdentity.links)
+                throw new IOException("PREVIEW_STAGE_CHANGED");
+        }
 
         /**
          * Durable handoff after the caller has committed its own journal. The marker is exclusive and
@@ -480,6 +625,7 @@ public final class LibraryBackupArchive {
             case "pdf_original": return LibraryBackupManifest.MAX_PDF_BYTES;
             case "assigned_cover_png": case "user_cover_preset_png": return LibraryBackupManifest.MAX_PNG_BYTES;
             case "vault_entry_json": return LibraryBackupManifest.MAX_VAULT_BYTES;
+            case "vault_storage_markdown": return LibraryBackupManifest.MAX_VAULT_BYTES;
             case "video_attachment_mp4": return LibraryBackupManifest.MAX_VIDEO_BYTES;
             default: throw new IOException("RESOURCE_ROLE_INVALID");
         }
@@ -515,7 +661,39 @@ public final class LibraryBackupArchive {
                     vault.sourceRevisionMs != LibraryBackupJson.integer(payload.get("source_revision_ms"), 0, Long.MAX_VALUE, "VAULT_PAYLOAD_REVISION") ||
                     vault.createdAtMs != LibraryBackupJson.integer(payload.get("created_at_ms"), 0, Long.MAX_VALUE, "VAULT_PAYLOAD_CREATED"))
                 throw new IOException("VAULT_PAYLOAD_DESCRIPTOR_MISMATCH");
+            if(vault.sourceStorageResourceId!=null) {
+                if(!"android".equals(manifest.producer.platform))throw new IOException("VAULT_STORAGE_PLATFORM_MISMATCH");
+                LibraryBackupManifest.Resource storage=manifest.resourceById(vault.sourceStorageResourceId);
+                byte[] raw=readBounded(files,staged.get(vault.sourceStorageResourceId),storage.byteLength);
+                final String markdown;
+                try{markdown=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(raw)).toString();}
+                catch(Exception invalid){throw new IOException("VAULT_STORAGE_UTF8_INVALID",invalid);}
+                ArchiveUpdateProfile sourceProfile=null;
+                for(ArchiveUpdateProfile candidate:manifest.updateProfiles)if(vault.noteItemId!=null&&vault.noteItemId.equals(candidate.noteItemId)){sourceProfile=candidate;break;}
+                // Legacy/profile-v1 archives remain copyable. Their storage Markdown is still
+                // parsed and validated with a scoped synthetic UUID, but that UUID is not
+                // accepted by the update adapter as a source identity. Schema v2 binds the
+                // deterministic source-material projection into the profile digest.
+                String sourceMaterialId=sourceProfile!=null&&sourceProfile.schemaVersion>=ArchiveUpdateProfile.SCHEMA_VERSION
+                        ?ArchiveUpdateProfile.vaultSourceMaterialId(sourceProfile,vault,storage)
+                        :ArchiveUpdateProfile.vaultCopyValidationMaterialId(vault,storage);
+                try{StorageAdapter.androidVaultMarkdown(raw,new StorageAdapter.Association(sourceMaterialId,null,"independent",null));}
+                catch(IllegalArgumentException invalid){throw new IOException("VAULT_STORAGE_PROFILE_INVALID",invalid);}
+                String head=markdown.substring(0,Math.min(markdown.length(),4096));
+                if(!vault.sourceNoteId.equals(VaultStore.frontValue(head,"note-id"))
+                        ||!payload.get("title").equals(VaultStore.frontValue(head,"title"))
+                        ||vault.sourceRevisionMs!=parseVaultHeaderLong(VaultStore.frontValue(head,"source-modified"))
+                        ||vault.createdAtMs!=parseVaultHeaderLong(VaultStore.frontValue(head,"digitized-epoch"))
+                        ||!LibraryBackupJson.string(payload.get("markdown"),"VAULT_PAYLOAD_MARKDOWN").equals(ArchiveManualUpdateAdapter.vaultBody(markdown)))
+                    throw new IOException("VAULT_STORAGE_DESCRIPTOR_MISMATCH");
+            }
         }
+    }
+
+    private static long parseVaultHeaderLong(String value)throws IOException {
+        try{long parsed=Long.parseLong(value);if(parsed<0)throw new NumberFormatException();return parsed;}
+        catch(NumberFormatException invalid){throw new IOException("VAULT_STORAGE_TIME_INVALID",invalid);}
     }
 
     private static byte[] readBounded(SafeFiles files, File file, long maxBytes) throws IOException {
@@ -705,6 +883,14 @@ public final class LibraryBackupArchive {
         static final class Written{final byte[] name;final int flags,method;final long crc,compressed,expanded,offset;Written(byte[] n,int f,int m,long c,long z,long e,long o){name=n;flags=f;method=m;crc=c;compressed=z;expanded=e;offset=o;}}
     }
 
+    /** Creates an owned mode-0700 child for temporary archives; the caller must remove it. */
+    static File createPrivateCacheDirectory(File cacheDirectory,String prefix)throws IOException {
+        if(cacheDirectory==null||!cacheDirectory.isAbsolute()||prefix==null||!prefix.matches("[A-Za-z0-9._-]{1,64}"))throw new IOException("PRIVATE_CACHE_DIRECTORY_INVALID");
+        File child=new File(cacheDirectory,prefix+"-"+UUID.randomUUID());
+        try{Os.mkdir(child.getAbsolutePath(),0700);}catch(android.system.ErrnoException e){throw new IOException("PRIVATE_CACHE_DIRECTORY_CREATE_FAILED");}
+        SYSTEM_FILES.validatePrivateDirectory(child);return child;
+    }
+
     static final class AndroidSafeFiles implements SafeFiles {
         @Override public FileIdentity inspect(File path, boolean directory) throws IOException { try { checkAncestors(path.getAbsoluteFile().getParentFile()); android.system.StructStat s=Os.lstat(path.getAbsolutePath()); validateStat(s,directory); return identity(s,directory); } catch(android.system.ErrnoException e){throw new IOException("FILE_UNAVAILABLE");} }
         @Override public void validatePrivateDirectory(File path) throws IOException {
@@ -727,13 +913,13 @@ public final class LibraryBackupArchive {
                 fd=Os.open(path.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
                 android.system.StructStat opened=Os.fstat(fd); validateStat(opened,false);
                 if(!same(before,opened)) throw new IOException("FILE_CHANGED");
-                ChannelSource source = new ChannelSource(fd,identity(opened,false),path);
-                fd = null;
+                FileDescriptor owned = fd; fd = null;
+                ChannelSource source = new ChannelSource(owned,identity(opened,false),path);
                 return source;
             } catch(android.system.ErrnoException e){throw new IOException("FILE_UNAVAILABLE");}
             finally { if(fd!=null) try{Os.close(fd);}catch(android.system.ErrnoException ignored){} }
         }
-        @Override public FileOutputStream createExclusive(File path) throws IOException { try { checkAncestors(path.getAbsoluteFile().getParentFile()); java.io.FileDescriptor fd=Os.open(path.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600); return new FileOutputStream(fd); } catch(android.system.ErrnoException e){throw new IOException("FILE_CREATE_FAILED");} }
+        @Override public FileOutputStream createExclusive(File path) throws IOException { try { checkAncestors(path.getAbsoluteFile().getParentFile()); java.io.FileDescriptor fd=Os.open(path.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0600); return OwnedFdStreams.output(fd); } catch(android.system.ErrnoException e){throw new IOException("FILE_CREATE_FAILED");} }
         @Override public void syncExistingFile(File path,FileIdentity expected)throws IOException {
             java.io.FileDescriptor fd=null;
             try {
@@ -776,18 +962,26 @@ public final class LibraryBackupArchive {
                 android.system.StructStat opened=Os.fstat(fd),pathStat=Os.lstat(lockFile.getAbsolutePath());
                 if(!OsConstants.S_ISREG(opened.st_mode)||OsConstants.S_ISLNK(opened.st_mode)||opened.st_nlink!=1||opened.st_uid!=Os.getuid()||
                         (opened.st_mode&0077)!=0||!same(opened,pathStat))throw new IOException("PUBLISH_LOCK_UNSAFE");
-                stream=new FileOutputStream(fd);fd=null;channel=stream.getChannel();long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(30);
+                FileDescriptor owned=fd;fd=null;stream=OwnedFdStreams.output(owned);channel=stream.getChannel();long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(30);
                 while(lock==null&&System.nanoTime()<deadline){try{lock=channel.tryLock();}catch(java.nio.channels.OverlappingFileLockException busy){}if(lock==null)try{Thread.sleep(10);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IOException("PUBLISH_LOCK_INTERRUPTED");}}
                 if(lock==null)throw new IOException("PUBLISH_LOCK_BUSY");
                 final FileOutputStream held=stream;final java.nio.channels.FileLock heldLock=lock;
-                return ()->{try{heldLock.release();}finally{held.close();}};
+                return new PublishLock(){private boolean closed;@Override public synchronized void close()throws IOException{if(closed)return;closed=true;IOException failure=null;try{heldLock.release();}catch(IOException error){failure=error;}try{held.close();}catch(IOException error){if(failure==null)failure=error;else failure.addSuppressed(error);}if(failure!=null)throw failure;}};
             } catch(android.system.ErrnoException e) {
-                if(lock!=null)try{lock.release();}catch(IOException ignored){}if(stream!=null)try{stream.close();}catch(IOException ignored){}else if(fd!=null)try{Os.close(fd);}catch(android.system.ErrnoException ignored){}
-                throw new IOException("PUBLISH_LOCK_FAILED");
-            } catch(IOException failure) {
-                if(lock!=null)try{lock.release();}catch(IOException ignored){}if(stream!=null)try{stream.close();}catch(IOException ignored){}else if(fd!=null)try{Os.close(fd);}catch(android.system.ErrnoException ignored){}
+                IOException failure = new IOException("PUBLISH_LOCK_FAILED", e);
+                closePublishLockResources(lock, channel, stream, fd, failure);
+                throw failure;
+            } catch(IOException|RuntimeException|Error failure) {
+                closePublishLockResources(lock, channel, stream, fd, failure);
                 throw failure;
             }
+        }
+        private static void closePublishLockResources(java.nio.channels.FileLock lock,FileChannel channel,
+                FileOutputStream stream,FileDescriptor unowned,Throwable failure){
+            if(lock!=null)try{lock.release();}catch(IOException close){failure.addSuppressed(close);}
+            if(channel!=null)try{channel.close();}catch(IOException close){failure.addSuppressed(close);}
+            if(stream!=null)try{stream.close();}catch(IOException close){failure.addSuppressed(close);}
+            else if(unowned!=null)try{Os.close(unowned);}catch(android.system.ErrnoException close){failure.addSuppressed(new IOException("PUBLISH_LOCK_CLOSE_FAILED",close));}
         }
         @Override public boolean isPersistentPublishLockArtifact(File path)throws IOException {
             if(path==null||!path.getName().matches("\\.padnote-publish-[0-9a-f]{64}\\.lock"))return false;
@@ -836,7 +1030,7 @@ public final class LibraryBackupArchive {
             }catch(android.system.ErrnoException e){throw new IOException("PUBLISH_RENAME_FAILED");}
         }
         @Override public FileIdentity inspectOwnedPair(File path)throws IOException {try{checkAncestors(path.getAbsoluteFile().getParentFile());android.system.StructStat s=Os.lstat(path.getAbsolutePath());if(!OsConstants.S_ISREG(s.st_mode)||OsConstants.S_ISLNK(s.st_mode)||s.st_nlink!=2)throw new IOException("FILE_UNSAFE");return identity(s,false);}catch(android.system.ErrnoException e){throw new IOException("FILE_UNAVAILABLE");}}
-        @Override public Seekable openOwnedPair(File path)throws IOException {FileDescriptor fd=null;try{checkAncestors(path.getAbsoluteFile().getParentFile());android.system.StructStat before=Os.lstat(path.getAbsolutePath());if(!OsConstants.S_ISREG(before.st_mode)||OsConstants.S_ISLNK(before.st_mode)||before.st_nlink!=2)throw new IOException("FILE_UNSAFE");fd=Os.open(path.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);android.system.StructStat opened=Os.fstat(fd);if(!same(before,opened))throw new IOException("FILE_CHANGED");ChannelSource input=new ChannelSource(fd,identity(opened,false),path);fd=null;return input;}catch(android.system.ErrnoException e){throw new IOException("FILE_UNAVAILABLE");}finally{if(fd!=null)try{Os.close(fd);}catch(android.system.ErrnoException ignored){}}}
+        @Override public Seekable openOwnedPair(File path)throws IOException {FileDescriptor fd=null;try{checkAncestors(path.getAbsoluteFile().getParentFile());android.system.StructStat before=Os.lstat(path.getAbsolutePath());if(!OsConstants.S_ISREG(before.st_mode)||OsConstants.S_ISLNK(before.st_mode)||before.st_nlink!=2)throw new IOException("FILE_UNSAFE");fd=Os.open(path.getAbsolutePath(),OsConstants.O_RDONLY|AndroidFileCompat.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);android.system.StructStat opened=Os.fstat(fd);if(!same(before,opened))throw new IOException("FILE_CHANGED");FileDescriptor owned=fd;fd=null;return new ChannelSource(owned,identity(opened,false),path);}catch(android.system.ErrnoException e){throw new IOException("FILE_UNAVAILABLE");}finally{if(fd!=null)try{Os.close(fd);}catch(android.system.ErrnoException ignored){}}}
         @Override public void linkNoReplace(File from,File to)throws IOException { try{Os.link(from.getAbsolutePath(),to.getAbsolutePath());}catch(android.system.ErrnoException e){throw new IOException("DESTINATION_CREATE_FAILED errno="+e.errno+" detail="+e.getMessage(),e);} }
         @Override public void unlink(File path)throws IOException { try{Os.remove(path.getAbsolutePath());}catch(android.system.ErrnoException e){if(path.exists())throw new IOException("FILE_UNLINK_FAILED");} }
         @Override public boolean matchesFile(File path, FileIdentity expected)throws IOException {
@@ -954,7 +1148,16 @@ public final class LibraryBackupArchive {
         private static boolean same(android.system.StructStat a,android.system.StructStat b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&a.st_size==b.st_size&&a.st_mtime==b.st_mtime&&a.st_ctime==b.st_ctime&&a.st_nlink==b.st_nlink&&a.st_mode==b.st_mode;}
         private static final class ChannelSource implements Seekable {
             final FileInputStream stream; final FileChannel channel; final FileIdentity opened; final File path;
-            ChannelSource(java.io.FileDescriptor fd,FileIdentity opened,File path){this.stream=new FileInputStream(fd);this.channel=stream.getChannel();this.opened=opened;this.path=path;}
+            ChannelSource(java.io.FileDescriptor fd,FileIdentity opened,File path)throws IOException{
+                FileInputStream ownedStream=OwnedFdStreams.input(fd);
+                try{
+                    FileChannel openedChannel=ownedStream.getChannel();
+                    this.stream=ownedStream;this.channel=openedChannel;this.opened=opened;this.path=path;
+                }catch(RuntimeException|Error failure){
+                    try{ownedStream.close();}catch(IOException closeFailure){failure.addSuppressed(closeFailure);}
+                    throw failure;
+                }
+            }
             public long size()throws IOException{return channel.size();}
             public void readFully(long offset,byte[] target,int targetOffset,int length)throws IOException{ByteBuffer b=ByteBuffer.wrap(target,targetOffset,length);long p=offset;while(b.hasRemaining()){int n=channel.read(b,p);if(n<0)throw new IOException("FILE_TRUNCATED");if(n==0)continue;p+=n;}}
             public FileIdentity openedIdentity()throws IOException{try{return identity(Os.fstat(stream.getFD()),false);}catch(android.system.ErrnoException e){throw new IOException("FILE_STAT_FAILED");}}

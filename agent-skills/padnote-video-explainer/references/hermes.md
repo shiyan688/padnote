@@ -1,8 +1,6 @@
-# Hermes execution
+# Hermes host
 
-Use this path only when Hermes Agent is the host. Hermes owns the model and TTS configuration; PadNote and this Skill never receive provider credentials.
-
-## One-time host setup
+Read this guide only when Hermes is the Agent hosting the Skill. Choose the model and TTS capability in the Hermes configuration that the user selected. PadNote does not select a vendor, receive provider credentials, or promise that a real Hermes installation has been tested.
 
 Expose the parent Skill directory in the active Hermes profile:
 
@@ -12,46 +10,19 @@ skills:
     - /absolute/path/to/padnote/agent-skills
 ```
 
-Select a TTS provider with `hermes tools`. Edge TTS is the zero-subscription test option. The video worker still requires Linux x64 and Node.js 22.22 or newer.
+Invoke `/padnote-video-explainer` with the absolute task root and request Stage 1. Stop after `output/review.json` validates. Do not synthesize or render until the user approves the exact storyboard revision.
 
-## Stage 1
-
-Invoke `/padnote-video-explainer` with the absolute task root and request Stage 1 only. Stop after `output/review.json` validates. Do not call TTS before the user approves the exact storyboard revision.
-
-## Stage 2
-
-If the host has configured `PADNOTE_TTS_COMMAND`, use that provider adapter instead of Hermes' native TTS tool:
+After approval, persist the approval and choose one configured audio path. If Hermes has a TTS tool that can write the required WAV files, read only `approval.lesson_ir_snapshot_path` from `work/task-state.json` and synthesize each scene's exact narration to `work/audio/<scene-id>.wav`. Do not read narration from the mutable `output/lesson.ir.json` after approval. Then run:
 
 ```bash
 npm run task:approve -- <task-root> --revision <n>
-npm run audio:prepare -- <task-root>
-PADNOTE_AGENT_BACKEND=hermes npm run render -- <task-root> --approval approve --revision <n>
-npm run validate:result -- <task-root>
-```
-
-The host can supply exact DashScope fields directly, or a private environment-file path to the adapter. The adapter parses that file without sourcing it and selects only its documented `DASHSCOPE_*` fields. Do not copy or print those files or values in Agent messages. Hermes orchestrates the commands while the adapter performs synthesis.
-
-Otherwise, when native TTS is configured:
-
-```bash
-npm run task:approve -- <task-root> --revision <n>
-```
-
-Read `approval.lesson_ir_snapshot_path` from `work/task-state.json`. For every
-scene in that frozen, digest-bound IR, call Hermes' `text_to_speech` tool once.
-Do not synthesize from the mutable `output/lesson.ir.json` path after approval:
-
-- `text`: the scene's exact `narration` value.
-- `output_path`: the absolute `<task-root>/work/audio/<scene-id>.wav` path.
-
-Do not use voice-mode playback or a default audio-cache path. After every scene WAV exists, run:
-
-```bash
 npm run audio:index -- <task-root>
 PADNOTE_AGENT_BACKEND=hermes npm run render -- <task-root> --approval approve --revision <n>
 npm run validate:result -- <task-root>
 ```
 
-`audio:index` requires a non-silent 16-bit PCM WAV for every scene and derives duration, byte count, and SHA-256 from the closed files. If the selected Hermes provider does not produce that format, stop and report the validation error; do not relabel compressed audio as WAV.
+If Hermes TTS is not suitable, use an explicitly selected adapter according to [the provider-neutral TTS contract](tts-contract.md). Its adapter output must still pass `audio:index`; do not relabel compressed audio as WAV. Do not copy or print provider configuration or credentials in Agent messages.
+
+The selected path must produce a non-silent 16-bit PCM WAV for every scene. If it cannot, stop and report the validation error. Validate the final result before claiming completion. Do not retry a possibly charged call automatically; inspect the original task and authorize a supported retry explicitly.
 
 The Hermes API server, PadNote network adapter, and task transport are outside this Skill. They exchange the standard task root defined by the schemas and portable references in this directory.

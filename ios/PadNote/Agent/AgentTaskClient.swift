@@ -300,6 +300,7 @@ public final class AgentTaskService: @unchecked Sendable {
                 throw AgentTaskError.capabilityUnavailable("task_bundle")
             }
         }
+        try Self.requirePaperContextCapability(payload, profile: profile)
         return try taskStore.create(profile: profile, payload: payload)
     }
 
@@ -317,6 +318,12 @@ public final class AgentTaskService: @unchecked Sendable {
 
     public func submit(id: UUID) async throws -> AgentTaskRecord {
         let task = try requireTask(id)
+        if task.payload.requiredCapability != nil {
+            guard let profile = connectionStore.profile(id: task.connection.connectionID),
+                  task.connection.stillMatches(profile) else { throw AgentTaskError.connectionChanged }
+            guard profile.connected else { throw AgentTaskError.connectionChanged }
+            try Self.requirePaperContextCapability(task.payload, profile: profile)
+        }
         let token = try credential(for: task)
         let remote = try await client(for: task).submit(task: task, token: token)
         return try apply(remote, to: task)
@@ -358,6 +365,16 @@ public final class AgentTaskService: @unchecked Sendable {
         guard let profile = connectionStore.profile(id: task.connection.connectionID),
               profile.connected, task.connection.stillMatches(profile) else { return false }
         return profile.capabilities[name] == true
+    }
+
+    private static func requirePaperContextCapability(_ payload: AgentTaskPayload, profile: AgentConnectionProfile) throws {
+        guard let required = payload.requiredCapability else { return }
+        guard required == "note_context_bundle", payload.bundleBase64 != nil, profile.connected,
+              profile.kind == .hermes, profile.transport == .bridge,
+              profile.capabilities["task_bundle"] == true, profile.capabilities[required] == true,
+              profile.capabilities["builtinVideo"] != true, profile.capabilities["builtin_video"] != true else {
+            throw AgentTaskError.capabilityUnavailable(required)
+        }
     }
 
     private func requireTask(_ id: UUID) throws -> AgentTaskRecord {

@@ -67,10 +67,28 @@ final class DigitizationController implements AutoCloseable {
 
     boolean isBusy() { return active != null || preparing != null; }
 
+    /**
+     * Compatibility entry point for the existing shelf action. It captures a new ADD target;
+     * replacement/update remains unavailable unless a future explicit destination UI supplies it.
+     */
+    void open(NoteCanvasView canvas,String noteID,String title,String profileID,
+              AiConfigStore.Config config,long sourceUpdatedAt) {
+        try {
+            DigitizationStore.Target target=vault.captureDigitizationTarget(noteID,null);
+            open(canvas,noteID,title,profileID,config,sourceUpdatedAt,target);
+        } catch(Exception unavailableTarget) {
+            message("无法确认新的知识库目标："+safe(unavailableTarget));
+        }
+    }
+
     /** Called on the UI thread after the inline editor has committed. */
     void open(NoteCanvasView canvas, String noteID, String title, String profileID,
-              AiConfigStore.Config config, long sourceUpdatedAt) {
+              AiConfigStore.Config config, long sourceUpdatedAt,DigitizationStore.Target target) {
         if (closed || preparing != null || active != null) return;
+        if(target==null||noteID==null||!noteID.equals(target.noteId)){
+            message("请选择有效的知识库目标后再开始整理");
+            return;
+        }
         final int serial = ++generation;
         final Capture capture;
         try {
@@ -84,7 +102,7 @@ final class DigitizationController implements AutoCloseable {
             }
             capture = new Capture(document, snapshot, flows,
                     document.optInt("pdfPageCount", 0) > 0 ? NoteStore.pdfFile(activity, noteID) : null,
-                    profileID, config, sourceUpdatedAt);
+                    profileID, config, sourceUpdatedAt,target);
             preparing = capture;
         } catch (Exception error) {
             message("无法准备数字化：" + safe(error));
@@ -143,7 +161,11 @@ final class DigitizationController implements AutoCloseable {
         }
         DigitizationStore.Snapshot matching = null;
         for (DigitizationStore.Snapshot draft : history) {
-            if (source != null && draft.matches(source) && matching == null) matching = draft;
+            if (source != null && draft.matches(source) && draft.target!=null
+                    &&draft.target.sameIntent(capture.target)){matching=draft;break;}
+        }
+        if(matching==null)for(DigitizationStore.Snapshot draft:history){
+            if(source!=null&&draft.matches(source)&&draft.target==null){matching=draft;break;}
         }
         final DigitizationStore.Snapshot resume = matching;
         AlertDialog plan = new AlertDialog.Builder(activity).setTitle("整理「"
@@ -162,6 +184,20 @@ final class DigitizationController implements AutoCloseable {
             }
         } else if (!history.isEmpty()) {
             addText(body, "原文、PDF、页数或模型配置与旧批次不同。旧草稿会保留，新批次不会混用旧结果。");
+        }
+        if(source!=null){
+            for(DigitizationStore.Snapshot prior:history){
+                if(!prior.matches(source)||prior.target==null
+                        ||prior.target.sameIntent(capture.target)
+                        ||prior.state==DigitizationStore.State.COMPLETED)continue;
+                String destination=prior.target.kind==DigitizationStore.TargetKind.GROUP
+                        ?(prior.target.operation==DigitizationStore.TargetOperation.ADD?"之前选择的新组材料":"之前选择的组材料")
+                        :"之前选择的本机材料";
+                addButton(body,"继续旧目标 · "+destination+" · "+prior.completedCount()+" / "+prior.totalPages+" 页",()->{
+                    capture.target=prior.target;
+                    start(capture,source,prior,serial,plan);
+                });
+            }
         }
         if (source != null) {
             addButton(body, history.isEmpty() ? "确认范围并开始" : "新建整理批次", () -> {
@@ -208,7 +244,8 @@ final class DigitizationController implements AutoCloseable {
             synchronized (run) {
                 run.cancellation.throwIfCancelled();
                 run.draft = resume == null ? store.create(source,
-                        run.capture.document.optString("title", "笔记"), run.capture.sourceUpdatedAt) : store.load(resume.runId);
+                        run.capture.document.optString("title", "笔记"), run.capture.sourceUpdatedAt,
+                        run.capture.target) : store.load(resume.runId);
                 if (!run.draft.matches(source)) throw new IllegalStateException("原文或接收者已改变，请新建整理批次");
                 try { run.lease = store.acquireLease(run.draft.runId); }
                 catch (Exception unavailableLease) {
@@ -225,6 +262,9 @@ final class DigitizationController implements AutoCloseable {
                     run.skipFailureCommit = true;
                     throw new IllegalStateException("Checkpoint changed after confirmation");
                 }
+                if(run.draft.target==null)run.draft=store.bindTarget(run.draft,run.capture.target);
+                else if(!run.draft.target.sameIntent(run.capture.target))
+                    throw new IllegalStateException("整理稿已绑定其他知识库目标，请查看或导出原稿");
                 if (!"COMPLETED".equals(run.draft.state.name())) run.draft = store.startAttempt(run.draft);
             }
             while (run.draft.nextPendingPage() >= 0) {
@@ -259,21 +299,15 @@ final class DigitizationController implements AutoCloseable {
                     }
                 }
             }
+            // Publication provenance belongs to the captured checkpoint. A later save of
+            // identical canonical ink must not change a retry's immutable output bytes.
             long sourceTime = run.draft.sourceUpdatedAt;
-            try {
-                JSONObject persisted = NoteStore.load(activity, run.draft.noteId);
-                if (DigitizationStore.canonicalSourceFingerprint(persisted)
-                        .equals(run.draft.sourceFingerprint)) sourceTime = persisted.optLong("updatedAt", sourceTime);
-            } catch (Exception unavailableOriginal) {
-                // The completed transcription remains publishable with its captured provenance.
-            }
             synchronized (run) {
                 run.cancellation.throwIfCancelled();
                 if (!"COMPLETED".equals(run.draft.state.name())) {
                     update(run, "全部页面已保存，正在写入知识库…");
-                    String name = vault.write(run.draft.noteId, run.draft.title, run.draft.totalPages,
-                            sourceTime, run.draft.pages);
-                    // A crash after vault.write only repeats a local atomic write, never a model request.
+                    String name = vault.publishDigitization(run.draft.target,run.draft.title,
+                            run.draft.totalPages,sourceTime,run.draft.pages);
                     run.draft = store.markPublished(run.draft, name);
                 }
                 published = true;
@@ -430,10 +464,12 @@ final class DigitizationController implements AutoCloseable {
         final File pdf;
         final AiConfigStore.Config config;
         final long sourceUpdatedAt;
+        DigitizationStore.Target target;
         Capture(JSONObject document, NoteCanvasView.PdfExportSnapshot snapshot, List<TextFlow> flows,
-                File pdf, String profileID, AiConfigStore.Config config, long sourceUpdatedAt) {
+                File pdf, String profileID, AiConfigStore.Config config, long sourceUpdatedAt,
+                DigitizationStore.Target target) {
             this.document = document; this.snapshot = snapshot; this.flows = flows; this.pdf = pdf;
-            this.config = config; this.sourceUpdatedAt = sourceUpdatedAt;
+            this.config = config; this.sourceUpdatedAt = sourceUpdatedAt;this.target=target;
         }
         @Override public void close() { if (snapshot != null) snapshot.close(); }
     }

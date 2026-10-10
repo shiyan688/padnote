@@ -17,11 +17,13 @@ public final class NoteCoverStore: @unchecked Sendable {
     public static let maxBytes = 8 * 1024 * 1024
     public static let maxPixels = 12_000_000
     private let directory: URL
+    private let groupRootURL: URL
 
-    public init(directory: URL? = nil) {
+    public init(directory: URL? = nil, groupRootURL: URL? = nil) {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let suffix = ProcessInfo.processInfo.arguments.contains("--uitesting") ? "PadNoteUITest/covers" : "PadNote/covers"
         self.directory = directory ?? root.appendingPathComponent(suffix, isDirectory: true)
+        self.groupRootURL = groupRootURL ?? NoteGroupStore.defaultRootURL()
     }
 
     private func url(_ id: String) -> URL? {
@@ -36,7 +38,17 @@ public final class NoteCoverStore: @unchecked Sendable {
     }
 
     public func assign(noteID: String, image: UIImage) throws {
-        guard let url = url(noteID), let cg = image.cgImage else { throw NoteCoverError.invalidImage }
+        guard let url = url(noteID) else { throw NoteCoverError.invalidImage }
+        let data = try Self.encodedPNG(image)
+        try NoteGroupCatalogFence.withWriter {
+            try requireLegacyMutationAllowed(noteID: noteID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
+    public static func encodedPNG(_ image: UIImage) throws -> Data {
+        guard let cg = image.cgImage else { throw NoteCoverError.invalidImage }
         guard cg.width > 0, cg.height > 0, cg.width <= Self.maxPixels / cg.height else { throw NoteCoverError.dimensions }
         let factor = min(1, 720 / max(image.size.width, image.size.height))
         let size = CGSize(width: max(1, image.size.width * factor), height: max(1, image.size.height * factor))
@@ -45,8 +57,7 @@ public final class NoteCoverStore: @unchecked Sendable {
             image.draw(in: CGRect(origin: .zero, size: size))
         }
         guard let data = scaled.pngData(), data.count <= Self.maxBytes else { throw NoteCoverError.tooLarge }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        return data
     }
 
     public func backupPNGURL(noteID: String) throws -> URL? {
@@ -56,15 +67,17 @@ public final class NoteCoverStore: @unchecked Sendable {
     }
 
     public func restorePNG(noteID: String, from staged: URL, expectedSize: Int64? = nil, expectedSHA256: String? = nil, cancellation: LibraryBackupCancellationToken? = nil) throws {
-        guard let target = url(noteID), !FileManager.default.fileExists(atPath: target.path) else { throw LibraryBackupError.transaction("封面目标已存在或 ID 无效") }
-        _ = try Self.validatePNGFile(staged)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        do {
-            let copied = try LibraryBackupArchive.copyVerified(staged, to: target, maximumBytes: Int64(Self.maxBytes), cancellation: cancellation)
-            if let expectedSize, copied.size != expectedSize { throw LibraryBackupError.sourceChanged }
-            if let expectedSHA256, copied.sha256 != expectedSHA256 { throw LibraryBackupError.sourceChanged }
-            _ = try Self.validatePNGFile(target)
-        } catch { try? FileManager.default.removeItem(at: target); throw error }
+        try NoteGroupCatalogFence.withWriter {
+            guard let target = url(noteID), !FileManager.default.fileExists(atPath: target.path) else { throw LibraryBackupError.transaction("封面目标已存在或 ID 无效") }
+            _ = try Self.validatePNGFile(staged)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            do {
+                let copied = try LibraryBackupArchive.copyVerified(staged, to: target, maximumBytes: Int64(Self.maxBytes), cancellation: cancellation)
+                if let expectedSize, copied.size != expectedSize { throw LibraryBackupError.sourceChanged }
+                if let expectedSHA256, copied.sha256 != expectedSHA256 { throw LibraryBackupError.sourceChanged }
+                _ = try Self.validatePNGFile(target)
+            } catch { try? FileManager.default.removeItem(at: target); throw error }
+        }
     }
 
     public static func validatePNGFile(_ url: URL) throws -> (width: Int, height: Int) {
@@ -84,16 +97,32 @@ public final class NoteCoverStore: @unchecked Sendable {
     }
 
     func rollbackRestoredPNG(noteID: String, expectedSHA256: String) throws {
-        guard let target = url(noteID), expectedSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
-            throw LibraryBackupError.unsafeFile
+        try NoteGroupCatalogFence.withWriter {
+            guard let target = url(noteID), expectedSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+                throw LibraryBackupError.unsafeFile
+            }
+            guard FileManager.default.fileExists(atPath: target.path) else { return }
+            _ = try LibraryBackupArchive.validateRegularSource(target, maximumBytes: Int64(Self.maxBytes))
+            guard try LibraryBackupArchive.hashFile(target).sha256 == expectedSHA256 else { throw LibraryBackupError.sourceChanged }
+            try FileManager.default.removeItem(at: target)
         }
-        guard FileManager.default.fileExists(atPath: target.path) else { return }
-        _ = try LibraryBackupArchive.validateRegularSource(target, maximumBytes: Int64(Self.maxBytes))
-        guard try LibraryBackupArchive.hashFile(target).sha256 == expectedSHA256 else { throw LibraryBackupError.sourceChanged }
-        try FileManager.default.removeItem(at: target)
     }
 
-    public func remove(noteID: String) { if let url = url(noteID) { try? FileManager.default.removeItem(at: url) } }
+    public func remove(noteID: String) throws {
+        try NoteGroupCatalogFence.withWriter {
+            try requireLegacyMutationAllowed(noteID: noteID)
+            if let url = url(noteID), FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    private func requireLegacyMutationAllowed(noteID: String) throws {
+        // Historical opaque note IDs cannot address UUID-keyed groups. UUID IDs must consult
+        // the current marker while the catalog writer lease is held; any corrupt marker fails closed.
+        guard (try? NoteGroupFacade.foundationUUID(noteID)) != nil else { return }
+        try NoteGroupStore.requireLegacyMutationAllowed(noteID: noteID, rootURL: groupRootURL)
+    }
 
     public static func decode(_ data: Data, maxEdge: Int = 720) throws -> UIImage {
         guard data.count <= maxBytes else { throw NoteCoverError.tooLarge }

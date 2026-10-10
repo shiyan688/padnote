@@ -1,6 +1,6 @@
 # AI 会话恢复验收
 
-本页用于问题9的验收，不代表已经通过。会话数据与权限约定见 [会话存储契约](AI_CONVERSATION_STATE.md)。
+本页用于问题9的验收，不代表已经通过。当前实现状态和已运行证据见 [TODO 执行账本](TODO_EXECUTION.md)，数据与权限约定见 [会话存储契约](AI_CONVERSATION_STATE.md)。
 
 ## 可重复场景
 

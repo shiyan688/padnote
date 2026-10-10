@@ -174,6 +174,11 @@ final class AgentTaskStore {
 
     Task create(AgentConnectionStore.Config connection, String title, String input,
                 String noteId, long noteRevision, byte[] bundle) throws Exception {
+        return create(connection,title,input,noteId,noteRevision,bundle,"");
+    }
+
+    Task create(AgentConnectionStore.Config connection, String title, String input,
+                String noteId, long noteRevision, byte[] bundle,String requiredCapability) throws Exception {
         if (connection == null || connection.id.isEmpty() || !connection.verified())
             throw new IllegalArgumentException("请选择已验证的 Agent");
         byte[] inputBytes = value(input).getBytes(StandardCharsets.UTF_8);
@@ -183,6 +188,15 @@ final class AgentTaskStore {
             throw new IllegalArgumentException("任务标题必须在 1–256 字符之间");
         if (bundle != null && bundle.length > MAX_BUNDLE)
             throw new IllegalArgumentException("任务包不能超过 8 MiB");
+        if(requiredCapability!=null&&!requiredCapability.isEmpty()&&
+                (!"note_context_bundle".equals(requiredCapability)||
+                        connection.transport!=AgentConnectionStore.Transport.BRIDGE||
+                        connection.kind==AgentConnectionStore.Kind.BUILTIN_VIDEO||
+                        connection.featureMap==null||
+                        !Boolean.TRUE.equals(connection.featureMap.get(requiredCapability))||
+                        !Boolean.TRUE.equals(connection.featureMap.get("task_bundle"))||
+                        !Boolean.TRUE.equals(connection.featureMap.get("run_submission"))))
+            throw new IllegalArgumentException("所选 Agent 未验证纸面上下文任务包能力");
         String clientId = "padnote-" + UUID.randomUUID().toString().replace("-", "");
         String sourceNoteId = value(noteId).isEmpty() ? "text-" + clientId.substring(8) : value(noteId);
         JSONObject body;
@@ -193,6 +207,9 @@ final class AgentTaskStore {
             if (bundle != null && bundle.length > 0) {
                 body.put("bundle_base64", Base64.encodeToString(bundle, Base64.NO_WRAP));
                 body.put("bundle_sha256", sha256(bundle));
+            }
+            if(requiredCapability!=null&&!requiredCapability.isEmpty()) {
+                body.put("required_capability",requiredCapability);
             }
         } else {
             if (bundle != null && bundle.length > 0)

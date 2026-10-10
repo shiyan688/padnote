@@ -5,14 +5,26 @@ plugins {
 android {
     namespace 'com.padnote.android'
     compileSdk 35
+    ndkVersion '29.0.14206865'
 
     defaultConfig {
         applicationId 'com.padnote.android'
         minSdk 24
         targetSdk 35
-        versionCode 48
-        versionName '0.18.0-beta.9'
+        versionCode 49
+        versionName '0.18.0-beta.10'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        externalNativeBuild {
+            ndkBuild {
+                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        ndkBuild {
+            path file('src/main/jni/Android.mk')
+        }
     }
 
     buildTypes {
@@ -44,6 +56,7 @@ android {
 }
 
 dependencies {
+    implementation 'androidx.core:core:1.13.1'
     // Embedded QR capture avoids requiring a separate scanner app for pairing.
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
     implementation 'com.google.zxing:core:3.5.3'

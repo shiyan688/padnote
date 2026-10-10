@@ -28,6 +28,17 @@ import java.util.UUID;
 public class RestoredLibraryMaterialStoreTest {
     @Rule public TemporaryFolder temp=new TemporaryFolder();
 
+    @Test public void listingAnAbsentPrivateMaterialStoreDoesNotCreateIt() throws Exception {
+        File root=new File(temp.getRoot(),"never-created/materials");
+        NoInitializationFiles files=new NoInitializationFiles();
+        RestoredLibraryMaterialStore store=new RestoredLibraryMaterialStore(root,files,new SyntheticMedia());
+        RestoredLibraryMaterialStore.ListResult result=store.listDetailed(proof->true);
+        assertTrue(result.records.isEmpty());
+        assertTrue(result.diagnostics.isEmpty());
+        assertFalse("read-only listing must not create store directories",root.exists());
+        assertEquals("absent root returns before private layout initialization",0,files.directoryChecks);
+    }
+
     @Test public void multipleKindsRemainHiddenUntilGateAndKeepHistoricalIdentity() throws Exception {
         Fixture f=fixture();
         RestoredLibraryMaterialStore store=store(f.root);
@@ -606,6 +617,16 @@ public class RestoredLibraryMaterialStoreTest {
         public void linkNoReplace(File from,File to)throws IOException {Files.createLink(to.toPath(),from.toPath());}
         public void unlink(File path)throws IOException {Files.delete(path.toPath());}
         public boolean matchesFile(File path,LibraryBackupArchive.FileIdentity expected)throws IOException {try{return inspect(path,false).inode==expected.inode;}catch(IOException e){return false;}}
+    }
+    private static final class NoInitializationFiles extends TestFiles {
+        int directoryChecks;
+        @Override public void validatePrivateDirectory(File path)throws IOException {
+            directoryChecks++;
+            throw new IOException("UNEXPECTED_LAYOUT_INITIALIZATION");
+        }
+        @Override public void mkdirExclusive(File path)throws IOException {
+            throw new IOException("UNEXPECTED_LAYOUT_INITIALIZATION");
+        }
     }
     private static final class MissingAncestorSensitiveFiles extends TestFiles {
         @Override public boolean isAbsentNoFollow(File path)throws IOException {

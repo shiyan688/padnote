@@ -90,6 +90,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private static final int REQUEST_EXPORT_AGENT_ARTIFACT = 7108;
     private static final int REQUEST_EXPORT_RECOVERY = 7109;
     private static final int REQUEST_EXPORT_VIDEO_ATTACHMENT = 7110;
+    private static final int REQUEST_EXPORT_PENDING_VIDEO = 7115;
     private static final int REQUEST_EXPORT_CONTENT_OUTLINE = 7111;
     private static final int REQUEST_LIBRARY_BACKUP = 7112;
     private static final int REQUEST_LIBRARY_RESTORE = 7113;
@@ -206,6 +207,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private AiConfigStore aiConfigStore;
     private AiConversationStore aiConversationStore;
     private AiConversationStore.Snapshot aiConversationSnapshot;
+    private String paperAiContextReadFailure = "";
     private final List<AiConversationStore.VisibleEntry> aiVisibleTimeline = new ArrayList<>();
     private boolean renderingAiTimeline;
     private boolean aiConversationLoading;
@@ -226,12 +228,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private String pendingContentOutlineMarkdown;
     private String pendingExportNoteId;
     private String pendingExportJson;
-    private String pendingExportVaultFile;
+    private VaultStore.VaultSelection pendingExportVaultSelection;
+    private java.util.function.Consumer<Intent> vaultExportLaunchForTest;
+    private java.util.function.Consumer<byte[]> vaultExportBytesForTest;
+    private java.util.function.Consumer<String> vaultRouteResultForTest;
     private VideoTaskBundleIO.FrozenBundle pendingVideoTaskBundle;
     private String pendingVideoTaskTitle;
     private String pendingVideoAttachmentId;
     private boolean pendingVideoAttachmentShare;
+    private VideoActionSelection pendingVideoAttachmentSelection;
+    private PendingVideoArtifactStore.Entry pendingVideoArtifactExport;
     private boolean pendingVideoHubAfterSave;
+    private boolean pendingPaperHandoffAfterSave;
+    private boolean pendingPaperHandoffAfterRestore;
     private String pendingAgentArtifactTaskId;
     private String pendingAgentArtifactId;
     private boolean pendingAgentArtifactShareAfterSave;
@@ -239,8 +248,25 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private AiConversationStore.Snapshot pendingAiConversationRecoverySnapshot;
     private String pendingRecoveryName;
     private DigitizationController digitizationController;
+    private String pendingDigitizationNoteId;
     private boolean editorVisible = false;
     private int bookshelfLoadGeneration = 0;
+    private volatile boolean bookshelfCatalogRenderedForTest;
+    /** Group token frozen before an attachment action or confirmation. */
+    static final class VideoActionBase {
+        final String noteId,lineage,revision,digest,title; final boolean grouped;
+        VideoActionBase(String noteId,String lineage,String revision,String digest,String title,boolean grouped){
+            this.noteId=noteId;this.lineage=lineage;this.revision=revision;this.digest=digest;this.title=title==null?"":title;this.grouped=grouped;
+        }
+    }
+    private static final class VideoActionList {
+        final VideoActionBase base; final List<VideoAttachmentStore.Attachment> values;
+        VideoActionList(VideoActionBase base,List<VideoAttachmentStore.Attachment> values){this.base=base;this.values=values;}
+    }
+    static final class VideoActionSelection {
+        final VideoActionBase base; final VideoAttachmentStore.Attachment attachment;
+        VideoActionSelection(VideoActionBase base,VideoAttachmentStore.Attachment attachment){this.base=base;this.attachment=attachment;}
+    }
     private float penWidthDp = 2f;
     private float highlighterWidthDp = 12f;
     private int highlighterColor = Color.rgb(255, 205, 45);
@@ -437,10 +463,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** Bookshelf entries from the last render; vault staleness checks read it. */
     private List<NoteStore.Entry> lastShelfEntries = new ArrayList<>();
     private List<NoteStore.RecoveryEntry> lastRecoveryEntries = new ArrayList<>();
+    private volatile String bookshelfStageForTest = "IDLE";
+    private volatile int bookshelfCoverCountForTest,bookshelfCoverFailureCountForTest;
+    private volatile long bookshelfLoadStartedForTest;
+    private volatile String recoveryScanStateForTest="IDLE";
+    private final java.util.Map<String, FrameLayout> shelfCoverSlots = new java.util.HashMap<>();
+    private volatile String shelfRenameState = "IDLE", shelfDeleteState = "IDLE";
+    private volatile String shelfRenameFailure = "NONE", shelfDeleteFailure = "NONE";
+    private volatile String coverMutationResult = "IDLE", coverMutationFailure = "NONE";
+    private String currentGroupLineage, currentGroupRevision, currentGroupDigest;
+    private String groupEditorSessionId = java.util.UUID.randomUUID().toString();
+    private long editorSessionGeneration;
+    private long groupDraftCaptureSequence;
     /** Decoded shelf covers keyed by note id; refreshed with the entry list. */
     private java.util.Map<String, Bitmap> lastShelfCovers = new java.util.HashMap<>();
     /** Cover-pick target; null while choosing for a note that does not exist yet. */
     private String pendingCoverNoteId;
+    private String pendingCoverGroupRevision,pendingCoverGroupDigest;
     private Bitmap pendingNewNoteCover;
     private String pendingNewNoteTitle = "";
     private android.app.Dialog coverPickerDialog;
@@ -653,6 +692,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showBookshelf() {
+        bookshelfCatalogRenderedForTest=false;
         pendingVideoHubAfterSave=false;
         if (digitizationController != null) digitizationController.pause();
         handler.removeCallbacks(delayedSave);
@@ -700,6 +740,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout.LayoutParams actionsParams = matchWrap();
         actionsParams.topMargin = dp(18);
         header.addView(actions, actionsParams);
+        Button pendingVideoButton=pillButton("待处理视频",BUTTON_QUIET);
+        pendingVideoButton.setContentDescription("查看、另存或删除待处理视频结果");
+        pendingVideoButton.setOnClickListener(view->{if(android.os.Build.VERSION.SDK_INT>=27)showPendingVideoArtifacts(null);});
+        actions.addView(pendingVideoButton,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(42)));
         Button importButton = pillButton("导入笔记", BUTTON_QUIET);
         importButton.setOnClickListener(view -> launchImportNote());
         actions.addView(importButton, new LinearLayout.LayoutParams(
@@ -816,7 +860,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         return panel;
     }
 
-    private LinearLayout labeledField(String label, EditText field) {
+    private LinearLayout labeledField(String label, View field) {
         LinearLayout group = verticalPanel();
         TextView caption = text(label, 12, SECONDARY_TEXT);
         group.addView(caption, new LinearLayout.LayoutParams(
@@ -835,32 +879,55 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void loadBookshelf(int generation) {
+        final long started=android.os.SystemClock.elapsedRealtime();
+        bookshelfLoadStartedForTest=started;
+        bookshelfCatalogRenderedForTest=false;bookshelfStageForTest="LIST_LOADING";
+        bookshelfCoverCountForTest=0;bookshelfCoverFailureCountForTest=0;
         storageExecutor.execute(() -> {
             try {
-                List<NoteStore.Entry> entries = NoteStore.list(this);
-                List<NoteStore.RecoveryEntry> recoveryEntries = NoteStore.listRecovery(this);
-                java.util.Map<String, Bitmap> covers = new java.util.HashMap<>();
-                for (NoteStore.Entry entry : entries) {
-                    Bitmap cover = CoverStore.load(this, entry.id, 320);
-                    if (cover != null) {
-                        covers.put(entry.id, cover);
-                    }
+                List<NoteStore.Entry> entries=NoteStore.list(this);
+                bookshelfStageForTest="NOTES_LOADED";
+                runOnUiThread(()->{
+                    if(editorVisible||generation!=bookshelfLoadGeneration)return;
+                    lastShelfEntries=entries;lastShelfCovers=new java.util.HashMap<>();
+                    renderBookshelf(entries,java.util.Collections.emptyList());
+                    bookshelfCatalogRenderedForTest=true;bookshelfStageForTest="CATALOG_RENDERED";
+                });
+                java.util.Map<String,Bitmap> covers=new java.util.HashMap<>();
+                bookshelfStageForTest="COVERS_LOADING";
+                int completed=0,failures=0;
+                for(NoteStore.Entry entry:entries){
+                    if(generation!=bookshelfLoadGeneration)return;
+                    try{Bitmap cover=CoverStore.load(this,entry.id,320);if(cover!=null)covers.put(entry.id,cover);}
+                    catch(Exception optionalCoverFailure){failures++;}
+                    completed++;bookshelfCoverCountForTest=completed;bookshelfCoverFailureCountForTest=failures;
                 }
-                runOnUiThread(() -> {
-                    if (!editorVisible && generation == bookshelfLoadGeneration) {
-                        lastShelfCovers = covers;
-                        renderBookshelf(entries, recoveryEntries);
+                recoveryScanStateForTest="SCANNING";
+                List<NoteStore.RecoveryEntry> recovery=NoteStore.listRecovery(this);
+                recoveryScanStateForTest="COMPLETE";
+                runOnUiThread(()->{
+                    if(editorVisible||generation!=bookshelfLoadGeneration)return;
+                    lastShelfCovers=covers;lastRecoveryEntries=recovery;
+                    for(java.util.Map.Entry<String,Bitmap> item:covers.entrySet()){
+                        FrameLayout slot=shelfCoverSlots.get(item.getKey());
+                        if(slot==null||slot.getParent()==null)continue;
+                        slot.removeAllViews();ImageView image=new ImageView(this);image.setImageBitmap(item.getValue());
+                        image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setContentDescription("笔记封面");
+                        slot.addView(image,new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));
                     }
+                    if(!recovery.isEmpty())renderRecoverySection(recovery);
+                    bookshelfCatalogRenderedForTest=true;bookshelfStageForTest="RENDERED";
                 });
             } catch (Exception error) {
+                bookshelfStageForTest="FAILED";recoveryScanStateForTest="FAILED";
                 runOnUiThread(() -> {
                     if (!editorVisible && generation == bookshelfLoadGeneration) {
-                        bookshelfList.removeAllViews();
-                        TextView message = text("书架读取失败：" + safeError(error),
-                                14, Color.rgb(143, 47, 43));
-                        message.setGravity(Gravity.CENTER);
-                        bookshelfList.addView(message, new LinearLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+                        if(!bookshelfCatalogRenderedForTest){
+                            bookshelfList.removeAllViews();
+                            TextView message = text("书架读取失败：" + safeError(error),14,Color.rgb(143, 47, 43));
+                            message.setGravity(Gravity.CENTER);
+                            bookshelfList.addView(message, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+                        }
                     }
                 });
             }
@@ -877,7 +944,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void renderBookshelf(List<NoteStore.Entry> entries,
                                  List<NoteStore.RecoveryEntry> recoveryEntries) {
         bookshelfList.removeAllViews();
+        shelfCoverSlots.clear();
         lastShelfEntries = entries;
+        bookshelfCatalogRenderedForTest=true;
         lastRecoveryEntries = recoveryEntries;
         shelfSectionTitle.setText(entries.isEmpty() ? "最近笔记"
                 : String.format(Locale.CHINA, "最近笔记 · %d", entries.size()));
@@ -1167,7 +1236,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.setClickable(true);
         row.setFocusable(true);
         row.setContentDescription("打开格式笔记 " + note.title);
-        row.setOnClickListener(view -> showVaultReader(note.fileName));
+        row.setOnClickListener(view -> showVaultReader(note));
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -1211,7 +1280,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         Button open = pillButton("打开", BUTTON_TONAL);
-        open.setOnClickListener(view -> showVaultReader(note.fileName));
+        open.setOnClickListener(view -> showVaultReader(note));
         actions.addView(open, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)));
         Button more = pillButton("⋮", BUTTON_QUIET);
@@ -1283,6 +1352,275 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         showNoteVideoHub(entry);
     }
 
+    private void showPaperHandoffForCurrentNote() {
+        if(!editorVisible||currentNoteId==null||!restoreCompleted||canvasView==null){
+            Toast.makeText(this,"当前笔记尚未安全恢复，未分享或发送",Toast.LENGTH_LONG).show();return;
+        }
+        commitInlineTextEditorExcept(null);
+        handler.removeCallbacks(delayedSave);
+        if(saveInFlight||documentRevision!=lastSavedRevision){
+            pendingPaperHandoffAfterSave=true;
+            saveDocument(false);
+            Toast.makeText(this,"先保存当前笔记；保存成功后再继续",Toast.LENGTH_LONG).show();return;
+        }
+        showPaperHandoffActions();
+    }
+
+    private void showPaperHandoffActions() {
+        new AlertDialog.Builder(this).setTitle("分享与交给 Agent")
+                .setItems(new String[]{"分享当前纸面 PDF…","交给电脑 Agent…"},(dialog,which)->{
+                    if(which==0)freezeCurrentPaperPdf(true,this::sharePaperPdf);
+                    else freezeCurrentPaperPdf(false,this::showNoteWorkComposer);
+                }).setNegativeButton("取消",null).show();
+    }
+
+    private static final class PaperCapture {
+        final String noteId,title;
+        final long documentRevision,sourceRevision;
+        final int pageCount;
+        PaperCapture(String noteId,String title,long documentRevision,long sourceRevision,int pageCount){
+            this.noteId=noteId;this.title=title;this.documentRevision=documentRevision;
+            this.sourceRevision=sourceRevision;this.pageCount=pageCount;
+        }
+    }
+
+    private static final class FrozenPaper {
+        final File file;
+        final PaperCapture capture;
+        FrozenPaper(File file,PaperCapture capture){this.file=file;this.capture=capture;}
+    }
+
+    private PaperCapture capturePaperRevision() {
+        if(!restoreCompleted||canvasView==null||currentNoteId==null||documentRevision!=lastSavedRevision||saveInFlight)
+            throw new IllegalStateException("笔记尚未保存完成，未导出");
+        NoteStore.Entry source=findNoteEntry(currentNoteId);
+        if(source==null)throw new IllegalStateException("来源笔记已不存在");
+        return new PaperCapture(source.id,currentNoteTitle,documentRevision,source.updatedAt,canvasView.getPageCount());
+    }
+
+    private boolean isPaperRevisionCurrent(PaperCapture capture) {
+        if(capture==null||!restoreCompleted||canvasView==null||!capture.noteId.equals(currentNoteId)||
+                capture.documentRevision!=documentRevision||saveInFlight)return false;
+        NoteStore.Entry latest=findNoteEntry(capture.noteId);
+        return latest!=null&&latest.updatedAt==capture.sourceRevision;
+    }
+
+    private void showNoteWorkComposer(FrozenPaper frozenPaper) {
+        if(frozenPaper==null||frozenPaper.file==null||frozenPaper.capture==null)return;
+        final File pdf=frozenPaper.file;
+        final PaperCapture capture=frozenPaper.capture;
+        if(!isPaperRevisionCurrent(capture)){pdf.delete();Toast.makeText(this,"笔记在冻结 PDF 后发生变化，未发送；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+        final NoteStore.Entry source=findNoteEntry(capture.noteId);
+        if(source==null){pdf.delete();Toast.makeText(this,"来源笔记已不存在，未发送",Toast.LENGTH_LONG).show();return;}
+        final long capturedSourceRevision=capture.sourceRevision;
+        final long capturedDocumentRevision=capture.documentRevision;
+        String[] presets={"继续按我的要求工作","整理成可分享讲义","找理解漏洞并出练习","生成讲解视频"};
+        String[] ids={"continue","shareable_handout","find_gaps_and_practice","explain_video"};
+        String[] styles={"清晰讲义","手写白板","类比讲解","逐步推导","一分钟复习"};
+        String[] stylePrompts={
+                "用清晰的讲义式画面讲解。每个画面聚焦一个概念，标题简短，公式、图和解释放在一起。例题按步骤展开，减少装饰和套话。",
+                "像老师在白板上边写边讲。从问题开始，逐步画出图、写出关键公式和批注，让观看者看清每一步怎样产生。避免一次铺满整张白板。",
+                "先用一个贴近日常的类比建立直觉，再回到材料中的准确概念。明确指出类比适用的范围和容易误解的地方。",
+                "围绕一个问题展开完整推导。每一步说明使用的前提、公式或变换，突出本步变化的符号，不跳过影响理解的步骤。",
+                "做一个约一分钟的复习视频，选出最值得记住的三个要点，指出一个常见误区，最后留一道简短自测题。保留必要条件和单位，不为缩短时长改变结论。"};
+        List<AgentConnectionStore.Config> supported=new ArrayList<>();
+        for(AgentConnectionStore.Config profile:agentConnectionStore.list())if(profile.verified()&&
+                profile.transport==AgentConnectionStore.Transport.BRIDGE&&
+                profile.kind!=AgentConnectionStore.Kind.BUILTIN_VIDEO&&
+                profile.featureMap!=null&&
+                Boolean.TRUE.equals(profile.featureMap.get("task_bundle"))&&
+                Boolean.TRUE.equals(profile.featureMap.get("note_context_bundle"))&&
+                Boolean.TRUE.equals(profile.featureMap.get("run_submission")))supported.add(profile);
+        if(supported.isEmpty()){pdf.delete();Toast.makeText(this,"没有已验证且支持纸面上下文任务包的电脑 Agent；未发送",Toast.LENGTH_LONG).show();return;}
+        LinearLayout body=verticalPanel();
+        String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(supported.get(i));
+        Spinner connection=new Spinner(this);connection.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,connectionLabels));
+        body.addView(labeledField("接收 Agent",connection));
+        Spinner preset=new Spinner(this);
+        preset.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,presets));
+        body.addView(labeledField("任务预设（可编辑）",preset));
+        EditText instruction=new EditText(this);instruction.setMinLines(3);
+        instruction.setGravity(Gravity.TOP);instruction.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        instruction.setText("请结合这份笔记的纸面和可读上下文完成我的要求。");
+        body.addView(labeledField("具体要求",instruction));
+        Spinner style=new Spinner(this);
+        style.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,styles));
+        View styleField=labeledField("视频讲解风格（可选）",style);body.addView(styleField);
+        EditText stylePrompt=new EditText(this);stylePrompt.setMinLines(3);
+        stylePrompt.setGravity(Gravity.TOP);stylePrompt.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField("风格提示（可编辑）",stylePrompt);body.addView(stylePromptField);
+        styleField.setVisibility(View.GONE);stylePromptField.setVisibility(View.GONE);
+        style.setVisibility(View.GONE);stylePrompt.setVisibility(View.GONE);
+        style.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){stylePrompt.setText(stylePrompts[position]);}
+            @Override public void onNothingSelected(AdapterView<?> parent){}
+        });
+        preset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){
+                int visibility=position==3?View.VISIBLE:View.GONE;
+                styleField.setVisibility(visibility);stylePromptField.setVisibility(visibility);
+                style.setVisibility(visibility);stylePrompt.setVisibility(visibility);
+                if(position==0)instruction.setText("请结合这份笔记的纸面和可读上下文，继续按我的具体要求工作。");
+                else if(position==1)instruction.setText("请把这份笔记整理成结构清晰、适合分享的讲义，保留关键定义、推导和结论。");
+                else if(position==2)instruction.setText("请找出我可能没有理解牢的关键点，并给出有答案的练习题。");
+                else instruction.setText("请结合这份笔记的纸面和可读上下文，生成可分享的讲解视频；按所选风格完成必要的策划、素材生成与制作，并遵循目标 Agent 的授权和必要审阅流程。");
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent){}
+        });
+        final String content;
+        try{content=currentReadablePaperContext(capture.pageCount);}
+        catch(Exception error){pdf.delete();Toast.makeText(this,"无法读取本笔记的交流上下文（未发送）："+safeError(error),Toast.LENGTH_LONG).show();return;}
+        TextView scope=text("发送范围：当前整份笔记 · "+capture.pageCount+" 页 PDF · "+formatBytes(pdf.length())+
+                "\n纸面来自已冻结的页面渲染，包含背景和实际可见内容；手写墨迹、图片与其中文字通过 PDF 提供。下方是笔记原文与交流预览。\n不会附带其它笔记、连接配置或令牌。",12,SECONDARY_TEXT);
+        body.addView(scope,matchWrap());
+        TextView readable=text(content,12,INK_COLOR);readable.setTextIsSelectable(true);
+        ScrollView contentScroll=new ScrollView(this);contentScroll.addView(readable);
+        body.addView(contentScroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(190)));
+        ScrollView formScroll=new ScrollView(this);formScroll.addView(body);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("分享与交给电脑 Agent")
+                .setView(formScroll).setNegativeButton("取消",(d,w)->pdf.delete())
+                .setPositiveButton("确认并发送",(d,w)->{
+                    int selected=preset.getSelectedItemPosition();String instructionText=instruction.getText().toString().trim();
+                    if(instructionText.isEmpty()){pdf.delete();Toast.makeText(this,"任务要求不能为空，未发送",Toast.LENGTH_LONG).show();return;}
+                    NoteStore.Entry latest=findNoteEntry(currentNoteId);
+                    if(!isPaperRevisionCurrent(capture)||documentRevision!=capturedDocumentRevision||saveInFlight||latest==null||
+                            latest.updatedAt!=capturedSourceRevision){pdf.delete();Toast.makeText(this,"笔记在确认期间发生变化，请重新打开入口；未发送",Toast.LENGTH_LONG).show();return;}
+                    String styleValue=selected==3?stylePrompt.getText().toString().trim():"";
+                    String taskInput="请按任务包要求完成「"+presets[selected]+"」。实际纸面见 input/paper.pdf，可读笔记和本笔记 AI 交流见 input/content.md。\n\n"+
+                            instructionText+(styleValue.isEmpty()?"":"\n讲解风格："+styleValue);
+                    AgentConnectionStore.Config target=supported.get(connection.getSelectedItemPosition());
+                    aiExecutor.execute(()->{
+                        try {
+                            byte[] paper=readBounded(pdf,NoteWorkBundleIO.MAX_EXPANDED_BYTES);
+                            NoteWorkBundleIO.Frozen frozen=NoteWorkBundleIO.freeze(source.id,capturedSourceRevision,
+                                    capture.title,instructionText,ids[selected],styleValue,content,paper);
+                            runOnUiThread(()->new AgentTaskDialogs(this,agentConnectionStore,aiExecutor,
+                                    this::launchCreateAgentArtifactDocument).sendNoteWork(target,frozen,
+                                    "纸面任务 · "+capture.title,taskInput,capture.noteId));
+                        }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
+                                "无法冻结或打包笔记（未发送）："+safeError(error),Toast.LENGTH_LONG).show());}
+                        finally{pdf.delete();}
+                    });
+                }).create();
+        dialog.setOnCancelListener(d->pdf.delete());
+        dialog.show();
+    }
+
+    private String currentReadablePaperContext(int pageCount) throws Exception {
+        JSONObject document=canvasView.toJsonDocument(currentNoteId,currentNoteTitle);
+        StringBuilder out=new StringBuilder("# ").append(currentNoteTitle).append("\n\n")
+                .append("页面数：").append(pageCount).append("\n\n## 笔记中的可读文字\n");
+        JSONArray flows=document.optJSONArray("textFlows");
+        if(flows!=null)for(int i=0;i<flows.length();i++){
+            JSONObject flow=flows.optJSONObject(i);if(flow==null)continue;
+            String source=flow.optString("source","").trim();if(!source.isEmpty())out.append(source).append("\n\n");
+        }
+        // Schema 8 serializes authored text in textFlows and intentionally emits an
+        // empty textBoxes array; legacy boxes are migrated into flows on restore.
+        // Include any legacy standalone boxes only when there are no flows, avoiding duplicates.
+        JSONArray boxes=document.optJSONArray("textBoxes");
+        if((flows==null||flows.length()==0)&&boxes!=null)for(int i=0;i<boxes.length();i++){
+            JSONObject box=boxes.optJSONObject(i);if(box==null)continue;
+            String source=box.optString("source",box.optString("text","")).trim();
+            if(!source.isEmpty())out.append(source).append("\n\n");
+        }
+        out.append("## 本笔记 AI 交流上下文\n");
+        if(aiConversationLoading)throw new IllegalStateException("AI 交流仍在读取；请稍后重试，未发送");
+        if(!paperAiContextReadFailure.isEmpty()){
+            out.append("未包含：本笔记 AI 交流记录无法读取（").append(paperAiContextReadFailure)
+                    .append("）。确认页会明确标出；你可以取消发送。\n");
+            return out.toString();
+        }
+        boolean hadConversation=false;
+        for(AiConversationStore.VisibleEntry item:aiVisibleTimeline){
+            String value=item.text==null?"":item.text.trim();
+            if(value.isEmpty())continue;
+            hadConversation=true;
+            out.append(item.role==null?"对话":item.role).append("：").append(value).append("\n\n");
+        }
+        if(!hadConversation)out.append("未发现本笔记可读取的 AI 交流记录；其它笔记的对话不会附加。\n");
+        else if(aiConversationSnapshot!=null&&
+                (!aiConversationSnapshot.binding.semanticDigest.equals(canvasView.aiConversationFingerprint())||
+                        !aiConversationSnapshot.binding.pdfDigest.equals(aiPdfDigest)))
+            out.append("\n[这段交流来自本笔记较早的纸面版本；仍按本笔记范围提供作学习上下文。]\n");
+        return out.toString();
+    }
+
+    private static byte[] readBounded(File file,int maxBytes) throws Exception {
+        if(file==null||!file.isFile()||file.length()<1||file.length()>maxBytes)
+            throw new java.io.IOException("纸面 PDF 超过 32 MiB 或无效");
+        try(InputStream input=new FileInputStream(file);java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream()){
+            byte[] buffer=new byte[32*1024];int count;while((count=input.read(buffer))!=-1){
+                if(output.size()+count>maxBytes)throw new java.io.IOException("纸面 PDF 超过 32 MiB");
+                output.write(buffer,0,count);
+            }return output.toByteArray();
+        }
+    }
+
+    private void sharePaperPdf(FrozenPaper frozenPaper) {
+        if(frozenPaper==null||frozenPaper.file==null)return;
+        File pdf=frozenPaper.file;
+        if(!isPaperRevisionCurrent(frozenPaper.capture)){pdf.delete();Toast.makeText(this,"笔记在冻结 PDF 后发生变化，未分享；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+        try {
+            File directory=new File(getCacheDir(),"paper-share");
+            if(!directory.isDirectory()&&!directory.mkdirs())throw new java.io.IOException("无法建立分享缓存");
+            File retained=new File(directory,UUID.randomUUID()+".pdf");
+            try(InputStream input=new FileInputStream(pdf);OutputStream output=new FileOutputStream(retained)){
+                byte[] buffer=new byte[32*1024];int count;while((count=input.read(buffer))!=-1)output.write(buffer,0,count);
+            }
+            android.net.Uri uri=androidx.core.content.FileProvider.getUriForFile(this,
+                    getPackageName()+".paper-files",retained);
+            Intent send=new Intent(Intent.ACTION_SEND).setType("application/pdf")
+                    .putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            send.setClipData(ClipData.newUri(getContentResolver(),frozenPaper.capture.title+".pdf",uri));
+            startActivity(Intent.createChooser(send,"分享纸面 PDF"));
+        } catch(Exception error){Toast.makeText(this,"分享 PDF 失败："+safeError(error),Toast.LENGTH_LONG).show();}
+        finally {if(pdf!=null)pdf.delete();}
+    }
+
+    private void freezeCurrentPaperPdf(boolean retainForShare,Consumer<FrozenPaper> onSuccess) {
+        final PaperCapture capture;
+        final NoteCanvasView.PdfExportSnapshot snapshot;
+        try {
+            capture=capturePaperRevision();
+            snapshot=canvasView.createPdfExportSnapshot();
+            PdfNoteIO.chooseRasterLongEdge(snapshot.getPageCount(),snapshot.getPageWidth(),snapshot.getPageHeight());
+        } catch(Exception error){Toast.makeText(this,"无法准备纸面 PDF（未发送）："+safeError(error),Toast.LENGTH_LONG).show();return;}
+        File directory=new File(getCacheDir(),retainForShare?"paper-share":"paper-work");
+        if(!directory.isDirectory()&&!directory.mkdirs()){snapshot.close();Toast.makeText(this,"无法准备 PDF 缓存",Toast.LENGTH_LONG).show();return;}
+        FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);
+        appFrame.addView(host,new FrameLayout.LayoutParams(1,1));
+        ProgressDialog progress=new ProgressDialog(this);progress.setTitle("正在冻结整份纸面");progress.setMessage("渲染 PDF 页面…");progress.setCancelable(false);
+        AtomicBoolean cancelled=new AtomicBoolean(false),finished=new AtomicBoolean(false),started=new AtomicBoolean(false);
+        Future<?>[] future={null};
+        Runnable cleanup=()->{if(!finished.compareAndSet(false,true))return;snapshot.close();if(host.getParent()==appFrame)appFrame.removeView(host);if(progress.isShowing())progress.dismiss();};
+        progress.setButton(ProgressDialog.BUTTON_NEGATIVE,"取消",(dialog,which)->{cancelled.set(true);snapshot.close();Future<?> running=future[0];if(running!=null&&running.cancel(true)&&!started.get()){cleanup.run();}});
+        progress.show();
+        File[] produced={null};
+        try { future[0]=storageExecutor.submit(()->{
+            started.set(true);
+            Exception failure=null;
+            try {
+                File output=File.createTempFile("paper-",".pdf",directory);produced[0]=output;
+                try(OutputStream stream=new FileOutputStream(output)){
+                    PdfNoteIO.exportFlattenedPdf(snapshot,host,stream,new Handler(Looper.getMainLooper()),
+                            (page,total)->runOnUiThread(()->{if(progress.isShowing())progress.setMessage("正在渲染第 "+page+" / "+total+" 页…");}),cancelled::get);
+                }
+                if(cancelled.get()||Thread.currentThread().isInterrupted())throw new PdfNoteIO.ExportCancelledException();
+                if(output.length()<8||output.length()>PdfNoteIO.MAX_PDF_BYTES)throw new java.io.IOException("导出 PDF 无效或超过上限");
+            } catch(Exception error){failure=error;}
+            catch(OutOfMemoryError error){failure=new java.io.IOException("PDF 渲染内存不足",error);}
+            final Exception result=failure;runOnUiThread(()->{
+                cleanup.run();
+                if(result!=null){if(produced[0]!=null)produced[0].delete();if(!cancelled.get())Toast.makeText(this,"PDF 未完成（未分享或发送）："+safeError(result),Toast.LENGTH_LONG).show();return;}
+                if(!isPaperRevisionCurrent(capture)){if(produced[0]!=null)produced[0].delete();Toast.makeText(this,"笔记在冻结 PDF 期间发生变化，未分享或发送；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+                onSuccess.accept(new FrozenPaper(produced[0],capture));
+            });
+        }); } catch(java.util.concurrent.RejectedExecutionException rejected) {
+            cleanup.run();Toast.makeText(this,"导出任务无法启动（未分享或发送）",Toast.LENGTH_LONG).show();
+        }
+    }
+
     private boolean openTaskSourceNote(String noteId) {
         NoteStore.Entry entry=findNoteEntry(noteId);
         if(entry==null)return false;
@@ -1291,11 +1629,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showNoteVideoHub(NoteStore.Entry source) {
         if (source == null) { Toast.makeText(this, "找不到原笔记", Toast.LENGTH_SHORT).show(); return; }
-        String[] actions = new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频"};
+        String[] actions = android.os.Build.VERSION.SDK_INT>=27
+                ?new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频", "待处理关联视频"}
+                :new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频"};
         new AlertDialog.Builder(this).setTitle(source.title).setItems(actions, (dialog, which) -> {
             if (which == 0) startVideoForOriginalNote(source);
             else if (which == 1) newVideoTaskDialogs().showForNote(source.id);
-            else showVideoAttachments(source);
+            else if(which==2)showVideoAttachments(source);
+            else if(android.os.Build.VERSION.SDK_INT>=27)showPendingVideoArtifacts(source.id);
         }).setNegativeButton("关闭", null).show();
     }
 
@@ -1340,7 +1681,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showVideoAttachments(String noteId,String title,NoteStore.Entry source){
         storageExecutor.execute(()->{
             try{
-                List<VideoAttachmentStore.Attachment> values=videoAttachmentStore.listForNote(noteId);
+                VideoActionList loaded=readVideoActionList(noteId,title);
+                List<VideoAttachmentStore.Attachment> values=loaded.values;
                 runOnUiThread(()->{
                     if(values.isEmpty()){new AlertDialog.Builder(this).setTitle("已关联视频")
                             .setMessage("这份笔记还没有本机离线视频。生成任务并下载校验成果后，可在任务产物菜单中关联。")
@@ -1349,30 +1691,31 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         VideoAttachmentStore.Attachment a=values.get(i);boolean stale=VideoAttachmentStore.isSourceStale(source,a);
                         labels[i]=a.name+" · "+(source==null?"原笔记已删除":stale?"来源已更新，旧快照":"修订 "+a.sourceRevision)+" · "+formatBytes(a.sizeBytes);}
                     new AlertDialog.Builder(this).setTitle((source==null?"原笔记已删除 · ":title+" · ")+"已关联视频（本机离线）")
-                            .setItems(labels,(d,w)->showAttachedVideoActions(values.get(w)))
+                            .setItems(labels,(d,w)->showAttachedVideoActions(new VideoActionSelection(loaded.base,values.get(w))))
                             .setNegativeButton("关闭",null).show();
                 });
-            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"视频附件索引无法读取："+safeError(error),Toast.LENGTH_LONG).show());}
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"无法验证笔记视频；没有读取或修改附件",Toast.LENGTH_LONG).show());}
         });
     }
 
-    private void showAttachedVideoActions(VideoAttachmentStore.Attachment attachment){
+    private void showAttachedVideoActions(VideoActionSelection selection){
+        VideoAttachmentStore.Attachment attachment=selection.attachment;
         new AlertDialog.Builder(this).setTitle(attachment.name)
                 .setItems(new String[]{"离线播放","另存到文件","另存后分享","移除本笔记关联"},(d,w)->{
-                    if(w==0)playAttachedVideo(attachment);
-                    else if(w==1||w==2)launchSaveAttachedVideo(attachment,w==2);
+                    if(w==0)playAttachedVideo(selection);
+                    else if(w==1||w==2)launchSaveAttachedVideo(selection,w==2);
                     else new AlertDialog.Builder(this).setTitle("移除视频关联？")
-                            .setMessage("这会移除本机视频文件和本笔记的关联；已另存到其他位置的副本不受影响。")
-                            .setNegativeButton("取消",null).setPositiveButton("移除",(confirm,which)->storageExecutor.execute(()->{
-                                try{videoAttachmentStore.remove(attachment.id);NoteStore.Entry latest=findNoteEntry(attachment.noteId);runOnUiThread(()->showVideoAttachments(attachment.noteId,latest==null?"已删除来源":latest.title,latest));}
-                                catch(Exception error){runOnUiThread(()->Toast.makeText(this,"移除失败："+safeError(error),Toast.LENGTH_LONG).show());}
-                            })).show();
+                            .setMessage(selection.base.grouped
+                                    ?"这会从当前笔记版本移除视频关联；旧版本仍保留该视频。"
+                                    :"这会移除本机视频文件和本笔记的关联；已另存到其他位置的副本不受影响。")
+                            .setNegativeButton("取消",null).setPositiveButton("移除",(confirm,which)->removeVideoSelection(selection)).show();
                 }).show();
     }
 
-    private void playAttachedVideo(VideoAttachmentStore.Attachment attachment){
+    private void playAttachedVideo(VideoActionSelection selection){
+        VideoAttachmentStore.Attachment attachment=selection.attachment;
         storageExecutor.execute(()->{
-            try{File verified=videoAttachmentStore.openVerified(attachment);runOnUiThread(()->{
+            try{File verified=openVideoSelection(selection);runOnUiThread(()->{
                 VideoView player=new VideoView(this);player.setMediaController(new android.widget.MediaController(this));
                 AlertDialog dialog=new AlertDialog.Builder(this).setTitle(attachment.name).setView(player)
                         .setPositiveButton("关闭",null).create();
@@ -1386,8 +1729,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         });
     }
 
-    private void launchSaveAttachedVideo(VideoAttachmentStore.Attachment attachment,boolean share){
+    private void launchSaveAttachedVideo(VideoActionSelection selection,boolean share){
+        VideoAttachmentStore.Attachment attachment=selection.attachment;
         pendingVideoAttachmentId=attachment.id;pendingVideoAttachmentShare=share;
+        pendingVideoAttachmentSelection=selection;
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("video/mp4");intent.putExtra(Intent.EXTRA_TITLE,safeFileName(attachment.name));
         startActivityForResult(intent,REQUEST_EXPORT_VIDEO_ATTACHMENT);
@@ -1572,29 +1917,123 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void attachAgentArtifact(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact) {
         if(task.noteId==null||task.noteId.isEmpty()){Toast.makeText(this,"此任务没有来源笔记",Toast.LENGTH_LONG).show();return;}
-        if(findNoteEntry(task.noteId)==null){Toast.makeText(this,"来源笔记已删除，不能新建关联",Toast.LENGTH_LONG).show();return;}
+        storageExecutor.execute(()->{
+            try{
+                NoteStore.Entry source=findNoteEntry(task.noteId);
+                if(source==null)throw new java.io.IOException("VIDEO_NOTE_NOT_FOUND");
+                VideoActionBase base=captureVideoActionBase(task.noteId,source.title);
+                runOnUiThread(()->confirmAgentArtifactAttach(task,artifact,base));
+            }catch(Exception error){
+                runOnUiThread(()->Toast.makeText(this,"无法验证来源笔记当前版本；视频没有下载或关联。",Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void downloadAndAttachAgentArtifact(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
+            VideoActionBase base){
         aiExecutor.execute(()->{
-            File temporary=null;
+            File temporary=null;VideoAttachmentStore.Attachment metadata=null;
+            PendingVideoArtifactStore pendingStore=null;PendingVideoArtifactStore.Entry operation=null;
+            boolean reservedApi=android.os.Build.VERSION.SDK_INT>=27,committed=false;
             try{
                 AgentConnectionStore.Config connection=agentConnectionStore.get(task.connectionId);
-                if(!task.matches(connection))throw new IllegalStateException("连接身份已变化，未下载或关联产物");
-                temporary=videoAttachmentDownloader.download(task,connection,artifact,new File(getCacheDir(),"agent-artifacts"));
+                if(!task.matches(connection))throw new IllegalStateException("CONNECTION_IDENTITY_CHANGED");
                 String bundleSha=new JSONObject(task.submissionJson).optString("bundle_sha256","");
-                if(!bundleSha.matches("[a-fA-F0-9]{64}"))throw new IllegalStateException("任务记录缺少已验证输入包摘要");
-                VideoAttachmentStore.Attachment attached=videoAttachmentStore.attach(task.noteId,task.noteRevision,
-                        bundleSha,task.submissionSha256,task.clientTaskId,task.remoteTaskId,task.connectionId,
-                        task.connectionRevision,task.kind.name(),task.transport.name(),task.bridgeId,task.instanceId,
-                        connection.certSha256,artifact.id,artifact.name,artifact.mediaType,
-                        artifact.sizeBytes,artifact.sha256,temporary);
-                VideoAttachmentStore.Attachment result=attached;
-                runOnUiThread(()->Toast.makeText(this,"视频已校验并关联到原笔记："+result.name,Toast.LENGTH_LONG).show());
+                if(!bundleSha.matches("[a-fA-F0-9]{64}")||!task.submissionSha256.matches("[a-fA-F0-9]{64}"))
+                    throw new IllegalStateException("TASK_SOURCE_DIGEST_INVALID");
+                metadata=createTaskVideoAttachment(task,artifact,connection,bundleSha);
+                File downloadDirectory;
+                if(reservedApi){
+                    pendingStore=new PendingVideoArtifactStore(this);
+                    operation=pendingStore.reserve(metadata,base.grouped?base.lineage:null,
+                            base.grouped?base.revision:null,base.grouped?base.digest:null);
+                    downloadDirectory=pendingStore.downloadDirectory(operation);
+                }else downloadDirectory=videoAttachmentStore.downloadStagingDirectory();
+                temporary=videoAttachmentDownloader.download(task,connection,artifact,
+                        downloadDirectory);
+                if(operation!=null){operation=pendingStore.complete(operation,temporary);temporary=null;}
+                File verifiedSource=operation==null?temporary:operation.videoFile;
+                if(base.grouped){
+                    verifyVideoBaseLineage(base);
+                    com.padnote.android.streaming.LegacyFileCapture.Result verified=
+                            com.padnote.android.streaming.LegacyFileCapture.inspect(this,verifiedSource,
+                                    com.padnote.android.streaming.StreamingGroupStore.VIDEO_MAX);
+                    com.padnote.android.streaming.StreamingGroupStore.Snapshot published=
+                            new NoteGroupFacade(this).attachVideoRevision(base.noteId,base.revision,base.digest,
+                                    metadata,verified);
+                    if(!base.lineage.equals(published.lineage)||!snapshotHasExactVideo(published,metadata))
+                        throw new java.io.IOException("VIDEO_PUBLISH_UNCONFIRMED");
+                }else{
+                    if(operation==null){
+                        videoAttachmentStore.attach(task.noteId,task.noteRevision,bundleSha,task.submissionSha256,
+                                task.clientTaskId,task.remoteTaskId,task.connectionId,task.connectionRevision,
+                                task.kind.name(),task.transport.name(),task.bridgeId,task.instanceId,connection.certSha256,
+                                artifact.id,artifact.name,artifact.mediaType,artifact.sizeBytes,artifact.sha256,verifiedSource);
+                    }else{
+                        VideoAttachmentStore.Attachment saved=videoAttachmentStore.attach(metadata,verifiedSource);
+                        if(!PendingVideoArtifactStore.sameAttachment(saved,metadata))throw new java.io.IOException("VIDEO_PUBLISH_UNCONFIRMED");
+                    }
+                }
+                committed=true;
+                String success="视频已校验并关联到原笔记："+metadata.name;
+                if(operation!=null){
+                    try{pendingStore.remove(operation);}
+                    catch(Exception cleanup){success+="；待处理副本仍保留，请在书架的待处理视频中检查";}
+                }
+                String shown=success;runOnUiThread(()->Toast.makeText(this,shown,Toast.LENGTH_LONG).show());
             }catch(Exception error){
                 java.util.function.Consumer<Exception> testSink=videoAttachmentFailureForTest;
                 if(testSink!=null)testSink.accept(error);
-                runOnUiThread(()->Toast.makeText(this,"关联视频失败："+safeError(error),Toast.LENGTH_LONG).show());
+                boolean durable=false,payloadAvailable=false,alreadyPublished=false,pendingCleared=false;
+                if(reservedApi&&pendingStore!=null&&metadata!=null){
+                    try{
+                        if(operation==null)operation=pendingStore.findOperation(metadata.id);
+                        if(operation!=null){
+                            operation=pendingStore.refresh(operation);payloadAvailable=operation.available;
+                            durable=operation.durable;
+                            if(operation.available&&operation.durable){
+                                try{alreadyPublished=videoAlreadyPublished(metadata.noteId,
+                                        base.grouped?base.lineage:null,metadata);}
+                                catch(Exception unresolved){alreadyPublished=false;}
+                                if(alreadyPublished){
+                                    try{pendingStore.remove(operation);pendingCleared=true;}catch(Exception ignored){}
+                                }else durable=true;
+                            }else if(!operation.available){
+                                try{pendingStore.cancelIncomplete(operation);operation=null;}
+                                catch(Exception cleanup){durable=operation.durable;}
+                            }
+                        }
+                    }catch(Exception preserveFailure){
+                        durable=operation!=null&&operation.durable;
+                        payloadAvailable=operation!=null&&operation.available;
+                    }
+                }
+                final String message;
+                if(alreadyPublished)message=pendingCleared?"已在当前笔记版本确认这份视频；重复结果已安全收拢。":
+                        "已确认视频在当前笔记版本中；待处理副本清理未完成，请在书架的待处理视频中检查。";
+                else if(durable&&payloadAvailable)message="附加状态未确认；已校验结果保存在书架的待处理视频中。请先检查当前笔记，再决定是否重试。";
+                else if(payloadAvailable)message="附加状态未确认；视频字节当前可校验，但持久性未确认，请立即另存。任务产物也仍在任务历史。";
+                else if(durable)message="下载或关联未完成；待处理列表保留了状态记录，原任务产物仍可从任务历史重新打开。";
+                else if(temporary!=null||reservedApi)message="视频尚未完成关联；任务产物仍可从任务历史重新打开。未验证的本地文件不会显示为已保存。";
+                else message="附加状态未确认；请从任务历史重新打开视频产物并检查当前笔记。";
+                final String shown=message;
+                runOnUiThread(()->Toast.makeText(this,shown,Toast.LENGTH_LONG).show());
+            }finally{
+                if(temporary!=null&&operation==null)temporary.delete();
             }
-            finally{if(temporary!=null)temporary.delete();}
         });
+    }
+
+    private void confirmAgentArtifactAttach(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
+            VideoActionBase base){
+        String version=base.grouped?"当前版本 "+base.revision.substring(0,Math.min(12,base.revision.length())):"当前本机笔记";
+        String failureOutcome=android.os.Build.VERSION.SDK_INT>=27
+                ?"若下载期间笔记更新，本次关联会取消，视频会保留在待处理列表。"
+                :"若下载期间笔记更新，本次关联会取消；视频仍可从任务历史重新打开。";
+        new AlertDialog.Builder(this).setTitle("关联已校验视频")
+                .setMessage("将任务产物“"+artifact.name+"”关联到“"+base.title+"”的"+version+"。"+failureOutcome)
+                .setNegativeButton("取消",null)
+                .setPositiveButton("下载并关联",(dialog,which)->downloadAndAttachAgentArtifact(task,artifact,base)).show();
     }
 
     private void launchAgentArtifactSave(AgentTaskStore.Task task, AgentTaskStore.Artifact artifact,
@@ -1700,12 +2139,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         });
 
         Bitmap cover = lastShelfCovers.get(entry.id);
+        FrameLayout coverSlot = new FrameLayout(this);
+        coverSlot.setContentDescription("笔记封面槽位");
+        shelfCoverSlots.put(entry.id, coverSlot);
         if (cover != null) {
-            LinearLayout.LayoutParams plateParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(126));
-            plateParams.setMargins(0, 0, 0, dp(16));
-            card.addView(coverPlate(cover), plateParams);
+            ImageView image = new ImageView(this);
+            image.setImageBitmap(cover);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            image.setContentDescription("笔记封面");
+            coverSlot.addView(image, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        } else {
+            coverSlot.setBackground(roundedBackground(Color.rgb(244,241,232), Color.TRANSPARENT, 12));
         }
+        LinearLayout.LayoutParams plateParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(126));
+        plateParams.setMargins(0, 0, 0, dp(16));
+        card.addView(coverSlot, plateParams);
 
         TextView title = text(entry.title, 17, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -1750,6 +2200,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      * chosen bitmap is parked on {@link #pendingNewNoteCover} instead.
      */
     private void showCoverPicker(String noteId) {
+        pendingCoverNoteId=noteId;pendingCoverGroupRevision=null;pendingCoverGroupDigest=null;
+        if(noteId!=null)try{com.padnote.android.streaming.StreamingGroupStore.Snapshot base=new NoteGroupFacade(this).openGroup(noteId);
+            if(base!=null){pendingCoverGroupRevision=base.revision;pendingCoverGroupDigest=base.digest;}}
+        catch(Exception error){Toast.makeText(this,"无法确认封面目标版本",Toast.LENGTH_LONG).show();return;}
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(14), dp(24), dp(6));
@@ -1828,6 +2282,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         image.setImageBitmap(bitmap);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         image.setContentDescription("封面：" + label);
+        frame.addView(image, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.setOnClickListener(view -> onPicked.run());
         frame.setForeground(applyThumbRipple());
         int pad = dp(2);
@@ -1852,15 +2308,34 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Toast.makeText(this, "已选封面：" + label, Toast.LENGTH_SHORT).show();
             return;
         }
+        final String revision=noteId.equals(pendingCoverNoteId)?pendingCoverGroupRevision:null;
+        final String digest=noteId.equals(pendingCoverNoteId)?pendingCoverGroupDigest:null;
+        coverMutationResult="PENDING";coverMutationFailure="NONE";
         storageExecutor.execute(() -> {
             try {
-                CoverStore.assign(this, noteId, bitmap);
+                if(revision!=null&&digest!=null)new NoteGroupFacade(this).replaceCoverRevision(noteId,revision,digest,CoverStore.encodeForGroup(bitmap));
+                else CoverStore.assign(this,noteId,bitmap);
+                coverMutationResult="PUBLISHED";
                 runOnUiThread(this::refreshBookshelf);
             } catch (Exception error) {
+                coverMutationResult="FAILED";coverMutationFailure=error.getClass().getSimpleName()+":"+safeError(error);
                 runOnUiThread(() -> Toast.makeText(this,
                         "封面保存失败：" + safeError(error), Toast.LENGTH_LONG).show());
             }
         });
+    }
+
+    private void removeCoverForNote(String noteId){
+        final com.padnote.android.streaming.StreamingGroupStore.Snapshot base;
+        try{base=new NoteGroupFacade(this).openGroup(noteId);}
+        catch(Exception error){coverMutationResult="FAILED";coverMutationFailure=error.getClass().getSimpleName();return;}
+        coverMutationResult="PENDING";coverMutationFailure="NONE";
+        storageExecutor.execute(()->{try{
+            if(base!=null)new NoteGroupFacade(this).removeCoverRevision(noteId,base.revision,base.digest);
+            else CoverStore.remove(this,noteId);
+            coverMutationResult="PUBLISHED";runOnUiThread(this::refreshBookshelf);
+        }catch(Exception error){coverMutationResult="FAILED";coverMutationFailure=error.getClass().getSimpleName()+":"+safeError(error);
+            runOnUiThread(()->Toast.makeText(this,"封面未移除："+safeError(error),Toast.LENGTH_LONG).show());}});
     }
 
     private void promptAddToPresets(Bitmap bitmap) {
@@ -2161,11 +2636,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        pendingPaperHandoffAfterRestore = false;
+        if (!entry.id.equals(currentNoteId)) pendingPaperHandoffAfterSave = false;
         if(!entry.id.equals(currentNoteId))pendingVideoHubAfterSave=false;
         bookshelfLoadGeneration += 1;
         releaseAiSelectionSnapshot();
         aiConversationLoadSerial += 1;
         aiConversationSnapshot = null;
+        paperAiContextReadFailure = "";
         aiConversationSaveFailureShown = false;
         aiVisibleTimeline.clear();
         aiMessages.clear();
@@ -2176,6 +2654,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiPdfDigestAvailable = false;
         currentNoteId = entry.id;
         currentNoteTitle = entry.title;
+        currentGroupLineage=null;currentGroupRevision=null;currentGroupDigest=null;
+        groupEditorSessionId=java.util.UUID.randomUUID().toString();groupDraftCaptureSequence=0;
+        editorSessionGeneration++;
         editorVisible = true;
         restoreCompleted = false;
         documentRevision = 0;
@@ -2217,7 +2698,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         // Long-press and the ⋮ button both land here; the list adapts to whether
         // the note currently has a cover.
         List<String> items = new ArrayList<>(java.util.Arrays.asList(
-                "重命名", "更换封面", "导出", "转为格式笔记", "视频任务与成果", "删除"));
+                "重命名", "更换封面", "导出", "分享与交给 Agent", "转为格式笔记", "视频任务与成果", "删除"));
         if (CoverStore.has(this, entry.id)) {
             items.add(2, "移除封面");
         }
@@ -2231,11 +2712,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     } else if ("更换封面".equals(label)) {
                         showCoverPicker(entry.id);
                     } else if ("移除封面".equals(label)) {
-                        CoverStore.remove(this, entry.id);
-                        refreshBookshelf();
-                        Toast.makeText(this, "已移除封面", Toast.LENGTH_SHORT).show();
+                        removeCoverForNote(entry.id);
                     } else if ("导出".equals(label)) {
                         launchExportNote(entry);
+                    } else if ("分享与交给 Agent".equals(label)) {
+                        openNote(entry);
+                        pendingPaperHandoffAfterRestore = true;
                     } else if ("转为格式笔记".equals(label)) {
                         openNoteThenDigitize(entry);
                     } else if ("视频任务与成果".equals(label)) {
@@ -2248,6 +2730,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showRenameNoteDialog(NoteStore.Entry entry) {
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot groupBase=null;
+        try{groupBase=new NoteGroupFacade(this).openGroup(entry.id);}
+        catch(Exception error){shelfRenameState="SOURCE_SNAPSHOT_FAILED";shelfRenameFailure=error.getClass().getSimpleName();Toast.makeText(this,"无法确认笔记版本",Toast.LENGTH_LONG).show();return;}
+        final com.padnote.android.streaming.StreamingGroupStore.Snapshot capturedBase=groupBase;
+        shelfRenameState="DIALOG_SHOWN";shelfRenameFailure="NONE";
         EditText input = createNoteTitleInput(entry.title, "输入新的笔记名称");
         new AlertDialog.Builder(this)
                 .setTitle("重命名笔记")
@@ -2255,11 +2742,18 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 .setNegativeButton("取消", null)
                 .setPositiveButton("保存", (dialog, which) -> {
                     String title = input.getText().toString();
+                    shelfRenameState="RENAME_PUBLISH_PENDING";
+                    shelfRenameFailure="NONE";
                     storageExecutor.execute(() -> {
                         try {
-                            NoteStore.rename(this, entry.id, title);
+                            if(capturedBase==null)NoteStore.rename(this,entry.id,title);
+                            else NoteStore.rename(this,entry.id,title,capturedBase.revision,capturedBase.digest);
+                            shelfRenameState="RENAME_PUBLISHED";
                             runOnUiThread(this::refreshBookshelf);
                         } catch (Exception error) {
+                            String code=error.getMessage();
+                            shelfRenameFailure=error.getClass().getSimpleName()+((code!=null&&code.matches("[A-Z0-9_]{1,64}"))?":"+code:"");
+                            shelfRenameState="BASE_CAS_CONFLICT".equals(code)?"RENAME_FAILED_CONFLICT":"GROUP_NOTE_RETIRED".equals(code)?"RENAME_FAILED_RETIRED":"RENAME_FAILED";
                             runOnUiThread(() -> Toast.makeText(this,
                                     "重命名失败：" + safeError(error), Toast.LENGTH_LONG).show());
                         }
@@ -2301,25 +2795,36 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void confirmDeleteNote(NoteStore.Entry entry) {
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot groupBase=null;
+        try{groupBase=new NoteGroupFacade(this).openGroup(entry.id);}
+        catch(Exception error){shelfDeleteState="SOURCE_SNAPSHOT_FAILED";shelfDeleteFailure=error.getClass().getSimpleName();Toast.makeText(this,"无法核对笔记版本",Toast.LENGTH_LONG).show();return;}
+        final com.padnote.android.streaming.StreamingGroupStore.Snapshot capturedBase=groupBase;
         int attachmentCount = 0;
         try { attachmentCount = videoAttachmentStore.countForNote(entry.id); }
         catch (Exception error) { Toast.makeText(this, "无法核对视频附件：" + safeError(error), Toast.LENGTH_LONG).show(); return; }
         final int attachedVideos = attachmentCount;
         new AlertDialog.Builder(this)
                 .setTitle("删除“" + entry.title + "”？")
-                .setMessage("删除后将从本机书架移除，无法在应用内撤销。"
-                        + (attachedVideos == 0 ? "" : "将同时删除 " + attachedVideos + " 个已关联的视频附件；此前另存到其他位置的副本不受影响。"))
+                .setMessage(capturedBase==null
+                        ? "删除后将从本机书架移除，无法在应用内撤销。"
+                            + (attachedVideos == 0 ? "" : "将同时删除 " + attachedVideos + " 个已关联的视频附件；此前另存到其他位置的副本不受影响。")
+                        : "将从本机书架移除这篇笔记。完整版本和历史会保留在本机；目前应用内的历史恢复入口尚未开放。"
+                            + (attachedVideos == 0 ? "" : "其中的 " + attachedVideos + " 个已关联视频也会随完整历史保留。"))
                 .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> storageExecutor.execute(() -> {
+                .setPositiveButton("删除", (dialog, which) -> {
+                    shelfDeleteState="DELETE_PUBLISH_PENDING";
+                    shelfDeleteFailure="NONE";
+                    storageExecutor.execute(() -> {
                     boolean noteDeleted=false;
                     try {
-                        videoAttachmentStore.removeForNote(entry.id);
-                        CoverStore.remove(this, entry.id);
-                        aiConversationStore.clear(entry.id);
-                        NoteStore.delete(this, entry.id);
+                        if(capturedBase!=null)NoteStore.delete(this,entry.id,capturedBase.revision,capturedBase.digest);
+                        else{videoAttachmentStore.removeForNote(entry.id);CoverStore.remove(this,entry.id);aiConversationStore.clear(entry.id);NoteStore.delete(this,entry.id);}
                         noteDeleted=true;
+                        shelfDeleteState="DELETE_PUBLISHED";
                         runOnUiThread(this::refreshBookshelf);
                     } catch (Exception error) {
+                        String code=error.getMessage();shelfDeleteFailure=error.getClass().getSimpleName()+((code!=null&&code.matches("[A-Z0-9_]{1,64}"))?":"+code:"");
+                        shelfDeleteState="DELETE_FAILED";
                         final boolean deleted=noteDeleted;
                         runOnUiThread(() -> {
                             if(deleted)refreshBookshelf();
@@ -2327,7 +2832,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                     "删除失败："+safeError(error),Toast.LENGTH_LONG).show();
                         });
                     }
-                }))
+                    });
+                })
                 .show();
     }
 
@@ -2413,6 +2919,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
         videoParams.leftMargin = dp(8);
         header.addView(video, videoParams);
+
+        Button paper = pillButton("分享/Agent", BUTTON_TONAL);
+        paper.setContentDescription("分享当前纸面 PDF，或将纸面和可读上下文交给电脑 Agent");
+        paper.setOnClickListener(view -> showPaperHandoffForCurrentNote());
+        LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+        paperParams.leftMargin = dp(6);
+        header.addView(paper, paperParams);
 
         statsView = text("0 笔 · 0 点", 13, Color.rgb(89, 102, 114));
         header.addView(statsView);
@@ -6260,6 +6774,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void startDigitizationForCurrentNote() {
         if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
         commitInlineTextEditorExcept(null);
+        if(documentRevision!=lastSavedRevision){
+            pendingDigitizationNoteId=currentNoteId;
+            saveDocument(false);
+            return;
+        }
+        continueDigitizationForCurrentNote();
+    }
+
+    private void continueDigitizationForCurrentNote() {
+        if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
         if (digitizationController == null) digitizationController = new DigitizationController(this, vaultStore,
                 () -> showAiManagerDialog(null));
         AiConfigStore.Profile profile = aiConfigStore.activeProfile();
@@ -6320,20 +6844,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         onApply.accept(editor.getText().toString())).show();
     }
 
-    private void showVaultReader(String fileName) {
+    private void showVaultReader(VaultStore.VaultNote note) {
         storageExecutor.execute(() -> {
             try {
-                String markdown = vaultStore.read(fileName);
-                runOnUiThread(() -> presentVaultReader(fileName, markdown));
+                VaultStore.VaultSelection selection=vaultStore.captureSelection(note);
+                runOnUiThread(() -> presentVaultReader(selection));
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "读取失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        vaultFailureMessage(error), Toast.LENGTH_LONG).show());
             }
         });
     }
 
-    private void presentVaultReader(String fileName, String markdown) {
+    private void presentVaultReader(VaultStore.VaultSelection selection) {
+        String fileName=selection.fileName;
+        String markdown=new String(selection.markdown,StandardCharsets.UTF_8);
         String[] currentSource = new String[]{markdown};
+        VaultStore.VaultSelection[] currentSelection=new VaultStore.VaultSelection[]{selection};
         AtomicBoolean readerClosed = new AtomicBoolean(false);
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -6345,6 +6872,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         body.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        Button editCurrent=pillButton("编辑源码",BUTTON_QUIET);
+        editCurrent.setContentDescription("编辑格式笔记源码");
+        body.addView(editCurrent,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,dp(42)));
         LinearLayout recovery = new LinearLayout(this);
         recovery.setOrientation(LinearLayout.VERTICAL);
         recovery.setPadding(dp(12), dp(8), dp(12), dp(8));
@@ -6356,6 +6887,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         Button viewSource = pillButton("查看源码", BUTTON_QUIET);
         Button copySource = pillButton("复制", BUTTON_QUIET);
         Button editSource = pillButton("编辑", BUTTON_QUIET);
+        editSource.setContentDescription("编辑格式笔记源码");
         Button retry = pillButton("重新显示", BUTTON_TONAL);
         actions.addView(viewSource, new LinearLayout.LayoutParams(0, dp(40), 1f));
         actions.addView(copySource, new LinearLayout.LayoutParams(0, dp(40), .7f));
@@ -6367,28 +6899,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 "格式笔记源码", currentSource[0]));
         copySource.setOnClickListener(view -> copyLocalSource(
                 "PadNote 格式笔记源码", currentSource[0]));
-        editSource.setOnClickListener(view -> editLocalDisplaySource(
-                "编辑格式笔记源码", currentSource[0], edited -> {
-                    status.setText("正在保存源码…");
-                    storageExecutor.execute(() -> {
-                        try {
-                            vaultStore.replaceRaw(fileName, edited);
-                            runOnUiThread(() -> {
-                                if (readerClosed.get()) return;
-                                currentSource[0] = edited;
-                                recovery.setVisibility(View.GONE);
-                                webHolder[0].renderDocument(edited);
-                            });
-                        } catch (Exception error) {
-                            runOnUiThread(() -> {
-                                if (readerClosed.get()) return;
-                                status.setText("源码保存失败 · 原文件未改动");
-                                Toast.makeText(this, "源码保存失败：" + safeError(error),
-                                        Toast.LENGTH_LONG).show();
-                            });
-                        }
-                    });
-                }, "修改会保存到这份格式笔记；不会请求模型。"));
+        View.OnClickListener editVaultAction=view -> showVaultEditor(currentSelection[0],currentSource[0],
+                committed -> {
+                    if(readerClosed.get())return;
+                    currentSelection[0]=committed;
+                    currentSource[0]=new String(committed.markdown,StandardCharsets.UTF_8);
+                    recovery.setVisibility(View.GONE);
+                    webHolder[0].renderDocument(currentSource[0]);
+                });
+        editSource.setOnClickListener(editVaultAction);
+        editCurrent.setOnClickListener(editVaultAction);
         retry.setOnClickListener(view -> {
             retry.setEnabled(false);
             status.setText("正在重新显示…");
@@ -6441,32 +6961,40 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void launchExportVaultFile(VaultStore.VaultNote note) {
-        pendingExportVaultFile = note.fileName;
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/markdown");
-        intent.putExtra(Intent.EXTRA_TITLE, VaultStore.sanitizeTitle(note.title) + ".md");
-        startActivityForResult(intent, REQUEST_EXPORT_VAULT);
+        storageExecutor.execute(()->{
+            try {
+                VaultStore.VaultSelection selected=vaultStore.captureSelection(note);
+                runOnUiThread(()->{
+                    pendingExportVaultSelection=selected;
+                    Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("text/markdown");
+                    intent.putExtra(Intent.EXTRA_TITLE,VaultStore.sanitizeTitle(note.title)+".md");
+                    if(vaultExportLaunchForTest!=null)vaultExportLaunchForTest.accept(intent);
+                    else startActivityForResult(intent,REQUEST_EXPORT_VAULT);
+                });
+            } catch(Exception failure) {
+                runOnUiThread(()->Toast.makeText(this,vaultFailureMessage(failure),Toast.LENGTH_LONG).show());
+            }
+        });
     }
 
     private void exportVaultFileToUri(Intent data) {
-        android.net.Uri uri = data.getData();
-        String capturedFile = pendingExportVaultFile;
-        pendingExportVaultFile = null;
+        android.net.Uri uri=data.getData();
+        VaultStore.VaultSelection captured=pendingExportVaultSelection;
+        pendingExportVaultSelection=null;
+        if(captured==null){Toast.makeText(this,"导出版本已失效；请重新选择格式笔记",Toast.LENGTH_LONG).show();return;}
         storageExecutor.execute(() -> {
             try {
-                String markdown = vaultStore.read(capturedFile);
-                try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                    if (output == null) {
-                        throw new IllegalStateException("无法打开所选位置");
-                    }
-                    output.write(markdown.getBytes(StandardCharsets.UTF_8));
+                if(vaultExportBytesForTest!=null)vaultExportBytesForTest.accept(captured.markdown.clone());
+                else try (OutputStream output = getContentResolver().openOutputStream(uri)) {
+                    if (output == null) throw new IllegalStateException("EXPORT_DESTINATION_UNAVAILABLE");
+                    output.write(captured.markdown);
                 }
-                runOnUiThread(() -> Toast.makeText(this, "已导出 Markdown",
-                        Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> {recordVaultRouteResultForTest("export_committed");Toast.makeText(this, "已导出所选版本的 Markdown",
+                        Toast.LENGTH_SHORT).show();});
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> {recordVaultRouteResultForTest("export_failed");Toast.makeText(this,
+                        "导出失败；所选版本未重新读取", Toast.LENGTH_LONG).show();});
             }
         });
     }
@@ -6501,6 +7029,474 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空", (dialog, which) -> canvasView.clearAll())
                 .show();
+    }
+
+    void setVaultRouteHooksForTest(java.util.function.Consumer<Intent> launch,java.util.function.Consumer<byte[]> exported,java.util.function.Consumer<String> result) {
+        if((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)throw new IllegalStateException("TEST_HOOKS_REQUIRE_DEBUGGABLE");
+        vaultExportLaunchForTest=launch;vaultExportBytesForTest=exported;vaultRouteResultForTest=result;
+    }
+    void setVaultStoreForTest(VaultStore store) {
+        if((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0||store==null)throw new IllegalStateException("TEST_HOOKS_REQUIRE_DEBUGGABLE");
+        vaultStore=store;
+    }
+    void openVaultForTest(VaultStore.VaultNote note){showVaultReader(note);}
+    boolean bookshelfCoverSlotReadyForTest(String noteId){
+        FrameLayout slot=shelfCoverSlots.get(noteId);
+        return slot!=null&&slot.getVisibility()==View.VISIBLE&&slot.getHeight()>0&&slot.getParent()!=null;
+    }
+    String bookshelfLoadDiagnosticForTest(){
+        org.json.JSONObject result=new org.json.JSONObject();
+        try{result.put("catalog_rendered",bookshelfCatalogRenderedForTest);result.put("stage",bookshelfStageForTest);
+            result.put("notes",lastShelfEntries.size());result.put("note_count",lastShelfEntries.size());
+            result.put("covers",bookshelfCoverCountForTest);result.put("cover_failures",bookshelfCoverFailureCountForTest);
+            result.put("elapsed_ms",Math.max(0,android.os.SystemClock.elapsedRealtime()-bookshelfLoadStartedForTest));
+            result.put("recovery_scan",recoveryScanStateForTest);result.put("note_list",new org.json.JSONObject(NoteStore.listDiagnosticForTest(this)));}
+        catch(Exception unavailable){try{result.put("diagnostic_error",unavailable.getClass().getSimpleName());}catch(Exception ignored){}}
+        return result.toString();
+    }
+    String bookshelfRenameDiagnosticForTest(){return shelfRenameState;}
+    String bookshelfRenameFailureEvidenceForTest(){return shelfRenameFailure;}
+    String bookshelfDeleteDiagnosticForTest(){return shelfDeleteState;}
+    String bookshelfDeleteFailureEvidenceForTest(){return shelfDeleteFailure;}
+    String coverMutationResultForTest(){return coverMutationResult;}
+    String coverMutationFailureEvidenceForTest(){return coverMutationFailure;}
+    String groupRevisionForTest(){return currentGroupRevision;}
+    String groupDigestForTest(){return currentGroupDigest;}
+    void installDigitizationControllerForTest(DigitizationController value){digitizationController=value;}
+    DigitizationController digitizationControllerForTest(){return digitizationController;}
+    void requestDigitizationForTest(){startDigitizationForCurrentNote();}
+    String saveStatusForTest(){return saveStatusView==null?"":String.valueOf(saveStatusView.getText());}
+    String editorOpenStateForTest(String expectedNoteId,String expectedRevision,String expectedDigest){
+        org.json.JSONObject state=new org.json.JSONObject();
+        try{state.put("editorVisible",editorVisible);state.put("restoreCompleted",restoreCompleted);
+            state.put("currentNoteIdMatchesSynthetic",expectedNoteId!=null&&expectedNoteId.equals(currentNoteId));
+            state.put("currentGroupBaseMatches",expectedRevision!=null&&expectedDigest!=null&&expectedRevision.equals(currentGroupRevision)&&expectedDigest.equals(currentGroupDigest));
+            state.put("canvasPresent",canvasView!=null);state.put("canvasEnabled",canvasView!=null&&canvasView.isEnabled());}
+        catch(Exception impossible){throw new AssertionError(impossible);}return state.toString();
+    }
+    void recordVaultRouteResultForTest(String result){java.util.function.Consumer<String> sink=vaultRouteResultForTest;if(sink!=null)sink.accept(result);}
+    void showVaultMoreForTest(VaultStore.VaultNote note){showVaultMoreMenu(note);}
+    void launchVaultExportForTest(VaultStore.VaultNote note){launchExportVaultFile(note);}
+    void completeVaultExportForTest(Intent result){exportVaultFileToUri(result);}
+    private void showVaultEditor(VaultStore.VaultSelection base,String markdown,
+                                 java.util.function.Consumer<VaultStore.VaultSelection> onSaved) {
+        EditText editor=new EditText(this);
+        editor.setText(markdown);editor.setGravity(Gravity.TOP|Gravity.START);editor.setTypeface(Typeface.MONOSPACE);
+        editor.setMinLines(10);editor.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        editor.setFilters(new InputFilter[]{new InputFilter.LengthFilter(500_000)});
+        TextView status=text("保存会基于打开时选中的版本。冲突时草稿会保留。",12,SECONDARY_TEXT);
+        Button retryOnCurrent=pillButton("基于当前版本重试",BUTTON_QUIET);retryOnCurrent.setVisibility(View.GONE);
+        LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);
+        content.addView(status,matchWrap());content.addView(editor,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,dp(360)));content.addView(retryOnCurrent,matchWrap());
+        VaultStore.VaultSelection[] selected={base};
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("编辑格式笔记源码")
+                .setView(content).setNegativeButton("关闭",null).setPositiveButton("保存",null).create();
+        retryOnCurrent.setOnClickListener(v->storageExecutor.execute(()->{
+            try {
+                VaultStore.VaultSelection latest=vaultStore.captureCurrentSelection(selected[0]);
+                runOnUiThread(()->new AlertDialog.Builder(this).setTitle("确认使用当前版本")
+                        .setMessage("这份草稿来自较早版本。只有确认后才会以当前版本作为新的保存基线；草稿内容保持不变。")
+                        .setNegativeButton("继续保留草稿",null)
+                        .setPositiveButton("确认并保存草稿",(d,w)->{selected[0]=latest;saveVaultDraft(dialog,editor,status,retryOnCurrent,selected,onSaved);})
+                        .show());
+            } catch(Exception failure) {
+                runOnUiThread(()->status.setText(getString(R.string.vault_failure_draft_retained, vaultFailureMessage(failure))));
+            }
+        }));
+        dialog.setOnShowListener(ignored->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->
+                saveVaultDraft(dialog,editor,status,retryOnCurrent,selected,onSaved)));
+        dialog.show();
+    }
+
+    private void saveVaultDraft(AlertDialog dialog,EditText editor,TextView status,Button retryOnCurrent,
+                                VaultStore.VaultSelection[] selected,java.util.function.Consumer<VaultStore.VaultSelection> onSaved) {
+        String draft=editor.getText().toString();
+        status.setText("正在保存源码…");dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        storageExecutor.execute(()->{
+            try {
+                VaultStore.VaultSelection committed=vaultStore.replaceSelection(selected[0],draft);
+                runOnUiThread(()->{if(!isFinishing()){selected[0]=committed;recordVaultRouteResultForTest("edit_committed");onSaved.accept(committed);dialog.dismiss();}});
+            } catch(Exception failure) {
+                runOnUiThread(()->{
+                    if(isFinishing())return;
+                    recordVaultRouteResultForTest("edit_failed_draft_retained");
+                    status.setText(getString(R.string.vault_failure_draft_retained_retry, vaultFailureMessage(failure)));
+                    retryOnCurrent.setVisibility(View.VISIBLE);
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                });
+            }
+        });
+    }
+
+    private String vaultFailureMessage(Exception failure) {
+        String code=failure==null?"":String.valueOf(failure.getMessage());
+        if(code.contains("BASE_CAS_CONFLICT")||code.contains("BASE_CONTENT_CONFLICT"))return "笔记版本已更新，本次操作未应用";
+        if(code.contains("RETIRED"))return "笔记已归档，格式笔记不可修改";
+        if(code.contains("MARKER")||code.contains("OWNER")||code.contains("GROUP_"))return "笔记材料校验或版本检查失败；请检查当前版本后决定是否重试";
+        return "格式笔记操作失败；草稿仍保留，请检查当前版本后决定是否重试";
+    }
+
+    private VideoActionList readVideoActionList(String noteId,String title)throws Exception {
+        if(noteId==null||noteId.isEmpty())throw new java.io.IOException("VIDEO_NOTE_ID_REQUIRED");
+        if(android.os.Build.VERSION.SDK_INT>=27){
+            try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot snapshot=
+                        new NoteGroupFacade(this).openGroup(noteId);
+                if(snapshot!=null){
+                    VideoActionBase base=new VideoActionBase(noteId,snapshot.lineage,snapshot.revision,
+                            snapshot.digest,title,true);
+                    return new VideoActionList(base,GroupAuthorityBridge.videoViews(snapshot));
+                }
+                VideoActionBase base=new VideoActionBase(noteId,null,null,null,title,false);
+                return new VideoActionList(base,videoAttachmentStore.listLegacyForNote(noteId));
+            }
+        }
+        VideoActionBase base=new VideoActionBase(noteId,null,null,null,title,false);
+        return new VideoActionList(base,videoAttachmentStore.listLegacyForNote(noteId));
+    }
+
+    private VideoActionBase captureVideoActionBase(String noteId,String title)throws Exception {
+        if(noteId==null||noteId.isEmpty())throw new java.io.IOException("VIDEO_NOTE_ID_REQUIRED");
+        if(android.os.Build.VERSION.SDK_INT>=27){
+            try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot snapshot=
+                        new NoteGroupFacade(this).openGroup(noteId);
+                if(snapshot!=null)return new VideoActionBase(noteId,snapshot.lineage,snapshot.revision,
+                        snapshot.digest,title,true);
+                if(findNoteEntry(noteId)==null)throw new java.io.IOException("VIDEO_NOTE_NOT_FOUND");
+                return new VideoActionBase(noteId,null,null,null,title,false);
+            }
+        }
+        if(findNoteEntry(noteId)==null)throw new java.io.IOException("VIDEO_NOTE_NOT_FOUND");
+        return new VideoActionBase(noteId,null,null,null,title,false);
+    }
+
+    private void removeVideoSelection(VideoActionSelection selection){
+        storageExecutor.execute(()->{
+            try{
+                if(selection.base.grouped){
+                    verifyVideoBaseLineage(selection.base);
+                    new NoteGroupFacade(this).removeVideoRevision(selection.base.noteId,
+                            selection.base.revision,selection.base.digest,selection.attachment.id);
+                    runOnUiThread(()->{
+                        Toast.makeText(this,"已从当前笔记版本移除；旧版本仍保留该视频",Toast.LENGTH_LONG).show();
+                        NoteStore.Entry latest=findNoteEntry(selection.base.noteId);
+                        showVideoAttachments(selection.base.noteId,latest==null?selection.base.title:latest.title,latest);
+                    });
+                }else{
+                    videoAttachmentStore.remove(selection.attachment.id);
+                    runOnUiThread(()->{
+                        Toast.makeText(this,"已移除视频关联",Toast.LENGTH_LONG).show();
+                        NoteStore.Entry latest=findNoteEntry(selection.base.noteId);
+                        showVideoAttachments(selection.base.noteId,latest==null?selection.base.title:latest.title,latest);
+                    });
+                }
+            }catch(Exception error){
+                String message=selection.base.grouped?groupVideoFailureMessage(error,"移除"):
+                        "移除状态未确认；请重新打开视频列表核实后再处理。";
+                runOnUiThread(()->Toast.makeText(this,message,Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private String groupVideoFailureMessage(Exception error,String action){
+        String code=error==null?"":error.getMessage();
+        if("BASE_CAS_CONFLICT".equals(code))return "笔记版本已更新；本次未"+action+"，请重新打开视频列表后再试。";
+        if("GROUP_NOTE_RETIRED".equals(code))return "笔记已删除；本次未"+action+"。";
+        return "无法验证笔记当前版本；本次操作状态未确认，请重新打开视频列表核实。";
+    }
+
+    private void verifyVideoBaseLineage(VideoActionBase base)throws Exception {
+        if(base==null||!base.grouped||base.lineage==null)throw new java.io.IOException("GROUP_VIDEO_BASE_INVALID");
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot current=
+                new NoteGroupFacade(this).openGroup(base.noteId);
+        if(current==null||!base.lineage.equals(current.lineage))
+            throw new java.io.IOException("BASE_CAS_CONFLICT");
+    }
+
+    private boolean videoAlreadyPublished(String noteId,String expectedLineage,
+            VideoAttachmentStore.Attachment expected)throws Exception {
+        if(noteId==null||expected==null||!noteId.equals(expected.noteId))
+            throw new java.io.IOException("VIDEO_RECONCILE_TARGET_INVALID");
+        if(android.os.Build.VERSION.SDK_INT>=27){
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot group=new NoteGroupFacade(this).openGroup(noteId);
+            if(group!=null){
+                if(expectedLineage==null||!expectedLineage.equals(group.lineage))throw new java.io.IOException("VIDEO_LINEAGE_CHANGED");
+                return snapshotHasExactVideo(group,expected);
+            }
+            if(expectedLineage!=null)throw new java.io.IOException("VIDEO_LINEAGE_CHANGED");
+            try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+                for(VideoAttachmentStore.Attachment item:videoAttachmentStore.listLegacyForNote(noteId))
+                    if(item.id.equals(expected.id)){
+                        if(!PendingVideoArtifactStore.sameAttachment(item,expected))
+                            throw new java.io.IOException("VIDEO_IDENTITY_CONFLICT");
+                        File file=videoAttachmentStore.openVerified(item);
+                        com.padnote.android.streaming.LegacyFileCapture.inspect(this,file,expected.sizeBytes);
+                        return true;
+                    }
+            }
+            return false;
+        }
+        for(VideoAttachmentStore.Attachment item:videoAttachmentStore.listForNote(noteId))
+            if(item.id.equals(expected.id)){
+                if(!PendingVideoArtifactStore.sameAttachment(item,expected))throw new java.io.IOException("VIDEO_IDENTITY_CONFLICT");
+                videoAttachmentStore.openVerified(item);return true;
+            }
+        return false;
+    }
+
+    private boolean snapshotHasExactVideo(com.padnote.android.streaming.StreamingGroupStore.Snapshot snapshot,
+            VideoAttachmentStore.Attachment expected)throws Exception {
+        if(snapshot==null||expected==null||!snapshot.localId.equals(expected.noteId))return false;
+        for(VideoAttachmentStore.Attachment item:GroupAuthorityBridge.videoViews(snapshot))
+            if(item.id.equals(expected.id)){
+                if(!PendingVideoArtifactStore.sameAttachment(item,expected))
+                    throw new java.io.IOException("VIDEO_IDENTITY_CONFLICT");
+                // This projects from the immutable winning revision and verifies the member bytes.
+                GroupAuthorityBridge.videoProjection(this,snapshot,expected);
+                return true;
+            }
+        return false;
+    }
+
+    private File openVideoSelection(VideoActionSelection selection)throws Exception {
+        if(!selection.base.grouped)return videoAttachmentStore.openVerified(selection.attachment);
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot captured=
+                new NoteGroupFacade(this).openGroupRevision(selection.base.noteId,
+                        selection.base.revision,selection.base.digest);
+        if(!selection.base.lineage.equals(captured.lineage))throw new java.io.IOException("GROUP_VIDEO_LINEAGE_CHANGED");
+        return GroupAuthorityBridge.videoProjection(this,captured,selection.attachment);
+    }
+
+    private VideoAttachmentStore.Attachment createTaskVideoAttachment(AgentTaskStore.Task task,
+            AgentTaskStore.Artifact artifact,AgentConnectionStore.Config connection,String bundleSha)throws Exception {
+        String id=UUID.randomUUID().toString();
+        return new VideoAttachmentStore.Attachment(id,task.noteId,task.noteRevision,bundleSha,
+                task.submissionSha256,task.connectionRevision,task.kind.name(),task.transport.name(),
+                connection.certSha256,task.clientTaskId,task.remoteTaskId,task.connectionId,
+                task.bridgeId,task.instanceId,artifact.id,artifact.name,artifact.mediaType,
+                artifact.sizeBytes,artifact.sha256,"video-"+id+".mp4",System.currentTimeMillis(),
+                "computer_task","linked_note",task.noteId,1,"source_and_task_payload","verified_local_copy");
+    }
+
+    private void launchSavePendingVideo(PendingVideoArtifactStore.Entry entry){
+        pendingVideoArtifactExport=entry;
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("video/mp4");intent.putExtra(Intent.EXTRA_TITLE,safeFileName(entry.attachment.name));
+        startActivityForResult(intent,REQUEST_EXPORT_PENDING_VIDEO);
+    }
+
+    private void exportPendingVideoToUri(android.net.Uri uri){
+        PendingVideoArtifactStore.Entry selected=pendingVideoArtifactExport;pendingVideoArtifactExport=null;
+        storageExecutor.execute(()->{
+            boolean saved=false;
+            try{
+                if(selected==null)throw new java.io.IOException("PENDING_VIDEO_SELECTION_MISSING");
+                PendingVideoArtifactStore.Entry verified=null;
+                for(PendingVideoArtifactStore.Entry candidate:
+                        new PendingVideoArtifactStore(this).listForNote(selected.attachment.noteId))
+                    if(candidate.operationId.equals(selected.operationId))verified=candidate;
+                if(verified==null)throw new java.io.IOException("PENDING_VIDEO_ENTRY_MISSING");
+                MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;
+                try(InputStream in=new FileInputStream(verified.videoFile);OutputStream out=getContentResolver().openOutputStream(uri)){
+                    if(out==null)throw new java.io.IOException("PENDING_VIDEO_EXPORT_TARGET_MISSING");
+                    byte[] buffer=new byte[32*1024];int n;
+                    while((n=in.read(buffer))!=-1){if(n==0)continue;total=Math.addExact(total,n);
+                        if(total>verified.attachment.sizeBytes)throw new java.io.IOException("PENDING_VIDEO_EXPORT_SIZE_CHANGED");
+                        digest.update(buffer,0,n);out.write(buffer,0,n);}
+                    out.flush();
+                }
+                if(total!=verified.attachment.sizeBytes||!verified.attachment.sha256.equalsIgnoreCase(sha256Hex(digest.digest())))
+                    throw new java.io.IOException("PENDING_VIDEO_EXPORT_HASH_CHANGED");
+                saved=true;String name=verified.attachment.name;
+                runOnUiThread(()->Toast.makeText(this,"待处理视频已校验并另存："+name,Toast.LENGTH_LONG).show());
+            }catch(Exception failure){runOnUiThread(()->Toast.makeText(this,
+                    "待处理视频另存失败；待处理副本仍保留。",Toast.LENGTH_LONG).show());}
+            finally{if(!saved)try{getContentResolver().delete(uri,null,null);}catch(Exception ignored){}}
+        });
+    }
+
+    private void showPendingVideoArtifacts(String noteId){
+        storageExecutor.execute(()->{
+            try{
+                PendingVideoArtifactStore store=new PendingVideoArtifactStore(this);
+                List<PendingVideoArtifactStore.Entry> entries=noteId==null?store.listAll():store.listForNote(noteId);
+                runOnUiThread(()->{
+                    if(entries.isEmpty()){new AlertDialog.Builder(this).setTitle("待处理关联视频")
+                            .setMessage("没有待处理的视频产物。") .setPositiveButton("关闭",null).show();return;}
+                    String[] labels=new String[entries.size()];for(int i=0;i<labels.length;i++){
+                        PendingVideoArtifactStore.Entry entry=entries.get(i);
+                        if(entry.attachment==null)labels[i]="有一条无法验证的待处理记录；原文件未删除";
+                        else labels[i]=entry.attachment.name+" · "+formatBytes(entry.attachment.sizeBytes)
+                                +(entry.available?(entry.durable?" · 已校验":" · 已校验但持久性未确认")
+                                        :" · 下载/记录待恢复");
+                    }
+                    new AlertDialog.Builder(this).setTitle("待处理关联视频")
+                            .setItems(labels,(dialog,which)->showPendingVideoActions(entries.get(which)))
+                            .setNegativeButton("关闭",null).show();
+                });
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
+                    "待处理视频无法验证；本次没有修改文件。",Toast.LENGTH_LONG).show());}
+        });
+    }
+
+    private View pendingVideoActionHeader(String title,String message){
+        LinearLayout header=new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setPadding(dp(24),dp(20),dp(24),dp(8));
+        TextView titleView=new TextView(this);
+        titleView.setText(title==null?"":title);
+        titleView.setTextAppearance(android.R.style.TextAppearance_Material_Title);
+        TextView messageView=new TextView(this);
+        messageView.setText(message==null?"":message);
+        messageView.setTextAppearance(android.R.style.TextAppearance_Material_Body1);
+        messageView.setPadding(0,dp(8),0,dp(4));
+        header.addView(titleView,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        header.addView(messageView,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        return header;
+    }
+
+    private AlertDialog.Builder pendingVideoActionList(String title,String message,String[] actions,
+            android.content.DialogInterface.OnClickListener listener){
+        return new AlertDialog.Builder(this).setCustomTitle(pendingVideoActionHeader(title,message))
+                .setItems(actions,listener);
+    }
+
+    private void showPendingVideoActions(PendingVideoArtifactStore.Entry entry){
+        if(entry==null||entry.attachment==null){
+            new AlertDialog.Builder(this).setTitle("待处理记录需要检查")
+                    .setMessage("无法验证这条记录的材料身份。原文件和未知文件均保留，请导出应用数据后再处理。")
+                    .setPositiveButton("关闭",null).show();return;
+        }
+        if(PendingVideoArtifactStore.isDeleteIncomplete(entry)){
+            new AlertDialog.Builder(this).setTitle("清理尚未完成")
+                    .setMessage("上次删除已记录，但中断后仍有本机文件。仅会继续清理本记录中可验证的文件。")
+                    .setPositiveButton("继续清理",(d,w)->removePendingVideo(entry))
+                    .setNegativeButton("关闭",null).show();return;
+        }
+        if(!entry.available){
+            pendingVideoActionList("视频结果尚未验证",
+                    "下载或记录没有完整提交。未验证文件不能重新关联或导出；任务来源仍可从任务历史查看。",
+                    new String[]{"删除这条未完成记录"},(d,w)->confirmPendingVideoRemoval(entry))
+                    .setNegativeButton("关闭",null).show();return;
+        }
+        if(!entry.durable){
+            pendingVideoActionList(entry.attachment.name,
+                    "视频字节当前可校验，但文件系统未确认其持久写入。可先另存副本；请勿重新关联。",
+                    new String[]{"另存到文件"},(d,w)->launchSavePendingVideo(entry))
+                    .setNegativeButton("关闭",null).show();return;
+        }
+        if(entry.hasUnknownChild){
+            pendingVideoActionList("待处理目录需要检查",
+                    "目录中存在无法识别的文件。已校验视频仍可另存；不会改动未知文件，也不会删除该目录。",
+                    new String[]{"另存到文件"},(d,w)->launchSavePendingVideo(entry))
+                    .setNegativeButton("关闭",null).show();return;
+        }
+        pendingVideoActionList(entry.attachment.name,
+                "附加状态未确认；已校验视频保存在本机。重新关联前会要求你明确选择来源笔记并确认其当前版本。",
+                new String[]{"重新选择来源笔记并关联","另存到文件","删除待处理副本"},(dialog,which)->{
+                    if(which==0)choosePendingVideoTarget(entry);
+                    else if(which==1)launchSavePendingVideo(entry);
+                    else confirmPendingVideoRemoval(entry);
+                }).show();
+    }
+
+    private void choosePendingVideoTarget(PendingVideoArtifactStore.Entry entry){
+        storageExecutor.execute(()->{
+            try{
+                NoteStore.Entry source=findNoteEntry(entry.attachment.noteId);
+                if(source==null)throw new java.io.IOException("VIDEO_SOURCE_NOTE_UNAVAILABLE");
+                runOnUiThread(()->pendingVideoActionList("选择任务的来源笔记",
+                        "任务来源身份固定为“"+source.title+"”。为保持来源记录一致，此待处理视频只可重新关联到这份笔记。",
+                        new String[]{source.title},(dialog,which)->preparePendingVideoRetry(entry,source))
+                        .setNegativeButton("取消",null).show());
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
+                    "原来源笔记不可用；你仍可另存或删除待处理视频。",Toast.LENGTH_LONG).show());}
+        });
+    }
+
+    private void preparePendingVideoRetry(PendingVideoArtifactStore.Entry entry,NoteStore.Entry selected){
+        storageExecutor.execute(()->{
+            try{
+                NoteStore.Entry current=findNoteEntry(selected.id);
+                if(current==null||!current.id.equals(entry.attachment.noteId))throw new java.io.IOException("VIDEO_TARGET_CHANGED");
+                VideoActionBase base=captureVideoActionBase(current.id,current.title);
+                runOnUiThread(()->new AlertDialog.Builder(this).setTitle("重新关联待处理视频")
+                        .setMessage("将“"+entry.attachment.name+"”关联到“"+base.title+"”的已捕获当前版本。任务原始来源信息会保留；这不是原先失败操作的自动重试。")
+                        .setNegativeButton("取消",null)
+                        .setPositiveButton("确认关联",(dialog,which)->retryPendingVideo(entry,base)).show());
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
+                    "无法验证当前笔记版本；待处理视频仍保留。",Toast.LENGTH_LONG).show());}
+        });
+    }
+
+    private void confirmPendingVideoRemoval(PendingVideoArtifactStore.Entry entry){
+        new AlertDialog.Builder(this).setTitle("删除待处理副本？")
+                .setMessage("只删除这份已校验的本机待处理副本，不影响任务历史或笔记版本。")
+                .setNegativeButton("取消",null).setPositiveButton("删除",(d,w)->removePendingVideo(entry)).show();
+    }
+
+    private void removePendingVideo(PendingVideoArtifactStore.Entry entry){
+        storageExecutor.execute(()->{
+            try{new PendingVideoArtifactStore(this).remove(entry);
+                runOnUiThread(()->showPendingVideoArtifacts(null));}
+            catch(Exception error){runOnUiThread(()->Toast.makeText(this,
+                    "待处理记录仍有文件；未删除未知内容。请重新打开待处理视频查看。",Toast.LENGTH_LONG).show());}
+        });
+    }
+
+    private void retryPendingVideo(PendingVideoArtifactStore.Entry entry,VideoActionBase base){
+        storageExecutor.execute(()->{
+            PendingVideoArtifactStore store=new PendingVideoArtifactStore(this);
+            boolean committed=false,exactAlreadyPublished=false;
+            try{
+                if(entry==null||!entry.available||!entry.durable||entry.attachment==null||!base.noteId.equals(entry.attachment.noteId))
+                    throw new java.io.IOException("PENDING_VIDEO_RETRY_TARGET_INVALID");
+                PendingVideoArtifactStore.Entry current=store.refresh(entry);
+                if(!current.available)throw new java.io.IOException("PENDING_VIDEO_CONTENT_UNAVAILABLE");
+                if(videoAlreadyPublished(base.noteId,base.grouped?base.lineage:null,entry.attachment)){
+                    exactAlreadyPublished=true;
+                    store.remove(current);committed=true;
+                    runOnUiThread(()->Toast.makeText(this,"已在当前笔记版本确认这份视频；重复结果已安全收拢。",Toast.LENGTH_LONG).show());
+                    return;
+                }
+                if(base.grouped){
+                    verifyVideoBaseLineage(base);
+                    com.padnote.android.streaming.LegacyFileCapture.Result verified=
+                            com.padnote.android.streaming.LegacyFileCapture.inspect(this,current.videoFile,
+                                    com.padnote.android.streaming.StreamingGroupStore.VIDEO_MAX);
+                    com.padnote.android.streaming.StreamingGroupStore.Snapshot published=
+                            new NoteGroupFacade(this).attachVideoRevision(base.noteId,base.revision,base.digest,
+                                    current.attachment,verified);
+                    if(!base.lineage.equals(published.lineage)||!snapshotHasExactVideo(published,current.attachment))
+                        throw new java.io.IOException("PENDING_VIDEO_PUBLISH_UNCONFIRMED");
+                }else{
+                    VideoAttachmentStore.Attachment saved=videoAttachmentStore.attach(current.attachment,current.videoFile);
+                    if(!PendingVideoArtifactStore.sameAttachment(saved,current.attachment))throw new java.io.IOException("PENDING_VIDEO_PUBLISH_UNCONFIRMED");
+                }
+                committed=true;
+                try{store.remove(current);
+                    runOnUiThread(()->Toast.makeText(this,"待处理视频已关联到当前笔记版本",Toast.LENGTH_LONG).show());
+                }catch(Exception cleanup){runOnUiThread(()->Toast.makeText(this,
+                        "视频已关联到当前笔记版本；待处理副本清理失败，仍可在待处理列表中检查。",Toast.LENGTH_LONG).show());}
+            }catch(Exception error){
+                if(!committed&&entry!=null&&entry.attachment!=null){
+                    try{if(videoAlreadyPublished(entry.attachment.noteId,
+                            base.grouped?base.lineage:null,entry.attachment)){
+                        exactAlreadyPublished=true;
+                        store.remove(entry);committed=true;
+                        runOnUiThread(()->Toast.makeText(this,"已在当前笔记版本确认这份视频；重复结果已安全收拢。",Toast.LENGTH_LONG).show());
+                        return;
+                    }}catch(Exception uncertain){/* Preserve the durable entry when exact publication cannot be proved. */}
+                }
+                String message=committed||exactAlreadyPublished?"已确认视频在当前笔记版本中；待处理副本清理未完成，请在书架的待处理视频中检查。":
+                        "附加状态未确认；待处理视频仍保留。请先检查当前笔记，再决定是否再次操作。";
+                runOnUiThread(()->Toast.makeText(this,message,Toast.LENGTH_LONG).show());
+            }
+        });
     }
 
     private void leaveEditorToBookshelf() {
@@ -6940,13 +7936,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            if(requestCode==REQUEST_IMPORT_COVER){pendingCoverNoteId=null;pendingCoverGroupRevision=null;pendingCoverGroupDigest=null;}
             if(requestCode==REQUEST_LIBRARY_RESTORE){LibraryBackupArchive.StagedArchive pending=pendingLibraryRestoreStage;pendingLibraryRestoreStage=null;closeRestoreStage(pending);}
             if(requestCode==REQUEST_RESTORED_MATERIAL_EXPORT){clearRestoredMaterialExportRequest();}
             if (requestCode == REQUEST_EXPORT_NOTE) {
                 pendingExportJson = null;
                 pendingExportNoteId = null;
             } else if (requestCode == REQUEST_EXPORT_VAULT) {
-                pendingExportVaultFile = null;
+                pendingExportVaultSelection = null;
             } else if (requestCode == REQUEST_EXPORT_CONTENT_OUTLINE) {
                 pendingContentOutlineMarkdown = null;
             } else if (requestCode == REQUEST_EXPORT_VIDEO_TASK) {
@@ -6954,7 +7951,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             } else if (requestCode == REQUEST_EXPORT_AGENT_ARTIFACT) {
                 clearPendingAgentArtifact();
             } else if(requestCode==REQUEST_EXPORT_VIDEO_ATTACHMENT){
-                pendingVideoAttachmentId=null;pendingVideoAttachmentShare=false;
+                pendingVideoAttachmentId=null;pendingVideoAttachmentShare=false;pendingVideoAttachmentSelection=null;
+            } else if(requestCode==REQUEST_EXPORT_PENDING_VIDEO){
+                pendingVideoArtifactExport=null;
             } else if (requestCode == REQUEST_EXPORT_RECOVERY) {
                 pendingRecoveryFile = null;
                 pendingAiConversationRecoverySnapshot = null;
@@ -6979,6 +7978,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             exportVideoTaskToUri(data.getData());
         } else if(requestCode==REQUEST_EXPORT_VIDEO_ATTACHMENT){
             exportVideoAttachmentToUri(data.getData());
+        } else if(requestCode==REQUEST_EXPORT_PENDING_VIDEO){
+            if(android.os.Build.VERSION.SDK_INT>=27)exportPendingVideoToUri(data.getData());
         } else if (requestCode == REQUEST_EXPORT_AGENT_ARTIFACT) {
             exportAgentArtifactToUri(data.getData());
         } else if (requestCode == REQUEST_EXPORT_RECOVERY) {
@@ -7132,16 +8133,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void exportVideoAttachmentToUri(android.net.Uri uri){
+        VideoActionSelection selection=pendingVideoAttachmentSelection;
         String id=pendingVideoAttachmentId;boolean share=pendingVideoAttachmentShare;
-        pendingVideoAttachmentId=null;pendingVideoAttachmentShare=false;
+        pendingVideoAttachmentId=null;pendingVideoAttachmentShare=false;pendingVideoAttachmentSelection=null;
         storageExecutor.execute(()->{
             boolean savedSuccessfully=false;
             try{
-                VideoAttachmentStore.Attachment found=null;
-                // The attachment record is reloaded by note lists; find it across current notes without trusting URI/path input.
-                for(NoteStore.Entry note:NoteStore.list(this))for(VideoAttachmentStore.Attachment item:videoAttachmentStore.listForNote(note.id))if(item.id.equals(id))found=item;
-                if(found==null)throw new IllegalStateException("视频附件已移除");
-                File source=videoAttachmentStore.openVerified(found);MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;
+                if(selection==null||!selection.attachment.id.equals(id))throw new IllegalStateException("视频附件选择已失效");
+                VideoAttachmentStore.Attachment found=selection.attachment;
+                File source=openVideoSelection(selection);MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;
                 try(InputStream in=new FileInputStream(source);OutputStream out=getContentResolver().openOutputStream(uri)){
                     if(out==null)throw new IllegalStateException("无法打开目标文件");byte[] b=new byte[64*1024];int n;
                     while((n=in.read(b))>=0)if(n>0){total+=n;if(total>found.sizeBytes)throw new IllegalStateException("视频文件大小改变");digest.update(b,0,n);out.write(b,0,n);}out.flush();
@@ -7450,11 +8450,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             JSONObject restoredDocument = null;
             String restoreError = null;
+            String restoredLineage=null,restoredRevision=null,restoredDigest=null;
             AiConversationStore.Snapshot restoredConversation = null;
             String conversationError = null;
             String pdfDigest = "";
             try {
-                restoredDocument = NoteStore.load(this, noteId);
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(this,noteId);
+                if(managed==null)restoredDocument=NoteStore.load(this,noteId);
+                else{
+                    byte[] body=managed.readSmall("body.bin",(int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX);
+                    String json=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(body)).toString();
+                    restoredDocument=NotePrecisionJsonParser.parseObject(json);
+                    restoredLineage=managed.lineage;restoredRevision=managed.revision;restoredDigest=managed.digest;
+                }
             } catch (Exception error) {
                 restoreError = "本地笔记读取失败：" + safeError(error);
             }
@@ -7474,6 +8483,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
             JSONObject document = restoredDocument;
             String errorMessage = restoreError;
+            String groupLineage=restoredLineage,groupRevision=restoredRevision,groupDigest=restoredDigest;
             AiConversationStore.Snapshot conversation = restoredConversation;
             String conversationLoadError = conversationError;
             String restoredPdfDigest = pdfDigest;
@@ -7488,6 +8498,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     restoreCompleted = true;
                     canvasView.setEnabled(true);
                     lastSavedRevision = documentRevision;
+                    currentGroupLineage=groupLineage;currentGroupRevision=groupRevision;currentGroupDigest=groupDigest;
+                    currentNoteTitle=document.optString("title",currentNoteTitle);
                     aiPdfDigest = restoredPdfDigest;
                     aiPdfDigestAvailable = !restoredPdfDigest.startsWith("!unavailable:");
                     applyRestoredAiConversation(conversation, conversationLoadError);
@@ -7499,6 +8511,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         saveStatusView.setText(pendingPageStyle.describe());
                         pendingPageStyle = null;
                     }
+                    if (pendingPaperHandoffAfterRestore) {
+                        pendingPaperHandoffAfterRestore = false;
+                        handler.post(this::showPaperHandoffForCurrentNote);
+                    }
                 } catch (Exception error) {
                     showRestoreFailure("笔记内容校验失败：" + safeError(error));
                 }
@@ -7509,6 +8525,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void applyRestoredAiConversation(AiConversationStore.Snapshot restored,
                                              String loadError) {
         aiConversationLoading = false;
+        paperAiContextReadFailure=loadError==null?"":(loadError.length()>240?loadError.substring(0,240):loadError);
         aiConversationSaveFailureShown = false;
         aiConversationSnapshot = restored;
         aiVisibleTimeline.clear();
@@ -7639,33 +8656,54 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void saveDocument(boolean showToast) {
         if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
         pendingSaveToast |= showToast;
-        if (saveInFlight) {
-            saveQueued = true;
-            return;
+        if (saveInFlight) { saveQueued=true; return; }
+        final String json,noteId=currentNoteId,noteTitle=currentNoteTitle;
+        final long savingRevision=documentRevision,saveGeneration=editorSessionGeneration;
+        final String lineage=currentGroupLineage,baseRevision=currentGroupRevision,baseDigest=currentGroupDigest;
+        final boolean managed=lineage!=null||baseRevision!=null||baseDigest!=null;
+        if(managed&&(lineage==null||baseRevision==null||baseDigest==null)){
+            saveStatusView.setText("保存基准无效 · 修改仍留在当前笔记");pendingLeaveAfterSave=false;return;
         }
-        final String json;
-        final String noteId = currentNoteId;
-        final String noteTitle = currentNoteTitle;
-        final long savingRevision = documentRevision;
-        try {
-            json = NoteJsonCodec.stringify(canvasView.toJsonDocument(noteId, noteTitle));
-            pendingUnsavedJson = json;
-        } catch (Exception error) {
-            saveStatusView.setText("生成未保存副本失败：" + safeError(error));
-            pendingLeaveAfterSave = false;
-            if (showToast) Toast.makeText(this, "无法生成保存数据", Toast.LENGTH_LONG).show();
-            return;
-        }
-        saveInFlight = true;
-        saveQueued = false;
-        saveStatusView.setText("正在保存…");
-        storageExecutor.execute(() -> {
-            try {
-                NoteStore.save(this, noteId, noteTitle, json);
-                runOnUiThread(() -> onSaveSucceeded(noteId, savingRevision));
-            } catch (Exception error) {
-                String message = safeError(error);
-                runOnUiThread(() -> onSaveFailed(noteId, message));
+        try{json=NoteJsonCodec.stringify(canvasView.toJsonDocument(noteId,noteTitle));pendingUnsavedJson=json;}
+        catch(Exception error){saveStatusView.setText("生成未保存副本失败："+safeError(error));pendingLeaveAfterSave=false;return;}
+        final String editorSession=groupEditorSessionId;
+        final long capture=managed?++groupDraftCaptureSequence:0;
+        saveInFlight=true;saveQueued=false;saveStatusView.setText("正在保存…");
+        storageExecutor.execute(()->{
+            GroupEditorDraftStore.Draft draft=null;
+            try{
+                com.padnote.android.streaming.StreamingGroupStore.Snapshot committed=null;
+                if(managed){
+                    draft=GroupEditorDraftStore.create(noteId,lineage,baseRevision,baseDigest,
+                            savingRevision,editorSession,capture,null,json);
+                    GroupEditorDraftStore.write(this,draft);
+                    committed=new NoteGroupFacade(this).saveEditorRevision(noteId,baseRevision,baseDigest,noteTitle,json);
+                    GroupEditorDraftStore.clearIfMatches(this,draft);
+                }else NoteStore.save(this,noteId,noteTitle,json);
+                final com.padnote.android.streaming.StreamingGroupStore.Snapshot saved=committed;
+                runOnUiThread(()->{
+                    if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
+                    if(saved!=null){currentGroupLineage=saved.lineage;currentGroupRevision=saved.revision;currentGroupDigest=saved.digest;}
+                    saveInFlight=false;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
+                    if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText("已保存到本机 · 可重新打开");pendingSaveToast=false;
+                        if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;continueDigitizationForCurrentNote();}
+                        if(pendingLeaveAfterSave){showBookshelf();return;}}
+                    if(saveQueued||savingRevision<documentRevision){saveQueued=false;saveDocument(false);}
+                    else if(pendingVideoHubAfterSave){pendingVideoHubAfterSave=false;NoteStore.Entry latest=findNoteEntry(noteId);if(latest!=null)showNoteVideoHub(latest);}
+                    else if(pendingPaperHandoffAfterSave){pendingPaperHandoffAfterSave=false;showPaperHandoffActions();}
+                });
+            }catch(Exception error){
+                boolean retained=false;
+                if(draft!=null)try{GroupEditorDraftStore.Draft current=GroupEditorDraftStore.read(this,noteId);retained=current!=null&&current.covers(draft);}catch(Exception ignored){}
+                final boolean hasDraft=retained;final String failure=safeError(error);
+                runOnUiThread(()->{
+                    if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
+                    saveInFlight=false;saveQueued=false;saveStatusView.setText(hasDraft?"保存失败 · 本次恢复草稿已保留，可重试或导出":"保存失败 · 未保存修改仍可重试或导出");
+                    pendingLeaveAfterSave=false;
+                    if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;Toast.makeText(this,"笔记保存失败，数字化未启动；修改仍保留在编辑器中",Toast.LENGTH_LONG).show();}
+                    if(pendingVideoHubAfterSave)pendingVideoHubAfterSave=false;
+                    if(pendingPaperHandoffAfterSave){pendingPaperHandoffAfterSave=false;Toast.makeText(this,"笔记未能保存，未分享或发送",Toast.LENGTH_LONG).show();}
+                });
             }
         });
     }
@@ -7696,6 +8734,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             NoteStore.Entry latest=findNoteEntry(noteId);
             if(latest==null)Toast.makeText(this,"保存成功后仍找不到笔记，视频入口已取消",Toast.LENGTH_LONG).show();
             else showNoteVideoHub(latest);
+            return;
+        }
+        if (pendingPaperHandoffAfterSave) {
+            pendingPaperHandoffAfterSave = false;
+            showPaperHandoffActions();
         }
     }
 
@@ -7703,6 +8746,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!noteId.equals(currentNoteId)) return;
         saveInFlight = false;
         saveQueued = false;
+        pendingPaperHandoffAfterSave = false;
         saveStatusView.setText("保存失败 · 未保存修改仍可重试或导出");
         boolean needsDialog = pendingLeaveAfterSave || pendingSaveToast;
         pendingLeaveAfterSave = false;

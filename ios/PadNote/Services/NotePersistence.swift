@@ -10,11 +10,13 @@ struct PersistedNoteDraft: Codable, Equatable {
     let schemaVersion: Int
     let revision: Int
     let document: NoteDocument
+    let baseGroupToken: NoteGroupVersionToken?
 
-    init(revision: Int, document: NoteDocument) {
+    init(revision: Int, document: NoteDocument, baseGroupToken: NoteGroupVersionToken? = nil) {
         schemaVersion = 1
         self.revision = revision
         self.document = document
+        self.baseGroupToken = baseGroupToken
     }
 
     func encoded() throws -> Data {
@@ -99,9 +101,9 @@ actor NoteDraftWorker {
         self.faultInjector = faultInjector
     }
 
-    func persist(document: NoteDocument, revision: Int) async throws -> Bool {
+    func persist(document: NoteDocument, revision: Int, baseGroupToken: NoteGroupVersionToken? = nil) async throws -> Bool {
         guard gate.shouldCommit(noteID: document.id, revision: revision) else { return false }
-        let envelope = PersistedNoteDraft(revision: revision, document: document)
+        let envelope = PersistedNoteDraft(revision: revision, document: document, baseGroupToken: baseGroupToken)
         let data = try await Task.detached(priority: .utility) { try envelope.encoded() }.value
         try Task.checkCancellation()
         guard gate.shouldCommit(noteID: document.id, revision: revision) else { return false }

@@ -42,6 +42,7 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
     public let parentTaskID: String?
     public let bundleBase64: String?
     public let bundleSHA256: String?
+    public let requiredCapability: String?
 
     enum CodingKeys: String, CodingKey {
         case clientTaskID = "client_task_id"
@@ -49,6 +50,7 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         case parentTaskID = "parent_task_id"
         case bundleBase64 = "bundle_base64"
         case bundleSHA256 = "bundle_sha256"
+        case requiredCapability = "required_capability"
     }
 
     public init(
@@ -57,13 +59,16 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         input: String,
         source: AgentTaskSource,
         bundle: Data? = nil,
-        parentTaskID: String? = nil
+        parentTaskID: String? = nil,
+        requiredCapability: String? = nil
     ) throws {
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientTaskID.isEmpty, !normalizedTitle.isEmpty, normalizedTitle.count <= 256,
               !input.isEmpty, Data(input.utf8).count <= 128 * 1024,
               !source.noteID.isEmpty,
-              (parentTaskID.map { !$0.isEmpty && bundle == nil } ?? true) else { throw AgentTaskError.invalidPayload }
+              (parentTaskID.map { !$0.isEmpty && bundle == nil } ?? true),
+              (requiredCapability == nil || requiredCapability == "note_context_bundle"),
+              (requiredCapability == nil || bundle != nil) else { throw AgentTaskError.invalidPayload }
         if let bundle, bundle.count > 8 * 1024 * 1024 { throw AgentTaskError.bundleTooLarge }
         self.clientTaskID = clientTaskID
         self.title = normalizedTitle
@@ -72,6 +77,7 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         self.parentTaskID = parentTaskID
         self.bundleBase64 = bundle?.base64EncodedString()
         self.bundleSHA256 = bundle.map { SHA256.hash(data: $0).hex }
+        self.requiredCapability = requiredCapability
     }
 
     public var canonicalData: Data {
