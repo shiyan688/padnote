@@ -18,6 +18,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -47,6 +48,9 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.VideoView;
 import android.widget.Toast;
+
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
@@ -96,7 +100,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private static final int REQUEST_LIBRARY_RESTORE = 7113;
     private static final int REQUEST_RESTORED_MATERIAL_EXPORT = 7114;
     private static final int SURFACE_COLOR = Color.rgb(244, 241, 232);
-    private static final int TOOLBAR_COLOR = Color.rgb(238, 241, 242);
+    private static final int TOOLBAR_COLOR = Color.rgb(244, 241, 232);
     private static final int INK_COLOR = Color.rgb(23, 33, 43);
     private static final float MIN_PEN_WIDTH_DP = 0.3f;
     private static final float MAX_PEN_WIDTH_DP = 8f;
@@ -154,6 +158,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private final List<OpenAiCompatibleClient.Message> aiMessages = new ArrayList<>();
 
     private FrameLayout appFrame;
+    private int lastAiFrameWidth;
+    private int lastAiFrameHeight;
+    private int aiKeyboardBaseFrameHeight;
+    private int aiImeBottomInsetPx;
+    private boolean aiImeVisible;
+    private int aiKeyboardRestoreWidth;
+    private int aiKeyboardRestoreHeight;
+    private float aiKeyboardRestoreX;
+    private float aiKeyboardRestoreY;
+    private boolean aiCardTemporarilyFitForIme;
     private FrameLayout canvasFrame;
     private LinearLayout bookshelfList;
     /** Section heading for the note grid; renderBookshelf keeps its count current. */
@@ -810,7 +824,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         button.setStateListAnimator(null);
         int fill = Color.TRANSPARENT;
         int stroke = Color.TRANSPARENT;
-        float radius = 21f;
+        float radius = 19f;
         switch (style) {
             case BUTTON_PRIMARY:
                 button.setTextSize(14);
@@ -834,6 +848,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 button.setTextSize(13);
                 button.setTextColor(SECONDARY_TEXT);
                 break;
+        }
+        if (style == BUTTON_QUIET) {
+            stroke = CARD_STROKE;
         }
         button.setBackground(roundedBackground(fill, stroke, radius));
         applyPressFeedback(button, radius);
@@ -863,15 +880,26 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private LinearLayout labeledField(String label, View field) {
         LinearLayout group = verticalPanel();
         TextView caption = text(label, 12, SECONDARY_TEXT);
+        caption.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         group.addView(caption, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        group.addView(field, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (field instanceof EditText) stylePaperInput((EditText) field);
+        LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fieldParams.topMargin = dp(4);
+        group.addView(field, fieldParams);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.bottomMargin = dp(10);
         group.setLayoutParams(params);
         return group;
+    }
+
+    private void stylePaperInput(EditText input) {
+        input.setMinHeight(dp(48));
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        input.setBackground(roundedBackground(CARD_COLOR, CARD_STROKE, 19f));
+        applyPressFeedback(input, 19f);
     }
 
     private TextView sectionCaption(String value) {
@@ -1405,6 +1433,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         return latest!=null&&latest.updatedAt==capture.sourceRevision;
     }
 
+    private void showPaperAgentUnavailableDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("先连接电脑 Agent")
+                .setMessage("还没有能接收这份笔记的电脑连接。请先连接电脑，或检查现有连接是否已验证并支持接收笔记任务。笔记没有发送。")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("连接设置", (dialog, which) -> showAgentConnectionDialog())
+                .show();
+    }
+
     private void showNoteWorkComposer(FrozenPaper frozenPaper) {
         if(frozenPaper==null||frozenPaper.file==null||frozenPaper.capture==null)return;
         final File pdf=frozenPaper.file;
@@ -1431,7 +1468,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 Boolean.TRUE.equals(profile.featureMap.get("task_bundle"))&&
                 Boolean.TRUE.equals(profile.featureMap.get("note_context_bundle"))&&
                 Boolean.TRUE.equals(profile.featureMap.get("run_submission")))supported.add(profile);
-        if(supported.isEmpty()){pdf.delete();Toast.makeText(this,"没有已验证且支持纸面上下文任务包的电脑 Agent；未发送",Toast.LENGTH_LONG).show();return;}
+        if(supported.isEmpty()){
+            pdf.delete();
+            showPaperAgentUnavailableDialog();
+            return;
+        }
         LinearLayout body=verticalPanel();
         String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(supported.get(i));
         Spinner connection=new Spinner(this);ChoiceRows.styleSpinner(connection);connection.setAdapter(ChoiceRows.spinnerAdapter(connection,connectionLabels));
@@ -2889,6 +2930,27 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiCardParams.gravity = Gravity.TOP | Gravity.START;
         appFrame.addView(aiCard, aiCardParams);
         aiCard.setVisibility(View.GONE);
+        appFrame.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> {
+            int frameWidth = right - left;
+            int frameHeight = bottom - top;
+            if (frameWidth == lastAiFrameWidth && frameHeight == lastAiFrameHeight) {
+                return;
+            }
+            lastAiFrameWidth = frameWidth;
+            lastAiFrameHeight = frameHeight;
+            handleAiCardFrameSizeChanged(frameWidth, frameHeight);
+        });
+        ViewCompat.setOnApplyWindowInsetsListener(appFrame, (view, insets) -> {
+            boolean imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime());
+            int imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            if (imeBottom > dp(120)) {
+                imeVisible = true;
+            }
+            handleAiCardImeInsetsChanged(imeVisible, imeBottom);
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(appFrame);
         return appFrame;
     }
 
@@ -2896,7 +2958,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(20), dp(12), dp(20), dp(10));
+        header.setPadding(dp(20), dp(8), dp(20), dp(8));
 
         ToolIconButton back = iconButton(ToolIconButton.Icon.BOOKSHELF,
                 "返回书架", view -> leaveEditorToBookshelf());
@@ -2905,18 +2967,18 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout titleGroup = new LinearLayout(this);
         titleGroup.setOrientation(LinearLayout.VERTICAL);
         TextView title = text(currentNoteTitle == null ? "未命名笔记" : currentNoteTitle,
-                22, INK_COLOR);
+                20, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleGroup.addView(title);
-        titleGroup.addView(text("PadNote · 单指移动 · 双指缩放 · 底部继续滚动加页",
-                12, Color.rgb(116, 128, 139)));
+        titleGroup.addView(text("纸面 · 双指缩放",
+                12, SECONDARY_TEXT));
         header.addView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         Button video = pillButton("视频", BUTTON_TONAL);
         video.setContentDescription("当前笔记的视频任务与成果");
         video.setOnClickListener(view -> showVideoHubForCurrentNote());
         LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         videoParams.leftMargin = dp(8);
         header.addView(video, videoParams);
 
@@ -2924,11 +2986,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         paper.setContentDescription("分享当前纸面 PDF，或将纸面和可读上下文交给电脑 Agent");
         paper.setOnClickListener(view -> showPaperHandoffForCurrentNote());
         LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         paperParams.leftMargin = dp(6);
         header.addView(paper, paperParams);
 
-        statsView = text("0 笔 · 0 点", 13, Color.rgb(89, 102, 114));
+        statsView = text("1/1 页 · 100%", 12, SECONDARY_TEXT);
+        statsView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        statsView.setSingleLine(true);
+        statsView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         header.addView(statsView);
         return header;
     }
@@ -2943,7 +3008,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(6), dp(10), dp(6));
+        row.setPadding(dp(8), dp(6), dp(8), dp(6));
 
         penButton = iconButton(ToolIconButton.Icon.PEN, "画笔设置", view -> {
             selectTool(NoteCanvasView.Tool.PEN);
@@ -2987,7 +3052,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     this, color, "使用" + PRESET_COLOR_NAMES[index]);
             swatch.setOnClickListener(view -> applyInkColor(color));
             colorSwatches.add(swatch);
-            LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(42), dp(46));
+            LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(48), dp(48));
             row.addView(swatch, swatchParams);
         }
 
@@ -3639,8 +3704,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                       View.OnClickListener listener) {
         ToolIconButton button = new ToolIconButton(this, icon, description);
         button.setOnClickListener(listener);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(46), dp(46));
-        params.setMargins(dp(2), 0, dp(2), 0);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(48), dp(48));
+        params.setMargins(dp(1), 0, dp(1), 0);
         button.setLayoutParams(params);
         return button;
     }
@@ -3649,7 +3714,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         View separator = new View(this);
         separator.setBackgroundColor(Color.rgb(208, 214, 218));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(1), dp(28));
-        params.setMargins(dp(6), 0, dp(6), 0);
+        params.setMargins(dp(4), 0, dp(4), 0);
         separator.setLayoutParams(params);
         return separator;
     }
@@ -3861,35 +3926,35 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private LinearLayout createAiCard() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setElevation(dp(14));
-        GradientDrawable cardBackground = roundedBackground(
-                Color.rgb(252, 251, 247), Color.rgb(190, 202, 214), 18);
+        card.setElevation(dp(7));
+        GradientDrawable cardBackground = roundedBackground(CARD_COLOR, CARD_STROKE, 20);
         card.setBackground(cardBackground);
         card.setClipToOutline(true);
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(14), dp(7), dp(6), dp(7));
-        header.setBackgroundColor(Color.rgb(40, 94, 168));
+        header.setPadding(dp(12), dp(4), dp(8), dp(4));
+        header.setBackgroundColor(ACCENT_TINT);
 
-        aiCardTitle = text("AI 助手 · 拖动这里", 15, Color.WHITE);
+        aiCardTitle = text("AI 助手", 15, INK_COLOR);
         aiCardTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         aiCardTitle.setGravity(Gravity.CENTER_VERTICAL);
         aiCardTitle.setSingleLine(true);
+        aiCardTitle.setContentDescription("AI 助手；拖动标题移动对话卡");
         aiCardTitle.setOnTouchListener(this::handleAiCardDrag);
         header.addView(aiCardTitle, new LinearLayout.LayoutParams(0, dp(42), 1f));
 
-        aiSettingsButton = aiHeaderControl("⚙", "配置 AI API");
+        aiSettingsButton = aiHeaderControl("设置", "配置 AI API");
         aiSettingsButton.setOnClickListener(view -> showAiManagerDialog(null));
         header.addView(aiSettingsButton);
-        aiMinimizeButton = aiHeaderControl("—", "最小化 AI 卡片");
+        aiMinimizeButton = aiHeaderControl("收起", "最小化 AI 卡片");
         aiMinimizeButton.setOnClickListener(view -> setAiCardMinimized(!aiCardMinimized));
         header.addView(aiMinimizeButton);
-        TextView clearConversation = aiHeaderControl("⌫", "清空本笔记 AI 对话");
+        TextView clearConversation = aiHeaderControl("清空", "清空本笔记 AI 对话");
         clearConversation.setOnClickListener(view -> confirmClearAiConversation());
         header.addView(clearConversation);
-        TextView close = aiHeaderControl("×", "关闭 AI 卡片");
+        TextView close = aiHeaderControl("关闭", "关闭 AI 卡片");
         close.setOnClickListener(view -> closeAiCard());
         header.addView(close);
         card.addView(header, new LinearLayout.LayoutParams(
@@ -3908,32 +3973,46 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiSelectionPreview = new ImageView(this);
         aiSelectionPreview.setContentDescription("本次 AI 对话使用的圈选图片");
         aiSelectionPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        aiSelectionPreview.setBackgroundColor(Color.rgb(235, 236, 232));
+        aiSelectionPreview.setBackgroundColor(SURFACE_COLOR);
         scrollContent.addView(aiSelectionPreview, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(105)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(88)));
 
-        aiStatusView = text("等待选择笔记", 12, Color.rgb(93, 105, 115));
+        // Keep the conversation immediately below its source preview so written
+        // replies have room before optional setup and shortcut controls in the scroll.
+        aiConversationView = new LinearLayout(this);
+        aiConversationView.setOrientation(LinearLayout.VERTICAL);
+        aiConversationView.setPadding(0, dp(8), 0, dp(8));
+        scrollContent.addView(aiConversationView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        aiStatusView = text("等待选择笔记", 12, SECONDARY_TEXT);
         aiStatusView.setPadding(dp(2), dp(7), dp(2), dp(5));
         aiCardBody.addView(aiStatusView);
 
         LinearLayout outputModeRow = new LinearLayout(this);
         outputModeRow.setOrientation(LinearLayout.HORIZONTAL);
         outputModeRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView outputModeLabel = text("回答显示", 12, Color.rgb(93, 105, 115));
+        TextView outputModeLabel = text("回答显示", 12, SECONDARY_TEXT);
         outputModeRow.addView(outputModeLabel,
-                new LinearLayout.LayoutParams(0, dp(38), 0.7f));
-        aiInlineOutputButton = aiCardButton("允许工具写入");
+                new LinearLayout.LayoutParams(0, dp(48), 0.7f));
+        aiInlineOutputButton = aiCardButton("允许写入");
         aiInlineOutputButton.setContentDescription("允许 AI 使用笔记工具在空白处写入");
         aiInlineOutputButton.setOnClickListener(view -> setAiOutputInline(true, true));
         outputModeRow.addView(aiInlineOutputButton,
-                new LinearLayout.LayoutParams(0, dp(38), 1f));
+                new LinearLayout.LayoutParams(0, dp(48), 1f));
         aiCardOutputButton = aiCardButton("仅卡片");
         aiCardOutputButton.setContentDescription("AI 回答只显示在对话卡片中");
         aiCardOutputButton.setOnClickListener(view -> setAiOutputInline(false, true));
-        LinearLayout.LayoutParams cardModeParams = new LinearLayout.LayoutParams(0, dp(38), 0.85f);
+        LinearLayout.LayoutParams cardModeParams = new LinearLayout.LayoutParams(0, dp(48), 0.85f);
         cardModeParams.setMargins(dp(6), 0, 0, 0);
         outputModeRow.addView(aiCardOutputButton, cardModeParams);
         scrollContent.addView(outputModeRow);
+
+        TextView quickActionsLabel = text("快捷动作", 12, SECONDARY_TEXT);
+        quickActionsLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        LinearLayout.LayoutParams quickActionsLabelParams = matchWrap();
+        quickActionsLabelParams.topMargin = dp(8);
+        scrollContent.addView(quickActionsLabel, quickActionsLabelParams);
 
         LinearLayout presets = new LinearLayout(this);
         presets.setOrientation(LinearLayout.HORIZONTAL);
@@ -3943,8 +4022,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiMarkdownButton = aiCardButton("整理 Markdown");
         aiMarkdownButton.setOnClickListener(view -> requestAiMessage(
                 "请把圈选笔记整理成结构清晰的 Markdown，保留原意、层级、公式和待办项。"));
-        presets.addView(aiExplainButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
-        LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0, dp(42), 1.35f);
+        presets.addView(aiExplainButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0, dp(48), 1.35f);
         markdownParams.setMargins(dp(8), 0, 0, 0);
         presets.addView(aiMarkdownButton, markdownParams);
         scrollContent.addView(presets);
@@ -3954,20 +4033,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 "请把圈选内容中最适合图解的关系画成一张简明示意图，调用 draw_diagram 写入笔记。"
                         + "先查看页面空白，默认放在相关原文下方；不要遮挡手写。标签用中文，辨认不清时先问我。"));
         scrollContent.addView(aiDiagramButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
-        aiMaterialsSummary = text("额外材料：未选择（默认不读取知识库）", 11, FAINT_TEXT);
+        aiMaterialsSummary = text("额外材料：未选择（默认不读取知识库）", 12, FAINT_TEXT);
         aiMaterialsSummary.setPadding(dp(4), dp(7), dp(4), dp(2));
         scrollContent.addView(aiMaterialsSummary);
         LinearLayout materialRow = new LinearLayout(this);
         materialRow.setOrientation(LinearLayout.HORIZONTAL);
         aiMaterialsButton = aiCardButton("选择额外材料");
         aiMaterialsButton.setOnClickListener(view -> showAiMaterialPicker());
-        materialRow.addView(aiMaterialsButton, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        materialRow.addView(aiMaterialsButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
         aiMaterialsPreviewButton = aiCardButton("预览");
         aiMaterialsPreviewButton.setEnabled(false);
         aiMaterialsPreviewButton.setOnClickListener(view -> showAiMaterialPreview());
-        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(0, dp(38), 0.55f);
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(0, dp(48), 0.55f);
         previewParams.setMargins(dp(6), 0, 0, 0);
         materialRow.addView(aiMaterialsPreviewButton, previewParams);
         scrollContent.addView(materialRow);
@@ -3983,13 +4062,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiReviewTranscriptCheck.setContentDescription(
                 "可选：先编辑手写转写，再交给回答模型；默认直接继续");
         scrollContent.addView(aiReviewTranscriptCheck,
-                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
-        aiConversationView = new LinearLayout(this);
-        aiConversationView.setOrientation(LinearLayout.VERTICAL);
-        aiConversationView.setPadding(0, dp(8), 0, dp(8));
-        scrollContent.addView(aiConversationView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         scrollParams.setMargins(0, dp(4), 0, dp(6));
@@ -4005,13 +4079,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiInputView.setHintTextColor(Color.rgb(137, 147, 155));
         aiInputView.setGravity(Gravity.TOP | Gravity.START);
         aiInputView.setSingleLine(false);
+        aiInputView.setMinLines(2);
         aiInputView.setMaxLines(3);
         aiInputView.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        inputRow.addView(aiInputView, new LinearLayout.LayoutParams(0, dp(62), 1f));
+        stylePaperInput(aiInputView);
+        // Let two or three lines grow with the user's font scale; longer prompts scroll
+        // inside the editor while the adjacent 48dp Send target stays reachable.
+        aiInputView.setMinHeight(dp(62));
+        inputRow.addView(aiInputView, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         aiSendButton = aiCardButton("发送");
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(74), dp(54));
+        styleAiSendButton(aiSendButton);
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(80), dp(48));
         sendParams.setMargins(dp(8), 0, 0, 0);
         inputRow.addView(aiSendButton, sendParams);
         aiSendButton.setOnClickListener(view -> {
@@ -4028,7 +4109,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiRetryButton.setVisibility(View.GONE);
         aiRetryButton.setContentDescription("使用原请求、材料范围和接收地址重试");
         aiRetryButton.setOnClickListener(view -> retryAiRequest());
-        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(dp(68), dp(54));
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(dp(72), dp(48));
         retryParams.setMargins(dp(6), 0, 0, 0);
         inputRow.addView(aiRetryButton, retryParams);
         aiCardBody.addView(inputRow);
@@ -4044,19 +4125,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiResizeHandle.setFocusable(true);
         aiResizeHandle.setOnTouchListener(this::handleAiCardResize);
         card.addView(aiResizeHandle, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         updateAiOutputModeButtons();
         return card;
     }
 
     private TextView aiHeaderControl(String symbol, String description) {
-        TextView control = text(symbol, 22, Color.WHITE);
+        TextView control = text(symbol, 11, ACCENT_COLOR);
         control.setGravity(Gravity.CENTER);
         control.setContentDescription(description);
         control.setClickable(true);
         control.setFocusable(true);
-        control.setMinWidth(dp(42));
-        control.setMinHeight(dp(42));
+        control.setMinWidth(dp(48));
+        control.setMinHeight(dp(48));
+        control.setBackground(roundedBackground(ACCENT_TINT, Color.TRANSPARENT, 19f));
+        applyPressFeedback(control, 19f);
         return control;
     }
 
@@ -4064,12 +4147,36 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         Button button = new Button(this);
         button.setText(label);
         button.setTextSize(13);
-        button.setTextColor(INK_COLOR);
+        button.setTextColor(aiButtonTextColors(INK_COLOR));
         button.setAllCaps(false);
         button.setMinWidth(0);
-        button.setMinHeight(0);
-        button.setPadding(dp(10), 0, dp(10), 0);
+        button.setMinHeight(dp(48));
+        button.setStateListAnimator(null);
+        button.setPadding(dp(12), dp(4), dp(12), dp(4));
+        button.setBackground(aiButtonBackground(CARD_COLOR, CARD_STROKE));
+        applyPressFeedback(button, 19f);
         return button;
+    }
+
+    private void styleAiSendButton(Button button) {
+        button.setTextColor(aiButtonTextColors(Color.WHITE));
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(aiButtonBackground(ACCENT_COLOR, ACCENT_COLOR));
+        applyPressFeedback(button, 19f);
+    }
+
+    private ColorStateList aiButtonTextColors(int enabledColor) {
+        return new ColorStateList(
+                new int[][] { new int[] { -android.R.attr.state_enabled }, new int[] {} },
+                new int[] { Color.rgb(137, 141, 145), enabledColor });
+    }
+
+    private StateListDrawable aiButtonBackground(int enabledColor, int enabledStroke) {
+        StateListDrawable backgrounds = new StateListDrawable();
+        backgrounds.addState(new int[] { -android.R.attr.state_enabled },
+                roundedBackground(Color.rgb(235, 233, 227), Color.rgb(220, 217, 209), 19f));
+        backgrounds.addState(new int[] {}, roundedBackground(enabledColor, enabledStroke, 19f));
+        return backgrounds;
     }
 
     void setAiOutputInline(boolean inline, boolean persist) {
@@ -4144,8 +4251,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void styleAiOutputModeButton(Button button, boolean selected) {
         button.setTextColor(selected ? Color.WHITE : INK_COLOR);
         button.setBackground(roundedBackground(
-                selected ? Color.rgb(40, 94, 168) : Color.rgb(238, 241, 243),
-                selected ? Color.rgb(40, 94, 168) : Color.rgb(188, 199, 208), 7));
+                selected ? ACCENT_COLOR : ACCENT_TINT,
+                selected ? ACCENT_COLOR : CARD_STROKE, 19f));
     }
 
     private GradientDrawable roundedBackground(int fillColor, int strokeColor, float radiusDp) {
@@ -4188,10 +4295,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (event.getActionMasked() == MotionEvent.ACTION_UP ||
                 event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             moveAiCardTo(aiCard.getX(), aiCard.getY());
-            preferences.edit()
+            if (!aiCardTemporarilyFitForIme) {
+                preferences.edit()
                     .putFloat("aiCardX", aiCard.getX())
                     .putFloat("aiCardY", aiCard.getY())
                     .apply();
+            }
             view.performClick();
             return true;
         }
@@ -4231,13 +4340,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (event.getActionMasked() == MotionEvent.ACTION_UP ||
                 event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             view.getParent().requestDisallowInterceptTouchEvent(false);
-            aiCardExpandedWidthPx = aiCard.getWidth();
-            aiCardExpandedHeightPx = aiCard.getHeight();
-            float density = getResources().getDisplayMetrics().density;
-            preferences.edit()
-                    .putFloat("aiCardWidthDp", aiCardExpandedWidthPx / density)
-                    .putFloat("aiCardHeightDp", aiCardExpandedHeightPx / density)
-                    .apply();
+            if (!aiCardTemporarilyFitForIme) {
+                aiCardExpandedWidthPx = aiCard.getWidth();
+                aiCardExpandedHeightPx = aiCard.getHeight();
+                float density = getResources().getDisplayMetrics().density;
+                preferences.edit()
+                        .putFloat("aiCardWidthDp", aiCardExpandedWidthPx / density)
+                        .putFloat("aiCardHeightDp", aiCardExpandedHeightPx / density)
+                        .apply();
+            }
             moveAiCardTo(aiCard.getX(), aiCard.getY());
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                 view.performClick();
@@ -4252,7 +4363,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         float maxX = Math.max(0, appFrame.getWidth() - aiCard.getWidth());
-        float maxY = Math.max(0, appFrame.getHeight() - aiCard.getHeight());
+        float maxY = Math.max(0, aiCardAvailableHeight() - aiCard.getHeight());
         aiCard.setX(Math.max(0, Math.min(x, maxX)));
         aiCard.setY(Math.max(0, Math.min(y, maxY)));
     }
@@ -4600,7 +4711,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiCardMinimized = minimized;
         aiCardBody.setVisibility(minimized ? View.GONE : View.VISIBLE);
         aiResizeHandle.setVisibility(minimized ? View.GONE : View.VISIBLE);
-        aiMinimizeButton.setText(minimized ? "□" : "—");
+        aiMinimizeButton.setText(minimized ? "展开" : "收起");
         aiMinimizeButton.setContentDescription(minimized ? "恢复 AI 卡片" : "最小化 AI 卡片");
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiCard.getLayoutParams();
         params.width = minimized ? dp(280) : Math.max(dp(330), aiCardExpandedWidthPx);
@@ -4622,15 +4733,123 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         int maximumWidth = appFrame.getWidth();
-        int maximumHeight = appFrame.getHeight();
+        int maximumHeight = aiCardAvailableHeight();
         int minimumWidth = Math.min(dp(330), maximumWidth);
         int minimumHeight = Math.min(dp(380), maximumHeight);
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiCard.getLayoutParams();
+        int currentWidth = params.width;
+        int currentHeight = params.height;
         params.width = Math.max(minimumWidth,
                 Math.min(Math.max(dp(330), aiCardExpandedWidthPx), maximumWidth));
         params.height = Math.max(minimumHeight,
                 Math.min(Math.max(dp(380), aiCardExpandedHeightPx), maximumHeight));
+        if (params.width != currentWidth || params.height != currentHeight) {
+            aiCard.setLayoutParams(params);
+        }
+    }
+
+    private int aiCardAvailableHeight() {
+        if (appFrame == null) {
+            return 0;
+        }
+        int frameHeight = appFrame.getHeight();
+        if (!aiImeVisible || aiImeBottomInsetPx <= 0) {
+            return frameHeight;
+        }
+        // Some Android versions resize the content frame; others keep it full-size and
+        // report the IME only through insets. Subtract only the inset portion not already
+        // reflected in the measured frame height.
+        int measuredShrink = Math.max(0, aiKeyboardBaseFrameHeight - frameHeight);
+        int remainingImeInset = Math.max(0, aiImeBottomInsetPx - measuredShrink);
+        return Math.max(1, frameHeight - remainingImeInset);
+    }
+
+    private void captureAiCardGeometryForIme() {
+        if (aiCard == null || aiCard.getVisibility() != View.VISIBLE || aiCardMinimized ||
+                aiCardTemporarilyFitForIme) {
+            return;
+        }
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiCard.getLayoutParams();
+        aiKeyboardRestoreWidth = params.width;
+        aiKeyboardRestoreHeight = params.height;
+        aiKeyboardRestoreX = aiCard.getX();
+        aiKeyboardRestoreY = aiCard.getY();
+        aiCardTemporarilyFitForIme = true;
+    }
+
+    private void fitAiCardToImeArea() {
+        if (!aiCardTemporarilyFitForIme || aiCard == null || appFrame == null ||
+                aiCard.getVisibility() != View.VISIBLE || aiCardMinimized) {
+            return;
+        }
+        fitExpandedAiCardToFrame();
+        moveAiCardTo(aiKeyboardRestoreX, aiKeyboardRestoreY);
+    }
+
+    private void handleAiCardImeInsetsChanged(boolean visible, int imeBottom) {
+        if (aiImeVisible == visible && aiImeBottomInsetPx == imeBottom) {
+            return;
+        }
+        aiImeVisible = visible;
+        aiImeBottomInsetPx = visible ? imeBottom : 0;
+        if (visible) {
+            captureAiCardGeometryForIme();
+            if (aiCardTemporarilyFitForIme) {
+                aiCard.post(this::fitAiCardToImeArea);
+            }
+        } else if (aiCardTemporarilyFitForIme && appFrame != null &&
+                (aiKeyboardBaseFrameHeight == 0 ||
+                        appFrame.getHeight() >= aiKeyboardBaseFrameHeight - dp(24))) {
+            aiCard.post(this::restoreAiCardAfterIme);
+        }
+    }
+
+    private void handleAiCardFrameSizeChanged(int frameWidth, int frameHeight) {
+        if (frameWidth <= 0 || frameHeight <= 0 || aiCard == null) {
+            return;
+        }
+        if (!aiImeVisible && !aiCardTemporarilyFitForIme) {
+            // Keep the current orientation's stable frame as the baseline. Retaining a
+            // prior taller orientation would make the next IME resize look pre-applied.
+            aiKeyboardBaseFrameHeight = frameHeight;
+            if (aiCard.getVisibility() == View.VISIBLE) {
+                aiCard.post(() -> {
+                    if (aiCard.getVisibility() != View.VISIBLE || aiImeVisible ||
+                            aiCardTemporarilyFitForIme) {
+                        return;
+                    }
+                    if (!aiCardMinimized) {
+                        fitExpandedAiCardToFrame();
+                    }
+                    moveAiCardTo(aiCard.getX(), aiCard.getY());
+                });
+            }
+            return;
+        }
+        if (aiImeVisible) {
+            captureAiCardGeometryForIme();
+            aiCard.post(this::fitAiCardToImeArea);
+            return;
+        }
+        if (aiCardTemporarilyFitForIme &&
+                frameHeight >= aiKeyboardBaseFrameHeight - dp(24)) {
+            aiCard.post(this::restoreAiCardAfterIme);
+        }
+    }
+
+    private void restoreAiCardAfterIme() {
+        if (!aiCardTemporarilyFitForIme || aiCard == null || appFrame == null || aiImeVisible ||
+                (aiKeyboardBaseFrameHeight > 0 &&
+                        appFrame.getHeight() < aiKeyboardBaseFrameHeight - dp(24))) {
+            return;
+        }
+        aiCardTemporarilyFitForIme = false;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiCard.getLayoutParams();
+        params.width = aiKeyboardRestoreWidth;
+        params.height = aiKeyboardRestoreHeight;
         aiCard.setLayoutParams(params);
+        moveAiCardTo(aiKeyboardRestoreX, aiKeyboardRestoreY);
+        aiKeyboardBaseFrameHeight = appFrame.getHeight();
     }
 
     private void updateAiCardTitle() {
@@ -5532,8 +5751,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void scrollAiConversationToBottom() {
-        if (aiConversationScroll != null) {
-            aiConversationScroll.post(() -> aiConversationScroll.fullScroll(View.FOCUS_DOWN));
+        if (aiConversationScroll != null && aiConversationView != null) {
+            aiConversationScroll.post(() -> {
+                int conversationBottom = aiConversationView.getBottom();
+                int target = Math.max(0, conversationBottom - aiConversationScroll.getHeight());
+                aiConversationScroll.scrollTo(0, target);
+            });
         }
     }
 
@@ -6390,10 +6613,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.setPadding(dp(22), dp(8), dp(22), 0);
 
         AiConfigStore.Profile active = aiConfigStore.activeProfile();
-        content.addView(text("当前使用：" + (active == null ? "未配置" : active.name),
-                13, Color.rgb(23, 33, 43)));
-        content.addView(text("点击任意配置即可切换；直连与两段式可并存。",
-                12, Color.rgb(91, 103, 113)));
+        TextView activeLabel = text("当前配置：" + (active == null ? "未配置" : active.name),
+                14, INK_COLOR);
+        activeLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        content.addView(activeLabel);
+        TextView managerHint = text("点选一项切换使用；直连和两段式配置可并存。",
+                12, SECONDARY_TEXT);
+        LinearLayout.LayoutParams managerHintParams = matchWrap();
+        managerHintParams.topMargin = dp(4);
+        content.addView(managerHint, managerHintParams);
 
         ScrollView listScroll = new ScrollView(this);
         LinearLayout profileList = new LinearLayout(this);
@@ -6403,9 +6631,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.addView(listScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
 
-        Button newButton = new Button(this);
-        newButton.setText("新建配置");
-        content.addView(newButton, matchWrap());
+        Button newButton = pillButton("新建配置", BUTTON_PRIMARY);
+        newButton.setMinHeight(dp(48));
+        LinearLayout.LayoutParams newButtonParams = matchWrap();
+        newButtonParams.topMargin = dp(8);
+        content.addView(newButton, newButtonParams);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("AI 配置")
@@ -6447,11 +6677,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(12), dp(10), dp(8), dp(10));
-        GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(10));
-        background.setColor(isActive ? Color.rgb(218, 230, 247) : Color.rgb(245, 246, 247));
-        background.setStroke(dp(1), isActive ? Color.rgb(40, 94, 168) : Color.rgb(214, 220, 224));
+        GradientDrawable background = roundedBackground(
+                isActive ? ACCENT_TINT : CARD_COLOR,
+                isActive ? ACCENT_COLOR : CARD_STROKE, 18f);
         row.setBackground(background);
+        applyPressFeedback(row, 18f);
 
         LinearLayout.LayoutParams rowParams = matchWrap();
         rowParams.topMargin = dp(6);
@@ -6483,17 +6713,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             onChanged.run();
         });
 
-        Button editButton = new Button(this);
-        editButton.setText("编辑");
-        editButton.setTextSize(11);
-        editButton.setMinWidth(dp(52));
+        Button editButton = pillButton("编辑", BUTTON_QUIET);
+        editButton.setTextSize(12);
+        editButton.setMinHeight(dp(48));
+        editButton.setMinWidth(dp(56));
         editButton.setOnClickListener(view -> showProfileEditorDialog(profile.id, onChanged));
         row.addView(editButton);
 
-        Button deleteButton = new Button(this);
-        deleteButton.setText("删除");
-        deleteButton.setTextSize(11);
-        deleteButton.setMinWidth(dp(52));
+        Button deleteButton = pillButton("删除", BUTTON_DANGER);
+        deleteButton.setTextSize(12);
+        deleteButton.setMinHeight(dp(48));
+        deleteButton.setMinWidth(dp(56));
         deleteButton.setOnClickListener(view -> new AlertDialog.Builder(this)
                 .setTitle("删除配置？")
                 .setMessage("将删除“" + profile.name + "”。已保存的 Key 会一并清除。")
@@ -6524,7 +6754,6 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(8), dp(22), 0);
 
-        content.addView(text("厂商预设（自动填地址与推荐模型，不改 Key）", 12, Color.rgb(91, 103, 113)));
         Spinner presetSpinner = new Spinner(this);
         ChoiceRows.styleSpinner(presetSpinner);
         AiConfigStore.VendorPreset[] presets = AiConfigStore.vendorPresets();
@@ -6534,19 +6763,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         ArrayAdapter<String> presetAdapter = ChoiceRows.spinnerAdapter(presetSpinner, presetLabels);
         presetSpinner.setAdapter(presetAdapter);
-        content.addView(presetSpinner, matchWrap());
-        TextView presetHint = text(presets[0].hint, 12, Color.rgb(91, 103, 113));
+        content.addView(labeledField("厂商预设（自动填地址与推荐模型，不改 Key）", presetSpinner), matchWrap());
+        TextView presetHint = text(presets[0].hint, 12, SECONDARY_TEXT);
         presetHint.setPadding(dp(4), dp(2), dp(4), 0);
         content.addView(presetHint, matchWrap());
 
-        content.addView(text("配置名称", 12, Color.rgb(91, 103, 113)));
         EditText nameInput = new EditText(this);
         nameInput.setSingleLine(true);
         nameInput.setHint("例如：智谱免费 / DeepSeek 两段式");
         nameInput.setText(current.name);
-        content.addView(nameInput, matchWrap());
+        content.addView(labeledField("配置名称", nameInput), matchWrap());
 
-        content.addView(text("路线", 12, Color.rgb(91, 103, 113)));
         Spinner modeSpinner = new Spinner(this);
         ChoiceRows.styleSpinner(modeSpinner);
         ArrayAdapter<String> modeAdapter = ChoiceRows.spinnerAdapter(modeSpinner,
@@ -6554,7 +6781,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         "转写 + 回答（两段式）"});
         modeSpinner.setAdapter(modeAdapter);
         modeSpinner.setSelection(current.split ? 1 : 0);
-        content.addView(modeSpinner, matchWrap());
+        content.addView(labeledField("路线", modeSpinner), matchWrap());
 
         LinearLayout directGroup = new LinearLayout(this);
         directGroup.setOrientation(LinearLayout.VERTICAL);
@@ -6722,7 +6949,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private EditText labeledInput(LinearLayout group, String label, String hint, String value) {
-        group.addView(text(label, 12, Color.rgb(91, 103, 113)));
+        TextView caption = text(label, 12, SECONDARY_TEXT);
+        caption.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        group.addView(caption);
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setHint(hint);
@@ -6730,7 +6959,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
                 : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         input.setText(value == null ? "" : value);
-        group.addView(input, matchWrap());
+        stylePaperInput(input);
+        LinearLayout.LayoutParams inputParams = matchWrap();
+        inputParams.topMargin = dp(4);
+        inputParams.bottomMargin = dp(12);
+        group.addView(input, inputParams);
         return input;
     }
 
@@ -6999,7 +7232,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void updateStatsText() {
         String selection = selectionCount > 0 ? " · 选中 " + selectionCount : "";
-        statsView.setText(String.format(Locale.CHINA, "%d 笔 · %d 点 · %d/%d 页 · %d%%%s",
+        String compactSelection = selectionCount > 0 ? " · 选" + selectionCount : "";
+        statsView.setText(String.format(Locale.CHINA, "%d/%d 页 · %d%%%s",
+                currentPageNumber, totalPageCount, canvasZoomPercent, compactSelection));
+        statsView.setContentDescription(String.format(Locale.CHINA,
+                "%d 笔，%d 点，第 %d 页，共 %d 页，缩放 %d%%%s",
                 strokeCount, pointCount, currentPageNumber, totalPageCount,
                 canvasZoomPercent, selection));
     }

@@ -9,6 +9,9 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.SweepGradient;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.content.res.ColorStateList;
 import android.view.View;
 
 final class ToolIconButton extends View {
@@ -53,6 +56,7 @@ final class ToolIconButton extends View {
     private final Icon icon;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint backgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint palettePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
     private final RectF reusableRect = new RectF();
@@ -71,6 +75,14 @@ final class ToolIconButton extends View {
         setMinimumWidth(dp(44));
         setMinimumHeight(dp(44));
         backgroundPaint.setColor(Color.WHITE);
+        borderPaint.setStyle(Paint.Style.STROKE);
+        borderPaint.setStrokeWidth(dp(1));
+        borderPaint.setColor(Color.rgb(236, 233, 226));
+        GradientDrawable rippleMask = new GradientDrawable();
+        rippleMask.setColor(Color.WHITE);
+        rippleMask.setCornerRadius(dp(11));
+        setForeground(new RippleDrawable(
+                ColorStateList.valueOf(Color.argb(34, 40, 94, 168)), null, rippleMask));
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setStrokeJoin(Paint.Join.ROUND);
     }
@@ -112,6 +124,9 @@ final class ToolIconButton extends View {
         backgroundPaint.setColor(isSelected() ? SELECTED_BACKGROUND_COLOR : Color.WHITE);
         reusableRect.set(dp(2), dp(2), width - dp(2), height - dp(2));
         canvas.drawRoundRect(reusableRect, dp(11), dp(11), backgroundPaint);
+        borderPaint.setColor(isSelected() ? SELECTED_COLOR : Color.rgb(236, 233, 226));
+        reusableRect.inset(dp(0.5f), dp(0.5f));
+        canvas.drawRoundRect(reusableRect, dp(11), dp(11), borderPaint);
 
         int foreground = !isEnabled() ? DISABLED_COLOR : (isSelected() ? SELECTED_COLOR : INK_COLOR);
         paint.setColor(foreground);
