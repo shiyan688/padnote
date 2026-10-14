@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
+import re
 import sys
 import webbrowser
 from pathlib import Path
@@ -28,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video-node", help="absolute path to the administrator-installed Node.js executable")
     parser.add_argument("--video-skill-root", help="absolute path to the installed PadNote video Skill")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--shutdown-event", help=argparse.SUPPRESS)
     parser.add_argument("--lan", action="store_true",
                         help="accept tablets on the same Wi-Fi over TLS pinned by the pairing QR")
     parser.add_argument("--lan-port", type=int, default=8767)
@@ -41,7 +44,24 @@ def main(argv: list[str] | None = None) -> int:
 
     service: BridgeService | None = None
     servers: ServerGroup | None = None
+    shutdown_handle = None
     try:
+        if args.shutdown_event is not None:
+            if os.name != "nt" or not re.fullmatch(
+                    r"Local\\PadNoteConnectionAssistantShutdown-[0-9a-f]{32}",
+                    args.shutdown_event):
+                parser.error("invalid shutdown event")
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenEventW.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_wchar_p]
+            kernel32.OpenEventW.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            kernel32.WaitForSingleObject.restype = ctypes.c_uint
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            shutdown_handle = kernel32.OpenEventW(0x00100000, False, args.shutdown_event)
+            if not shutdown_handle:
+                raise OSError("could not open the launcher shutdown event")
+        else:
+            kernel32 = None
         service = BridgeService(
             Path(args.state_dir),
             video_node=Path(args.video_node).expanduser() if args.video_node is not None else None,
@@ -66,8 +86,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_browser:
             webbrowser.open(servers.admin_url)
         while True:
+            if shutdown_handle and kernel32.WaitForSingleObject(shutdown_handle, 0) == 0:
+                break
             for thread in servers._threads:
-                thread.join(timeout=1)
+                thread.join(timeout=0.25)
     except KeyboardInterrupt:
         pass
     except StateOwnershipError:
@@ -88,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
             servers.close()
         elif service is not None:
             service.close()
+        if shutdown_handle:
+            kernel32.CloseHandle(shutdown_handle)
     return 0
 
 

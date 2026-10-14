@@ -2,67 +2,37 @@
 
 **Think on the page, then share it with a computer agent.**
 
-PadNote is an open-source tablet notebook for handwriting, drawing, and AI-assisted learning. On Android, you can work with handwriting and AI in the same note, share the complete page as a PDF, or send the current note's frozen PDF and readable context to a paired Hermes assistant on your local network.
+PadNote is an open-source tablet notebook for handwriting, drawing, and AI-assisted learning. On Android, work in the same note, export a complete-page PDF, or send the current note's PDF and readable context to a paired Hermes assistant.
 
-[Android beta.10](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.10) · [Beta.10 test guide](docs/BETA10_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.11](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.11) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Android-0.18.0-beta.11-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [Test guide](docs/BETA11_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-## Learn on the page
+## beta.11
 
-Write, draw, zoom, and continue an AI conversation in the current note. Useful answers can stay editable on the page. Share the complete note as a PDF with its pages, background, handwriting, and readable text.
+Android model, agent, export, task preset, and video-style menus now use a consistent paper-like selection style with clearer selected states, wrapped labels, and touch targets. Windows x64 has a per-user setup installer that preserves existing user data.
 
-You can also hand the current note to a paired computer agent. Before sending, review the target, task, and included material: the note PDF, readable text, and conversation available from that same note. PadNote does not treat a PDF as recognized text or include other notes or a knowledge base.
+The APK supports Android 7.0 / API 24 and later, package `com.padnote.android.beta`, and uses the same debug signing certificate as beta.10, so it can update an existing installation. Back up important notes first. Windows setup was tested on Windows 11 x64 through SSH Session 0 for installation, bundled imports, native window button start/stop, readiness status, service, same-version reinstall, and uninstall. This does not verify interactive desktop mouse use, Wi-Fi pairing, or a live Hermes task. The installer is unsigned.
 
-| Area | Current scope |
-| --- | --- |
-| Note taking | Android multi-page notes, handwriting and editing, zoom, PDF import and export |
-| AI learning | Continue a conversation in the current note using a service you configure |
-| Sharing | Export the complete note as a PDF through Android's share sheet |
-| Computer agent | Send the current note and readable context to a paired Hermes assistant that supports note tasks |
-| Task presets | Continue work, make a shareable handout, find learning gaps and make exercises, or request a shareable explainer video |
+## Scope and limitations
 
-You or your selected agent choose the model, speech synthesis, and video tools. PadNote does not require Qwen or tie video tasks to one provider. Generic files can be saved to the device and shared from a file manager; in-app play, save, and share actions are available for video files.
+Write, edit, and zoom in a note; continue an AI conversation; export a full note as PDF; or send the current note PDF and readable context to a paired Hermes agent that supports note tasks. You or the selected agent choose models, speech, and video tools; Qwen is optional. OpenClaw provides discovery/setup guidance only; Codex note tasks are not connected. iPad source is available, but there is no installable signed IPA.
 
-## Android beta.10
+The desktop assistant does not include Hermes, models, API keys, or video runtimes. WSL Hermes must expose an API reachable from Windows; automatic WSL discovery is not implemented. External services may incur costs. Review the task and included material before sending.
 
-The beta.10 debug APK supports Android 7.0 / API 24 and later. It uses the beta.9 signing certificate and can update an existing beta.9 installation. Back up important notes before installing.
+## Downloads and verification
 
-- [Download the Android APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.10/PadNote-Android-0.18.0-beta.10-debug.apk)
-- [Download the test kit](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.10/PadNote-beta10-test-kit.zip)
-- [Release assets and checksums](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.10)
-
-This is a debug test build, not a Play Store release. Real Windows/WSL, tablet, and Hermes task testing is still needed.
-
-## Computer assistant
-
-The assistant runs on your computer and connects PadNote to a Hermes installation you already use. It does not include Hermes, models, credentials, or video runtimes. See the [test guide](docs/BETA10_TESTING.md) for Windows/WSL networking requirements.
-
-OpenClaw currently provides discovery and setup guidance only; its note-task workflow is not connected. Codex is not connected to note tasks. iPad source code is available, but there is no installable signed IPA, TestFlight, or App Store build.
+The Release includes the Android APK, Windows x64 installer, two demonstration videos, source ZIP, test guide, license files, and `SHA256SUMS.txt`. Verify each download with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows.
 
 ## Build from source
 
-Clone the repository:
+For Android, install JDK 17, Android SDK Platform 35, and Build Tools 35.0.0, then run:
 
 ```sh
-git clone https://github.com/shiyan688/padnote.git
-cd padnote
+cd android
+./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
-### Android
+See [`desktop/connection-assistant/windows-setup/README-WINDOWS.md`](desktop/connection-assistant/windows-setup/README-WINDOWS.md) for Windows setup source and build prerequisites. See [`docs/BETA11_TESTING.md`](docs/BETA11_TESTING.md) for user testing steps.
 
-Install JDK 17, Android SDK Platform 35, Build Tools 35.0.0, and NDK 29.0.14206865. Set `JAVA_HOME` and `ANDROID_SDK_ROOT` (or `ANDROID_HOME`), then run:
+## License and feedback
 
-```sh
-tools/build-android-apk.sh
-```
-
-The repository includes the Gradle Wrapper. The first build downloads Gradle and dependencies.
-
-### iPad
-
-Open `ios/PadNote.xcodeproj` in Xcode, select the `PadNote` scheme and an iPad Simulator, then run. For a physical device, select your Apple Development Team under Signing & Capabilities. There is currently no installable signed IPA.
-
-See the [iPad README](ios/README.md) for details.
-
-## License
-
-The Android and iPad applications use the [MIT License](LICENSE). The video-agent subproject remains under Apache-2.0; third-party components retain their own licenses. See [licensing details](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Original Android/iPad code is MIT licensed; the video-agent subproject is Apache-2.0. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSING.md`](LICENSING.md). For feedback, include version, device, steps, and observed behavior. Do not upload API keys, pairing tokens, passwords, or private notes.

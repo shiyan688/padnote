@@ -6,7 +6,6 @@ import android.graphics.Typeface;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -70,8 +69,8 @@ final class AgentConnectionDialogs {
         int guideIndex = labels.size();
         labels.add("如何连接另一台电脑？");
         final int finalQrIndex = qrIndex;
-        new AlertDialog.Builder(activity).setTitle("电脑 Agent")
-                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+        ChoiceRows.builder(activity).setTitle("电脑 Agent")
+                .setAdapter(ChoiceRows.adapter(activity, labels.toArray(new String[0])), (dialog, which) -> {
                     if (which == 0) new AgentTaskDialogs(activity, store, worker,
                             artifactSaveLauncher).showList();
                     else if (which <= profiles.size()) showActions(profiles.get(which - 1));
@@ -353,7 +352,7 @@ final class AgentConnectionDialogs {
     }
     private LinearLayout panel() { LinearLayout v = new LinearLayout(activity); v.setOrientation(LinearLayout.VERTICAL); v.setPadding(dp(20), dp(8), dp(20), dp(8)); return v; }
     private ScrollView scroll(View child) { ScrollView s = new ScrollView(activity); s.addView(child); return s; }
-    private Spinner spinner(String[] values) { Spinner s = new Spinner(activity); ArrayAdapter<String> a = new ArrayAdapter<>(activity, android.R.layout.simple_spinner_item, values); a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); s.setAdapter(a); return s; }
+    private Spinner spinner(String[] values) { Spinner s = new Spinner(activity); ChoiceRows.styleSpinner(s); s.setAdapter(ChoiceRows.spinnerAdapter(s, values)); return s; }
     private EditText field(String hint, boolean secret) { EditText f = new EditText(activity); f.setHint(hint); f.setSingleLine(true); f.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : 0)); return f; }
     private void addLabeled(LinearLayout body, String label, View field) { TextView t = text(label, 12); t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); body.addView(t); body.addView(field, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)); }
     private TextView text(String value, int size) { TextView t = new TextView(activity); t.setText(value); t.setTextSize(size); t.setPadding(0, dp(6), 0, dp(6)); return t; }

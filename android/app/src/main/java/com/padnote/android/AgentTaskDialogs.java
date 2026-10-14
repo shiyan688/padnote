@@ -101,8 +101,9 @@ final class AgentTaskDialogs {
                 .setNegativeButton("关闭",null).show();return;}
         List<String> labels=new ArrayList<>();for(AgentTaskStore.Task t:values){
             labels.add(historyRow(t)+"\n来源修订 "+t.noteRevision);}
-        new AlertDialog.Builder(activity).setTitle("本笔记任务历史")
-                .setAdapter(multilineRows(labels),(d,w)->showDetail(values.get(w).clientTaskId))
+        ChoiceRows.builder(activity).setTitle("本笔记任务历史")
+                .setAdapter(ChoiceRows.adapter(activity, labels.toArray(new String[0])),
+                        (d,w)->showDetail(values.get(w).clientTaskId))
                 .setNegativeButton("关闭",null).show();
     }
 
@@ -169,7 +170,7 @@ final class AgentTaskDialogs {
                 (c.kind!=AgentConnectionStore.Kind.BUILTIN_VIDEO||c.capabilities.contains("video_task_submission")))profiles.add(c);
         if(profiles.isEmpty()){toast("没有已验证且支持任务包的 Bridge Agent");return;}
         String[] labels=new String[profiles.size()];for(int i=0;i<labels.length;i++)labels[i]=destinationLabel(profiles.get(i));
-        new AlertDialog.Builder(activity).setTitle("发送到哪一个 Agent？").setItems(labels,(d,w)->{
+        ChoiceRows.builder(activity).setTitle("发送到哪一个 Agent？").setAdapter(ChoiceRows.adapter(activity, labels),(d,w)->{
                     AgentConnectionStore.Config selected=profiles.get(w);
                     new AlertDialog.Builder(activity).setTitle("确认发送任务包")
                             .setMessage("目标："+destinationLabel(selected)+"\n材料："+title+

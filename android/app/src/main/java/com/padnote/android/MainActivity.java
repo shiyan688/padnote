@@ -1299,9 +1299,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** Per-vault-note overflow: export and delete live here, not on the card face. */
     private void showVaultMoreMenu(VaultStore.VaultNote note) {
         String[] actions = new String[]{"导出 .md", "生成讲解视频", "本笔记任务与成果", "删除"};
-        new AlertDialog.Builder(this)
+        ChoiceRows.builder(this)
                 .setTitle(note.title)
-                .setItems(actions, (dialog, which) -> {
+                .setAdapter(ChoiceRows.adapter(this, actions), (dialog, which) -> {
                     if (which == 0) {
                         launchExportVaultFile(note);
                     } else if (which == 1) {
@@ -1367,8 +1367,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showPaperHandoffActions() {
-        new AlertDialog.Builder(this).setTitle("分享与交给 Agent")
-                .setItems(new String[]{"分享当前纸面 PDF…","交给电脑 Agent…"},(dialog,which)->{
+        ChoiceRows.builder(this).setTitle("分享与交给 Agent")
+                .setAdapter(ChoiceRows.adapter(this, new String[]{"分享当前纸面 PDF…","交给电脑 Agent…"}),(dialog,which)->{
                     if(which==0)freezeCurrentPaperPdf(true,this::sharePaperPdf);
                     else freezeCurrentPaperPdf(false,this::showNoteWorkComposer);
                 }).setNegativeButton("取消",null).show();
@@ -1434,17 +1434,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(supported.isEmpty()){pdf.delete();Toast.makeText(this,"没有已验证且支持纸面上下文任务包的电脑 Agent；未发送",Toast.LENGTH_LONG).show();return;}
         LinearLayout body=verticalPanel();
         String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(supported.get(i));
-        Spinner connection=new Spinner(this);connection.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,connectionLabels));
+        Spinner connection=new Spinner(this);ChoiceRows.styleSpinner(connection);connection.setAdapter(ChoiceRows.spinnerAdapter(connection,connectionLabels));
         body.addView(labeledField("接收 Agent",connection));
-        Spinner preset=new Spinner(this);
-        preset.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,presets));
+        Spinner preset=new Spinner(this);ChoiceRows.styleSpinner(preset);
+        preset.setAdapter(ChoiceRows.spinnerAdapter(preset,presets));
         body.addView(labeledField("任务预设（可编辑）",preset));
         EditText instruction=new EditText(this);instruction.setMinLines(3);
         instruction.setGravity(Gravity.TOP);instruction.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         instruction.setText("请结合这份笔记的纸面和可读上下文完成我的要求。");
         body.addView(labeledField("具体要求",instruction));
-        Spinner style=new Spinner(this);
-        style.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,styles));
+        Spinner style=new Spinner(this);ChoiceRows.styleSpinner(style);
+        style.setAdapter(ChoiceRows.spinnerAdapter(style,styles));
         View styleField=labeledField("视频讲解风格（可选）",style);body.addView(styleField);
         EditText stylePrompt=new EditText(this);stylePrompt.setMinLines(3);
         stylePrompt.setGravity(Gravity.TOP);stylePrompt.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
@@ -1632,7 +1632,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         String[] actions = android.os.Build.VERSION.SDK_INT>=27
                 ?new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频", "待处理关联视频"}
                 :new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频"};
-        new AlertDialog.Builder(this).setTitle(source.title).setItems(actions, (dialog, which) -> {
+        ChoiceRows.builder(this).setTitle(source.title).setAdapter(ChoiceRows.adapter(this, actions), (dialog, which) -> {
             if (which == 0) startVideoForOriginalNote(source);
             else if (which == 1) newVideoTaskDialogs().showForNote(source.id);
             else if(which==2)showVideoAttachments(source);
@@ -1690,8 +1690,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     String[] labels=new String[values.size()];for(int i=0;i<labels.length;i++){
                         VideoAttachmentStore.Attachment a=values.get(i);boolean stale=VideoAttachmentStore.isSourceStale(source,a);
                         labels[i]=a.name+" · "+(source==null?"原笔记已删除":stale?"来源已更新，旧快照":"修订 "+a.sourceRevision)+" · "+formatBytes(a.sizeBytes);}
-                    new AlertDialog.Builder(this).setTitle((source==null?"原笔记已删除 · ":title+" · ")+"已关联视频（本机离线）")
-                            .setItems(labels,(d,w)->showAttachedVideoActions(new VideoActionSelection(loaded.base,values.get(w))))
+                    ChoiceRows.builder(this).setTitle((source==null?"原笔记已删除 · ":title+" · ")+"已关联视频（本机离线）")
+                            .setAdapter(ChoiceRows.adapter(this, labels),(d,w)->showAttachedVideoActions(new VideoActionSelection(loaded.base,values.get(w))))
                             .setNegativeButton("关闭",null).show();
                 });
             }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"无法验证笔记视频；没有读取或修改附件",Toast.LENGTH_LONG).show());}
@@ -1700,8 +1700,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showAttachedVideoActions(VideoActionSelection selection){
         VideoAttachmentStore.Attachment attachment=selection.attachment;
-        new AlertDialog.Builder(this).setTitle(attachment.name)
-                .setItems(new String[]{"离线播放","另存到文件","另存后分享","移除本笔记关联"},(d,w)->{
+        ChoiceRows.builder(this).setTitle(attachment.name)
+                .setAdapter(ChoiceRows.adapter(this, new String[]{"离线播放","另存到文件","另存后分享","移除本笔记关联"}),(d,w)->{
                     if(w==0)playAttachedVideo(selection);
                     else if(w==1||w==2)launchSaveAttachedVideo(selection,w==2);
                     else new AlertDialog.Builder(this).setTitle("移除视频关联？")
@@ -1904,8 +1904,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void launchCreateAgentArtifactDocument(AgentTaskStore.Task task,
                                                    AgentTaskStore.Artifact artifact) {
         if ("video/mp4".equals(artifact.mediaType)) {
-            new AlertDialog.Builder(this).setTitle(artifact.name)
-                    .setItems(new String[]{"播放已校验视频", "保存到文件", "保存后分享", "关联到来源笔记"}, (dialog, which) -> {
+            ChoiceRows.builder(this).setTitle(artifact.name)
+                    .setAdapter(ChoiceRows.adapter(this, new String[]{"播放已校验视频", "保存到文件", "保存后分享", "关联到来源笔记"}), (dialog, which) -> {
                         if (which == 0) playAgentVideo(task, artifact);
                         else if(which==3) attachAgentArtifact(task,artifact);
                         else launchAgentArtifactSave(task, artifact, which == 2);
@@ -2703,9 +2703,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             items.add(2, "移除封面");
         }
         final List<String> labels = items;
-        new AlertDialog.Builder(this)
+        ChoiceRows.builder(this)
                 .setTitle(entry.title)
-                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                .setAdapter(ChoiceRows.adapter(this, labels.toArray(new String[0])), (dialog, which) -> {
                     String label = labels.get(which);
                     if ("重命名".equals(label)) {
                         showRenameNoteDialog(entry);
@@ -2963,8 +2963,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         highlighterButton.setAccentColor(highlighterColor);
         shapeButton = iconButton(ToolIconButton.Icon.SHAPE, "几何图形：拖动绘制矩形", view -> {
             selectTool(NoteCanvasView.Tool.SHAPE);
-            new AlertDialog.Builder(this).setTitle("几何图形")
-                    .setItems(new String[]{"矩形", "直线", "椭圆"}, (dialog, which) -> {
+            ChoiceRows.builder(this).setTitle("几何图形")
+                    .setAdapter(ChoiceRows.adapter(this, new String[]{"矩形", "直线", "椭圆"}), (dialog, which) -> {
                         canvasView.setShapeType(which);
                         canvasView.setTool(NoteCanvasView.Tool.SHAPE);
                     }).show();
@@ -3073,8 +3073,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 actions.add(new ContentOutlineAction(pageIndex, null));
             }
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("内容大纲 · 文字对象按起始页归组")
-                .setItems(labels.toArray(new String[0]), (shown, which) -> {
+        AlertDialog dialog = ChoiceRows.builder(this).setTitle("内容大纲 · 文字对象按起始页归组")
+                .setAdapter(ChoiceRows.adapter(this, labels.toArray(new String[0])), (shown, which) -> {
                     ContentOutlineAction action = actions.get(which);
                     if (action.flowId == null) { canvasView.goToPage(action.pageIndex); return; }
                     for (NoteTextBox box : canvasView.getTextBoxes()) {
@@ -4435,7 +4435,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     AlertDialog createAiMaterialPickerDialog(List<VaultStore.VaultNote> available,
                                                String[] labels, boolean[] checked,
                                                Consumer<Set<String>> onConfirm) {
-        return new AlertDialog.Builder(this)
+        return ChoiceRows.builder(this)
                 .setTitle("选择本次可读材料（改变后开始新对话）")
                 .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) ->
                         checked[which] = isChecked)
@@ -6526,14 +6526,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
         content.addView(text("厂商预设（自动填地址与推荐模型，不改 Key）", 12, Color.rgb(91, 103, 113)));
         Spinner presetSpinner = new Spinner(this);
+        ChoiceRows.styleSpinner(presetSpinner);
         AiConfigStore.VendorPreset[] presets = AiConfigStore.vendorPresets();
         String[] presetLabels = new String[presets.length];
         for (int index = 0; index < presets.length; index++) {
             presetLabels[index] = presets[index].label;
         }
-        ArrayAdapter<String> presetAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, presetLabels);
-        presetAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        ArrayAdapter<String> presetAdapter = ChoiceRows.spinnerAdapter(presetSpinner, presetLabels);
         presetSpinner.setAdapter(presetAdapter);
         content.addView(presetSpinner, matchWrap());
         TextView presetHint = text(presets[0].hint, 12, Color.rgb(91, 103, 113));
@@ -6549,11 +6548,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
         content.addView(text("路线", 12, Color.rgb(91, 103, 113)));
         Spinner modeSpinner = new Spinner(this);
-        ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item,
+        ChoiceRows.styleSpinner(modeSpinner);
+        ArrayAdapter<String> modeAdapter = ChoiceRows.spinnerAdapter(modeSpinner,
                 new String[]{"直连多模态（一个模型看图并回答）",
                         "转写 + 回答（两段式）"});
-        modeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         modeSpinner.setAdapter(modeAdapter);
         modeSpinner.setSelection(current.split ? 1 : 0);
         content.addView(modeSpinner, matchWrap());
@@ -7332,8 +7330,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                 +(entry.available?(entry.durable?" · 已校验":" · 已校验但持久性未确认")
                                         :" · 下载/记录待恢复");
                     }
-                    new AlertDialog.Builder(this).setTitle("待处理关联视频")
-                            .setItems(labels,(dialog,which)->showPendingVideoActions(entries.get(which)))
+                    ChoiceRows.builder(this).setTitle("待处理关联视频")
+                            .setAdapter(ChoiceRows.adapter(this, labels),(dialog,which)->showPendingVideoActions(entries.get(which)))
                             .setNegativeButton("关闭",null).show();
                 });
             }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
@@ -7361,8 +7359,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private AlertDialog.Builder pendingVideoActionList(String title,String message,String[] actions,
             android.content.DialogInterface.OnClickListener listener){
-        return new AlertDialog.Builder(this).setCustomTitle(pendingVideoActionHeader(title,message))
-                .setItems(actions,listener);
+        return ChoiceRows.builder(this).setCustomTitle(pendingVideoActionHeader(title,message))
+                .setAdapter(ChoiceRows.adapter(this, actions),listener);
     }
 
     private void showPendingVideoActions(PendingVideoArtifactStore.Entry entry){
@@ -7530,8 +7528,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showLibraryActions() {
         String[] actions={"备份整个资料库","从备份恢复为副本","查看离线恢复材料","处理上次未完成的恢复"};
-        new AlertDialog.Builder(this).setTitle("资料库备份与恢复")
-                .setItems(actions,(dialog,which)->{
+        ChoiceRows.builder(this).setTitle("资料库备份与恢复")
+                .setAdapter(ChoiceRows.adapter(this, actions),(dialog,which)->{
                     if(which==0)launchLibraryBackup();
                     else if(which==1)launchLibraryRestore();
                     else if(which==2)showRestoredMaterials();
@@ -7797,7 +7795,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showRestoredMaterialList(List<RestoredLibraryMaterialStore.Record> records){
         if(records.isEmpty()){showLibraryMessage("离线恢复材料","当前没有离线恢复材料。如果备份包含知识库资料、离线视频或封面预设，恢复完成后会显示在这里。");return;}
         String[] labels=new String[records.size()];for(int i=0;i<records.size();i++){RestoredLibraryMaterialStore.Record r=records.get(i);String kind=r.kind==RestoredLibraryMaterialStore.Kind.VAULT?"知识库资料":r.kind==RestoredLibraryMaterialStore.Kind.VIDEO?"离线视频":"封面预设";labels[i]=kind+" · "+restoredMaterialDisplayName(r);}
-        new AlertDialog.Builder(this).setTitle("离线恢复材料 · "+records.size()).setItems(labels,(d,which)->showRestoredMaterialActions(records.get(which))).setNegativeButton("关闭",null).show();
+        ChoiceRows.builder(this).setTitle("离线恢复材料 · "+records.size()).setAdapter(ChoiceRows.adapter(this, labels),(d,which)->showRestoredMaterialActions(records.get(which))).setNegativeButton("关闭",null).show();
     }
 
     private static String restoredMaterialDisplayName(RestoredLibraryMaterialStore.Record record){
@@ -7865,8 +7863,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         commitInlineTextEditorExcept(null);
-        new AlertDialog.Builder(this).setTitle("导出当前笔记")
-                .setItems(new String[]{"PadNote 可编辑包", "标准 PDF（页面已合并）"},
+        ChoiceRows.builder(this).setTitle("导出当前笔记")
+                .setAdapter(ChoiceRows.adapter(this, new String[]{"PadNote 可编辑包", "标准 PDF（页面已合并）"}),
                         (dialog, which) -> {
                             if (which == 1) launchCreatePdfDocument();
                             else {

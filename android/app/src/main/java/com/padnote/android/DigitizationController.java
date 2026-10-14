@@ -375,8 +375,8 @@ final class DigitizationController implements AutoCloseable {
                     + ("COMPLETED".equals(draft.state.name()) ? "已存知识库" : "未完成")
                     + " · " + android.text.format.DateFormat.format("MM-dd HH:mm", draft.createdAt);
         }
-        dialog(new AlertDialog.Builder(activity).setTitle("已保存的整理批次")
-                .setItems(labels, (d, which) -> preview(history.get(which)))
+        dialog(ChoiceRows.builder(activity).setTitle("已保存的整理批次")
+                .setAdapter(ChoiceRows.adapter(activity, labels), (d, which) -> preview(history.get(which)))
                 .setNegativeButton("关闭", null).create());
     }
 

@@ -421,8 +421,8 @@ final class NoteTextBoxView extends FrameLayout {
 
     private void showRenderRecoveryDialog() {
         String[] actions = new String[]{"查看源码", "复制源码", "编辑", "重新显示"};
-        new AlertDialog.Builder(getContext()).setTitle(renderFailureReason)
-                .setItems(actions, (dialog, which) -> {
+        ChoiceRows.builder(getContext()).setTitle(renderFailureReason)
+                .setAdapter(ChoiceRows.adapter(getContext(), actions), (dialog, which) -> {
                     if (which == 0) showFailedSource();
                     else if (which == 1) copyFailedSource();
                     else if (which == 2) beginInlineEditing();
