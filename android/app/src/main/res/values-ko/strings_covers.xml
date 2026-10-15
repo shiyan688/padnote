@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">표지 대상 노트 버전을 확인할 수 없습니다</string>
+    <string name="cover_builtin_section">기본 표지</string>
+    <string name="cover_user_presets_section">내 프리셋</string>
+    <string name="cover_import_button">사진에서 표지 가져오기…</string>
+    <string name="cover_import_hint">가져온 이미지는 다음 단계에서 프리셋에 추가해 새 노트에서 다시 사용할 수 있습니다.</string>
+    <string name="cover_new_note_title">새 노트 표지 선택</string>
+    <string name="cover_change_title">표지 변경</string>
+    <string name="cover_accessibility_label">표지: %1$s</string>
+    <string name="cover_selected">선택한 표지: %1$s</string>
+    <string name="cover_save_failed">표지를 저장하지 못했습니다: %1$s</string>
+    <string name="cover_remove_failed">표지를 제거하지 못했습니다: %1$s</string>
+    <string name="cover_preset_confirm_title">이 이미지를 표지 프리셋에 추가할까요?</string>
+    <string name="cover_preset_confirm_message">추가하면 새 노트와 다른 노트에서도 사용할 수 있습니다.</string>
+    <string name="cover_preset_decline">나중에</string>
+    <string name="cover_preset_add_button">프리셋에 추가</string>
+    <string name="cover_preset_added">표지를 프리셋에 추가했습니다</string>
+    <string name="cover_preset_add_failed">프리셋에 추가하지 못했습니다: %1$s</string>
+    <string name="cover_preset_cream_ruled">크림색 줄</string>
+    <string name="cover_preset_light_blue_grid">연한 파란색 격자</string>
+    <string name="cover_preset_forest_dots">짙은 녹색 점</string>
+    <string name="cover_preset_writing_blue">필기 파랑</string>
+    <string name="cover_preset_knowledge_green">지식 저장소 녹색</string>
+    <string name="cover_preset_ochre">황토색</string>
+</resources>

@@ -49,27 +49,27 @@ final class AgentConnectionDialogs {
     void show() {
         List<AgentConnectionStore.Config> profiles;
         try { profiles = store.listSummaries(); }
-        catch (RuntimeException error) { error("无法读取连接：" + message(error)); return; }
+        catch (RuntimeException error) { error(activity.getString(R.string.flow_cannot_read_connections, message(error))); return; }
         List<String> labels = new ArrayList<>();
-        labels.add("查看电脑任务");
+        labels.add(activity.getString(R.string.flow_view_tasks));
         String defaultId = store.defaultId();
         for (AgentConnectionStore.Config profile : profiles) {
             labels.add((profile.id.equals(defaultId) ? "★ " : "") +
-                    AgentTaskDialogs.destinationLabel(profile) + " · " + profile.statusLabel());
+                    AgentTaskDestinationLabel.forProfile(activity,profile) + " · " + profile.statusLabel());
         }
         int manualIndex = labels.size();
-        labels.add("＋ 手动添加连接");
+        labels.add(activity.getString(R.string.flow_manual_add));
         int qrIndex = -1;
         if (qrLauncher != null) {
             qrIndex = labels.size();
-            labels.add("扫码添加连接");
+            labels.add(activity.getString(R.string.flow_scan_pair));
         }
         int pasteIndex = labels.size();
-        labels.add("粘贴连接助手配对内容");
+        labels.add(activity.getString(R.string.flow_paste_pair));
         int guideIndex = labels.size();
-        labels.add("如何连接另一台电脑？");
+        labels.add(activity.getString(R.string.flow_connect_other));
         final int finalQrIndex = qrIndex;
-        ChoiceRows.builder(activity).setTitle("电脑 Agent")
+        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_agent_title))
                 .setAdapter(ChoiceRows.adapter(activity, labels.toArray(new String[0])), (dialog, which) -> {
                     if (which == 0) new AgentTaskDialogs(activity, store, worker,
                             artifactSaveLauncher).showList();
@@ -79,28 +79,28 @@ final class AgentConnectionDialogs {
                     else if (which == pasteIndex) showPairingPaste();
                     else if (which == guideIndex) AgentConnectionGuide.show(activity);
                 })
-                .setNegativeButton("关闭", null).show();
+                .setNegativeButton(activity.getString(R.string.flow_close), null).show();
     }
 
     private void showActions(AgentConnectionStore.Config summary) {
         AgentConnectionStore.Config profile = store.get(summary.id);
-        if (profile == null) { error("连接已不存在"); return; }
+        if (profile == null) { error(activity.getString(R.string.flow_connection_missing)); return; }
         boolean isDefault = profile.id.equals(store.defaultId());
         List<String> actions = new ArrayList<>();
-        if (!isDefault) actions.add("设为默认");
+        if (!isDefault) actions.add(activity.getString(R.string.flow_set_default));
         if (AgentCapabilitySummary.canSubmitHermesText(profile.kind, profile.verified(),
-                profile.capabilities)) actions.add("发送文本任务");
-        actions.add("能力与下一步");
-        actions.add("测试连接");
-        actions.add("编辑");
-        actions.add("删除");
+                profile.capabilities)) actions.add(activity.getString(R.string.flow_send_text_task));
+        actions.add(activity.getString(R.string.flow_capabilities));
+        actions.add(activity.getString(R.string.flow_test_connection));
+        actions.add(activity.getString(R.string.flow_edit));
+        actions.add(activity.getString(R.string.flow_delete));
         LinearLayout body = panel();
-        TextView identity = text("目标\n" + AgentTaskDialogs.destinationLabel(profile) +
-                "\n连接状态：" + profile.statusLabel(), 14);
+        TextView identity = text(activity.getString(R.string.flow_target) + "\n" + AgentTaskDestinationLabel.forProfile(activity,profile) +
+                "\n" + activity.getString(R.string.flow_connection_status_value, profile.statusLabel()), 14);
         identity.setTag("agent-target-identity");
         body.addView(identity);
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("连接操作")
-                .setView(scroll(body)).setNegativeButton("返回", (window, which) -> show()).create();
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_connection_actions))
+                .setView(scroll(body)).setNegativeButton(activity.getString(R.string.flow_back), (window, which) -> show()).create();
         for (String action : actions) {
             Button row = new Button(activity);
             row.setAllCaps(false);
@@ -116,54 +116,54 @@ final class AgentConnectionDialogs {
     }
 
     private void performAction(AgentConnectionStore.Config profile, String action) {
-        if ("设为默认".equals(action)) {
-            if (!store.setDefault(profile.id)) error("无法设置默认连接");
+        if (activity.getString(R.string.flow_set_default).equals(action)) {
+            if (!store.setDefault(profile.id)) error(activity.getString(R.string.flow_cannot_default));
             else { changed.run(); show(); }
-        } else if ("发送文本任务".equals(action)) {
+        } else if (activity.getString(R.string.flow_send_text_task).equals(action)) {
             if (!AgentCapabilitySummary.canSubmitHermesText(profile.kind,
                     profile.verified(), profile.capabilities)) {
-                error("当前连接未确认支持 Hermes 文本任务提交，请查看能力与下一步或重新测试");
+                error(activity.getString(R.string.flow_unsupported_hermes));
             } else new AgentTaskDialogs(activity, store, worker,
                     artifactSaveLauncher).showNewText(profile);
-        } else if ("能力与下一步".equals(action)) {
+        } else if (activity.getString(R.string.flow_capabilities).equals(action)) {
             showCapabilitySummary(profile);
-        } else if ("测试连接".equals(action)) test(profile);
-        else if ("编辑".equals(action)) showEditor(profile);
+        } else if (activity.getString(R.string.flow_test_connection).equals(action)) test(profile);
+        else if (activity.getString(R.string.flow_edit).equals(action)) showEditor(profile);
         else confirmDelete(profile);
     }
 
     private void showCapabilitySummary(AgentConnectionStore.Config profile) {
         StringBuilder body = new StringBuilder();
         if (profile.verified()) {
-            String checked = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.SIMPLIFIED_CHINESE)
+            String checked = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
                     .format(new Date(profile.verifiedAt));
-            body.append("最近验证：").append(checked)
-                    .append("\n这是当时的检查结果，不代表当前在线。\n\n");
+            body.append(activity.getString(R.string.flow_last_verified_value, checked))
+                    .append("\n").append(activity.getString(R.string.flow_verified_note)).append("\n\n");
         } else {
             if (profile.probeFailure != null) {
-                body.append("上次测试：").append(profile.probeFailure.label)
-                        .append("\n下一步：").append(profile.probeFailure.nextStep)
+                body.append(activity.getString(R.string.flow_last_test_value, profile.probeFailure.label))
+                        .append("\n").append(activity.getString(R.string.flow_next_step_value, profile.probeFailure.nextStep))
                         .append("\n\n");
             } else {
-                body.append("尚未验证。请先测试连接；身份检查通过也不等于任务执行可用。\n\n");
+                body.append(activity.getString(R.string.flow_not_verified_hint) + "\n\n");
             }
         }
-        body.append(AgentCapabilitySummary.describe(profile.kind, profile.transport,
+        body.append(AgentCapabilitySummary.describe(activity, profile.kind, profile.transport,
                 profile.verified(), profile.capabilities, profile.featureMapAvailable,
                 profile.featureMap));
-        new AlertDialog.Builder(activity).setTitle("能力与下一步")
-                .setMessage("目标：\n" + AgentTaskDialogs.destinationLabel(profile) +
-                        "\n\n" + body).setPositiveButton("知道了", null)
-                .setNegativeButton("重新测试", (dialog, which) -> test(profile)).show();
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_capabilities))
+                .setMessage(activity.getString(R.string.flow_target) + ":\n" + AgentTaskDestinationLabel.forProfile(activity,profile) +
+                        "\n\n" + body).setPositiveButton(activity.getString(R.string.flow_okay), null)
+                .setNegativeButton(activity.getString(R.string.flow_retest), (dialog, which) -> test(profile)).show();
     }
 
     private void showEditor(AgentConnectionStore.Config existing) {
         LinearLayout body = panel();
-        EditText name = field("名称，例如：家用电脑 Hermes", false);
-        Spinner kind = spinner(new String[]{"Hermes", "OpenClaw（仅 Bridge 检测）"});
-        Spinner transport = spinner(new String[]{"直接 HTTPS", "电脑连接助手 Bridge"});
-        EditText endpoint = field("https://computer.example", false);
-        EditText token = field(existing == null ? "连接令牌" : "留空保持原令牌", true);
+        EditText name = field(activity.getString(R.string.flow_example_name), false);
+        Spinner kind = spinner(new String[]{activity.getString(R.string.flow_hermes_option), activity.getString(R.string.flow_openclaw_option)});
+        Spinner transport = spinner(new String[]{activity.getString(R.string.flow_direct_https), activity.getString(R.string.flow_computer_bridge)});
+        EditText endpoint = field(activity.getString(R.string.flow_endpoint_hint), false);
+        EditText token = field(existing == null ? activity.getString(R.string.flow_new_token_hint) : activity.getString(R.string.flow_keep_token_hint), true);
         if (existing != null) {
             name.setText(existing.name); endpoint.setText(existing.endpoint);
             kind.setSelection(existing.kind == AgentConnectionStore.Kind.OPENCLAW ? 1 : 0);
@@ -172,17 +172,17 @@ final class AgentConnectionDialogs {
                 endpoint.setEnabled(false); kind.setEnabled(false); transport.setEnabled(false);
             }
         }
-        addLabeled(body, "名称", name); addLabeled(body, "协议", kind);
-        addLabeled(body, "连接方式", transport); addLabeled(body, "HTTPS 地址", endpoint);
-        addLabeled(body, "令牌", token);
+        addLabeled(body, activity.getString(R.string.flow_name), name); addLabeled(body, activity.getString(R.string.flow_protocol), kind);
+        addLabeled(body, activity.getString(R.string.flow_connection_method), transport); addLabeled(body, activity.getString(R.string.flow_https_address), endpoint);
+        addLabeled(body, activity.getString(R.string.flow_token), token);
         TextView note = text(existing != null && existing.transport == AgentConnectionStore.Transport.BRIDGE
-                ? "Bridge 的地址、协议和实例身份需重新配对后更换；此处只可改名称或令牌。"
-                : "修改地址、协议或令牌会产生新的连接修订并清除原验证状态。", 12);
+                ? activity.getString(R.string.flow_bridge_edit_note)
+                : activity.getString(R.string.flow_edit_revision_note), 12);
         body.addView(note);
         AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle(existing == null ? "添加 Agent" : "编辑 Agent")
-                .setView(scroll(body)).setNegativeButton("取消", null)
-                .setPositiveButton("保存", null).create();
+                .setTitle(existing == null ? activity.getString(R.string.flow_add_agent) : activity.getString(R.string.flow_edit_agent))
+                .setView(scroll(body)).setNegativeButton(activity.getString(R.string.flow_cancel), null)
+                .setPositiveButton(activity.getString(R.string.flow_save), null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(view -> {
                     try {
@@ -195,7 +195,7 @@ final class AgentConnectionDialogs {
                         String secret = token.getText().toString().trim();
                         if (existing == null) {
                             if (selectedTransport == AgentConnectionStore.Transport.BRIDGE) {
-                                throw new IllegalArgumentException("Bridge 连接请使用配对内容添加");
+                                throw new IllegalArgumentException(activity.getString(R.string.flow_bridge_pairing_required));
                             }
                             store.add(name.getText().toString(), selectedKind, selectedTransport,
                                     endpoint.getText().toString(), secret);
@@ -205,7 +205,7 @@ final class AgentConnectionDialogs {
                                     secret);
                         }
                         dialog.dismiss(); changed.run(); show();
-                    } catch (Exception error) { note.setText("保存失败：" + message(error)); }
+                    } catch (Exception error) { note.setText(activity.getString(R.string.flow_connection_save_failed, message(error))); }
                 }));
         dialog.show();
     }
@@ -213,11 +213,11 @@ final class AgentConnectionDialogs {
     private void test(AgentConnectionStore.Config profile) {
         String attemptId = store.beginProbe(profile.id, profile.revision);
         if (attemptId.isEmpty()) {
-            error("连接已被修改或无法保存测试状态，请重新打开后再试");
+            error(activity.getString(R.string.flow_connection_state_changed));
             return;
         }
-        AlertDialog progress = new AlertDialog.Builder(activity).setTitle("测试 " + profile.name)
-                .setMessage("正在检查协议、实例身份和能力…").setCancelable(false).create();
+        AlertDialog progress = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_test_profile, profile.name))
+                .setMessage(activity.getString(R.string.flow_checking_connection)).setCancelable(false).create();
         progress.show();
         worker.execute(() -> {
             try {
@@ -226,7 +226,7 @@ final class AgentConnectionDialogs {
                 activity.runOnUiThread(() -> {
                     progress.dismiss(); changed.run();
                     Toast.makeText(activity, applied ? result.message :
-                                    "连接已更新或有较新的测试，本次结果已忽略",
+                                    activity.getString(R.string.flow_test_result_ignored),
                             Toast.LENGTH_LONG).show(); show();
                 });
             } catch (Exception error) {
@@ -235,9 +235,8 @@ final class AgentConnectionDialogs {
                         attemptId, failure);
                 activity.runOnUiThread(() -> {
                     progress.dismiss(); changed.run();
-                    Toast.makeText(activity, applied ? "测试失败：" + failure.label + "。" +
-                                    failure.nextStep :
-                            "连接已更新或有较新的测试，本次失败结果已忽略",
+                    Toast.makeText(activity, applied ? activity.getString(R.string.flow_test_failed, failure.label, failure.nextStep) :
+                            activity.getString(R.string.flow_test_result_ignored),
                             Toast.LENGTH_LONG).show(); show();
                 });
             }
@@ -245,35 +244,34 @@ final class AgentConnectionDialogs {
     }
 
     private void confirmDelete(AgentConnectionStore.Config profile) {
-        new AlertDialog.Builder(activity).setTitle("删除连接？")
-                .setMessage("将删除“" + profile.name + "”在本机保存的令牌。已有任务记录会保留，且不会声称已停止电脑上的任务。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> {
-                    if (!store.delete(profile.id)) error("连接删除失败");
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_delete_connection))
+                .setMessage(activity.getString(R.string.flow_delete_connection_body, profile.name))
+                .setNegativeButton(activity.getString(R.string.flow_cancel), null)
+                .setPositiveButton(activity.getString(R.string.flow_delete), (dialog, which) -> {
+                    if (!store.delete(profile.id)) error(activity.getString(R.string.flow_cannot_delete));
                     changed.run(); show();
                 }).show();
     }
 
     private void showPairingPaste() {
         LinearLayout body = panel();
-        EditText payload = field("粘贴系统相机/电脑显示的 padnote-pair JSON", false);
+        EditText payload = field(activity.getString(R.string.flow_pair_payload_hint), false);
         payload.setSingleLine(false); payload.setMinLines(6);
         body.addView(payload);
-        TextView status = text("内容只会先解析并显示电脑地址；点击申请后仍需在电脑上明确批准。", 12);
+        TextView status = text(activity.getString(R.string.flow_pairing_privacy), 12);
         body.addView(status);
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("连接助手配对")
-                .setView(scroll(body)).setNegativeButton("取消", null)
-                .setPositiveButton("检查并申请", null).create();
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_pairing_title))
+                .setView(scroll(body)).setNegativeButton(activity.getString(R.string.flow_cancel), null)
+                .setPositiveButton(activity.getString(R.string.flow_check_apply), null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(view -> {
                     final AgentPairingClient.PairingPayload parsed;
                     try { parsed = AgentPairingClient.parse(payload.getText().toString()); }
-                    catch (Exception error) { status.setText("无法解析：" + message(error)); return; }
-                    new AlertDialog.Builder(activity).setTitle("向这台电脑申请连接？")
-                            .setMessage("地址：" + parsed.endpoint + "\n电脑标识：" + parsed.bridgeId +
-                                    "\n\n批准前不会取得任何 Agent 令牌。")
-                            .setNegativeButton("取消", null)
-                            .setPositiveButton("申请", (confirm, which) -> {
+                    catch (Exception error) { status.setText(activity.getString(R.string.flow_parse_failed, message(error))); return; }
+                    new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_pair_approve_title))
+                            .setMessage(activity.getString(R.string.flow_address_value, parsed.endpoint) + "\n" + activity.getString(R.string.flow_computer_id_value, parsed.bridgeId) + "\n\n" + activity.getString(R.string.flow_no_token_until_approved))
+                            .setNegativeButton(activity.getString(R.string.flow_cancel), null)
+                            .setPositiveButton(activity.getString(R.string.flow_request), (confirm, which) -> {
                                 dialog.dismiss(); beginPairing(parsed);
                             }).show();
                 }));
@@ -283,19 +281,18 @@ final class AgentConnectionDialogs {
     void showPairingPayload(String raw) {
         final AgentPairingClient.PairingPayload parsed;
         try { parsed = AgentPairingClient.parse(raw); }
-        catch (Exception error) { error("二维码内容无效：" + message(error)); return; }
-        new AlertDialog.Builder(activity).setTitle("向这台电脑申请连接？")
-                .setMessage("地址：" + parsed.endpoint + "\n电脑标识：" + parsed.bridgeId +
-                        "\n\n批准前不会取得任何 Agent 令牌。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("申请", (dialog, which) -> beginPairing(parsed)).show();
+        catch (Exception error) { error(activity.getString(R.string.flow_qr_invalid, message(error))); return; }
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_pair_approve_title))
+                .setMessage(activity.getString(R.string.flow_address_value, parsed.endpoint) + "\n" + activity.getString(R.string.flow_computer_id_value, parsed.bridgeId) + "\n\n" + activity.getString(R.string.flow_no_token_until_approved))
+                .setNegativeButton(activity.getString(R.string.flow_cancel), null)
+                .setPositiveButton(activity.getString(R.string.flow_request), (dialog, which) -> beginPairing(parsed)).show();
     }
 
     private void beginPairing(AgentPairingClient.PairingPayload payload) {
         AtomicBoolean cancelled = new AtomicBoolean();
-        AlertDialog waiting = new AlertDialog.Builder(activity).setTitle("等待电脑批准")
-                .setMessage("请在电脑连接助手中核对设备和 Agent 后批准。")
-                .setNegativeButton("取消", (dialog, which) -> cancelled.set(true))
+        AlertDialog waiting = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_waiting_approval))
+                .setMessage(activity.getString(R.string.flow_approve_in_assistant))
+                .setNegativeButton(activity.getString(R.string.flow_cancel), (dialog, which) -> cancelled.set(true))
                 .setCancelable(false).create();
         waiting.show();
         worker.execute(() -> {
@@ -310,13 +307,13 @@ final class AgentConnectionDialogs {
                         Thread.sleep(2500L); continue;
                     }
                     if (claim.state != AgentPairingClient.ClaimState.APPROVED) {
-                        throw new IllegalStateException(claim.state == AgentPairingClient.ClaimState.DENIED
-                                ? "电脑已拒绝本次配对" : "配对已过期，请重新生成配对码");
+                        throw new IllegalStateException(activity.getString(claim.state == AgentPairingClient.ClaimState.DENIED
+                                ? R.string.flow_pair_denied : R.string.flow_pair_expired));
                     }
                     int saved = 0; List<String> failures = new ArrayList<>();
                     for (AgentPairingClient.ApprovedConnection item : claim.connections) {
                         if (item.kind == AgentConnectionStore.Kind.OPENCLAW) {
-                            failures.add(item.name + "：当前版本尚不能执行 OpenClaw 任务"); continue;
+                            failures.add(item.name + "：" + activity.getString(R.string.flow_openclaw_task_unavailable)); continue;
                         }
                         try {
                             store.addBridge(item.name, item.kind, payload.endpoint,
@@ -327,18 +324,18 @@ final class AgentConnectionDialogs {
                     int completed = saved; String detail = String.join("\n", failures);
                     activity.runOnUiThread(() -> {
                         waiting.dismiss(); changed.run();
-                        Toast.makeText(activity, "已保存 " + completed + " 个 Agent" +
-                                (detail.isEmpty() ? "" : "\n未完成：\n" + detail),
+                        Toast.makeText(activity, activity.getString(R.string.flow_saved_agents, completed) +
+                                (detail.isEmpty() ? "" : "\n" + activity.getString(R.string.flow_not_completed, detail)),
                                 Toast.LENGTH_LONG).show(); show();
                     });
                     return;
                 }
-                if (!cancelled.get()) throw new IllegalStateException("配对已过期，请重新生成配对码");
+                if (!cancelled.get()) throw new IllegalStateException(activity.getString(R.string.flow_pair_expired));
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (Exception error) {
                 if (!cancelled.get()) activity.runOnUiThread(() -> {
-                    waiting.dismiss(); AgentConnectionDialogs.this.error("配对失败：" + message(error));
+                    waiting.dismiss(); AgentConnectionDialogs.this.error(activity.getString(R.string.flow_pair_failed, message(error)));
                 });
             } finally {
                 if (cancelled.get()) activity.runOnUiThread(waiting::dismiss);
@@ -346,10 +343,6 @@ final class AgentConnectionDialogs {
         });
     }
 
-    private static String kind(AgentConnectionStore.Config profile) {
-        return (profile.kind == AgentConnectionStore.Kind.HERMES ? "Hermes" : profile.kind == AgentConnectionStore.Kind.OPENCLAW ? "OpenClaw" : "内置视频工作流") +
-                (profile.transport == AgentConnectionStore.Transport.BRIDGE ? " · Bridge" : " · 直连");
-    }
     private LinearLayout panel() { LinearLayout v = new LinearLayout(activity); v.setOrientation(LinearLayout.VERTICAL); v.setPadding(dp(20), dp(8), dp(20), dp(8)); return v; }
     private ScrollView scroll(View child) { ScrollView s = new ScrollView(activity); s.addView(child); return s; }
     private Spinner spinner(String[] values) { Spinner s = new Spinner(activity); ChoiceRows.styleSpinner(s); s.setAdapter(ChoiceRows.spinnerAdapter(s, values)); return s; }
@@ -357,6 +350,6 @@ final class AgentConnectionDialogs {
     private void addLabeled(LinearLayout body, String label, View field) { TextView t = text(label, 12); t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); body.addView(t); body.addView(field, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)); }
     private TextView text(String value, int size) { TextView t = new TextView(activity); t.setText(value); t.setTextSize(size); t.setPadding(0, dp(6), 0, dp(6)); return t; }
     private int dp(int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
-    private void error(String value) { new AlertDialog.Builder(activity).setTitle("电脑 Agent").setMessage(value).setPositiveButton("好", null).show(); }
-    private static String message(Throwable error) { String m = error.getMessage(); return m == null || m.trim().isEmpty() ? "未知错误" : m; }
+    private void error(String value) { new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_agent_title)).setMessage(value).setPositiveButton(activity.getString(R.string.flow_okay), null).show(); }
+    private String message(Throwable error) { String m = error.getMessage(); return m == null || m.trim().isEmpty() ? activity.getString(R.string.flow_unknown_error) : m; }
 }

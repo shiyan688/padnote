@@ -12,7 +12,7 @@ final class ColorSwatchButton extends View {
     private final int swatchColor;
 
     ColorSwatchButton(Context context) {
-        this(context, Color.rgb(23, 33, 43), "使用墨蓝色");
+        this(context, Color.rgb(23, 33, 43), context.getString(R.string.canvas_ink_navy_swatch));
     }
 
     ColorSwatchButton(Context context, int swatchColor, String description) {

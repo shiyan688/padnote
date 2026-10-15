@@ -23,7 +23,13 @@ import java.nio.charset.StandardCharsets;
 
 /** Offline, non-interactive instructions for connecting a computer running Hermes. */
 final class AgentConnectionGuide {
-    private static final String ASSET_NAME = "agent-connection-guide.json";
+    private static String assetName(Activity activity) {
+        String language = activity.getResources().getConfiguration().locale.getLanguage();
+        if ("zh".equals(language)) language = "zh";
+        else if (!"ja".equals(language) && !"ko".equals(language) && !"es".equals(language)
+                && !"fr".equals(language) && !"de".equals(language)) language = "en";
+        return "agent-connection-guide-" + language + ".json";
+    }
     private static final int INK = Color.rgb(23, 33, 43);
     private static final int SECONDARY = Color.rgb(107, 118, 132);
     private static final int ACCENT = Color.rgb(40, 94, 168);
@@ -36,7 +42,7 @@ final class AgentConnectionGuide {
         try {
             guide = read(activity);
         } catch (Exception error) {
-            Toast.makeText(activity, "暂时无法打开连接教程", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, activity.getString(R.string.widget_guide_asset_error), Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -69,7 +75,7 @@ final class AgentConnectionGuide {
                 String code = section.optString("code");
                 if (!code.isEmpty()) {
                     TextView codeHint = text(activity,
-                            "命令或配置（请按本节说明在对应终端执行；可长按选择并复制）",
+                            activity.getString(R.string.widget_guide_command_hint),
                             12, SECONDARY);
                     LinearLayout.LayoutParams hintParams = matchWrap();
                     hintParams.topMargin = dp(activity, 10);
@@ -90,7 +96,7 @@ final class AgentConnectionGuide {
 
         JSONArray links = guide.optJSONArray("links");
         if (links != null && links.length() > 0) {
-            TextView linksTitle = text(activity, "官方文档", 17, INK);
+            TextView linksTitle = text(activity, activity.getString(R.string.widget_guide_official_docs), 17, INK);
             linksTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             LinearLayout.LayoutParams titleParams = matchWrap();
             titleParams.topMargin = dp(activity, 26);
@@ -119,10 +125,10 @@ final class AgentConnectionGuide {
         scroll.addView(content, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle(guide.optString("title", "连接教程"))
+                .setTitle(guide.optString("title", activity.getString(R.string.widget_guide_title)))
                 .setView(scroll)
-                .setNegativeButton("关闭", null)
-                .setNeutralButton("分享教程", null)
+                .setNegativeButton(activity.getString(R.string.widget_guide_close), null)
+                .setNeutralButton(activity.getString(R.string.widget_guide_share), null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
                 .setOnClickListener(view -> share(activity, guide)));
@@ -130,7 +136,7 @@ final class AgentConnectionGuide {
     }
 
     private static JSONObject read(Activity activity) throws Exception {
-        try (InputStream stream = activity.getAssets().open(ASSET_NAME)) {
+        try (InputStream stream = activity.getAssets().open(assetName(activity))) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int count;
@@ -143,7 +149,7 @@ final class AgentConnectionGuide {
         try {
             activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (ActivityNotFoundException error) {
-            Toast.makeText(activity, "未找到可打开网页的浏览器", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, activity.getString(R.string.widget_guide_open_browser_missing), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -164,7 +170,7 @@ final class AgentConnectionGuide {
         }
         JSONArray links = guide.optJSONArray("links");
         if (links != null && links.length() > 0) {
-            output.append("\n官方文档\n");
+            output.append("\n").append(activity.getString(R.string.widget_guide_official_docs)).append("\n");
             for (int index = 0; index < links.length(); index++) {
                 JSONObject link = links.optJSONObject(index);
                 if (link != null) output.append(link.optString("title")).append(": ")
@@ -176,9 +182,9 @@ final class AgentConnectionGuide {
                 .putExtra(Intent.EXTRA_SUBJECT, guide.optString("title"))
                 .putExtra(Intent.EXTRA_TEXT, output.toString());
         try {
-            activity.startActivity(Intent.createChooser(intent, "分享连接教程"));
+            activity.startActivity(Intent.createChooser(intent, activity.getString(R.string.widget_guide_share_chooser)));
         } catch (ActivityNotFoundException error) {
-            Toast.makeText(activity, "未找到可分享文本的应用", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, activity.getString(R.string.widget_guide_share_missing), Toast.LENGTH_LONG).show();
         }
     }
 

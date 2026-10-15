@@ -16,7 +16,7 @@ final class StrokeWidthPreviewView extends View {
 
     StrokeWidthPreviewView(Context context) {
         super(context);
-        setContentDescription("工具粗细预览");
+        setContentDescription(context.getString(R.string.canvas_stroke_width_preview_desc));
         setMinimumHeight(dp(68));
         paint.setStrokeCap(Paint.Cap.ROUND);
     }

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">Could not verify the target note version</string>
+    <string name="cover_builtin_section">Built-in covers</string>
+    <string name="cover_user_presets_section">My presets</string>
+    <string name="cover_import_button">Import cover from photos…</string>
+    <string name="cover_import_hint">Imported images can be added to presets on the next step for reuse with future notes.</string>
+    <string name="cover_new_note_title">Choose a cover for the new note</string>
+    <string name="cover_change_title">Change cover</string>
+    <string name="cover_accessibility_label">Cover: %1$s</string>
+    <string name="cover_selected">Selected cover: %1$s</string>
+    <string name="cover_save_failed">Cover could not be saved: %1$s</string>
+    <string name="cover_remove_failed">Cover was not removed: %1$s</string>
+    <string name="cover_preset_confirm_title">Add this image to cover presets?</string>
+    <string name="cover_preset_confirm_message">Once added, you can use it for new notes and other notes.</string>
+    <string name="cover_preset_decline">Not now</string>
+    <string name="cover_preset_add_button">Add to presets</string>
+    <string name="cover_preset_added">Cover added to presets</string>
+    <string name="cover_preset_add_failed">Could not add preset: %1$s</string>
+    <string name="cover_preset_cream_ruled">Cream ruled</string>
+    <string name="cover_preset_light_blue_grid">Light blue grid</string>
+    <string name="cover_preset_forest_dots">Forest green dots</string>
+    <string name="cover_preset_writing_blue">Writing blue</string>
+    <string name="cover_preset_knowledge_green">Knowledge green</string>
+    <string name="cover_preset_ochre">Ochre</string>
+</resources>

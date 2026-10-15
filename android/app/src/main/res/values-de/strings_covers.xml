@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">Die Version der Zielnotiz konnte nicht überprüft werden</string>
+    <string name="cover_builtin_section">Integrierte Cover</string>
+    <string name="cover_user_presets_section">Meine Voreinstellungen</string>
+    <string name="cover_import_button">Cover aus Fotos importieren …</string>
+    <string name="cover_import_hint">Importierte Bilder können im nächsten Schritt zu den Voreinstellungen hinzugefügt und in neuen Notizen wiederverwendet werden.</string>
+    <string name="cover_new_note_title">Cover für die neue Notiz auswählen</string>
+    <string name="cover_change_title">Cover ändern</string>
+    <string name="cover_accessibility_label">Cover: %1$s</string>
+    <string name="cover_selected">Ausgewähltes Cover: %1$s</string>
+    <string name="cover_save_failed">Cover konnte nicht gespeichert werden: %1$s</string>
+    <string name="cover_remove_failed">Cover wurde nicht entfernt: %1$s</string>
+    <string name="cover_preset_confirm_title">Dieses Bild zu den Cover-Voreinstellungen hinzufügen?</string>
+    <string name="cover_preset_confirm_message">Nach dem Hinzufügen können Sie das Bild in neuen und anderen Notizen verwenden.</string>
+    <string name="cover_preset_decline">Jetzt nicht</string>
+    <string name="cover_preset_add_button">Zu Voreinstellungen hinzufügen</string>
+    <string name="cover_preset_added">Cover zu den Voreinstellungen hinzugefügt</string>
+    <string name="cover_preset_add_failed">Voreinstellung konnte nicht hinzugefügt werden: %1$s</string>
+    <string name="cover_preset_cream_ruled">Cremefarbene Linien</string>
+    <string name="cover_preset_light_blue_grid">Hellblaues Raster</string>
+    <string name="cover_preset_forest_dots">Waldgrüne Punkte</string>
+    <string name="cover_preset_writing_blue">Schreibblau</string>
+    <string name="cover_preset_knowledge_green">Wissensgrün</string>
+    <string name="cover_preset_ochre">Ocker</string>
+</resources>

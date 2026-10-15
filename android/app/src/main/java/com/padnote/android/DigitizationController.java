@@ -77,7 +77,7 @@ final class DigitizationController implements AutoCloseable {
             DigitizationStore.Target target=vault.captureDigitizationTarget(noteID,null);
             open(canvas,noteID,title,profileID,config,sourceUpdatedAt,target);
         } catch(Exception unavailableTarget) {
-            message("无法确认新的知识库目标："+safe(unavailableTarget));
+            message(activity.getString(R.string.widget_digit_target_missing, safeMessage(unavailableTarget)));
         }
     }
 
@@ -86,7 +86,7 @@ final class DigitizationController implements AutoCloseable {
               AiConfigStore.Config config, long sourceUpdatedAt,DigitizationStore.Target target) {
         if (closed || preparing != null || active != null) return;
         if(target==null||noteID==null||!noteID.equals(target.noteId)){
-            message("请选择有效的知识库目标后再开始整理");
+            message(activity.getString(R.string.widget_digit_target_invalid));
             return;
         }
         final int serial = ++generation;
@@ -105,12 +105,12 @@ final class DigitizationController implements AutoCloseable {
                     profileID, config, sourceUpdatedAt,target);
             preparing = capture;
         } catch (Exception error) {
-            message("无法准备数字化：" + safe(error));
+            message(activity.getString(R.string.widget_digit_prepare_failed, safeMessage(error)));
             return;
         }
         AlertDialog progress = dialog(new AlertDialog.Builder(activity)
-                .setTitle("整理到知识库").setMessage("正在核对原文和已保存的进度…")
-                .setNegativeButton("取消", (d, which) -> pause()).create());
+                .setTitle(activity.getString(R.string.widget_digit_title)).setMessage(activity.getString(R.string.widget_digit_verifying))
+                .setNegativeButton(activity.getString(R.string.widget_digit_cancel), (d, which) -> pause()).create());
         progress.setCancelable(false);
         worker.execute(() -> {
             try {
@@ -138,7 +138,7 @@ final class DigitizationController implements AutoCloseable {
                     progress.dismiss();
                     if (preparing == capture) preparing = null;
                     capture.close();
-                    if (current(serial)) message("无法读取整理进度：" + safe(error));
+                    if (current(serial)) message(activity.getString(R.string.widget_digit_read_failed) + safeMessage(error));
                 });
             }
         });
@@ -148,16 +148,14 @@ final class DigitizationController implements AutoCloseable {
                           List<DigitizationStore.Snapshot> history,
                           List<DigitizationStore.CorruptEntry> corrupt, int serial) {
         LinearLayout body = body();
-        addText(body, "逐页整理手写、图片和 PDF 原文。已有文字按原文保留。每页完成即保存；"
-                + "取消或退出后，可以回来继续未完成的页。");
+        addText(body, activity.getString(R.string.widget_digit_intro));
         if (source != null) {
-            addText(body, "上传范围：整本笔记，共 " + capture.snapshot.getPageCount() + " 页。\n模型："
-                    + capture.config.model + "\n目标：" + safeTarget(capture.config.endpoint));
+            addText(body, activity.getString(R.string.widget_digit_upload_scope, capture.snapshot.getPageCount(), capture.config.model, safeTarget(capture.config.endpoint)));
         } else {
             addText(body, capture.config == null
-                    ? "先在 AI 设置中配置模型，才能发送新页面。已有草稿仍可查看和导出。"
-                    : "无法验证当前原文或模型配置，暂不能发送页面。已有草稿仍可查看和导出，请检查 PDF 原文与模型地址。");
-            if (configureAI != null) addButton(body, "AI 设置", () -> { pause(); configureAI.run(); });
+                    ? activity.getString(R.string.widget_digit_need_config)
+                    : activity.getString(R.string.widget_digit_config_invalid));
+            if (configureAI != null) addButton(body, activity.getString(R.string.widget_digit_ai_settings), () -> { pause(); configureAI.run(); });
         }
         DigitizationStore.Snapshot matching = null;
         for (DigitizationStore.Snapshot draft : history) {
@@ -168,22 +166,19 @@ final class DigitizationController implements AutoCloseable {
             if(source!=null&&draft.matches(source)&&draft.target==null){matching=draft;break;}
         }
         final DigitizationStore.Snapshot resume = matching;
-        AlertDialog plan = new AlertDialog.Builder(activity).setTitle("整理「"
-                + capture.document.optString("title", "笔记") + "」")
-                .setView(scroll(body)).setNegativeButton("关闭", null).create();
+        AlertDialog plan = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_note_title_format,
+                capture.document.optString("title", activity.getString(R.string.widget_digit_note_title))))
+                .setView(scroll(body)).setNegativeButton(activity.getString(R.string.widget_digit_close), null).create();
         if (resume != null) {
-            addText(body, "这份原文已有进度：" + resume.completedCount() + " / "
-                    + resume.totalPages + " 页。" + ("COMPLETED".equals(resume.state.name())
-                    ? "已保存到知识库。" : "未完成草稿不会覆盖知识库。"));
-            if (resume.inFlightPage >= 0) addText(body, "第 " + (resume.inFlightPage + 1)
-                    + " 页上次已尝试发送，但没有保存到返回结果。服务商可能已经处理并计费；"
-                    + "确认继续会重新发送这一页，可能再次计费。");
+            addText(body, activity.getString(R.string.widget_digit_resume_progress, resume.completedCount(), resume.totalPages) + ("COMPLETED".equals(resume.state.name())
+                    ? activity.getString(R.string.widget_digit_saved) : activity.getString(R.string.widget_digit_draft_not_overwrite)));
+            if (resume.inFlightPage >= 0) addText(body, activity.getString(R.string.widget_digit_uncertain_send, resume.inFlightPage + 1));
             if (!"COMPLETED".equals(resume.state.name())) {
-                addButton(body, resume.nextPendingPage() < 0 ? "保存已完成的转写" : "确认范围并继续未完成页",
+                addButton(body, resume.nextPendingPage() < 0 ? activity.getString(R.string.widget_digit_save_transcript) : activity.getString(R.string.widget_digit_continue_pages),
                         () -> start(capture, source, resume, serial, plan));
             }
         } else if (!history.isEmpty()) {
-            addText(body, "原文、PDF、页数或模型配置与旧批次不同。旧草稿会保留，新批次不会混用旧结果。");
+            addText(body, activity.getString(R.string.widget_digit_old_batch_diff));
         }
         if(source!=null){
             for(DigitizationStore.Snapshot prior:history){
@@ -191,32 +186,32 @@ final class DigitizationController implements AutoCloseable {
                         ||prior.target.sameIntent(capture.target)
                         ||prior.state==DigitizationStore.State.COMPLETED)continue;
                 String destination=prior.target.kind==DigitizationStore.TargetKind.GROUP
-                        ?(prior.target.operation==DigitizationStore.TargetOperation.ADD?"之前选择的新组材料":"之前选择的组材料")
-                        :"之前选择的本机材料";
-                addButton(body,"继续旧目标 · "+destination+" · "+prior.completedCount()+" / "+prior.totalPages+" 页",()->{
+                        ?(prior.target.operation==DigitizationStore.TargetOperation.ADD?activity.getString(R.string.widget_digit_new_group):activity.getString(R.string.widget_digit_old_group))
+                        :activity.getString(R.string.widget_digit_local_material);
+                addButton(body, activity.getString(R.string.widget_digit_resume_old_target, destination, prior.completedCount(), prior.totalPages), () -> {
                     capture.target=prior.target;
                     start(capture,source,prior,serial,plan);
                 });
             }
         }
         if (source != null) {
-            addButton(body, history.isEmpty() ? "确认范围并开始" : "新建整理批次", () -> {
+            addButton(body, history.isEmpty() ? activity.getString(R.string.widget_digit_confirm_range_start) : activity.getString(R.string.widget_digit_new_batch), () -> {
                 if (history.isEmpty()) start(capture, source, null, serial, plan);
-                else dialog(new AlertDialog.Builder(activity).setTitle("重新整理整本笔记？")
-                        .setMessage("将重新发送全部页面，可能再次产生模型费用。已有草稿会保留。")
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("新建并开始", (d, which) -> start(capture, source, null, serial, plan))
+                else dialog(new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_repeat_title))
+                        .setMessage(activity.getString(R.string.widget_digit_repeat_body))
+                        .setNegativeButton(activity.getString(R.string.widget_digit_cancel), null)
+                        .setPositiveButton(activity.getString(R.string.widget_digit_start_new), (d, which) -> start(capture, source, null, serial, plan))
                         .create());
             });
         }
-        if (!history.isEmpty()) addButton(body, "查看已保存的批次（" + history.size() + "）", () -> showHistory(history));
+        if (!history.isEmpty()) addButton(body, activity.getString(R.string.widget_digit_history_count, history.size()), () -> showHistory(history));
         if (!corrupt.isEmpty()) {
-            addText(body, "发现 " + corrupt.size() + " 份无法读取的检查点，原文件已保留；未作为可继续进度使用。");
-            addButton(body, "查看损坏检查点", () -> {
-                StringBuilder description = new StringBuilder("以下文件未被删除，也没有用于续跑：\n\n");
+            addText(body, activity.getString(R.string.widget_digit_corrupt_count, corrupt.size()));
+            addButton(body, activity.getString(R.string.widget_digit_corrupt_action), () -> {
+                StringBuilder description = new StringBuilder(activity.getString(R.string.widget_digit_corrupt_detail) + "\n\n");
                 for (DigitizationStore.CorruptEntry item : corrupt) description.append(item.fileName).append('\n');
-                dialog(new AlertDialog.Builder(activity).setTitle("无法读取的整理稿")
-                        .setMessage(description.toString()).setPositiveButton("关闭", null).create());
+                dialog(new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_unreadable_draft))
+                        .setMessage(description.toString()).setPositiveButton(activity.getString(R.string.widget_digit_close), null).create());
             });
         }
         dialog(plan, () -> {
@@ -231,8 +226,8 @@ final class DigitizationController implements AutoCloseable {
         Run run = new Run(capture, serial);
         active = run;
         plan.dismiss();
-        run.progress = dialog(new AlertDialog.Builder(activity).setTitle("正在整理到知识库")
-                .setMessage("准备中…").setNegativeButton("取消整理", null).setCancelable(false).create());
+        run.progress = dialog(new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_running_title))
+                .setMessage(activity.getString(R.string.widget_digit_preparing)).setNegativeButton(activity.getString(R.string.widget_digit_cancel_action), null).setCancelable(false).create());
         run.progress.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> cancel(run));
         worker.execute(() -> execute(run, source, resume));
     }
@@ -244,21 +239,21 @@ final class DigitizationController implements AutoCloseable {
             synchronized (run) {
                 run.cancellation.throwIfCancelled();
                 run.draft = resume == null ? store.create(source,
-                        run.capture.document.optString("title", "笔记"), run.capture.sourceUpdatedAt,
+                        run.capture.document.optString("title", activity.getString(R.string.widget_digit_note_title)), run.capture.sourceUpdatedAt,
                         run.capture.target) : store.load(resume.runId);
                 if (!run.draft.matches(source)) throw new IllegalStateException("原文或接收者已改变，请新建整理批次");
                 try { run.lease = store.acquireLease(run.draft.runId); }
                 catch (Exception unavailableLease) {
-                    run.localFailure = "这份批次仍在另一项操作中，请等它结束后再继续";
+                    run.localFailure = activity.getString(R.string.widget_digit_busy);
                     throw unavailableLease;
                 }
                 if (run.lease == null) {
-                    run.localFailure = "这份批次仍在另一项操作中，请等它结束后再继续";
+                    run.localFailure = activity.getString(R.string.widget_digit_busy);
                     throw new IllegalStateException("Digitization checkpoint lease is busy");
                 }
                 run.draft = store.load(run.draft.runId);
                 if (resume != null && run.draft.revision != resume.revision) {
-                    run.localFailure = "这份批次的进度已经更新，请重新打开，核对已完成页和未确认请求";
+                    run.localFailure = activity.getString(R.string.widget_digit_progress_changed);
                     run.skipFailureCommit = true;
                     throw new IllegalStateException("Checkpoint changed after confirmation");
                 }
@@ -270,14 +265,13 @@ final class DigitizationController implements AutoCloseable {
             while (run.draft.nextPendingPage() >= 0) {
                 run.cancellation.throwIfCancelled();
                 int page = run.draft.nextPendingPage();
-                update(run, "正在整理第 " + (page + 1) + " / " + run.draft.totalPages
-                        + " 页 · 已保存 " + run.draft.completedCount() + " 页");
+                update(run, activity.getString(R.string.widget_digit_page_progress, page + 1, run.draft.totalPages, run.draft.completedCount()));
                 Bitmap bitmap = run.capture.snapshot.renderBasePage(page, 1600);
                 byte[] png;
                 try {
                     BoundedPng output = new BoundedPng(MAX_PNG_BYTES);
                     if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                        throw new IllegalStateException("页面图像编码失败");
+                        throw new IllegalStateException(activity.getString(R.string.widget_digit_page_encode_failed));
                     }
                     png = output.toByteArray();
                 } finally { bitmap.recycle(); }
@@ -286,14 +280,14 @@ final class DigitizationController implements AutoCloseable {
                     run.draft = store.markPageStarted(run.draft, page);
                 }
                 String transcript = transcriber.transcribe(run.capture.config, png, PROMPT, run.cancellation);
-                if (transcript == null || transcript.trim().isEmpty()) throw new IllegalStateException("模型返回空结果，请重试此页");
+                if (transcript == null || transcript.trim().isEmpty()) throw new IllegalStateException(activity.getString(R.string.widget_digit_empty_result));
                 String pageText = mergePageContent(transcript, run.capture.flows, page);
                 synchronized (run) {
                     run.cancellation.throwIfCancelled();
                     try { run.draft = store.savePage(run.draft, page, pageText); }
                     catch (IllegalArgumentException limit) {
                         // Only local validation text is displayed; provider error bodies stay excluded.
-                        run.localFailure = limit.getMessage();
+                        run.localFailure = activity.getString(R.string.widget_digit_limit_failure);
                         run.limitFailure = true;
                         throw limit;
                     }
@@ -305,25 +299,24 @@ final class DigitizationController implements AutoCloseable {
             synchronized (run) {
                 run.cancellation.throwIfCancelled();
                 if (!"COMPLETED".equals(run.draft.state.name())) {
-                    update(run, "全部页面已保存，正在写入知识库…");
+                    update(run, activity.getString(R.string.widget_digit_all_saved));
                     String name = vault.publishDigitization(run.draft.target,run.draft.title,
                             run.draft.totalPages,sourceTime,run.draft.pages);
                     run.draft = store.markPublished(run.draft, name);
                 }
                 published = true;
             }
-            result = "已保存到知识库。";
+            result = activity.getString(R.string.widget_digit_saved);
         } catch (Exception error) {
             boolean cancelled = run.cancellation.isCancelled();
             String persistError = "";
             if (run.draft != null && run.lease != null && !run.skipFailureCommit) {
                 try { run.draft = cancelled ? store.cancel(run.draft) : store.fail(run.draft, "本次整理未完成"); }
-                catch (Exception saveError) { persistError = " 状态保存失败；下次会重新核对已落盘页面。"; }
+                catch (Exception saveError) { persistError = " " + activity.getString(R.string.widget_digit_persist_failed); }
             }
-            result = (cancelled ? "已取消本地请求。已保存的页面可继续，服务端可能仍产生费用。"
-                    : "整理未完成：" + (run.localFailure == null ? safe(error) : run.localFailure
-                    + (run.limitFailure ? "，可先导出部分结果并拆分原笔记" : ""))
-                    + "。已保存的页会保留。") + persistError;
+            result = cancelled ? activity.getString(R.string.widget_digit_local_cancelled)
+                    : activity.getString(R.string.widget_digit_failed, run.localFailure == null ? safeMessage(error) : run.localFailure,
+                    (run.limitFailure ? ". " + activity.getString(R.string.widget_digit_limit_action) : "") + persistError);
         } finally {
             if (run.lease != null) try { run.lease.close(); } catch (Exception ignored) { }
             run.capture.close();
@@ -336,9 +329,9 @@ final class DigitizationController implements AutoCloseable {
             if (!current(run.serial)) return;
             if (complete) message(notice);
             else {
-                AlertDialog.Builder alert = new AlertDialog.Builder(activity).setTitle("整理未完成")
-                        .setMessage(notice).setPositiveButton("关闭", null);
-                if (run.draft != null && run.draft.completedCount() > 0) alert.setNeutralButton("查看部分结果",
+                AlertDialog.Builder alert = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_failed_title))
+                        .setMessage(notice).setPositiveButton(activity.getString(R.string.widget_digit_close), null);
+                if (run.draft != null && run.draft.completedCount() > 0) alert.setNeutralButton(activity.getString(R.string.widget_digit_partial),
                         (d, which) -> preview(run.draft));
                 dialog(alert.create());
             }
@@ -351,7 +344,7 @@ final class DigitizationController implements AutoCloseable {
             run.cancellation.cancel();
         }
         if (run.progress != null && run.progress.isShowing()) {
-            run.progress.setMessage("正在取消本地请求，保留已保存的页面…");
+            run.progress.setMessage(activity.getString(R.string.widget_digit_canceling));
             run.progress.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
         }
     }
@@ -371,29 +364,29 @@ final class DigitizationController implements AutoCloseable {
         String[] labels = new String[history.size()];
         for (int index = 0; index < labels.length; index++) {
             DigitizationStore.Snapshot draft = history.get(index);
-            labels[index] = draft.completedCount() + "/" + draft.totalPages + " 页 · "
-                    + ("COMPLETED".equals(draft.state.name()) ? "已存知识库" : "未完成")
-                    + " · " + android.text.format.DateFormat.format("MM-dd HH:mm", draft.createdAt);
+            labels[index] = activity.getString(R.string.widget_digit_batch_label, draft.completedCount(), draft.totalPages,
+                    ("COMPLETED".equals(draft.state.name()) ? activity.getString(R.string.widget_digit_stored) : activity.getString(R.string.widget_digit_incomplete)),
+                    android.text.format.DateFormat.format("MM-dd HH:mm", draft.createdAt));
         }
-        dialog(ChoiceRows.builder(activity).setTitle("已保存的整理批次")
+        dialog(ChoiceRows.builder(activity).setTitle(activity.getString(R.string.widget_digit_saved_batches))
                 .setAdapter(ChoiceRows.adapter(activity, labels), (d, which) -> preview(history.get(which)))
-                .setNegativeButton("关闭", null).create());
+                .setNegativeButton(activity.getString(R.string.widget_digit_close), null).create());
     }
 
     private void preview(DigitizationStore.Snapshot draft) {
         String markdown = draft.partialMarkdown();
         LinearLayout content = body();
-        addText(content, "这是原文快照的转写稿。未完成页已标出；未保存到知识库的草稿不会参与知识库检索。");
+        addText(content, activity.getString(R.string.widget_digit_preview_intro));
         TextView text = addText(content, markdown.length() > 100_000
-                ? markdown.substring(0, 100_000) + "\n\n预览已截短，导出可取得完整草稿。" : markdown);
+                ? markdown.substring(0, 100_000) + "\n\n" + activity.getString(R.string.widget_digit_preview_truncated) : markdown);
         text.setTextIsSelectable(true);
-        dialog(new AlertDialog.Builder(activity).setTitle("整理稿 · " + draft.completedCount() + "/" + draft.totalPages + " 页")
-                .setView(scroll(content)).setPositiveButton("关闭", null)
-                .setNeutralButton("导出 Markdown", (d, which) -> {
+        dialog(new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.widget_digit_draft_title, draft.completedCount(), draft.totalPages))
+                .setView(scroll(content)).setPositiveButton(activity.getString(R.string.widget_digit_close), null)
+                .setNeutralButton(activity.getString(R.string.widget_digit_export_markdown), (d, which) -> {
                     pendingExport = markdown;
                     Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                             .setType("text/markdown").putExtra(Intent.EXTRA_TITLE,
-                                    VaultStore.sanitizeTitle(draft.title) + "-整理稿.md");
+                                    VaultStore.sanitizeTitle(draft.title) + activity.getString(R.string.widget_digit_file_title));
                     activity.startActivityForResult(intent, EXPORT_DRAFT_REQUEST);
                 }).create());
     }
@@ -406,10 +399,10 @@ final class DigitizationController implements AutoCloseable {
         android.net.Uri uri = data.getData();
         worker.execute(() -> {
             try (OutputStream output = activity.getContentResolver().openOutputStream(uri)) {
-                if (output == null) throw new IllegalStateException("无法打开所选位置");
+                if (output == null) throw new IllegalStateException(activity.getString(R.string.widget_digit_file_unavailable));
                 output.write(markdown.getBytes(StandardCharsets.UTF_8));
-                main.post(() -> { if (!closed) message("整理稿已导出"); });
-            } catch (Exception error) { main.post(() -> { if (!closed) message("导出失败：" + safe(error)); }); }
+                main.post(() -> { if (!closed) message(activity.getString(R.string.widget_digit_exported)); });
+            } catch (Exception error) { main.post(() -> { if (!closed) message(activity.getString(R.string.widget_digit_export_failed, safeMessage(error))); }); }
         });
         return true;
     }
@@ -419,15 +412,15 @@ final class DigitizationController implements AutoCloseable {
     }
     private boolean current(int serial) { return !closed && generation == serial && !activity.isFinishing() && !activity.isDestroyed(); }
     private void message(String value) { Toast.makeText(activity, value, Toast.LENGTH_LONG).show(); }
-    private static String safe(Exception error) {
+    private String safeMessage(Exception error) {
         // Provider bodies may contain private text. The network layer already categorizes its errors.
-        if (error instanceof java.util.concurrent.CancellationException) return "请求已取消";
-        if (error instanceof java.io.IOException) return "网络或文件读写失败，请检查连接与剩余空间后重试";
-        return "请求或保存未完成，请检查模型配置与原文后重试";
+        if (error instanceof java.util.concurrent.CancellationException) return activity.getString(R.string.widget_digit_cancelled);
+        if (error instanceof java.io.IOException) return activity.getString(R.string.widget_digit_io_failed);
+        return activity.getString(R.string.widget_digit_request_failed);
     }
-    private static String safeTarget(String endpoint) {
-        try { java.net.URI uri = new java.net.URI(endpoint); return uri.getHost() == null ? "已配置的模型服务" : uri.getHost(); }
-        catch (Exception ignored) { return "已配置的模型服务"; }
+    private String safeTarget(String endpoint) {
+        try { java.net.URI uri = new java.net.URI(endpoint); return uri.getHost() == null ? activity.getString(R.string.widget_digit_configured_service) : uri.getHost(); }
+        catch (Exception ignored) { return activity.getString(R.string.widget_digit_configured_service); }
     }
     private AlertDialog dialog(AlertDialog dialog) { return dialog(dialog, () -> { }); }
     private AlertDialog dialog(AlertDialog dialog, Runnable dismissed) {
@@ -489,11 +482,11 @@ final class DigitizationController implements AutoCloseable {
         final int maximum;
         BoundedPng(int maximum) { this.maximum = maximum; }
         @Override public synchronized void write(byte[] bytes, int offset, int length) {
-            if (length > maximum - count) throw new IllegalStateException("页面图像超出上传预算");
+            if (length > maximum - count) throw new IllegalStateException("Page image exceeds upload budget");
             super.write(bytes, offset, length);
         }
         @Override public synchronized void write(int value) {
-            if (count >= maximum) throw new IllegalStateException("页面图像超出上传预算");
+            if (count >= maximum) throw new IllegalStateException("Page image exceeds upload budget");
             super.write(value);
         }
     }

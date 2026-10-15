@@ -1,34 +1,38 @@
 # PadNote
 
+<img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote 标志">
+
 **在同一张纸上写、画、提问，再分享或交给电脑 Agent。**
 
-PadNote 是开源的平板笔记与 AI 学习工具。Android 可在同一份笔记中书写、绘图和交流，导出完整纸面 PDF，或把当前笔记材料交给已配对的 Hermes 电脑助手。模型与服务由你选择。
+PadNote 是面向平板的笔记与 AI 学习工具。你可以在同一份笔记中书写、绘图和提问，再分享纸面或交给已配对的电脑 Agent。模型和服务由你选择。
 
-[Android beta.12 测试版](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.12) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.12/PadNote-Android-0.18.0-beta.12-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [测试指南](docs/BETA12_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [测试指南](docs/BETA13_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
-Android 35 模拟器实测截图。纸面与问题均为合成示例；示例问题未发送。
+Android 模拟器实录，图中文字为本地界面示例。
 
-![纸面与 AI 卡片](docs/images/beta12-01-paper-ai.png)
+![多语言界面](docs/images/beta13-01-languages.png)
 
-![键盘打开时的输入框与发送按钮](docs/images/beta12-02-keyboard.png)
+![纸面工具图标](docs/images/beta13-02-tool-icons.png)
 
-![尚未连接 Agent 时的引导](docs/images/beta12-03-agent-guide.png)
+![新品牌标志](docs/images/beta13-03-new-brand.png)
 
-## beta.12 更新
+## beta.13 更新
 
-本版统一 Android 纸面工具栏、AI 卡片和表单中的操作按钮与图标。AI 输入框会随长内容伸展为两到三行；键盘打开时输入框和发送按钮仍可用，屏幕旋转后 AI 卡片保持可见。尚未连接电脑 Agent 时，点击“连接设置”即可进入配置。Windows x64 连接助手沿用 beta.11 安装程序，本轮没有修改 Windows 助手。
+Android 界面新增简体中文、英语、日语、韩语、西班牙语、法语和德语，并统一 21 个功能图标与新品牌标志。默认语言跟随系统，也可在书架中切换。翻译尚未经过母语者逐条审核；少数机器或 Agent 返回的原始错误仍可能保留原文，模型回答不会随界面语言翻译。
 
-Android APK 适用于 Android 7.0 / API 24 及以上，包名为 `com.padnote.android.beta`。APK 使用与 beta.11 相同的签名，可覆盖安装。安装前请备份重要笔记。测试范围与结果见[测试指南](docs/BETA12_TESTING.md)。
+同时修复大字号下发送按钮裁字、底部状态重叠和长标题书架按钮遮挡。未发送草稿按笔记保留，关闭卡片后可继续编辑。
+
+Windows 连接助手继续使用 beta.11 安装程序，因此 Windows 应用仍显示旧图标；本版源码更新了共享图标资源。iPad 本轮只有图标源码资源，没有可安装的签名 IPA。Android 安装范围、构建结果和已完成的实测项目以[测试指南](docs/BETA13_TESTING.md)为准。
 
 ## 功能范围与边界
 
-在当前笔记中书写、编辑、缩放并进行 AI 交流；分享完整纸面 PDF；将当前笔记的 PDF 和可读上下文发送给已配对且支持纸面任务的 Hermes Agent。模型、TTS 和视频工具由你或所选 Agent 配置，PadNote 不要求特定供应商。OpenClaw 目前仅提供发现与设置引导，Codex 纸面任务尚未接入。iPad 有源码，暂无可安装的签名 IPA。
+在当前笔记中书写、编辑、缩放并进行 AI 交流；分享完整纸面 PDF；将当前笔记材料发送给已配对且支持纸面任务的 Hermes Agent。模型与服务由你或所选 Agent 配置，PadNote 不要求特定供应商。OpenClaw 目前提供发现与设置引导，Codex 纸面任务尚未接入。iPad 有源码，暂无可安装的签名 IPA。
 
-电脑助手不附带 Hermes、模型、API 密钥或视频运行时。WSL Hermes 需要启用且可从 Windows 访问的 API；助手不会自动扫描 WSL。外部模型或工具可能产生费用。发送前检查材料范围、目标和任务。
+电脑助手不附带 Hermes、模型、API 密钥或视频运行时。WSL Hermes 需要启用可从 Windows 访问的 API；助手不会自动扫描 WSL。外部模型或工具可能产生费用。发送前检查材料范围、目标和任务。
 
 ## 下载与验证
 
-Release 提供 Android APK、Windows x64 安装程序、源码 ZIP、测试指南、许可文件和 `SHA256SUMS.txt`。本版没有重复发布 beta.11 演示视频。Windows 安装程序在 Windows 11 x64 的 SSH Session 0 完成安装、启动停止、服务、同版本重装和卸载检查；这不代表普通桌面鼠标操作、同 Wi-Fi 配对或真实 Hermes 任务已验证。安装程序未签名。
+Release 提供 Android APK、beta.11 Windows x64 安装程序、源码 ZIP、测试指南、许可文件和 `SHA256SUMS.txt`。Windows beta.11 安装程序的验证范围见测试指南；本轮不声称 Windows 助手获得新版 UI 或新图标。安装程序未签名。
 
 下载后在 macOS/Linux 使用 `shasum -a 256 <文件>`，Windows 使用 `Get-FileHash <文件> -Algorithm SHA256` 核对校验和。
 

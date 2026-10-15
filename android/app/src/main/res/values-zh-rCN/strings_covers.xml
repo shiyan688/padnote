@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">无法确认封面目标版本</string>
+    <string name="cover_builtin_section">内置封面</string>
+    <string name="cover_user_presets_section">我的预设</string>
+    <string name="cover_import_button">从相册导入封面…</string>
+    <string name="cover_import_hint">导入的图片可以在下一步加入预设，供以后新建时选用。</string>
+    <string name="cover_new_note_title">为新笔记选封面</string>
+    <string name="cover_change_title">更换封面</string>
+    <string name="cover_accessibility_label">封面：%1$s</string>
+    <string name="cover_selected">已选封面：%1$s</string>
+    <string name="cover_save_failed">封面保存失败：%1$s</string>
+    <string name="cover_remove_failed">封面未移除：%1$s</string>
+    <string name="cover_preset_confirm_title">把这张图加入预设封面？</string>
+    <string name="cover_preset_confirm_message">加入后，新建笔记和其他笔记都能直接选用它。</string>
+    <string name="cover_preset_decline">不用</string>
+    <string name="cover_preset_add_button">加入预设</string>
+    <string name="cover_preset_added">已加入预设封面</string>
+    <string name="cover_preset_add_failed">加入预设失败：%1$s</string>
+    <string name="cover_preset_cream_ruled">米白横线</string>
+    <string name="cover_preset_light_blue_grid">浅蓝方格</string>
+    <string name="cover_preset_forest_dots">墨绿点阵</string>
+    <string name="cover_preset_writing_blue">书写蓝</string>
+    <string name="cover_preset_knowledge_green">知识库绿</string>
+    <string name="cover_preset_ochre">赭石</string>
+</resources>

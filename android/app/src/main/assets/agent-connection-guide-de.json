@@ -1,0 +1,92 @@
+{
+  "title": "Anleitung zur Computerverbindung",
+  "summary": "Öffnen Sie den PadNote-Verbindungsassistenten auf dem Computer, auf dem Hermes läuft. Verbinden Sie Tablet und Computer mit demselben WLAN und scannen Sie den Code zum Koppeln; weitere Software ist nicht erforderlich. Sie können mehrere Verbindungen speichern oder eine vorhandene HTTPS-Adresse und ein Token manuell eingeben. Modell- und Agent-API-Schlüssel stellen Sie selbst bereit; sie bleiben auf Ihren Geräten. Diese Anleitung ist offline verfügbar.",
+  "sections": [
+    {
+      "title": "Verbindungsmethode auswählen",
+      "body": "Verbindungsassistent: Erkennt Hermes auf dem Computer. Nach dem Koppeln können Sie vom Tablet Textaufgaben oder ausgewählte Notizpakete senden, den Status prüfen, Freigaben für die aktuelle Aufgabe bearbeiten und Dateien abrufen. Das langfristige Hermes-Token bleibt auf dem Computer.\nDirektverbindung: Geben Sie die HTTPS-Adresse von Hermes und API_SERVER_KEY ein, um Textaufgaben zu senden. Zum Senden von Aufgabenpaketen und Empfangen von Dateien im Aufgabenordner ist der Verbindungsassistent erforderlich.\nOpenClaw bietet derzeit nur Erkennung und Anleitung; PadNote kann keine OpenClaw-Aufgaben ausführen. Eine erfolgreiche API-Prüfung bedeutet nicht, dass Video-Skills, TTS oder Rendering-Abhängigkeiten installiert sind."
+    },
+    {
+      "title": "1 · Computer-Verbindungsassistent öffnen",
+      "body": "Windows Setup installiert den nativen Windows-Assistenten für eine lokale Hermes-Installation unter Windows. Hermes in WSL wird dadurch nicht direkt gesteuert. Um Hermes in WSL zu verwenden, öffnen Sie dieselbe WSL-Distribution, in der Hermes installiert ist, und führen Sie dort aus dem Assistentenpaket `python3 start.py --lan` aus. Assistent und Hermes müssen in derselben WSL-Umgebung laufen, damit sie auf dieselben Aufgabendateien zugreifen können.\nDie lokale Verwaltungsseite wird unter http://127.0.0.1:8766 geöffnet. Öffnen Sie sie nur auf Ihrem eigenen Computer; sie ist nicht im LAN erreichbar."
+    },
+    {
+      "title": "2 · Hermes auswählen und API prüfen",
+      "body": "Wählen Sie im Assistenten die erkannte Hermes-Instanz aus und folgen Sie den Anweisungen, um deren Konfiguration zu verwenden. Wird sie nicht erkannt, geben Sie die lokale API-Adresse und API_SERVER_KEY manuell ein. Die Standardadresse lautet http://127.0.0.1:8642. Führen Sie die API-Prüfung aus; ein Kopplungscode wird erst nach erfolgreicher Prüfung erzeugt.\nDass Sie im Terminal chatten können, bedeutet nicht zwingend, dass API Server aktiviert ist. Meldet der Assistent, dass er deaktiviert ist, führen Sie die zusätzlichen Schritte unten aus; Hermes muss nicht neu installiert werden."
+    },
+    {
+      "title": "3 · Tablet und Computer im selben WLAN verbinden",
+      "body": "Verbinden Sie Tablet und Computer mit demselben WLAN oder Router. Start-PadNote.cmd aktiviert den Zugriff im selben Netzwerk standardmäßig: Der Assistent stellt auf Port 8767 eine verschlüsselte Geräte-API bereit. Der Computer erstellt sein eigenes Zertifikat; dessen Fingerabdruck ist im Kopplungs-QR-Code enthalten. Das Tablet vertraut ausschließlich diesem Zertifikat.\nFühren Sie unter Windows einmalig zwei Schritte in einer PowerShell als Administrator aus: (1) Erlauben Sie WSL, LAN-Verbindungen anzunehmen. Fügen Sie unter Windows 11 22H2 oder neuer [wsl2] und networkingMode=mirrored zu %UserProfile%\\.wslconfig hinzu, führen Sie wsl --shutdown aus und öffnen Sie WSL erneut. Unter Windows 10 verwenden Sie den Portweiterleitungsbefehl unten. (2) Erlauben Sie Port 8767 nur im Profil „Privat“ und prüfen Sie, dass das aktuelle WLAN als privat eingestellt ist.",
+      "code": "New-NetFirewallRule -DisplayName \"PadNote LAN\" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private\n# 仅 Windows 10：WSL 地址变化后需重跑\n$wslIp = (wsl hostname -I).Split(\" \")[0]\nnetsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp"
+    },
+    {
+      "title": "4 · Kopplungscode im lokalen Netzwerk erstellen",
+      "body": "Kehren Sie zum Computerassistenten zurück und öffnen Sie „4. Pair a tablet“. Wählen Sie unter „Same Wi-Fi (recommended)“ die Agent-Instanz und die LAN-Adresse des Computers (zum Beispiel 192.168.x.x) aus und erstellen Sie dann den Code. URL, Zertifikat oder Domäne müssen nicht eingegeben werden."
+    },
+    {
+      "title": "5 · Scannen und am Computer bestätigen",
+      "body": "Wählen Sie auf der PadNote-Agent-Seite des Computers „Zum Hinzufügen scannen“. Sie können auch den vollständigen Kopplungstext kopieren und über die Einfügeoption hinzufügen. Prüfen Sie die angezeigte Computeradresse, senden Sie die Anfrage und kehren Sie zum Computer zurück. Aktualisieren Sie dort die ausstehenden Geräte, prüfen Sie die Anfrage und genehmigen Sie dieses Tablet.\nEin Kopplungscode ist fünf Minuten gültig und kann nur einmal verwendet werden. Das Tablet benötigt niemals das langfristige Hermes-Token. Prüfen Sie nach dem Koppeln die Verbindung und senden Sie eine einfache Testaufgabe. Koppeln Sie erneut, wenn der Computerassistent neu installiert oder sein Zertifikat gelöscht wurde."
+    },
+    {
+      "title": "Mehrere Agents verbinden",
+      "body": "Fügen Sie jede Instanz einzeln hinzu, benennen und koppeln Sie sie. Zwei Hermes-Instanzen auf einem Computer benötigen jeweils die richtige Adresse, den richtigen Port oder das richtige Profil; ein anderer Computer verwendet seinen eigenen Assistenten und seine HTTPS-Adresse. Der Standard-Agent gilt nur für neue Aufgaben. Prüfen Sie vor dem Senden das Ziel. Bestehende Aufgaben bleiben auf ihrer ursprünglichen Verbindung und werden bei einer Änderung des Standard-Agenten nicht übertragen."
+    },
+    {
+      "title": "Aufgabe senden und Ergebnis empfangen",
+      "body": "Beginnen Sie mit einer einfachen Textaufgabe, zum Beispiel: „Antworte nur: Verbindung erfolgreich. Keine Dateien bearbeiten.“ Sobald ein Ergebnis angekommen ist, senden Sie ausgewählte Notizinhalte oder ein Video-Aufgabenpaket. Die Aufgabenseite zeigt den Status und ermöglicht Aktualisieren, Stoppen oder das Bearbeiten der aktuellen ausstehenden Freigabe. Kehren Sie nach einer Netzwerkunterbrechung zur selben Aufgabe zurück, um sie zu prüfen.\nEin Aufgabenpaket enthält nur die für diese Aufgabe ausgewählten Inhalte. Zurückgegebene Dateien werden vor der Vorschau oder dem Speichern geprüft und überschreiben niemals automatisch eine Notiz. Für die Videogenerierung sind weiterhin die Video-Skill, Stimme und Rendering-Werkzeuge des Computer-Agenten erforderlich; eine erfolgreiche Textantwort bedeutet nicht, dass ein Video erstellt wurde."
+    },
+    {
+      "title": "Zusatz · Hermes API Server aktivieren",
+      "body": "Bearbeiten Sie in der WSL-Distribution, in der Hermes installiert ist, die von dieser Instanz verwendete .env-Datei. Der Standardpfad lautet ~/.hermes/.env. Wenn Sie ein Profil oder HERMES_HOME verwenden, richten Sie sich nach der tatsächlichen Konfiguration der Instanz. Behalten Sie vorhandene Inhalte bei und ergänzen Sie nur fehlende API-Server-Einstellungen. Verwenden Sie einen vorhandenen API_SERVER_KEY weiter. Falls keiner vorhanden ist, können Sie mit openssl rand -hex 32 ein zufälliges Token erzeugen und den Platzhalter unten ersetzen. Dieses Token unterscheidet sich vom API-Schlüssel eines Modellanbieters.",
+      "code": "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=替换成你的随机令牌\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8642"
+    },
+    {
+      "title": "Zusatz · API starten",
+      "body": "Führen Sie hermes gateway in derselben Hermes-Umgebung aus. Läuft bereits ein Gateway, warten Sie, bis die aktuelle Aufgabe beendet ist, und starten Sie es dann neu, damit die neue Konfiguration geladen wird. Starten Sie keinen zweiten Prozess. Sobald das Protokoll API Server anzeigt, kehren Sie zum Assistenten zurück, wählen Sie „Refresh discovery“ und danach „Use this configuration“ und prüfen Sie die Instanz. Computer, WSL, Hermes und Verbindungsassistent müssen weiterlaufen.",
+      "code": "hermes gateway"
+    },
+    {
+      "title": "Optional · Tablet in einem anderen Netzwerk",
+      "body": "Eine Verbindung über verschiedene Netzwerke ist optional. Bei Bedarf können Sie ein privates Netzwerkwerkzeug wie Tailscale verwenden: Melden Sie beide Seiten beim selben privaten Netzwerk an, stellen Sie die Geräte-API auf Port 8765 auf dem Computer als HTTPS bereit und geben Sie anschließend die erzeugte https:// Adresse im Assistenten unter „When the tablet is on another network“ ein, um einen Kopplungscode zu erstellen. Teilen Sie die Verwaltungsseite auf Port 8766 nicht.",
+      "code": "tailscale serve status\ntailscale serve --bg --https=443 http://127.0.0.1:8765\ntailscale serve status"
+    },
+    {
+      "title": "Alternative · Direkte Hermes-Verbindung",
+      "body": "Wenn Sie bereits einen erreichbaren Hermes-HTTPS-Endpunkt haben, fügen Sie in PadNote manuell eine Verbindung hinzu und wählen Sie die direkte Hermes-Verbindung. Geben Sie nur die Stammadresse ein; hängen Sie weder /v1 noch /chat/completions an. Geben Sie nur den Wert von API_SERVER_KEY dieser Instanz ein, ohne Variablennamen, Anführungszeichen oder Bearer-Präfix.\nlocalhost / 127.0.0.1 auf dem Tablet verweist auf das Tablet selbst und kann nicht als Adresse eines anderen Computers verwendet werden."
+    },
+    {
+      "title": "macOS / Linux",
+      "body": "Entpacken Sie auf dem Computer mit Hermes das Assistentenpaket. Führen Sie unter macOS Start-PadNote.command und unter Linux start-padnote.sh aus. Verwenden Sie anschließend dieselbe Verwaltungsseite sowie denselben Ablauf für API-Prüfung und Kopplung. Ersetzen Sie im Prüfungsbefehl curl.exe durch curl. Diese Systeme benötigen keine Windows-zu-WSL-localhost-Weiterleitung."
+    },
+    {
+      "title": "Fehlerbehebung",
+      "body": "Zeitüberschreitung / Computer nicht gefunden: Stellen Sie sicher, dass der Computer nicht im Ruhezustand ist und WSL, Hermes und Assistent laufen; beide Geräte dasselbe WLAN nutzen; Windows Port 8767 im Profil „Privat“ zulässt; und WSL-Mirrored-Netzwerk oder Portweiterleitung eingerichtet ist.\nZertifikat oder Kopplung stimmen nicht überein: Der Computer hat ein neues Zertifikat erstellt. Erstellen Sie einen neuen Kopplungscode und koppeln Sie erneut.\n401 / 403: Prüfen Sie bei einer Direktverbindung API_SERVER_KEY. Prüfen Sie bei Assistentenverbindungen, ob die Gerätefreigabe widerrufen wurde, und koppeln Sie bei Bedarf erneut.\n502 / API deaktiviert: Erkennen Sie zuerst Hermes im Assistenten und prüfen Sie danach die localhost-Weiterleitung von Windows zu WSL.\n404 / Dienstidentität stimmt nicht: Verwechseln Sie nicht eine direkte Hermes-Adresse mit einer Assistentenadresse und hängen Sie kein /v1 an.\nAufgabe gesendet, Ergebnis unklar: Behalten Sie die ursprüngliche Aufgabe bei und wiederholen Sie sie oder fragen Sie ihren Status ab. Erstellen Sie nicht wiederholt dieselbe Aufgabe.\nKonfiguration geändert: Alte Aufgaben senden keine Zugangsdaten an eine neue Adresse oder Instanz. Kehren Sie zum ursprünglichen Computer zurück und prüfen Sie den Aufgabenstatus."
+    },
+    {
+      "title": "Aufgaben stoppen, Verbindungen entfernen und Zugriff widerrufen",
+      "body": "„Stop“ auf der Aufgabenseite fordert den Computer auf, die aktuelle Aufgabe zu stoppen, und wartet auf seine Antwort. Das Schließen der Seite stoppt die Aufgabe nicht. Wenn Sie eine Verbindung auf dem Tablet entfernen, wird nur dessen lokale Konfiguration gelöscht. Aufgabenprotokolle bleiben erhalten und die Autorisierung auf dem Computer wird nicht widerrufen. Um ein Tablet zu deaktivieren, widerrufen Sie seine Verbindung unter den autorisierten Geräten des Computerassistenten; andere Instanzen bleiben unberührt.\nWenn Sie den Zugriff im selben Netzwerk nicht mehr benötigen, stoppen Sie den Assistenten oder löschen Sie die oben hinzugefügte Firewallregel."
+    }
+  ],
+  "links": [
+    {
+      "title": "PadNote · Downloads und Versionshinweise",
+      "url": "https://github.com/shiyan688/padnote/releases"
+    },
+    {
+      "title": "Hermes · API Server",
+      "url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server"
+    },
+    {
+      "title": "Hermes · Umgebungsvariablen",
+      "url": "https://hermes-agent.nousresearch.com/docs/reference/environment-variables"
+    },
+    {
+      "title": "Tailscale · Download (netzwerkübergreifend optional)",
+      "url": "https://tailscale.com/download"
+    },
+    {
+      "title": "Microsoft · WSL-Netzwerk",
+      "url": "https://learn.microsoft.com/en-us/windows/wsl/networking"
+    }
+  ]
+}

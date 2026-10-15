@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">No se pudo verificar la versión de la nota de destino</string>
+    <string name="cover_builtin_section">Portadas integradas</string>
+    <string name="cover_user_presets_section">Mis preajustes</string>
+    <string name="cover_import_button">Importar portada desde Fotos…</string>
+    <string name="cover_import_hint">En el siguiente paso, puedes añadir las imágenes importadas a los preajustes para usarlas en futuras notas.</string>
+    <string name="cover_new_note_title">Elige una portada para la nota nueva</string>
+    <string name="cover_change_title">Cambiar portada</string>
+    <string name="cover_accessibility_label">Portada: %1$s</string>
+    <string name="cover_selected">Portada seleccionada: %1$s</string>
+    <string name="cover_save_failed">No se pudo guardar la portada: %1$s</string>
+    <string name="cover_remove_failed">No se quitó la portada: %1$s</string>
+    <string name="cover_preset_confirm_title">¿Añadir esta imagen a los preajustes de portada?</string>
+    <string name="cover_preset_confirm_message">Una vez añadida, podrás usarla en notas nuevas y en otras notas.</string>
+    <string name="cover_preset_decline">Ahora no</string>
+    <string name="cover_preset_add_button">Añadir a preajustes</string>
+    <string name="cover_preset_added">Portada añadida a los preajustes</string>
+    <string name="cover_preset_add_failed">No se pudo añadir el preajuste: %1$s</string>
+    <string name="cover_preset_cream_ruled">Líneas color crema</string>
+    <string name="cover_preset_light_blue_grid">Cuadrícula azul claro</string>
+    <string name="cover_preset_forest_dots">Puntos verde bosque</string>
+    <string name="cover_preset_writing_blue">Azul escritura</string>
+    <string name="cover_preset_knowledge_green">Verde conocimiento</string>
+    <string name="cover_preset_ochre">Ocre</string>
+</resources>

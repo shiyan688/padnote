@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="core_language">语言</string><string name="core_follow_system">跟随系统</string><string name="core_cancel">取消</string>
+    <string name="core_shelf_subtitle">我的书架 · 本地多笔记</string><string name="core_import_note">导入笔记</string><string name="core_agent">电脑 Agent</string><string name="core_create_note">＋ 新建笔记</string><string name="core_recent_notes">最近笔记</string><string name="core_loading_shelf">正在整理书架…</string><string name="core_empty_shelf">书架还是空的\n新建第一本笔记，或导入 .padnote.json</string><string name="core_open">打开</string>
+    <string name="core_ai_input_hint">继续提问或输入自定义要求…</string><string name="core_ai_settings">AI 设置</string><string name="core_ai_config">AI 配置</string><string name="core_done">完成</string><string name="core_new_ai_profile">新建 AI 配置</string><string name="core_edit_ai_profile">编辑 AI 配置</string><string name="core_secure_save">安全保存</string><string name="core_model">模型</string><string name="core_api_key">API 密钥</string><string name="core_endpoint">服务地址</string><string name="core_send">发送</string><string name="core_export_note">导出笔记</string><string name="core_export_pdf">导出 PDF</string><string name="core_delete">删除</string><string name="core_save">保存</string>
+    <string name="ai_card_busy">AI 助手 · 正在回答</string><string name="ai_card_minimized">AI 助手 · 已收起</string><string name="ai_card_drag">AI 助手</string><string name="ai_config_saved">API 已安全保存 · 首次发送前会确认</string>
+    <string name="vault_failure_draft_retained">%1$s；草稿仍保留。</string><string name="vault_failure_draft_retained_retry">%1$s；草稿保留。可复制/导出，或先检查当前版本，再明确选择当前版本后重试。</string>
+    <string name="core_edit">编辑</string><string name="core_delete_profile_title">删除配置？</string><string name="core_profile_deleted">将删除“%1$s”。已保存的密钥也会一并清除。</string><string name="core_vendor_preset">厂商预设（自动填入地址与推荐模型，不改密钥）</string><string name="core_profile_example">例如：智谱免费 / DeepSeek 两段式</string><string name="core_profile_name">配置名称</string><string name="core_route">路线</string><string name="core_direct_multimodal">直连多模态（一个模型看图并回答）</string><string name="core_two_step">转写 + 回答（两段式）</string><string name="core_two_step_help">两段式：转写模型先把圈选手写转成文字，回答模型只读文字并执行笔记操作。</string><string name="core_api_base">API 基址或完整 Chat Completions 地址</string><string name="core_image_model">支持图像输入的模型名称</string><string name="core_keystore_key">API Key（由 Android Keystore 加密）</string><string name="core_saved_key_hint">已安全保存；留空可保持不变</string><string name="core_enter_api_key">请输入 API Key</string><string name="core_transcription_api">转写 API 基址</string><string name="core_transcription_model">转写模型名称（需支持图像）</string><string name="core_response_api">回答 API 基址</string><string name="core_response_model">回答模型名称（纯文本即可）</string><string name="core_profile_name_error">请给配置起个名字</string>
+<string name="core_language_busy">AI 或材料任务仍在运行。请等待任务完成后再切换语言。</string>
+<string name="core_cover">封面</string><string name="core_no_cover">不用封面</string><string name="core_more">更多…</string><string name="core_cover_unused">封面：未使用</string><string name="core_unused">未使用</string><string name="core_custom_image">自定义图片</string><string name="core_create">创建</string><string name="core_paper">纸张</string><string name="core_lined">横线</string><string name="core_blank">白纸</string><string name="core_grid">方格</string><string name="core_dotted">点阵</string><string name="core_ratio">比例</string><string name="core_fit_screen">适应屏幕</string><string name="core_orientation">方向</string><string name="core_portrait">竖向</string><string name="core_landscape">横向</string><string name="core_paper_immutable">创建后纸张样式不可更改</string>
+<string name="core_back_shelf">返回书架</string><string name="core_unnamed_note">未命名笔记</string><string name="core_paper_zoom">纸面 · 双指缩放</string><string name="core_video">视频</string><string name="core_share_agent">分享/Agent</string><string name="core_video_tasks">当前笔记的视频任务与成果</string><string name="core_share_paper">分享当前纸面 PDF，或将纸面和可读上下文交给电脑 Agent</string><string name="core_pen_settings">画笔设置</string><string name="core_text_tool">文字笔：点击页面插入</string><string name="core_eraser_settings">局部橡皮设置</string><string name="core_lasso">套索选择</string><string name="core_highlighter_settings">高亮笔设置</string><string name="core_shape_draw">几何图形：拖动绘制矩形</string><string name="core_ai_open">打开 AI 对话卡</string><string name="core_palette">打开调色盘</string><string name="core_use_color">使用%1$s</string><string name="core_undo">撤销</string><string name="core_redo">重做</string><string name="core_duplicate_selection">复制选区</string><string name="core_delete_selection">删除选区</string><string name="core_cancel_selection">取消选择</string><string name="core_clear_note">清空笔记</string><string name="core_add_page">添加新页面</string><string name="core_page_manager">页面管理</string><string name="core_insert_image">插入图片</string><string name="core_save_now">立即保存</string>
+<string name="core_ai_wait">请等待当前回答完成</string><string name="core_active_profile">当前配置：%1$s</string><string name="core_unconfigured">未配置</string><string name="core_manager_hint">点选一项切换使用；直连和两段式配置可并存。</string><string name="core_new_profile">新建配置</string><string name="core_ai_security">仅接受 OpenAI 兼容消息格式和 HTTPS。密钥由 Android Keystore 加密，不写入笔记或日志。</string><string name="core_close">关闭</string><string name="core_no_profiles">还没有配置。点“新建配置”添加：\n选择厂商预设 → 粘贴 API Key → 保存。</string><string name="core_capability_confirmed">工具能力：已由真实调用确认</string><string name="core_capability_rejected">工具能力：服务端明确拒绝工具参数</string><string name="core_capability_unknown">工具能力：尚未确认</string><string name="core_profile_switched">已切换到：%1$s</string><string name="core_transcription_key">转写 API Key</string><string name="core_response_key">回答 API Key</string>
+<string name="core_pressure_status">压力 %1$.3f · %2$s</string><string name="core_status_ready">画笔就绪</string><string name="core_status_pan_zoom">单指拖动画布 · 双指缩放</string><string name="core_status_finger_pan">手指拖动画布 · 双指缩放</string><string name="core_status_pinch">双指缩放画布</string><string name="core_status_highlighter">高亮笔：半透明宽笔划</string><string name="core_status_shape">几何图形：拖动绘制矩形</string><string name="core_status_eraser">局部橡皮：只擦除覆盖区域</string><string name="core_status_lasso">套索：圈选后可用笔或手指拖动</string><string name="core_status_text">文字笔：点击页面位置插入文字框</string><string name="core_input_stylus">手写笔</string><string name="core_input_eraser">笔尾橡皮</string><string name="core_input_finger">手指</string><string name="core_input_mouse">鼠标</string><string name="core_input_unknown">未知输入</string>
+<string name="core_status_zoom">双指缩放 · %1$d%%</string><string name="core_status_nav_cancelled">已取消画布导航</string><string name="core_status_page_limit">单本笔记最多 500 页</string>
+<string name="core_prompt_explain">请分步骤讲解圈选笔记，保留公式和推导，并明确标记无法辨认的内容。</string><string name="core_prompt_markdown">请把圈选笔记整理成结构清晰的 Markdown，保留原意、层级、公式和待办项。</string><string name="core_prompt_diagram">请把圈选内容中最适合图解的关系画成一张简明示意图，调用 draw_diagram 写入笔记。先查看页面空白，默认放在相关原文下方；不要遮挡手写。标签使用圈选内容的语言，辨认不清时先询问我。</string>
+<string name="core_ai_settings_label">设置</string><string name="core_ai_minimize">收起</string><string name="core_ai_expand">展开</string><string name="core_ai_clear">清空</string><string name="core_ai_clear_desc">清空本笔记 AI 对话</string><string name="core_ai_close_desc">关闭 AI 卡片</string><string name="core_ai_title_drag">AI 助手；拖动标题移动对话卡</string><string name="core_ai_selection_image">本次 AI 对话使用的圈选图片</string><string name="core_ai_wait_selection">等待选择笔记</string><string name="core_ai_output_display">回答显示</string><string name="core_ai_write_allowed">允许写入</string><string name="core_ai_write_desc">允许 AI 使用笔记工具在空白处写入</string><string name="core_ai_only_card">仅卡片</string><string name="core_ai_only_card_desc">AI 回答只显示在对话卡片中</string><string name="core_ai_quick_actions">快捷动作</string><string name="core_ai_explain">讲解</string><string name="core_ai_markdown">整理 Markdown</string><string name="core_ai_diagram">画示意图 · Beta</string><string name="core_ai_material_summary">额外材料：未选择（默认不读取知识库）</string><string name="core_ai_extra_materials">选择额外材料</string><string name="core_ai_preview">预览</string><string name="core_ai_review_transcript">两段式转写后先校对</string><string name="core_ai_review_transcript_desc">可选：先编辑手写转写，再交给回答模型；默认直接继续</string>
+<string name="core_color_navy">墨蓝色</string><string name="core_color_ink_blue">书写蓝</string><string name="core_color_vermilion">朱红色</string><string name="core_color_forest">墨绿色</string><string name="core_color_purple">紫色</string>
+<string name="core_library_button">整库</string><string name="core_library_desc">整库备份、恢复与离线材料</string><string name="core_library_title">资料库备份与恢复</string><string name="core_library_backup">备份整个资料库</string><string name="core_library_restore">从备份恢复为副本</string><string name="core_library_materials">查看离线恢复材料</string><string name="core_library_resume">处理上次未完成的恢复</string><string name="core_editable_package">PadNote 可编辑包</string><string name="core_merged_pdf">标准 PDF（页面已合并）</string><string name="core_export_note_warning">此笔记导出包不包含应用私有视频附件；如需保存视频，请在“视频任务与成果”中另存。</string><string name="core_continue_export">继续导出</string>
+<string name="core_ai_settings_desc">配置 AI API</string><string name="core_ai_minimize_desc">最小化 AI 卡片</string><string name="core_ai_expand_desc">恢复 AI 卡片</string>
+<string name="core_agent_recipient">接收 Agent</string><string name="core_task_preset">任务预设（可编辑）</string><string name="core_specific_request">具体要求</string><string name="core_video_style_optional">视频讲解风格（可选）</string><string name="core_style_prompt_editable">风格提示（可编辑）</string><string name="core_default_task_prompt">请结合这份笔记的纸面和可读上下文完成我的要求。</string><string name="core_instruction_continue">请结合这份笔记的纸面和可读上下文，继续按我的具体要求工作。</string><string name="core_instruction_lecture">请把这份笔记整理成结构清晰、适合分享的讲义，保留关键定义、推导和结论。</string><string name="core_instruction_gaps">请找出我可能没有理解牢的关键点，并给出有答案的练习题。</string><string name="core_instruction_video">请结合这份笔记的纸面和可读上下文，生成可分享的讲解视频；按所选风格完成必要的策划、素材生成与制作，并遵循目标 Agent 的授权和必要审阅流程。</string><string name="core_style_lecture">清晰讲义</string><string name="core_style_whiteboard">手写白板</string><string name="core_style_analogy">类比讲解</string><string name="core_style_derivation">逐步推导</string><string name="core_style_review">一分钟复习</string><string name="core_style_prompt_lecture">用清晰的讲义式画面讲解。每个画面聚焦一个概念，标题简短，公式、图和解释放在一起。例题按步骤展开，减少装饰和套话。</string><string name="core_style_prompt_whiteboard">像老师在白板上边写边讲。从问题开始，逐步画出图、写出关键公式和批注，让观看者看清每一步怎样产生。避免一次铺满整张白板。</string><string name="core_style_prompt_analogy">先用一个贴近日常的类比建立直觉，再回到材料中的准确概念。明确指出类比适用的范围和容易误解的地方。</string><string name="core_style_prompt_derivation">围绕一个问题展开完整推导。每一步说明使用的前提、公式或变换，突出本步变化的符号，不跳过影响理解的步骤。</string><string name="core_style_prompt_review">做一个约一分钟的复习视频，选出最值得记住的三个要点，指出一个常见误区，最后留一道简短自测题。保留必要条件和单位，不为缩短时长改变结论。</string>
+
+    <string name="core_preset_continue">继续按我的要求工作</string>
+    <string name="core_preset_lecture">整理成可分享讲义</string>
+    <string name="core_preset_gaps">找理解漏洞并出练习</string>
+    <string name="core_preset_video">生成讲解视频</string>
+    <string name="core_pending_videos">待处理视频</string>
+    <string name="core_pending_videos_desc">查看、另存或删除待处理视频结果</string>
+    <string name="core_recent_count">最近笔记 · %d</string>
+    <string name="core_guide_title">三步上手 PadNote</string>
+    <string name="core_guide_close">关闭新手引导</string>
+    <string name="core_guide_write_title">写与圈选</string>
+    <string name="core_guide_write_detail">用笔书写，双指缩放画布；套索工具可圈选任意手写内容。</string>
+    <string name="core_guide_ai_title">问 AI</string>
+    <string name="core_guide_ai_detail">圈选后点 AI 图标：讲解、整理 Markdown 或自由提问，也可以问以前的笔记。</string>
+    <string name="core_guide_vault_title">转成格式笔记</string>
+    <string name="core_guide_vault_detail">笔记卡片「更多 → 转为格式笔记」可创建兼容 Obsidian 的 Markdown 知识库；明确选定后 AI 才会读取。</string>
+    <string name="core_vault_title">知识库 · 格式笔记</string>
+    <string name="core_vault_caption">手写笔记的 Markdown 版 · 可整体拷入 Obsidian</string>
+    <string name="core_vault_what">这是什么？</string>
+    <string name="core_vault_headline">把一本手写笔记，变成可检索的格式笔记</string>
+    <string name="core_vault_step_open">打开一本写好的手写笔记</string>
+    <string name="core_vault_step_open_detail">公式推导、流程图都没问题。</string>
+    <string name="core_vault_step_convert">点卡片「更多 → 转为格式笔记」</string>
+    <string name="core_vault_step_convert_detail">需要先在 AI 卡片里配置一次模型。</string>
+    <string name="core_vault_step_result">转换结果出现在这里</string>
+    <string name="core_vault_step_result_detail">可阅读、导出 .md 拷入 Obsidian；也可在 AI 卡片选它作为本次额外材料。</string>
+    <string name="core_vault_privacy">上传说明：数字化会把整页内容发送给你配置的模型，而不只是圈选区域；转换前会再次确认。</string>
+    <string name="core_vault_guide_title">知识库是什么</string>
+    <string name="core_got_it">知道了</string>
+    <string name="core_vault_open_desc">打开格式笔记 %s</string>
+    <string name="core_vault_date">%d 页 · 数字化于 %s</string>
+    <string name="core_vault_stale">原笔记已修改 · 建议重新生成</string>
+    <string name="core_vault_export">导出 .md</string>
+    <string name="core_vault_delete_title">删除格式笔记？</string>
+    <string name="core_vault_delete_message">将删除《%s》。手写原稿不受影响。</string>
+    <string name="core_paper_handoff">分享与交给 Agent</string>
+    <string name="core_paper_share_action">分享当前纸面 PDF…</string>
+    <string name="core_paper_agent_action">交给电脑 Agent…</string>
+    <string name="core_paper_agent_missing_title">先连接电脑 Agent</string>
+    <string name="core_paper_agent_missing">还没有能接收这份笔记的电脑连接。请先连接电脑，或检查现有连接是否已验证并支持接收笔记任务。笔记没有发送。</string>
+    <string name="core_later">稍后</string>
+    <string name="core_connection_settings">连接设置</string>
+    <string name="core_paper_changed">笔记在冻结 PDF 后发生变化，未发送；请重新打开入口</string>
+    <string name="core_paper_source_missing">来源笔记已不存在，未发送</string>
+    <string name="core_paper_read_error">无法读取本笔记的交流上下文（未发送）：%s</string>
+    <string name="core_paper_scope">发送范围：当前整份笔记 · %1$d 页 PDF · %2$s\n纸面来自已冻结的页面渲染，包含背景和实际可见内容；手写墨迹、图片与其中文字通过 PDF 提供。下方是笔记原文与交流预览。\n不会附带其它笔记、连接配置或令牌。</string>
+    <string name="core_paper_composer_title">分享与交给电脑 Agent</string>
+    <string name="core_confirm_send">确认并发送</string>
+    <string name="core_task_empty">任务要求不能为空，未发送</string>
+    <string name="core_paper_confirm_changed">笔记在确认期间发生变化，请重新打开入口；未发送</string>
+    <string name="core_paper_task_title">纸面任务 · %s</string>
+    <string name="core_paper_package_error">无法冻结或打包笔记（未发送）：%s</string>
+    <string name="core_task_bundle_intro">请按任务包要求完成「%1$s」。实际纸面见 input/paper.pdf，可读笔记和本笔记 AI 交流见 input/content.md。</string>
+    <string name="core_video_style_prefix">讲解风格：%1$s</string>
+</resources>

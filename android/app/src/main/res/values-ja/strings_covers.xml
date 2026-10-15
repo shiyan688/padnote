@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">カバー対象のノートの版を確認できませんでした</string>
+    <string name="cover_builtin_section">組み込みの表紙</string>
+    <string name="cover_user_presets_section">マイプリセット</string>
+    <string name="cover_import_button">写真から表紙を読み込む…</string>
+    <string name="cover_import_hint">読み込んだ画像は次の手順でプリセットに追加でき、新しいノートでも使えます。</string>
+    <string name="cover_new_note_title">新しいノートの表紙を選択</string>
+    <string name="cover_change_title">表紙を変更</string>
+    <string name="cover_accessibility_label">表紙：%1$s</string>
+    <string name="cover_selected">選択した表紙：%1$s</string>
+    <string name="cover_save_failed">表紙を保存できませんでした：%1$s</string>
+    <string name="cover_remove_failed">表紙を削除できませんでした：%1$s</string>
+    <string name="cover_preset_confirm_title">この画像を表紙のプリセットに追加しますか？</string>
+    <string name="cover_preset_confirm_message">追加すると、新しいノートやほかのノートでも使えます。</string>
+    <string name="cover_preset_decline">今はしない</string>
+    <string name="cover_preset_add_button">プリセットに追加</string>
+    <string name="cover_preset_added">表紙をプリセットに追加しました</string>
+    <string name="cover_preset_add_failed">プリセットに追加できませんでした：%1$s</string>
+    <string name="cover_preset_cream_ruled">クリーム色の罫線</string>
+    <string name="cover_preset_light_blue_grid">水色の方眼</string>
+    <string name="cover_preset_forest_dots">深緑のドット</string>
+    <string name="cover_preset_writing_blue">ライティングブルー</string>
+    <string name="cover_preset_knowledge_green">ナレッジグリーン</string>
+    <string name="cover_preset_ochre">オーカー</string>
+</resources>

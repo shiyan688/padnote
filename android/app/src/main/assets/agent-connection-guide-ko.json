@@ -1,0 +1,92 @@
+{
+  "title": "컴퓨터 연결 안내",
+  "summary": "Hermes를 실행하는 컴퓨터에서 PadNote 연결 도우미를 엽니다. 태블릿과 컴퓨터를 같은 Wi-Fi에 연결하고 코드를 스캔해 페어링하세요. 다른 소프트웨어는 필요하지 않습니다. 여러 연결을 저장하거나 기존 HTTPS 주소와 토큰을 직접 입력할 수 있습니다. 모델 및 Agent API 키는 직접 제공하며 기기에 보관됩니다. 이 안내는 오프라인에서 볼 수 있습니다.",
+  "sections": [
+    {
+      "title": "연결 방식 선택",
+      "body": "연결 도우미: 컴퓨터에서 Hermes를 감지하고 페어링하면 태블릿에서 텍스트 작업이나 선택한 노트 작업 묶음을 보내고, 상태 확인, 현재 작업의 승인 처리, 파일 가져오기를 할 수 있습니다. 장기간 사용하는 Hermes 토큰은 컴퓨터에 보관됩니다.\n직접 연결: Hermes HTTPS 주소와 API_SERVER_KEY를 입력해 텍스트 작업을 보냅니다. 작업 묶음 전송과 작업 폴더의 파일 수신에는 연결 도우미가 필요합니다.\nOpenClaw는 현재 감지와 안내만 제공합니다. PadNote에서 OpenClaw 작업을 실행할 수는 없습니다. API 확인에 성공해도 비디오 Skill, TTS, 렌더링 종속 항목이 설치됐다는 뜻은 아닙니다."
+    },
+    {
+      "title": "1 · 컴퓨터 연결 도우미 열기",
+      "body": "Windows Setup은 로컬 Windows Hermes 설치용 네이티브 Windows 도우미를 설치하며, WSL 안의 Hermes를 직접 제어하지 않습니다. WSL에서 Hermes를 사용하려면 Hermes가 설치된 것과 동일한 WSL 배포판을 열고 그 안에서 도우미 번들의 `python3 start.py --lan`을 실행하세요. 같은 작업 파일에 접근하도록 도우미와 Hermes를 동일한 WSL 환경에서 실행 상태로 유지하세요.\n로컬 관리 페이지는 http://127.0.0.1:8766 에서 열립니다. 본인 컴퓨터에서만 여세요. LAN에는 공개되지 않습니다."
+    },
+    {
+      "title": "2 · Hermes 선택 및 API 확인",
+      "body": "도우미에서 감지된 Hermes 인스턴스를 선택하고 안내에 따라 해당 설정을 사용하세요. 감지되지 않으면 로컬 API 주소와 API_SERVER_KEY를 직접 입력합니다. 기본 주소는 http://127.0.0.1:8642 입니다. API 확인을 실행하고 통과한 뒤에만 페어링 코드가 생성됩니다.\n터미널에서 대화할 수 있다고 API Server가 활성화된 것은 아닙니다. 도우미에서 비활성 상태라고 하면 아래 추가 단계를 따르세요. Hermes를 다시 설치할 필요는 없습니다."
+    },
+    {
+      "title": "3 · 같은 Wi-Fi에서 태블릿이 컴퓨터 찾기",
+      "body": "태블릿과 컴퓨터를 같은 Wi-Fi 네트워크 또는 라우터에 연결하세요. Start-PadNote.cmd는 기본적으로 동일 네트워크 접근을 활성화합니다. 도우미는 8767 포트에서 암호화된 장치 API를 제공합니다. 컴퓨터가 자체 인증서를 만들고 지문을 페어링 QR 코드에 포함하며, 태블릿은 해당 인증서만 신뢰합니다.\nWindows에서는 관리자 PowerShell에서 한 번 두 가지 작업을 합니다. (1) WSL이 LAN 연결을 받도록 설정합니다. Windows 11 22H2 이상에서는 %UserProfile%\\.wslconfig에 [wsl2]와 networkingMode=mirrored를 추가하고 wsl --shutdown을 실행한 뒤 WSL을 다시 엽니다. Windows 10에서는 아래 포트 전달 명령을 사용합니다. (2) 8767 포트는 Private 프로필에서만 허용하고 현재 Wi-Fi 네트워크가 Private로 설정됐는지 확인합니다.",
+      "code": "New-NetFirewallRule -DisplayName \"PadNote LAN\" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private\n# 仅 Windows 10：WSL 地址变化后需重跑\n$wslIp = (wsl hostname -I).Split(\" \")[0]\nnetsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp"
+    },
+    {
+      "title": "4 · 같은 네트워크 페어링 코드 만들기",
+      "body": "컴퓨터 도우미로 돌아가 “4. Pair a tablet”을 여세요. “Same Wi-Fi (recommended)”에서 Agent 인스턴스와 컴퓨터의 LAN 주소(예: 192.168.x.x)를 선택한 다음 코드를 만듭니다. URL, 인증서, 도메인을 입력할 필요가 없습니다."
+    },
+    {
+      "title": "5 · 스캔하고 컴퓨터에서 승인",
+      "body": "컴퓨터의 PadNote Agent 페이지에서 스캔하여 추가를 선택하세요. 전체 페어링 텍스트를 복사한 뒤 붙여넣기 옵션으로 추가할 수도 있습니다. 표시된 컴퓨터 주소를 확인하고 요청을 제출한 다음 컴퓨터로 돌아가 대기 중인 장치를 새로 고침하고 요청을 확인한 뒤 이 태블릿을 승인하세요.\n페어링 코드는 5분 동안 유효하며 한 번만 사용할 수 있습니다. 태블릿에 장기 Hermes 토큰은 필요하지 않습니다. 페어링 후 연결을 확인하고 간단한 테스트 작업을 보내세요. 컴퓨터 도우미를 재설치하거나 인증서를 삭제하면 다시 페어링하세요."
+    },
+    {
+      "title": "여러 Agent 연결",
+      "body": "각 인스턴스를 별도로 추가하고 이름을 지정해 페어링하세요. 한 컴퓨터에 Hermes 인스턴스가 두 개라면 각 인스턴스에 올바른 주소, 포트 또는 프로필이 필요합니다. 다른 컴퓨터는 그 컴퓨터의 도우미와 HTTPS 주소를 사용합니다. 기본 Agent는 새 작업에만 적용되므로 보내기 전에 대상을 확인하세요. 기존 작업은 원래 연결에 남으며 기본값 변경으로 이전되지 않습니다."
+    },
+    {
+      "title": "작업 보내기 및 결과 받기",
+      "body": "먼저 “연결 성공이라고만 답하고 파일은 조작하지 마세요”와 같은 간단한 텍스트 작업을 보내세요. 결과가 오는 것을 확인한 뒤 선택한 노트 내용이나 비디오 작업 묶음을 보냅니다. 작업 페이지에서 상태를 확인하고 새로 고침, 중지, 현재 대기 중인 승인 처리를 할 수 있습니다. 네트워크가 끊겼다면 같은 작업으로 돌아가 확인하세요.\n작업 묶음에는 해당 작업에서 선택한 내용만 포함됩니다. 반환 파일은 미리 보기 또는 저장 전에 검증되며 노트를 자동으로 덮어쓰지 않습니다. 비디오 생성에는 컴퓨터 Agent의 비디오 Skill, 음성 및 렌더링 도구가 여전히 필요합니다. 텍스트 응답 성공이 비디오 생성 완료를 뜻하지는 않습니다."
+    },
+    {
+      "title": "추가 · Hermes API Server 활성화",
+      "body": "Hermes가 설치된 WSL 배포판에서 해당 인스턴스가 사용하는 .env를 편집하세요. 기본 경로는 ~/.hermes/.env입니다. 프로필이나 HERMES_HOME을 사용한다면 해당 인스턴스의 실제 설정을 따르세요. 기존 내용은 유지하고 누락된 API Server 설정만 추가합니다. 기존 API_SERVER_KEY가 있으면 재사용하세요. 없다면 openssl rand -hex 32로 임의 토큰을 생성해 아래 자리표시자를 바꿀 수 있습니다. 이 토큰은 모델 제공업체 API 키와 다릅니다.",
+      "code": "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=替换成你的随机令牌\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8642"
+    },
+    {
+      "title": "추가 · API 시작",
+      "body": "같은 Hermes 환경에서 hermes gateway를 실행하세요. Gateway가 이미 실행 중이면 현재 작업이 끝날 때까지 기다린 다음 새 설정을 불러오도록 재시작하세요. 중복 프로세스를 시작하지 마세요. 로그에 API Server가 표시되면 도우미로 돌아가 “Refresh discovery”, “Use this configuration” 순서로 선택하고 인스턴스를 확인하세요. 컴퓨터, WSL, Hermes, 연결 도우미를 계속 실행 상태로 유지하세요.",
+      "code": "hermes gateway"
+    },
+    {
+      "title": "선택 사항 · 다른 네트워크에서 연결",
+      "body": "다른 네트워크에서의 연결은 선택 사항입니다. 필요하면 Tailscale 같은 비공개 네트워크 도구를 사용할 수 있습니다. 양쪽 장치에서 같은 비공개 네트워크에 로그인하고, 컴퓨터에서 8765 포트의 장치 API를 HTTPS로 공개한 다음 도우미의 “When the tablet is on another network”에 결과 https:// 주소를 입력해 페어링 코드를 만드세요. 8766 포트의 관리 페이지는 공유하지 마세요.",
+      "code": "tailscale serve status\ntailscale serve --bg --https=443 http://127.0.0.1:8765\ntailscale serve status"
+    },
+    {
+      "title": "대안 · Hermes 직접 연결",
+      "body": "접근 가능한 Hermes HTTPS 엔드포인트가 이미 있다면 PadNote에서 연결을 수동 추가하고 Hermes 직접 연결을 선택하세요. 루트 주소만 입력하고 /v1 또는 /chat/completions를 덧붙이지 마세요. 해당 인스턴스의 API_SERVER_KEY 값만 입력하고 변수명, 따옴표, Bearer 접두사는 제외하세요.\n태블릿의 localhost / 127.0.0.1은 태블릿 자체를 가리키므로 다른 컴퓨터 주소로 사용할 수 없습니다."
+    },
+    {
+      "title": "macOS / Linux",
+      "body": "Hermes를 실행하는 컴퓨터에서 도우미 번들을 압축 해제하세요. macOS에서는 Start-PadNote.command, Linux에서는 start-padnote.sh를 실행합니다. 이후 같은 관리 페이지, API 확인, 페어링 절차를 사용하세요. 확인 명령에서 curl.exe를 curl로 바꾸세요. 이 시스템에서는 Windows에서 WSL로 localhost를 전달하는 단계가 없습니다."
+    },
+    {
+      "title": "연결 문제 해결",
+      "body": "시간 초과 / 컴퓨터를 찾을 수 없음: 컴퓨터가 깨어 있고 WSL, Hermes, 도우미가 실행 중인지, 두 장치가 같은 Wi-Fi를 사용하는지, Windows의 Private 프로필에서 8767 포트가 허용됐는지, WSL mirrored 네트워크 또는 포트 전달이 설정됐는지 확인하세요.\n인증서 또는 페어링 불일치: 컴퓨터가 새 인증서를 만들었습니다. 새 페어링 코드를 만들고 다시 페어링하세요.\n401 / 403: 직접 연결은 API_SERVER_KEY를 확인하세요. 도우미 연결은 장치 승인이 취소됐는지 확인하고 필요하면 다시 페어링하세요.\n502 / API 비활성: 먼저 도우미에서 Hermes를 감지한 다음 Windows에서 WSL로의 localhost 전달을 확인하세요.\n404 / 서비스 식별 불일치: Hermes 직접 주소와 도우미 주소를 혼용하지 않았는지, /v1을 덧붙이지 않았는지 확인하세요.\n작업 제출 후 결과가 불분명함: 원래 작업을 유지하고 그 작업을 재시도하거나 조회하세요. 같은 작업을 반복해서 새로 만들지 마세요.\n설정 변경: 기존 작업은 새 주소나 인스턴스로 자격 증명을 보내지 않습니다. 원래 컴퓨터로 돌아가 작업 상태를 확인하세요."
+    },
+    {
+      "title": "작업 중지, 연결 삭제 및 권한 취소",
+      "body": "작업 페이지의 “Stop”은 컴퓨터에 현재 작업 중지를 요청하고 응답을 기다립니다. 페이지를 닫아도 작업은 멈추지 않습니다. 태블릿에서 연결을 제거하면 태블릿의 로컬 설정만 삭제됩니다. 작업 기록은 남으며 컴퓨터 측 승인은 취소되지 않습니다. 태블릿을 비활성화하려면 컴퓨터 도우미의 승인된 장치에서 해당 연결을 취소하세요. 다른 인스턴스에는 영향이 없습니다.\n동일 네트워크 접근이 더는 필요하지 않으면 도우미를 중지하거나 위에서 추가한 방화벽 규칙을 삭제하세요."
+    }
+  ],
+  "links": [
+    {
+      "title": "PadNote · 다운로드 및 릴리스 안내",
+      "url": "https://github.com/shiyan688/padnote/releases"
+    },
+    {
+      "title": "Hermes · API Server",
+      "url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server"
+    },
+    {
+      "title": "Hermes · 환경 변수",
+      "url": "https://hermes-agent.nousresearch.com/docs/reference/environment-variables"
+    },
+    {
+      "title": "Tailscale · 다운로드(외부 네트워크 연결 선택 사항)",
+      "url": "https://tailscale.com/download"
+    },
+    {
+      "title": "Microsoft · WSL 네트워킹",
+      "url": "https://learn.microsoft.com/en-us/windows/wsl/networking"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "title": "连接电脑上的 Agent",
+  "summary": "推荐在运行 Hermes 的电脑上打开 PadNote 连接助手，平板和电脑连同一个 Wi‑Fi，扫码即可配对，不需要安装其他软件。支持保存多个连接；也可以手动填写已有 HTTPS 地址和令牌。所有模型与 Agent 的 API Key 都由你自己提供并留在你的设备上。教程可离线阅读。",
+  "sections": [
+    {
+      "title": "先选连接方式",
+      "body": "连接助手：在电脑检测 Hermes，配对后从平板发送文字任务或笔记任务包，查看状态、处理当前任务的审批并取回文件。Hermes 的长期令牌留在电脑。\n手动直连：填写 Hermes 的 HTTPS 地址与 API_SERVER_KEY，可发送文字任务；任务包和任务目录中的文件回传需要连接助手。\nOpenClaw 目前只有检测与引导，尚不能在 PadNote 中执行任务。接口检查通过也不代表电脑已安装视频 Skill、TTS 或渲染依赖。"
+    },
+    {
+      "title": "1 · 打开电脑连接助手",
+      "body": "Windows Setup 安装的是适用于本机 Windows Hermes 的原生 Windows 助手，不会直接控制 WSL 内的 Hermes。若要使用 WSL 中的 Hermes，请打开安装了 Hermes 的同一个 WSL 发行版，并在其中从助手 bundle 运行 `python3 start.py --lan`。助手与 Hermes 要在同一个 WSL 环境中运行，才能访问相同的任务文件。\n本机管理页地址为 http://127.0.0.1:8766。请只在自己的电脑上打开；它不会暴露到局域网。"
+    },
+    {
+      "title": "2 · 选择 Hermes 并检查接口",
+      "body": "在助手中选择检测到的 Hermes，按提示使用该实例的配置；识别不了时手动添加本机接口地址和 API_SERVER_KEY。默认地址为 http://127.0.0.1:8642。运行接口检查，通过后才生成配对码。\n“终端能对话”不一定表示 API Server 已启用。若助手提示未启用，按下方补充步骤操作，不需要重新安装 Hermes。"
+    },
+    {
+      "title": "3 · 让平板能找到电脑（同一个 Wi‑Fi）",
+      "body": "平板和电脑连接同一个 Wi‑Fi 或同一台路由器。Start-PadNote.cmd 默认开启同网连接：助手在 8767 端口提供加密的设备接口，证书由电脑自己生成，指纹写进配对二维码，平板只信任这一张证书。\nWindows 需要做两件事（管理员 PowerShell，只需一次）：1）让 WSL 能收到局域网连接：Windows 11 22H2 及以上在 %UserProfile%\\.wslconfig 写入 [wsl2] 和 networkingMode=mirrored，然后执行 wsl --shutdown 再重新打开；Windows 10 用下面的端口转发。2）只对“专用网络”放行 8767，并确认当前 Wi‑Fi 设为专用网络。",
+      "code": "New-NetFirewallRule -DisplayName \"PadNote LAN\" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private\n# 仅 Windows 10：WSL 地址变化后需重跑\n$wslIp = (wsl hostname -I).Split(\" \")[0]\nnetsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp"
+    },
+    {
+      "title": "4 · 生成同网配对码",
+      "body": "回到电脑助手的“4. 生成平板配对”，在“同一个 Wi‑Fi（推荐）”里选择要连接的 Agent 实例和本机局域网地址（如 192.168.x.x），点击生成。不需要填写任何网址，也不需要证书或域名。"
+    },
+    {
+      "title": "5 · 扫码，在电脑确认",
+      "body": "在 PadNote 的电脑 Agent 页面选择扫码添加；也可复制完整配对内容，用粘贴入口添加。核对显示的电脑地址后发起申请，再回电脑点击“刷新待批准设备”，核对后批准这台平板。\n配对码只有 5 分钟有效且只能使用一次。平板不需要复制 Hermes 的长期令牌。配对成功后检查连接，再发送简单任务验证。电脑重装助手或删除其证书后，平板需要重新配对。"
+    },
+    {
+      "title": "连接多个 Agent",
+      "body": "每个实例单独添加、命名和配对。同一电脑上有两个 Hermes 实例时，它们需要各自正确的地址、端口或 profile；另一台电脑则使用自己的助手和 HTTPS 地址。默认 Agent 只影响新建任务，发送前仍要核对目标。已有任务始终留在原连接中，不会因为切换默认而转交给别的 Agent。"
+    },
+    {
+      "title": "发送任务与接收结果",
+      "body": "先发一个简单文字任务，例如“只回复：连接成功，不要操作文件”。确认能收到结果后，再发送选定的笔记内容或视频任务包。任务页可查看状态、刷新、停止或处理当前待审批操作；网络中断后回到原任务继续查询。\n任务包只发送本次选定内容。返回文件通过校验后由你预览或保存，不会自动覆盖笔记。视频生成仍需要电脑 Agent 的视频 Skill、配音和渲染工具；普通文字回复成功不代表视频已经生成。"
+    },
+    {
+      "title": "补充 · 启用 Hermes API Server",
+      "body": "在安装 Hermes 的 WSL 中编辑该实例实际使用的 .env。默认是 ~/.hermes/.env；使用 profile 或 HERMES_HOME 时以实际配置为准。保留原有内容，只补充缺失的 API Server 设置。已有 API_SERVER_KEY 就沿用；没有时可先用 openssl rand -hex 32 生成随机令牌，替换下面的占位文字。这个令牌与模型厂商 API Key 不同。",
+      "code": "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=替换成你的随机令牌\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8642"
+    },
+    {
+      "title": "补充 · 启动接口",
+      "body": "在同一个 Hermes 环境中运行 hermes gateway。已经运行的 Gateway 需要等当前任务结束后重启，才能加载新配置；不要同时启动重复进程。确认日志中出现 API Server 后，回助手点击“刷新发现”，再次点击“使用这套配置”，然后检测实例。电脑、WSL、Hermes 和连接助手都需保持运行。",
+      "code": "hermes gateway"
+    },
+    {
+      "title": "可选 · 平板不在同一个网络时",
+      "body": "跨网络连接不是必需的。确实需要时，可以自行使用 Tailscale 等私人网络工具：两端登录同一私人网络，在电脑上把设备 API 的 8765 端口发布为 HTTPS，再在助手的“平板不在同一个网络时”里填入输出的 https:// 地址生成配对码。不要共享管理页的 8766 端口。",
+      "code": "tailscale serve status\ntailscale serve --bg --https=443 http://127.0.0.1:8765\ntailscale serve status"
+    },
+    {
+      "title": "备选 · 手动直连",
+      "body": "已有可访问的 Hermes HTTPS 入口时，在 PadNote 手动添加连接，选择 Hermes 直连。地址只填根地址，不额外追加 /v1 或 /chat/completions；令牌只填该实例 API_SERVER_KEY 的值，不带变量名、引号或 Bearer。\n平板的 localhost / 127.0.0.1 指向平板自身，不能用作另一台电脑的地址。"
+    },
+    {
+      "title": "macOS / Linux",
+      "body": "在运行 Hermes 的电脑上解压助手：macOS 运行 Start-PadNote.command，Linux 运行 start-padnote.sh。随后使用同样的管理页、接口检查和配对流程。检查命令用 curl 替换 curl.exe；这两种系统没有 Windows 到 WSL 的 localhost 转发步骤。"
+    },
+    {
+      "title": "连接失败时",
+      "body": "超时 / 找不到电脑：确认电脑没有休眠，WSL、Hermes 与助手都在运行；平板和电脑在同一个 Wi‑Fi；Windows 已放行 8767 且当前网络是“专用网络”；WSL 已开启 mirrored 网络或端口转发。\n证书与配对时不一致：电脑重新生成了证书，请重新生成配对码并配对。\n401 / 403：手动直连时核对 API_SERVER_KEY；助手连接时检查设备授权是否被撤销，必要时重新配对。\n502 / 接口未启用：先在助手检测 Hermes，再检查 Windows 到 WSL 的 localhost。\n404 / 服务身份不符：确认没有混用 Hermes 直连与助手地址，也没有附加 /v1。\n任务已提交但结果不明：保留原任务，使用原任务重试或查询，不要连续新建相同任务。\n配置发生变化：旧任务不会向新地址或新实例发送凭据；回原电脑检查任务状态。"
+    },
+    {
+      "title": "停止任务、删除连接和撤销授权",
+      "body": "任务页的“停止”请求电脑停止当前任务，需要等电脑返回结果；关闭页面不会停止任务。平板删除连接只删除本机配置，仍会保留任务记录，也不会撤销电脑端授权。需要禁用某台平板时，在电脑助手的已授权设备中撤销对应连接；其他实例不受影响。\n不再需要同网连接时，停止助手即可；也可以删除上面添加的防火墙规则。"
+    }
+  ],
+  "links": [
+    {
+      "title": "PadNote · 下载与版本说明",
+      "url": "https://github.com/shiyan688/padnote/releases"
+    },
+    {
+      "title": "Hermes · API Server",
+      "url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server"
+    },
+    {
+      "title": "Hermes · 环境变量",
+      "url": "https://hermes-agent.nousresearch.com/docs/reference/environment-variables"
+    },
+    {
+      "title": "Tailscale · 下载（仅跨网可选）",
+      "url": "https://tailscale.com/download"
+    },
+    {
+      "title": "Microsoft · WSL 网络",
+      "url": "https://learn.microsoft.com/en-us/windows/wsl/networking"
+    }
+  ]
+}

@@ -53,11 +53,13 @@ public final class NoteCanvasView extends View {
     interface Listener {
         void onInkStatsChanged(int strokes, int points, float pressure, String inputStatus);
 
+
         void onDocumentChanged();
 
         void onSelectionChanged(int selectedStrokes, boolean canUndo, boolean canRedo);
 
         void onViewportChanged(int currentPage, int pageCount, int zoomPercent, String status);
+
 
         void onTextBoxesChanged(List<NoteTextBox> textBoxes);
 
@@ -140,7 +142,7 @@ public final class NoteCanvasView extends View {
         /** Draws everything except compiled text. Called by the export worker. */
         Bitmap renderBasePage(int pageIndex, int maxDimensionPx) throws IOException {
             if (closed || pageIndex < 0 || pageIndex >= pageCount) {
-                throw new IOException("PDF 导出快照已失效");
+                throw new IOException(owner.getContext().getString(R.string.canvas_pdf_snapshot_invalid));
             }
             float longest = Math.max(pageWidth, pageHeight);
             float scale = Math.min(2f, Math.max(1f / longest,
@@ -151,7 +153,7 @@ public final class NoteCanvasView extends View {
             try {
                 bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             } catch (RuntimeException | OutOfMemoryError error) {
-                throw new IOException("无法分配第 " + (pageIndex + 1) + " 页图像", error);
+                throw new IOException(owner.getContext().getString(R.string.canvas_pdf_bitmap_fail, pageIndex + 1), error);
             }
             Canvas canvas = new Canvas(bitmap);
             try {
@@ -162,7 +164,7 @@ public final class NoteCanvasView extends View {
                 canvas.restore();
             } catch (RuntimeException | OutOfMemoryError error) {
                 bitmap.recycle();
-                throw new IOException("无法渲染第 " + (pageIndex + 1) + " 页", error);
+                throw new IOException(owner.getContext().getString(R.string.canvas_pdf_render_fail, pageIndex + 1), error);
             }
             return bitmap;
         }
@@ -272,12 +274,12 @@ public final class NoteCanvasView extends View {
         void renderTextForPage(int pageIndex, Bitmap page, FrameLayout attachedHost,
                                PageCallback callback) {
             if (Looper.myLooper() != Looper.getMainLooper()) {
-                callback.onFailure(new IllegalStateException("文字页面必须在主线程渲染"));
+                callback.onFailure(new IllegalStateException(owner.getContext().getString(R.string.canvas_pdf_main_thread)));
                 return;
             }
             if (closed || page == null || page.isRecycled() ||
                     attachedHost == null || !attachedHost.isAttachedToWindow()) {
-                callback.onFailure(new IOException("PDF 文字渲染容器不可用"));
+                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_container_missing)));
                 return;
             }
             List<NoteTextBox> pageText = new ArrayList<>();
@@ -298,8 +300,7 @@ public final class NoteCanvasView extends View {
                     disposeTextView(activeHost, activeTextView);
                 }
                 activePageCallback = null;
-                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
-                        " 页文字渲染无法启动", error));
+                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_text_start_fail, pageIndex + 1), error));
             }
         }
 
@@ -308,7 +309,7 @@ public final class NoteCanvasView extends View {
                                         PageCallback callback) {
             if (closed) {
                 activePageCallback = null;
-                callback.onFailure(new IOException("PDF 导出已取消"));
+                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled)));
                 return;
             }
             if (index >= pageText.size()) {
@@ -346,7 +347,7 @@ public final class NoteCanvasView extends View {
                                 disposeTextView(host, view);
                                 if (closed && activePageCallback == callback) {
                                     activePageCallback = null;
-                                    callback.onFailure(new IOException("PDF 导出已取消"));
+                                    callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled)));
                                 }
                                 return;
                             }
@@ -355,8 +356,7 @@ public final class NoteCanvasView extends View {
                                     visualNativeHeight > viewHeight + density) {
                                 disposeTextView(host, view);
                                 activePageCallback = null;
-                                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
-                                        " 页文字内容超出可渲染范围"));
+                                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_text_too_tall, pageIndex + 1)));
                                 return;
                             }
                             try {
@@ -366,8 +366,7 @@ public final class NoteCanvasView extends View {
                                 if (!atomic && visualNativeHeight > reservedHeight + density * 2f) {
                                     disposeTextView(host, view);
                                     activePageCallback = null;
-                                    callback.onFailure(new IOException("第 " + (pageIndex + 1) +
-                                            " 页正文实高超过分页预留"));
+                                    callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_reserved_overflow, pageIndex + 1)));
                                     return;
                                 }
                                 // Whole-fragment containment is reserved for truly
@@ -388,8 +387,7 @@ public final class NoteCanvasView extends View {
                             } catch (RuntimeException | OutOfMemoryError error) {
                                 disposeTextView(host, view);
                                 activePageCallback = null;
-                                callback.onFailure(new IOException("第 " + (pageIndex + 1) +
-                                        " 页文字合成失败", error));
+                                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_composite_fail, pageIndex + 1), error));
                                 return;
                             }
                             disposeTextView(host, view);
@@ -401,8 +399,7 @@ public final class NoteCanvasView extends View {
                         public void onFailure(String message) {
                             disposeTextView(host, view);
                             activePageCallback = null;
-                            callback.onFailure(new IOException("第 " + (pageIndex + 1) +
-                                    " 页" + message));
+                            callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_page_error, pageIndex + 1, message)));
                         }
                     });
         }
@@ -443,7 +440,7 @@ public final class NoteCanvasView extends View {
             if (activePageCallback != null) {
                 PageCallback callback = activePageCallback;
                 activePageCallback = null;
-                callback.onFailure(new IOException("PDF 导出已取消"));
+                callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled)));
             }
             if (pdfBackground != null) pdfBackground.close();
         }
@@ -869,7 +866,7 @@ public final class NoteCanvasView extends View {
         selectedTool = Tool.LASSO;
         invalidate();
         dispatchSelectionState();
-        dispatchStats(0, "图片已插入 · 拖动移动，右下角调大小，套索可重新选中");
+        dispatchStats(0, getContext().getString(R.string.canvas_insert_image));
         notifyDocumentChanged();
     }
 
@@ -881,7 +878,7 @@ public final class NoteCanvasView extends View {
             encoded += image.png.length();
         }
         if (pixels > NoteImage.MAX_DOCUMENT_PIXELS || encoded > NoteImage.MAX_DOCUMENT_ENCODED) {
-            throw new IllegalArgumentException("本笔记图片已达容量上限，请分成另一本笔记");
+            throw new IllegalArgumentException(getContext().getString(R.string.canvas_image_limit));
         }
     }
 
@@ -949,7 +946,7 @@ public final class NoteCanvasView extends View {
         }
         ensurePageGeometry();
         if (!pointInsideAnyPage(requestedX, requestedY)) {
-            dispatchStats(0, "请点击页面内部插入文字");
+            dispatchStats(0, getContext().getString(R.string.canvas_insert_text_tap));
             return null;
         }
         pushUndoSnapshot();
@@ -972,7 +969,7 @@ public final class NoteCanvasView extends View {
         NoteTextBox first = reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchStats(0, "已添加 " + flow.format.displayName() + " 文本框");
+        dispatchStats(0, getContext().getString(R.string.canvas_flow_inserted, flow.format.displayName()));
         notifyDocumentChanged();
         return first;
     }
@@ -1053,8 +1050,8 @@ public final class NoteCanvasView extends View {
         NoteTextBox firstFragment = reflowFlow(flow, preparedLayouts);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("AI 回答已自动跨页排版");
-        dispatchStats(0, "AI 回答已自动排版 · 套索任一片段可统一编辑");
+        dispatchViewportState(getContext().getString(R.string.canvas_ai_flow_done));
+        dispatchStats(0, getContext().getString(R.string.canvas_ai_flow_hint));
         notifyDocumentChanged();
         List<NoteTextBox> laidOutFlow = findTextFlow(flow.id);
         return laidOutFlow.isEmpty() ? firstFragment
@@ -1092,10 +1089,8 @@ public final class NoteCanvasView extends View {
         NoteTextBox firstFragment = reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("文字已自动排版");
-        dispatchStats(0, "已插入 " + normalizedFormat.displayName() +
-                (firstFragment != null && firstFragment.flowCount > 1
-                        ? " 跨页文本流" : " 文字对象"));
+        dispatchViewportState(getContext().getString(R.string.canvas_flow_done));
+        dispatchStats(0, getContext().getString(R.string.canvas_flow_inserted_format, normalizedFormat.displayName(), getContext().getString(firstFragment != null && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow : R.string.canvas_text_object)));
         notifyDocumentChanged();
     }
 
@@ -1155,10 +1150,8 @@ public final class NoteCanvasView extends View {
         NoteTextBox firstFragment = reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("文本流已重新排版");
-        dispatchStats(0, "已更新 " + normalizedFormat.displayName() +
-                (firstFragment != null && firstFragment.flowCount > 1
-                        ? " 跨页文本流" : " 文字对象"));
+        dispatchViewportState(getContext().getString(R.string.canvas_flow_relayout));
+        dispatchStats(0, getContext().getString(R.string.canvas_flow_updated, normalizedFormat.displayName(), getContext().getString(firstFragment != null && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow : R.string.canvas_text_object)));
         notifyDocumentChanged();
     }
 
@@ -1195,10 +1188,10 @@ public final class NoteCanvasView extends View {
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("文本流已重新排版");
+        dispatchViewportState(getContext().getString(R.string.canvas_flow_relayout));
         dispatchStats(0, fragmentCount > 1
-                ? "已移动并重排跨页文本流 · 共 " + fragmentCount + " 页"
-                : "已移动文字对象");
+                ? getContext().getString(R.string.canvas_flow_reflow_pages, fragmentCount)
+                : getContext().getString(R.string.canvas_flow_moved_object));
         notifyDocumentChanged();
     }
 
@@ -1350,7 +1343,7 @@ public final class NoteCanvasView extends View {
         viewportPanY = dp(18) - pageTop(clampPageIndex(pageIndex)) * viewportScale;
         navigationRawPanY = viewportPanY;
         clampViewport(false);
-        dispatchViewportState("已滚动到第 " + (pageIndex + 1) + " 页");
+        dispatchViewportState(getContext().getString(R.string.canvas_scrolled_page, pageIndex + 1));
     }
 
     /** Moves a flow to an adjacent page, keeping its position within the page. */
@@ -1371,8 +1364,8 @@ public final class NoteCanvasView extends View {
         reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("文本流已移动到第 " + (flow.anchorPageIndex + 1) + " 页");
-        dispatchStats(0, "已移动到第 " + (flow.anchorPageIndex + 1) + " 页");
+        dispatchViewportState(getContext().getString(R.string.canvas_flow_moved_page, flow.anchorPageIndex + 1));
+        dispatchStats(0, getContext().getString(R.string.canvas_moved_to_page, flow.anchorPageIndex + 1));
         notifyDocumentChanged();
         return true;
     }
@@ -1409,10 +1402,10 @@ public final class NoteCanvasView extends View {
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("字号已调整为 " + Math.round(normalized) + "sp");
+        dispatchViewportState(getContext().getString(R.string.canvas_font_size, Math.round(normalized)));
         dispatchStats(0, fragmentCount > 1
-                ? "字号 " + Math.round(normalized) + "sp · 已重排 " + fragmentCount + " 页"
-                : "字号 " + Math.round(normalized) + "sp");
+                ? getContext().getString(R.string.canvas_font_reflow_pages, Math.round(normalized), fragmentCount)
+                : getContext().getString(R.string.canvas_font_single, Math.round(normalized)));
         notifyDocumentChanged();
     }
 
@@ -1485,10 +1478,10 @@ public final class NoteCanvasView extends View {
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("已按框体大小调整字号为 " + Math.round(chosen) + "sp");
+        dispatchViewportState(getContext().getString(R.string.canvas_font_box_size, Math.round(chosen)));
         dispatchStats(0, fragmentCount > 1
-                ? "字号 " + Math.round(chosen) + "sp · 跨 " + fragmentCount + " 页"
-                : "字号 " + Math.round(chosen) + "sp");
+                ? getContext().getString(R.string.canvas_font_across_pages, Math.round(chosen), fragmentCount)
+                : getContext().getString(R.string.canvas_font_single, Math.round(chosen)));
         notifyDocumentChanged();
     }
 
@@ -1533,8 +1526,8 @@ public final class NoteCanvasView extends View {
         reflowFlow(flow);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState("宽度已调整 · 文本流已重新排版");
-        dispatchStats(0, "已调整文字流宽度并自动重排");
+        dispatchViewportState(getContext().getString(R.string.canvas_width_relayout));
+        dispatchStats(0, getContext().getString(R.string.canvas_width_relayout_hint));
         notifyDocumentChanged();
     }
 
@@ -1552,7 +1545,7 @@ public final class NoteCanvasView extends View {
         }
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchStats(0, flow.size() > 1 ? "已删除整个跨页文本流" : "已删除文本框");
+        dispatchStats(0, flow.size() > 1 ? getContext().getString(R.string.canvas_flow_deleted_multi) : getContext().getString(R.string.canvas_flow_deleted));
         notifyDocumentChanged();
     }
 
@@ -1570,7 +1563,7 @@ public final class NoteCanvasView extends View {
         List<TextFragmentLayout> layouts = layoutFlow(flow);
         NoteTextBox first = reflowFlow(flow, layouts);
         if (!flow.lastLayoutComplete) {
-            dispatchStats(0, "文字流超过 500 页，屏幕仅显示已排入部分；完整源码已保留，不能导出 PDF");
+            dispatchStats(0, getContext().getString(R.string.canvas_too_many_pages));
         }
         return first;
     }
@@ -2572,14 +2565,14 @@ public final class NoteCanvasView extends View {
         }
         ensurePageGeometry();
         if (pageWidth <= 0f || pageHeight <= 0f) {
-            throw new IOException("纸张尺寸尚未就绪");
+            throw new IOException(getContext().getString(R.string.canvas_paper_not_ready));
         }
         for (TextFlow flow : textFlows.values()) {
             if (!flow.lastLayoutComplete) {
-                throw new IOException("文字流超过 500 页容量，PDF 未导出；原始文字仍保存在笔记中");
+                throw new IOException(getContext().getString(R.string.canvas_pdf_flow_too_long));
             }
             if (flow.lastRenderHeightUnresolved) {
-                throw new IOException("文字实际高度未能完整确认，PDF 未导出；请缩小或分段文字后重试");
+                throw new IOException(getContext().getString(R.string.canvas_pdf_height_unknown));
             }
         }
         List<InkStroke> strokeCopies = new ArrayList<>(strokes.size());
@@ -2748,7 +2741,7 @@ public final class NoteCanvasView extends View {
         invalidate();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState(reapply ? "已重新应用本次 AI 修改" : "已撤销本次 AI 修改");
+        dispatchViewportState(reapply ? getContext().getString(R.string.canvas_undo_ai) : getContext().getString(R.string.canvas_undo_ai_reverted));
         notifyDocumentChanged();
         return new AiEditApplyResult(aiEditState(record), toChange, 0);
     }
@@ -2911,8 +2904,7 @@ public final class NoteCanvasView extends View {
                     navigationRawPanY = viewportPanY;
                     clampViewport(false);
                     invalidate();
-                    dispatchViewportState("已定位 AI 修改所在第 "
-                            + (fragment.pageIndex + 1) + " 页");
+                    dispatchViewportState(getContext().getString(R.string.canvas_ai_change_page, fragment.pageIndex + 1));
                     return true;
                 }
             }
@@ -2953,10 +2945,10 @@ public final class NoteCanvasView extends View {
         clearSelectionInternal();
         rebuildInkBitmap();
         clampViewport(false);
-        dispatchStats(0, "已撤销");
+        dispatchStats(0, getContext().getString(R.string.canvas_undo));
         dispatchSelectionState();
         dispatchTextBoxesChanged();
-        dispatchViewportState("已撤销");
+        dispatchViewportState(getContext().getString(R.string.canvas_undo));
         notifyDocumentChanged();
     }
 
@@ -2971,10 +2963,10 @@ public final class NoteCanvasView extends View {
         clearSelectionInternal();
         rebuildInkBitmap();
         clampViewport(false);
-        dispatchStats(0, "已重做");
+        dispatchStats(0, getContext().getString(R.string.canvas_redo));
         dispatchSelectionState();
         dispatchTextBoxesChanged();
-        dispatchViewportState("已重做");
+        dispatchViewportState(getContext().getString(R.string.canvas_redo));
         notifyDocumentChanged();
     }
 
@@ -2992,7 +2984,7 @@ public final class NoteCanvasView extends View {
         clearSelectionInternal();
         clearInkBitmap();
         invalidate();
-        dispatchStats(0, "已清空，可撤销");
+        dispatchStats(0, getContext().getString(R.string.canvas_clear));
         dispatchSelectionState();
         dispatchTextBoxesChanged();
         notifyDocumentChanged();
@@ -3008,7 +3000,7 @@ public final class NoteCanvasView extends View {
         recountPoints();
         clearSelectionInternal();
         rebuildInkBitmap();
-        dispatchStats(0, "已删除选中笔画");
+        dispatchStats(0, getContext().getString(R.string.canvas_delete_strokes));
         dispatchSelectionState();
         notifyDocumentChanged();
     }
@@ -3053,7 +3045,7 @@ public final class NoteCanvasView extends View {
         }
         recountPoints();
         rebuildInkBitmap();
-        dispatchStats(0, "已复制选区，可拖动");
+        dispatchStats(0, getContext().getString(R.string.canvas_copy_selection));
         dispatchSelectionState();
         notifyDocumentChanged();
     }
@@ -3558,11 +3550,10 @@ public final class NoteCanvasView extends View {
         initializeViewportIfReady(parsed.schemaVersion == 1);
         rebuildAllFlows();
         rebuildInkBitmap();
-        dispatchStats(0, "已恢复本地笔记");
+        dispatchStats(0, getContext().getString(R.string.canvas_restored));
         dispatchSelectionState();
         dispatchTextBoxesChanged();
-        dispatchViewportState(parsed.schemaVersion == 1
-                ? "旧笔记已升级为分页画布" : "已恢复页面位置");
+        dispatchViewportState(getContext().getString(parsed.schemaVersion == 1 ? R.string.canvas_legacy_upgraded : R.string.canvas_position_restored));
     }
 
     private static double finiteDocumentDouble(double value, String message) throws JSONException {
@@ -3599,7 +3590,7 @@ public final class NoteCanvasView extends View {
         initializeViewportIfReady(false);
         clampViewport(false);
         invalidate();
-        dispatchViewportState("手指拖动画布 · 双指缩放");
+        dispatchViewportState(getContext().getString(R.string.canvas_pan_zoom));
     }
 
     @Override
@@ -3644,7 +3635,7 @@ public final class NoteCanvasView extends View {
             canvas.drawRect(borderInset, previewTop + borderInset,
                     pageWidth - borderInset, previewTop + pageHeight - borderInset,
                     previewPageBorderPaint);
-            canvas.drawText("第 " + (pageCount + 1) + " 页预览 · 拉出 1/3 松手添加",
+            canvas.drawText(getContext().getString(R.string.canvas_preview_page, pageCount + 1),
                     pageWidth / 2f, previewTop + dp(22), previewPageLabelPaint);
         }
 
@@ -3710,8 +3701,8 @@ public final class NoteCanvasView extends View {
         }
         RectF first = dragPreviewRects.get(0);
         String label = dragPreviewRects.size() > 1
-                ? "第 " + dragPreviewPageLabel + " 页起 · 共 " + dragPreviewRects.size() + " 段"
-                : "第 " + dragPreviewPageLabel + " 页";
+                ? getContext().getString(R.string.canvas_preview_page_start, dragPreviewPageLabel, dragPreviewRects.size())
+                : getContext().getString(R.string.canvas_page_number, dragPreviewPageLabel);
         canvas.drawText(label, first.left + dp(8), first.top - dp(6), dragPreviewLabelPaint);
     }
 
@@ -3724,7 +3715,7 @@ public final class NoteCanvasView extends View {
             requestUnbufferedDispatch(event);
             int toolType = event.getToolType(actionIndex);
             if (toolType == MotionEvent.TOOL_TYPE_FINGER && isLikelyPalm(event, actionIndex)) {
-                dispatchStats(0, "手掌触控已拦截");
+                dispatchStats(0, getContext().getString(R.string.canvas_palm_block));
                 return true;
             }
             if (toolType == MotionEvent.TOOL_TYPE_FINGER && shouldNavigateWithFinger(event, actionIndex)) {
@@ -3732,7 +3723,7 @@ public final class NoteCanvasView extends View {
                 return true;
             }
             if (!acceptsInput(event, actionIndex)) {
-                dispatchStats(0, toolLabel(event.getToolType(actionIndex)) + "已拦截");
+                dispatchStats(0, getContext().getString(R.string.canvas_input_blocked, toolLabel(event.getToolType(actionIndex))));
                 return true;
             }
             beginEditingPointer(event, actionIndex);
@@ -3844,7 +3835,7 @@ public final class NoteCanvasView extends View {
         if (!pointInsideAnyPage(point.x, point.y)) {
             activePointerId = MotionEvent.INVALID_POINTER_ID;
             activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
-            dispatchStats(0, "请在页面内书写");
+            dispatchStats(0, getContext().getString(R.string.canvas_write_inside));
             return;
         }
         activeGesturePageIndex = pageIndexForWorldY(point.y);
@@ -3854,7 +3845,7 @@ public final class NoteCanvasView extends View {
             if (listener != null) {
                 listener.onTextInsertRequested(point.x, point.y);
             }
-            dispatchStats(0, "文字笔：已选择插入位置");
+            dispatchStats(0, getContext().getString(R.string.canvas_text_placement));
             return;
         }
         beginGesture(point);
@@ -3887,7 +3878,8 @@ public final class NoteCanvasView extends View {
         navigationRawPanY = viewportPanY;
         bottomPullDistance = Math.max(0, minimumViewportPanY() - viewportPanY);
         dispatchViewportState(countFingerPointers(event, excludedPointerIndex) >= 2
-                ? "双指缩放画布" : "手指拖动画布");
+                ? getContext().getString(R.string.core_status_pinch)
+                : getContext().getString(R.string.core_status_finger_pan));
     }
 
     private void resetNavigationReference(MotionEvent event, int excludedPointerIndex) {
@@ -3920,7 +3912,7 @@ public final class NoteCanvasView extends View {
             navigationRawPanY = viewportPanY;
             bottomPullDistance = 0;
             clampViewport(false);
-            dispatchViewportState("双指缩放 · " + getZoomPercent() + "%");
+            dispatchViewportState(getContext().getString(R.string.core_status_zoom, getZoomPercent()));
         } else if (fingerCount == 1) {
             float dx = focusX - navigationLastFocusX;
             float dy = focusY - navigationLastFocusY;
@@ -3940,8 +3932,8 @@ public final class NoteCanvasView extends View {
             }
             clampViewportX();
             dispatchViewportState(turningTowardEarlierPages
-                    ? "向上翻页 · 1:1 跟手"
-                    : (bottomPullDistance > 0 ? bottomPullStatus() : "手指拖动画布"));
+                    ? getContext().getString(R.string.canvas_turn_earlier)
+                    : (bottomPullDistance > 0 ? bottomPullStatus() : getContext().getString(R.string.canvas_finger_pan)));
         }
         navigationLastFocusX = focusX;
         navigationLastFocusY = focusY;
@@ -3967,7 +3959,7 @@ public final class NoteCanvasView extends View {
         } else if (canceled) {
             bottomPullDistance = 0;
             clampViewport(false);
-            dispatchViewportState("画布导航已取消");
+            dispatchViewportState(getContext().getString(R.string.core_status_nav_cancelled));
             invalidate();
         } else if (newPageCreationPull) {
             animateViewportBackToDocument();
@@ -3976,7 +3968,7 @@ public final class NoteCanvasView extends View {
             // exclusively for a provisional new page that did not reach its commit threshold.
             bottomPullDistance = 0;
             clampViewport(false);
-            dispatchViewportState("手指拖动画布 · 双指缩放");
+            dispatchViewportState(getContext().getString(R.string.core_status_finger_pan));
             invalidate();
         }
     }
@@ -4000,7 +3992,7 @@ public final class NoteCanvasView extends View {
             showEraserCursor = true;
             eraseAt(point.x, point.y);
             invalidate();
-            dispatchStats(point.pressure, "局部擦除");
+            dispatchStats(point.pressure, getContext().getString(R.string.canvas_erasing));
             return;
         }
         beginLasso(point.x, point.y);
@@ -4024,7 +4016,7 @@ public final class NoteCanvasView extends View {
             lastGestureY = point.y;
             eraseAlongPath(fromX, fromY, point.x, point.y);
             invalidate();
-            dispatchStats(point.pressure, "局部擦除");
+            dispatchStats(point.pressure, getContext().getString(R.string.canvas_erasing));
             return;
         }
         appendLassoPoint(point.x, point.y);
@@ -4082,7 +4074,7 @@ public final class NoteCanvasView extends View {
         invalidate();
 
         if (documentChangedInGesture) {
-            dispatchStats(0, "等待自动保存");
+            dispatchStats(0, getContext().getString(R.string.canvas_autosave));
             notifyDocumentChanged();
         } else if (activeGestureTool != Tool.LASSO) {
             dispatchStats(0, toolStatus(selectedTool));
@@ -4107,7 +4099,7 @@ public final class NoteCanvasView extends View {
         appendLivePointToInkCache(null, point, currentStroke);
         documentChangedInGesture = true;
         postInvalidateOnAnimation();
-        dispatchStats(point.pressure, "书写中 · " + toolLabel(activeToolType));
+        dispatchStats(point.pressure, getContext().getString(R.string.canvas_writing, toolLabel(activeToolType)));
     }
 
     private void normalizeShape(InkStroke stroke) {
@@ -4372,14 +4364,14 @@ public final class NoteCanvasView extends View {
             movingSelection = true;
             lastGestureX = x;
             lastGestureY = y;
-            dispatchStats(0, "拖动选区");
+            dispatchStats(0, getContext().getString(R.string.canvas_drag_selection));
             return;
         }
         clearSelectionInternal();
         lassoPoints.clear();
         lassoPoints.add(new PointF(x, y));
         dispatchSelectionState();
-        dispatchStats(0, "圈住要选择的笔画");
+        dispatchStats(0, getContext().getString(R.string.canvas_lasso_prompt));
         invalidate();
     }
 
@@ -4449,17 +4441,17 @@ public final class NoteCanvasView extends View {
             point.offset(dx, dy);
         }
         rebuildInkBitmap();
-        dispatchStats(0, "正在移动选区");
+        dispatchStats(0, getContext().getString(R.string.canvas_moving_selection));
     }
 
     private void finishLasso(boolean canceled) {
         if (movingSelection) {
-            dispatchStats(0, documentChangedInGesture ? "选区已移动" : "选区未移动");
+            dispatchStats(0, documentChangedInGesture ? getContext().getString(R.string.canvas_selection_moved) : getContext().getString(R.string.canvas_selection_unchanged));
             return;
         }
         if (canceled || lassoPoints.size() < 3) {
             lassoPoints.clear();
-            dispatchStats(0, "套索已取消");
+            dispatchStats(0, getContext().getString(R.string.canvas_lasso_cancelled));
             return;
         }
         selectStrokesInsideLasso();
@@ -4475,17 +4467,17 @@ public final class NoteCanvasView extends View {
         selectTextBoxInsideLasso();
         lassoPoints.clear();
         if (!selectedImages.isEmpty()) {
-            dispatchStats(0, "已选中图片 · 拖动移动，右下角调大小，工具栏删除或复制");
+            dispatchStats(0, getContext().getString(R.string.canvas_image_selected));
         } else if (hasPdfSelection()) {
-            dispatchStats(0, "已圈选 PDF 原文 · 点击 AI 提问");
+            dispatchStats(0, getContext().getString(R.string.canvas_pdf_selected));
         } else if (selectedStrokes.isEmpty() && selectedTextBoxId == null) {
-            dispatchStats(0, "没有选中笔画或文字对象");
+            dispatchStats(0, getContext().getString(R.string.canvas_selection_empty));
         } else if (selectedTextBoxId != null && selectedStrokes.isEmpty()) {
-            dispatchStats(0, "已选中文字对象 · 可移动、缩放或删除");
+            dispatchStats(0, getContext().getString(R.string.canvas_text_selected));
         } else if (selectedTextBoxId != null) {
-            dispatchStats(0, "已选中 " + selectedStrokes.size() + " 笔和文字对象");
+            dispatchStats(0, getContext().getString(R.string.canvas_strokes_and_text, selectedStrokes.size()));
         } else {
-            dispatchStats(0, "已选中 " + selectedStrokes.size() + " 笔，可拖动");
+            dispatchStats(0, getContext().getString(R.string.canvas_strokes_selected, selectedStrokes.size()));
         }
     }
 
@@ -4870,7 +4862,7 @@ public final class NoteCanvasView extends View {
     private void addPageInternal(boolean addToHistory, boolean navigateToNewPage) {
         ensurePageGeometry();
         if (pageCount >= 500) {
-            dispatchViewportState("单本笔记最多 500 页");
+        dispatchViewportState(getContext().getString(R.string.core_status_page_limit));
             return;
         }
         if (addToHistory) {
@@ -4886,8 +4878,8 @@ public final class NoteCanvasView extends View {
             clampViewport(false);
         }
         invalidate();
-        dispatchStats(0, "已添加第 " + pageCount + " 页");
-        dispatchViewportState("已添加第 " + pageCount + " 页");
+        dispatchStats(0, getContext().getString(R.string.canvas_inserted_page, pageCount));
+        dispatchViewportState(getContext().getString(R.string.canvas_inserted_page, pageCount));
         notifyDocumentChanged();
     }
 
@@ -4928,7 +4920,7 @@ public final class NoteCanvasView extends View {
         clampViewport(false);
         invalidate();
         notifyDocumentChanged();
-        dispatchViewportState("已删除第 " + (pageIndex + 1) + " 页");
+        dispatchViewportState(getContext().getString(R.string.canvas_deleted_page, pageIndex + 1));
         return true;
     }
 
@@ -4983,7 +4975,7 @@ public final class NoteCanvasView extends View {
         inkCacheDirty = true;
         invalidate();
         notifyDocumentChanged();
-        dispatchViewportState("已复制第 " + (pageIndex + 1) + " 页");
+        dispatchViewportState(getContext().getString(R.string.canvas_copied_page, pageIndex + 1));
         return true;
     }
 
@@ -5022,7 +5014,7 @@ public final class NoteCanvasView extends View {
         inkCacheDirty = true;
         invalidate();
         notifyDocumentChanged();
-        dispatchViewportState("已移动页面");
+        dispatchViewportState(getContext().getString(R.string.canvas_moved_page));
         return true;
     }
 
@@ -5138,7 +5130,7 @@ public final class NoteCanvasView extends View {
             if (pageCount >= 500) {
                 bottomPullDistance = 0;
                 viewportPanY = minimum;
-                dispatchViewportState("单本笔记最多 500 页");
+                dispatchViewportState(getContext().getString(R.string.canvas_page_limit));
                 return;
             }
             float rawOverscroll = minimum - navigationRawPanY;
@@ -5190,10 +5182,9 @@ public final class NoteCanvasView extends View {
     private String bottomPullStatus() {
         int revealPercent = Math.round(nextPageRevealFraction() * 100f);
         if (nextPageRevealFraction() >= nextPageCommitFraction()) {
-            return "已拉出 " + revealPercent + "% · 松手添加第 " +
-                    (pageCount + 1) + " 页";
+            return getContext().getString(R.string.canvas_pull_ready, revealPercent, pageCount + 1);
         }
-        return "下一页已拉出 " + revealPercent + "% · 拉到 33% 松手添加";
+        return getContext().getString(R.string.canvas_pull_progress, revealPercent);
     }
 
     private void drawBottomPullIndicator(Canvas canvas) {
@@ -5209,7 +5200,7 @@ public final class NoteCanvasView extends View {
         canvas.drawLine(fromX, lineY, toX, lineY, pullIndicatorTrackPaint);
         canvas.drawLine(fromX, lineY, fromX + width * progress, lineY, pullIndicatorPaint);
         pullTextPaint.setColor(progress >= 1f ? SELECTION_COLOR : Color.rgb(92, 107, 118));
-        canvas.drawText(progress >= 1f ? "松手添加新页面" : "继续上滑添加下一页",
+        canvas.drawText(getContext().getString(progress >= 1f ? R.string.canvas_pull_commit : R.string.canvas_pull_continue),
                 getWidth() / 2f, lineY - dp(9), pullTextPaint);
     }
 
@@ -5222,7 +5213,7 @@ public final class NoteCanvasView extends View {
             navigationRawPanY = targetPanY;
             bottomPullDistance = 0;
             invalidate();
-            dispatchViewportState("手指拖动画布 · 双指缩放");
+                dispatchViewportState(getContext().getString(R.string.core_status_finger_pan));
             return;
         }
         ValueAnimator animator = ValueAnimator.ofFloat(startPanY, targetPanY);
@@ -5235,7 +5226,7 @@ public final class NoteCanvasView extends View {
             navigationRawPanY = viewportPanY;
             invalidate();
             dispatchViewportState(bottomPullDistance > 0
-                    ? bottomPullStatus() : "手指拖动画布 · 双指缩放");
+                    ? bottomPullStatus() : getContext().getString(R.string.canvas_pan_zoom));
         });
         animator.addListener(new AnimatorListenerAdapter() {
             private boolean canceled;
@@ -5255,7 +5246,7 @@ public final class NoteCanvasView extends View {
                     navigationRawPanY = targetPanY;
                     bottomPullDistance = 0;
                     invalidate();
-                    dispatchViewportState("手指拖动画布 · 双指缩放");
+                    dispatchViewportState(getContext().getString(R.string.canvas_pan_zoom));
                 }
             }
         });
@@ -5368,35 +5359,35 @@ public final class NoteCanvasView extends View {
 
     private String toolLabel(int toolType) {
         if (toolType == MotionEvent.TOOL_TYPE_STYLUS) {
-            return "手写笔";
+            return getContext().getString(R.string.core_input_stylus);
         }
         if (toolType == MotionEvent.TOOL_TYPE_ERASER) {
-            return "笔尾橡皮";
+            return getContext().getString(R.string.core_input_eraser);
         }
         if (toolType == MotionEvent.TOOL_TYPE_FINGER) {
-            return "手指";
+            return getContext().getString(R.string.core_input_finger);
         }
         if (toolType == MotionEvent.TOOL_TYPE_MOUSE) {
-            return "鼠标";
+            return getContext().getString(R.string.core_input_mouse);
         }
-        return "未知输入";
+        return getContext().getString(R.string.core_input_unknown);
     }
 
     private String toolStatus(Tool tool) {
         if (tool == Tool.HIGHLIGHTER) {
-            return "高亮笔：半透明宽笔划";
+            return getContext().getString(R.string.core_status_highlighter);
         }
-        if (tool == Tool.SHAPE) return "几何图形：拖动绘制矩形";
+        if (tool == Tool.SHAPE) return getContext().getString(R.string.core_status_shape);
         if (tool == Tool.ERASER) {
-            return "局部橡皮：只擦除覆盖区域";
+            return getContext().getString(R.string.core_status_eraser);
         }
         if (tool == Tool.LASSO) {
-            return "套索：圈选后可用笔或手指拖动";
+            return getContext().getString(R.string.core_status_lasso);
         }
         if (tool == Tool.TEXT) {
-            return "文字笔：点击页面位置插入文字对象";
+            return getContext().getString(R.string.core_status_text);
         }
-        return "画笔就绪";
+        return getContext().getString(R.string.core_status_ready);
     }
 
     private InkPoint pointFromEvent(MotionEvent event, int pointerIndex, boolean historical, int historyIndex) {
@@ -6155,7 +6146,8 @@ public final class NoteCanvasView extends View {
             reflowFlow(flow);
             dispatchTextBoxesChanged();
             dispatchStats(0, corrected > comparison
-                    ? "已按示意图实际比例修正排版" : "已收紧示意图预留空间");
+                    ? getContext().getString(R.string.canvas_font_reflow_adjusted)
+                    : getContext().getString(R.string.canvas_font_space_tightened));
             return;
         }
         if (measured <= reserved * MEASURED_HEIGHT_TOLERANCE) {
@@ -6165,7 +6157,7 @@ public final class NoteCanvasView extends View {
         if (flow.heightCorrectionPasses >= MAX_HEIGHT_CORRECTION_PASSES) {
             // Keep the canonical source, but make possible viewport clipping explicit.
             flow.recordRenderFragmentHeight(fragment.id, true);
-            dispatchStats(0, "文字实际高度仍超过分页预留；已保留完整源码，请分段或缩小后重试");
+            dispatchStats(0, getContext().getString(R.string.canvas_height_overflow));
             return;
         }
         float needed = measured / Math.max(1f, reserved);
@@ -6175,14 +6167,14 @@ public final class NoteCanvasView extends View {
             // We cannot make another useful correction (usually MAX_HEIGHT_CORRECTION).
             // Keep this fragment unresolved even before the pass counter is exhausted.
             flow.recordRenderFragmentHeight(fragment.id, true);
-            dispatchStats(0, "文字实际高度超过分页预留上限；已保留完整源码，请分段或缩小后重试");
+            dispatchStats(0, getContext().getString(R.string.canvas_height_limit));
             return;
         }
         flow.heightCorrection = correction;
         flow.heightCorrectionPasses += 1;
         reflowFlow(flow);
         dispatchTextBoxesChanged();
-        dispatchStats(0, "已按实际渲染高度修正排版");
+        dispatchStats(0, getContext().getString(R.string.canvas_height_adjusted));
     }
 
     /** Anchor page of every flow, for detecting what a write pushed around. */

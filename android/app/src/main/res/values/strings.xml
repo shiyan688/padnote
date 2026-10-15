@@ -1,10 +1,110 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PadNote</string>
-    <string name="ai_card_busy">AI 助手 · 正在回答</string>
-    <string name="ai_card_minimized">AI 助手 · 已收起</string>
-    <string name="ai_card_drag">AI 助手</string>
-    <string name="ai_config_saved">API 已安全保存 · 首次发送前会确认</string>
-    <string name="vault_failure_draft_retained">%1$s；草稿仍保留。</string>
-    <string name="vault_failure_draft_retained_retry">%1$s；草稿保留。可复制/导出，或先检查当前版本，再明确选择当前版本后重试。</string>
+    <string name="app_name" translatable="false">PadNote</string>
+    <string name="ai_card_busy">AI assistant · Responding</string>
+    <string name="ai_card_minimized">AI assistant · Minimized</string>
+    <string name="ai_card_drag">AI assistant</string>
+    <string name="ai_config_saved">API saved securely · Confirmation required before first send</string>
+    <string name="vault_failure_draft_retained">%1$s; draft retained.</string>
+    <string name="vault_failure_draft_retained_retry">%1$s; draft retained. Copy or export it, or review the current version and explicitly choose it before retrying.</string>
+    <string name="core_language">Language</string>
+    <string name="core_follow_system">Follow system</string>
+    <string name="core_cancel">Cancel</string>
+    <string name="core_shelf_subtitle">My bookshelf · Local notes</string>
+    <string name="core_import_note">Import note</string>
+    <string name="core_agent">Computer Agent</string>
+    <string name="core_create_note">＋ New note</string>
+    <string name="core_recent_notes">Recent notes</string>
+    <string name="core_loading_shelf">Loading bookshelf…</string>
+    <string name="core_empty_shelf">Your bookshelf is empty\nCreate your first note or import a .padnote.json file</string>
+    <string name="core_open">Open</string>
+    <string name="core_ai_input_hint">Ask a follow-up or enter custom instructions…</string>
+    <string name="core_ai_settings">AI settings</string>
+    <string name="core_ai_config">AI configuration</string>
+    <string name="core_done">Done</string>
+    <string name="core_new_ai_profile">New AI profile</string>
+    <string name="core_edit_ai_profile">Edit AI profile</string>
+    <string name="core_secure_save">Save securely</string>
+    <string name="core_model">Model</string>
+    <string name="core_api_key">API key</string>
+    <string name="core_endpoint">Endpoint</string>
+    <string name="core_send">Send</string>
+    <string name="core_export_note">Export note</string>
+    <string name="core_export_pdf">Export PDF</string>
+    <string name="core_delete">Delete</string>
+    <string name="core_save">Save</string>
+    <string name="core_edit">Edit</string><string name="core_delete_profile_title">Delete profile?</string><string name="core_profile_deleted">“%1$s” will be deleted. Its saved keys will also be removed.</string>
+    <string name="core_vendor_preset">Provider preset (fills the endpoint and suggested model; leaves the key unchanged)</string><string name="core_profile_example">For example: Zhipu free / DeepSeek two-step</string><string name="core_profile_name">Profile name</string><string name="core_route">Mode</string>
+    <string name="core_direct_multimodal">Direct multimodal (one model reads images and responds)</string><string name="core_two_step">Transcription + response (two steps)</string><string name="core_two_step_help">Two-step: the transcription model converts selected handwriting to text; the response model reads the text and performs note actions.</string>
+    <string name="core_api_base">API base URL or full Chat Completions URL</string><string name="core_image_model">Image-capable model name</string><string name="core_keystore_key">API key (encrypted with Android Keystore)</string><string name="core_saved_key_hint">Saved securely; leave blank to keep it</string><string name="core_enter_api_key">Enter API key</string><string name="core_transcription_api">Transcription API base URL</string><string name="core_transcription_model">Transcription model (image support required)</string><string name="core_response_api">Response API base URL</string><string name="core_response_model">Response model (text only is fine)</string><string name="core_profile_name_error">Enter a profile name</string>
+    <string name="core_language_busy">An AI or material task is still running. Wait for it to finish before changing the language.</string>
+    <string name="core_cover">Cover</string><string name="core_no_cover">No cover</string><string name="core_more">More…</string><string name="core_cover_unused">Cover: not used</string><string name="core_unused">Not used</string><string name="core_custom_image">Custom image</string><string name="core_create">Create</string>
+    <string name="core_paper">Paper</string><string name="core_lined">Ruled</string><string name="core_blank">Blank</string><string name="core_grid">Grid</string><string name="core_dotted">Dotted</string><string name="core_ratio">Page size</string><string name="core_fit_screen">Fit screen</string><string name="core_orientation">Orientation</string><string name="core_portrait">Portrait</string><string name="core_landscape">Landscape</string><string name="core_paper_immutable">Paper style cannot be changed after creation</string>
+    <string name="core_back_shelf">Back to bookshelf</string><string name="core_unnamed_note">Untitled note</string><string name="core_paper_zoom">Paper · Pinch to zoom</string><string name="core_video">Video</string><string name="core_share_agent">Share / Agent</string><string name="core_video_tasks">Video tasks and results for this note</string><string name="core_share_paper">Share this paper as PDF or send it with readable context to a computer Agent</string>
+    <string name="core_pen_settings">Pen settings</string><string name="core_text_tool">Text pen: tap the page to insert</string><string name="core_eraser_settings">Partial eraser settings</string><string name="core_lasso">Lasso selection</string><string name="core_highlighter_settings">Highlighter settings</string><string name="core_shape_draw">Shapes: drag to draw a rectangle</string><string name="core_ai_open">Open AI chat</string><string name="core_palette">Open color palette</string><string name="core_use_color">Use %1$s</string><string name="core_undo">Undo</string><string name="core_redo">Redo</string><string name="core_duplicate_selection">Duplicate selection</string><string name="core_delete_selection">Delete selection</string><string name="core_cancel_selection">Cancel selection</string><string name="core_clear_note">Clear note</string><string name="core_add_page">Add page</string><string name="core_page_manager">Manage pages</string><string name="core_insert_image">Insert image</string><string name="core_save_now">Save now</string>
+    <string name="core_ai_wait">Wait for the current response to finish</string><string name="core_active_profile">Current profile: %1$s</string><string name="core_unconfigured">Not configured</string><string name="core_manager_hint">Select a profile to use it. Direct and two-step profiles can coexist.</string><string name="core_new_profile">New profile</string><string name="core_ai_security">OpenAI-compatible message format; HTTPS only. Keys are encrypted with Android Keystore and are not written to notes or logs.</string><string name="core_close">Close</string><string name="core_no_profiles">No profiles yet. Select “New profile” to add one:\nChoose a provider preset → paste an API key → save.</string><string name="core_capability_confirmed">Tool support: confirmed by a real call</string><string name="core_capability_rejected">Tool support: explicitly rejected by the server</string><string name="core_capability_unknown">Tool support: not confirmed</string><string name="core_profile_switched">Switched to: %1$s</string>
+    <string name="core_transcription_key">Transcription API key</string><string name="core_response_key">Response API key</string>
+    <string name="core_pressure_status">Pressure %1$.3f · %2$s</string><string name="core_status_ready">Pen ready</string><string name="core_status_pan_zoom">One finger to pan · Two fingers to zoom</string><string name="core_status_finger_pan">Pan with one finger · Pinch with two</string><string name="core_status_pinch">Pinch to zoom</string><string name="core_status_highlighter">Highlighter: translucent wide strokes</string><string name="core_status_shape">Shapes: drag to draw a rectangle</string><string name="core_status_eraser">Partial eraser: removes only covered areas</string><string name="core_status_lasso">Lasso: circle an item, then drag with a pen or finger</string><string name="core_status_text">Text pen: tap a page location to insert a text box</string><string name="core_input_stylus">Stylus</string><string name="core_input_eraser">Stylus eraser</string><string name="core_input_finger">Finger</string><string name="core_input_mouse">Mouse</string><string name="core_input_unknown">Unknown input</string>
+    <string name="core_status_zoom">Pinch to zoom · %1$d%%</string><string name="core_status_nav_cancelled">Canvas navigation cancelled</string><string name="core_status_page_limit">A note can have up to 500 pages</string>
+    <string name="core_prompt_explain">Explain the selected notes step by step. Preserve formulas and derivations, and clearly mark anything you cannot read.</string><string name="core_prompt_markdown">Organize the selected notes as clear Markdown. Preserve their meaning, hierarchy, formulas, and action items.</string><string name="core_prompt_diagram">Draw a concise diagram of the clearest relationship in the selected notes and insert it with draw_diagram. Check for blank space on the page and place it below the related source by default; do not cover handwriting. Use the language of the selected notes for labels, and ask me first if anything is unclear.</string>
+    <string name="core_ai_settings_label">Settings</string><string name="core_ai_minimize">Minimize</string><string name="core_ai_expand">Expand</string><string name="core_ai_clear">Clear</string><string name="core_ai_clear_desc">Clear this note’s AI conversation</string><string name="core_ai_close_desc">Close AI card</string><string name="core_ai_title_drag">AI assistant; drag the title to move this card</string><string name="core_ai_selection_image">Selected image used for this AI conversation</string><string name="core_ai_wait_selection">Waiting for a note selection</string><string name="core_ai_output_display">Response display</string><string name="core_ai_write_allowed">Allow note edits</string><string name="core_ai_write_desc">Allow AI to use note tools to write in blank areas</string><string name="core_ai_only_card">Card only</string><string name="core_ai_only_card_desc">Show AI responses only in the conversation card</string><string name="core_ai_quick_actions">Quick actions</string><string name="core_ai_explain">Explain</string><string name="core_ai_markdown">Organize Markdown</string><string name="core_ai_diagram">Draw diagram · Beta</string><string name="core_ai_material_summary">Extra materials: none selected (knowledge base is not read by default)</string><string name="core_ai_extra_materials">Choose extra materials</string><string name="core_ai_preview">Preview</string><string name="core_ai_review_transcript">Review transcription first in two-step mode</string><string name="core_ai_review_transcript_desc">Optional: edit the handwritten transcription before sending it to the response model; continue directly by default</string>
+    <string name="core_ai_settings_desc">Configure AI API</string><string name="core_ai_minimize_desc">Minimize AI card</string><string name="core_ai_expand_desc">Restore AI card</string>
+    <string name="core_color_navy">Navy</string><string name="core_color_ink_blue">Ink blue</string><string name="core_color_vermilion">Vermilion</string><string name="core_color_forest">Forest green</string><string name="core_color_purple">Purple</string>
+    <string name="core_library_button">Library</string><string name="core_library_desc">Back up and restore the library and manage offline materials</string><string name="core_library_title">Library backup and restore</string><string name="core_library_backup">Back up entire library</string><string name="core_library_restore">Restore from backup as a copy</string><string name="core_library_materials">View offline recovery materials</string><string name="core_library_resume">Continue the previous unfinished restore</string><string name="core_editable_package">Editable PadNote package</string><string name="core_merged_pdf">Standard PDF (pages merged)</string><string name="core_export_note_warning">The note export package does not include private video attachments. Save videos separately from Video tasks and results.</string><string name="core_continue_export">Continue export</string>
+    <string name="core_agent_recipient">Receiving Agent</string><string name="core_task_preset">Task preset (editable)</string><string name="core_specific_request">Specific request</string><string name="core_video_style_optional">Video narration style (optional)</string><string name="core_style_prompt_editable">Style prompt (editable)</string><string name="core_default_task_prompt">Use this note’s paper and readable context to complete my request.</string><string name="core_instruction_continue">Use this note’s paper and readable context, and continue following my specific instructions.</string><string name="core_instruction_lecture">Organize this note into clear, shareable lecture notes. Preserve key definitions, derivations, and conclusions.</string><string name="core_instruction_gaps">Find key points I may not understand well and create exercises with answers.</string><string name="core_instruction_video">Use this note’s paper and readable context to create a shareable explainer video. Complete the planning, asset generation, and production required by the selected style, following the target Agent’s permissions and required review steps.</string>
+    <string name="core_style_lecture">Clear lecture notes</string><string name="core_style_whiteboard">Handwritten whiteboard</string><string name="core_style_analogy">Analogy-led explanation</string><string name="core_style_derivation">Step-by-step derivation</string><string name="core_style_review">One-minute review</string><string name="core_style_prompt_lecture">Explain this in a clear lecture format. Focus each scene on one concept, with concise headings and formulas, diagrams, and explanations together. Expand examples step by step, with little decoration or filler.</string><string name="core_style_prompt_whiteboard">Explain this as a teacher writing on a whiteboard. Start with the question, then draw diagrams, write key formulas and notes, and show how each step follows. Do not fill the whole board at once.</string><string name="core_style_prompt_analogy">Start with a familiar everyday analogy, then return to the precise concepts in the source. State where the analogy applies and what it could misrepresent.</string><string name="core_style_prompt_derivation">Develop a complete derivation around one question. Explain the assumptions, formulas, or transformations at every step. Highlight the symbols that change and do not skip steps that matter for understanding.</string><string name="core_style_prompt_review">Create a one-minute review video with the three most memorable points, one common misconception, and a short self-check question at the end. Keep essential conditions and units; do not alter conclusions to shorten the video.</string>
+
+    <string name="core_preset_continue">Continue my task</string>
+    <string name="core_preset_lecture">Create shareable notes</string>
+    <string name="core_preset_gaps">Find gaps and create exercises</string>
+    <string name="core_preset_video">Create an explainer video</string>
+    <string name="core_pending_videos">Pending videos</string>
+    <string name="core_pending_videos_desc">View, save, or delete pending video results</string>
+    <string name="core_recent_count">Recent notes · %d</string>
+    <string name="core_guide_title">Three steps to get started</string>
+    <string name="core_guide_close">Close the getting started guide</string>
+    <string name="core_guide_write_title">Write and select</string>
+    <string name="core_guide_write_detail">Write with a pen and zoom with two fingers. Use the lasso to select handwriting.</string>
+    <string name="core_guide_ai_title">Ask AI</string>
+    <string name="core_guide_ai_detail">Select content and tap the AI icon to explain it, organize it as Markdown, or ask a question. You can also ask about earlier notes.</string>
+    <string name="core_guide_vault_title">Make formatted notes</string>
+    <string name="core_guide_vault_detail">Use More → Convert to formatted notes on a note card to create an Obsidian-compatible Markdown library. AI reads it only after you select it.</string>
+    <string name="core_vault_title">Digitized notes · formatted notes</string>
+    <string name="core_vault_caption">Handwritten Markdown version · copy the whole folder into Obsidian</string>
+    <string name="core_vault_what">What is this?</string>
+    <string name="core_vault_headline">Turn a handwritten note into searchable formatted notes</string>
+    <string name="core_vault_step_open">Open a completed handwritten note</string>
+    <string name="core_vault_step_open_detail">Equations and flowcharts are fine.</string>
+    <string name="core_vault_step_convert">Tap More → Convert to formatted notes</string>
+    <string name="core_vault_step_convert_detail">Configure a model in the AI card first.</string>
+    <string name="core_vault_step_result">The result appears here</string>
+    <string name="core_vault_step_result_detail">Read or export the .md file for Obsidian, or select it as extra material in the AI card.</string>
+    <string name="core_vault_privacy">Upload notice: digitization sends the entire page to your configured model, not only a selected area. You will confirm again before conversion.</string>
+    <string name="core_vault_guide_title">What is the library?</string>
+    <string name="core_got_it">Got it</string>
+    <string name="core_vault_open_desc">Open formatted note %s</string>
+    <string name="core_vault_date">%d pages · digitized on %s</string>
+    <string name="core_vault_stale">Original note changed · consider regenerating</string>
+    <string name="core_vault_export">Export .md</string>
+    <string name="core_vault_delete_title">Delete formatted note?</string>
+    <string name="core_vault_delete_message">This will delete “%s”. The handwritten original is unchanged.</string>
+    <string name="core_paper_handoff">Share and send to Agent</string>
+    <string name="core_paper_share_action">Share current paper as PDF…</string>
+    <string name="core_paper_agent_action">Send to computer Agent…</string>
+    <string name="core_paper_agent_missing_title">Connect a computer Agent first</string>
+    <string name="core_paper_agent_missing">No computer connection can receive this note. Connect a computer or check that an existing connection is verified and supports note tasks. Nothing was sent.</string>
+    <string name="core_later">Later</string>
+    <string name="core_connection_settings">Connection settings</string>
+    <string name="core_paper_changed">The note changed after the PDF was frozen. Nothing was sent; reopen this action.</string>
+    <string name="core_paper_source_missing">The source note no longer exists. Nothing was sent.</string>
+    <string name="core_paper_read_error">Cannot read this note’s sharing context (nothing sent): %s</string>
+    <string name="core_paper_scope">Send scope: entire current note · %1$d-page PDF · %2$s\nThe paper is a frozen rendering of visible pages, including backgrounds. Handwriting, images, and their text are provided in the PDF. Below is the note text and sharing preview.\nOther notes, connection settings, and tokens are not included.</string>
+    <string name="core_paper_composer_title">Share and send to computer Agent</string>
+    <string name="core_confirm_send">Confirm and send</string>
+    <string name="core_task_empty">Task request cannot be empty. Nothing was sent.</string>
+    <string name="core_paper_confirm_changed">The note changed during confirmation. Reopen this action; nothing was sent.</string>
+    <string name="core_paper_task_title">Paper task · %s</string>
+    <string name="core_paper_package_error">Could not freeze or package the note (nothing sent): %s</string>
+    <string name="core_task_bundle_intro">Complete the task package request: “%1$s”. The rendered paper is in input/paper.pdf; readable notes and this note’s AI conversation are in input/content.md.</string>
+    <string name="core_video_style_prefix">Video style: %1$s</string>
 </resources>

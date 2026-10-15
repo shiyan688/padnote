@@ -41,27 +41,27 @@ final class VideoTaskDialogs {
     }
 
     void show(AgentTaskStore.Task task){
-        if(!VideoTaskClient.isVideoBundle(task)){toast("该任务不是可审阅的Bridge视频任务包");return;}
+        if(!VideoTaskClient.isVideoBundle(task)){toast(activity.getString(R.string.flow_video_bundle_invalid));return;}
         LinearLayout root=new LinearLayout(activity);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(16),dp(8),dp(16),dp(8));
         TextView message=new TextView(activity);root.addView(message,new LinearLayout.LayoutParams(-1,-2));
         TextView diagnosticDetails=new TextView(activity);diagnosticDetails.setVisibility(View.GONE);
         LinearLayout scenes=new LinearLayout(activity);scenes.setOrientation(LinearLayout.VERTICAL);root.addView(scenes);
         LinearLayout actions=new LinearLayout(activity);actions.setOrientation(LinearLayout.VERTICAL);root.addView(actions);
-        Button diagnostics=button("检查电脑视频依赖"),refresh=button("刷新状态与审阅"),initialize=button("初始化视频任务"),
-                storyboard=button("生成下一版分镜"),approve=button("批准当前分镜"),cancel=button("取消排队中的操作"),stop=button("请求停止生成分镜"),stopStatus=button("查看停止状态"),retry=button("用同一幂等键重试提交"),
-                reconcile=button("核对电脑端结果"),
-                diagnosticDetailsToggle=button("显示技术诊断详情");
+        Button diagnostics=button(activity.getString(R.string.flow_check_video_deps)),refresh=button(activity.getString(R.string.flow_refresh_review)),initialize=button(activity.getString(R.string.flow_init_video_task)),
+                storyboard=button(activity.getString(R.string.flow_new_storyboard)),approve=button(activity.getString(R.string.flow_approve_storyboard)),cancel=button(activity.getString(R.string.flow_cancel_queued)),stop=button(activity.getString(R.string.flow_stop_storyboard)),stopStatus=button(activity.getString(R.string.flow_stop_status)),retry=button(activity.getString(R.string.flow_retry_same_key)),
+                reconcile=button(activity.getString(R.string.flow_reconcile_result)),
+                diagnosticDetailsToggle=button(activity.getString(R.string.flow_show_tech));
         diagnosticDetailsToggle.setVisibility(View.GONE);actions.addView(diagnostics,new LinearLayout.LayoutParams(-1,-2));
         actions.addView(diagnosticDetailsToggle,new LinearLayout.LayoutParams(-1,-2));
         for(Button b:new Button[]{refresh,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile})actions.addView(b,new LinearLayout.LayoutParams(-1,-2));
         root.addView(diagnosticDetails,new LinearLayout.LayoutParams(-1,-2));
-        AlertDialog dialog=new AlertDialog.Builder(activity).setTitle("视频分镜").setView(scroll(root)).setNegativeButton("关闭",null).create();
+        AlertDialog dialog=new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_video_review_title)).setView(scroll(root)).setNegativeButton(activity.getString(R.string.flow_close),null).create();
         AtomicBoolean busy=new AtomicBoolean(),dialogActive=new AtomicBoolean(true);JSONObject[] displayed={null};boolean[] imagesReady={false};
         AtomicBoolean storeHealthy=new AtomicBoolean(true);
         Runnable[] reload=new Runnable[1];
         reload[0]=()->{
             if(!dialog.isShowing()||!busy.compareAndSet(false,true))return;
-            imagesReady[0]=false;approve.setEnabled(false);message.setText("正在读取电脑视频任务…");
+            imagesReady[0]=false;approve.setEnabled(false);message.setText(activity.getString(R.string.flow_loading_video));
             initialize.setEnabled(false);storyboard.setEnabled(false);cancel.setEnabled(false);stop.setEnabled(false);stopStatus.setEnabled(false);retry.setEnabled(false);reconcile.setEnabled(false);
             worker.execute(()->{
                 String status="",error="";JSONObject review=null,diagnostic=null;VideoOperationStore.Operation op=null;JSONObject inspection=null;boolean initSucceeded=false,freshReview=false,freshOperation=false,verifiedStop=false;
@@ -88,28 +88,28 @@ final class VideoTaskDialogs {
                         catch(Exception ignored){/* A failed read never changes the saved stop intent or operation. */}
                     }
                     if(op!=null&&"initialize".equals(op.action)&&"succeeded".equals(op.status))initSucceeded=true;
-                    try{diagnostic=client.diagnostics(task,current(task));current(task);}catch(Exception e){error="电脑依赖诊断不可用。";}
+                    try{diagnostic=client.diagnostics(task,current(task));current(task);}catch(Exception e){error=activity.getString(R.string.flow_diagnostics_unavailable);}
                     try{review=client.review(task,current(task));current(task);validateReviewMatchesInspection(review,inspection);store.saveReview(task,review);freshReview=true;}catch(Exception e){try{review=store.review(task);}catch(Exception ignored){review=null;}if(error.isEmpty())error=friendlyFailure(e,task);}
                     if(review!=null&&freshReview){
                         JSONArray list=review.getJSONArray("scenes");java.util.ArrayList<android.graphics.Bitmap> bitmaps=new java.util.ArrayList<>();long pixels=0;
                         for(int i=0;i<list.length();i++){
-                            JSONObject scene=list.getJSONObject(i),meta=scene.getJSONObject("preview");pixels+=(long)meta.getInt("width")*meta.getInt("height");if(pixels>16_777_216L)throw new IllegalStateException("缩略图总内存预算超限，未启用批准");byte[] bytes=client.preview(task,current(task),review,meta);current(task);
+                            JSONObject scene=list.getJSONObject(i),meta=scene.getJSONObject("preview");pixels+=(long)meta.getInt("width")*meta.getInt("height");if(pixels>16_777_216L)throw new IllegalStateException(activity.getString(R.string.flow_memory_budget_exceeded));byte[] bytes=client.preview(task,current(task),review,meta);current(task);
                             android.graphics.Bitmap bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.length);
-                            if(bitmap==null)throw new IllegalStateException("预览PNG无法解码");bitmaps.add(bitmap);
+                            if(bitmap==null)throw new IllegalStateException(activity.getString(R.string.flow_preview_decode_failed));bitmaps.add(bitmap);
                         }
                         if(task.matches(connections.get(task.connectionId))){displayed[0]=review;imagesReady[0]=true;}
                         final JSONObject shown=review;final java.util.List<android.graphics.Bitmap> previews=bitmaps;
                         final String finalError=error;final VideoOperationStore.Operation finalOp=op;final JSONObject finalDiagnostic=diagnostic,finalInspection=inspection;
                         main.post(()->{if(!dialog.isShowing())return;scenes.removeAllViews();try{
-                            TextView heading=new TextView(activity);heading.setText("第 "+shown.getInt("revision")+" 版 · "+shown.getJSONObject("episode").getString("title")+"\n批准只记录审核结论，不会启动配音、付费请求或渲染。\n");scenes.addView(heading);
-                            JSONArray items=shown.getJSONArray("scenes");for(int i=0;i<items.length();i++){JSONObject s=items.getJSONObject(i);TextView text=new TextView(activity);text.setText("场景 "+(i+1)+" · "+s.getString("visual_kind")+"\n"+s.getString("learning_objective")+"\n解说："+s.getString("narration")+"\n屏幕文字："+join(s.getJSONArray("screen_text"))+"\n");scenes.addView(text);ImageView image=new ImageView(activity);image.setAdjustViewBounds(true);image.setMaxHeight(dp(240));image.setImageBitmap(previews.get(i));scenes.addView(image);}
+                            TextView heading=new TextView(activity);heading.setText(activity.getString(R.string.flow_video_review_revision,shown.getInt("revision"),shown.getJSONObject("episode").getString("title"))+"\n"+activity.getString(R.string.flow_approval_only));scenes.addView(heading);
+                            JSONArray items=shown.getJSONArray("scenes");for(int i=0;i<items.length();i++){JSONObject s=items.getJSONObject(i);TextView text=new TextView(activity);text.setText(activity.getString(R.string.flow_scene_label,i+1)+" · "+s.getString("visual_kind")+"\n"+s.getString("learning_objective")+"\n"+activity.getString(R.string.flow_narration_label)+" "+s.getString("narration")+"\n"+activity.getString(R.string.flow_screen_text_label)+" "+join(s.getJSONArray("screen_text"))+"\n");scenes.addView(text);ImageView image=new ImageView(activity);image.setAdjustViewBounds(true);image.setMaxHeight(dp(240));image.setImageBitmap(previews.get(i));scenes.addView(image);}
                         }catch(Exception ignored){}message.setText(summary(task,finalOp,finalDiagnostic,finalInspection,finalError));}
                     );
-                    } else {if(review!=null)error+=(error.isEmpty()?"":"\n")+"当前显示的是本地缓存审阅，未取得电脑端最新版本，不能批准。连接可用后刷新再审阅。";status=summary(task,op,diagnostic,inspection,error);}
+                    } else {if(review!=null)error+=(error.isEmpty()?"":"\n")+activity.getString(R.string.flow_cached_review_stale);status=summary(task,op,diagnostic,inspection,error);}
                 }catch(Exception e){
                     status=friendlyFailure(e,task);
                     try{review=store.review(task);}catch(Exception ignored){}
-                    if(review!=null)status+="\n本机保留了这版分镜文字；图片未缓存，连接恢复且身份仍匹配后才能重新加载。缓存内容不能用于批准。";
+                    if(review!=null)status+="\n"+activity.getString(R.string.flow_cached_images_missing);
                 }
                 final String output=status;final VideoOperationStore.Operation active=op;final JSONObject diag=diagnostic,inspect=inspection;
                 final boolean initialized=initSucceeded,operationFresh=freshOperation,stopped=verifiedStop;final JSONObject visible=review;
@@ -122,27 +122,27 @@ final class VideoTaskDialogs {
         };
         diagnostics.setOnClickListener(v->run(task,dialog,busy,()->{
             AgentConnectionStore.Config c=current(task);AgentConnectionClient.ProbeResult probe=AgentConnectionClient.probeResult(c);
-            if(!connections.applyProbeSuccess(c.id,c.revision,probe))throw new IllegalStateException("连接身份变化，请重新打开任务");
-            c=current(task);JSONObject d=client.diagnostics(task,c);c=current(task);StringBuilder technical=new StringBuilder("诊断详情（电脑返回）：\n");JSONObject checks=d.getJSONObject("checks");for(String key:new String[]{"worker_modules","storyboard_browser","render_browser","ffmpeg","ffprobe","tts"}){JSONObject item=checks.getJSONObject(key);technical.append(diagnosticName(key)).append("：").append(diagnosticStatus(item.getString("status"))).append(" · ").append(item.getString("reason")).append('\n');}
-            technical.append("视频操作能力：").append(c.capabilities.contains("video_operations")?"可用":"不可用").append("\nruntime_verified=false；video_ready=false；完整运行环境尚未核验；配音/渲染以依赖详情为准，批准不启动生产。\n");
+            if(!connections.applyProbeSuccess(c.id,c.revision,probe))throw new IllegalStateException(activity.getString(R.string.flow_identity_changed_reopen));
+            c=current(task);JSONObject d=client.diagnostics(task,c);c=current(task);StringBuilder technical=new StringBuilder(activity.getString(R.string.flow_diagnostics_label));JSONObject checks=d.getJSONObject("checks");for(String key:new String[]{"worker_modules","storyboard_browser","render_browser","ffmpeg","ffprobe","tts"}){JSONObject item=checks.getJSONObject(key);technical.append(diagnosticName(key)).append("：").append(diagnosticStatus(item.getString("status"))).append(" · ").append(item.getString("reason")).append('\n');}
+            technical.append(activity.getString(R.string.flow_video_capability_label)).append(c.capabilities.contains("video_operations")?activity.getString(R.string.flow_available):activity.getString(R.string.flow_unavailable)).append(activity.getString(R.string.flow_runtime_legacy_diagnostic));
             VideoOperationStore.Operation latest=store.latest(task);JSONObject inspection=latestInspection(task);boolean initialized=false;for(VideoOperationStore.Operation item:store.operations(task))if("initialize".equals(item.action)&&"succeeded".equals(item.status))initialized=true;
-            final boolean initDone=initialized,stopped=store.hasVerifiedStoryboardStop(task);final String tech=technical.toString();main.post(()->{message.setText("依赖检查已完成。这不代表完整运行环境已核验；配音/渲染以依赖详情为准，批准不启动生产。");diagnosticDetails.setText(tech);diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setText("显示技术诊断详情");diagnosticDetailsToggle.setVisibility(View.VISIBLE);configure(task,latest,d,inspection,initDone,displayed[0],imagesReady[0],storeHealthy.get(),false,stopped,message,diagnostics,refresh,diagnosticDetails,diagnosticDetailsToggle,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);});},reload[0]));
-        diagnosticDetailsToggle.setOnClickListener(v->{boolean show=diagnosticDetails.getVisibility()!=View.VISIBLE;diagnosticDetails.setVisibility(show?View.VISIBLE:View.GONE);diagnosticDetailsToggle.setText(show?"隐藏技术诊断详情":"显示技术诊断详情");});
+            final boolean initDone=initialized,stopped=store.hasVerifiedStoryboardStop(task);final String tech=technical.toString();main.post(()->{message.setText(activity.getString(R.string.flow_deps_check_done));diagnosticDetails.setText(tech);diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setText(activity.getString(R.string.flow_show_tech));diagnosticDetailsToggle.setVisibility(View.VISIBLE);configure(task,latest,d,inspection,initDone,displayed[0],imagesReady[0],storeHealthy.get(),false,stopped,message,diagnostics,refresh,diagnosticDetails,diagnosticDetailsToggle,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);});},reload[0]));
+        diagnosticDetailsToggle.setOnClickListener(v->{boolean show=diagnosticDetails.getVisibility()!=View.VISIBLE;diagnosticDetails.setVisibility(show?View.VISIBLE:View.GONE);diagnosticDetailsToggle.setText(activity.getString(show?R.string.flow_hide_tech:R.string.flow_show_tech));});
         refresh.setOnClickListener(v->reload[0].run());
         initialize.setOnClickListener(v->{disable(initialize,storyboard,approve,cancel,retry);start(task,dialog,busy,"initialize",displayed[0],reload[0]);});
         storyboard.setOnClickListener(v->{
             JSONObject state;
-            try{state=latestInspection(task);}catch(Exception e){message.setText("无法读取本地审核状态，请刷新后重试。");return;}
+            try{state=latestInspection(task);}catch(Exception e){message.setText(activity.getString(R.string.flow_local_review_unavailable));return;}
             if(state!=null&&"approved".equals(state.optString("status"))){
-                new AlertDialog.Builder(activity).setTitle("生成视频并调用云配音？")
-                        .setMessage("本次会把已批准稿发送到你配置的配音服务，再在电脑渲染。配音可能产生供应商费用；结果未知时不会自动重试。")
-                        .setNegativeButton("暂不生成",null).setPositiveButton("同意配音并生成",(d,w)->{
+                new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_produce_title))
+                        .setMessage(activity.getString(R.string.flow_produce_body))
+                        .setNegativeButton(activity.getString(R.string.flow_not_now),null).setPositiveButton(activity.getString(R.string.flow_approve_produce),(d,w)->{
                             disable(initialize,storyboard,approve,cancel,retry);start(task,dialog,busy,"produce",displayed[0],reload[0]);
                         }).show();
             }else{
-                new AlertDialog.Builder(activity).setTitle("发送笔记材料并生成分镜？")
-                        .setMessage("任务包中的笔记完整 Markdown 正文以及本任务填写的受众和学习目标会发送到“"+task.connectionName+"”电脑，再调用你配置的模型供应商账户生成分镜；供应商可能收费。只确认本次分镜请求。")
-                        .setNegativeButton("返回",null).setPositiveButton("发送材料并生成分镜",(d,w)->{
+                new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_send_material_title))
+                        .setMessage(activity.getString(R.string.flow_send_material_body,task.connectionName))
+                        .setNegativeButton(activity.getString(R.string.flow_back),null).setPositiveButton(activity.getString(R.string.flow_send_and_generate),(d,w)->{
                             disable(initialize,storyboard,approve,cancel,retry);start(task,dialog,busy,"storyboard",displayed[0],reload[0]);
                         }).show();
             }
@@ -152,11 +152,11 @@ final class VideoTaskDialogs {
         cancel.setOnClickListener(v->{disable(initialize,storyboard,approve,cancel,retry);cancel(task,dialog,busy,reload[0]);});
         stop.setOnClickListener(v->{
             VideoOperationStore.Operation active;
-            try{active=store.latest(task);}catch(Exception e){message.setText("无法读取当前视频操作，请刷新后重试。");return;}
+            try{active=store.latest(task);}catch(Exception e){message.setText(activity.getString(R.string.flow_cannot_read_op));return;}
             if(active!=null&&"produce".equals(active.action)){
-                new AlertDialog.Builder(activity).setTitle("请求停止配音与渲染？")
-                    .setMessage("电脑端会核对并停止这次确切的配音与渲染操作。已发生的供应商费用和云端处理无法撤回；只有电脑确认停止后才会显示已停止。")
-                    .setNegativeButton("继续运行",null).setPositiveButton("请求停止",(d,w)->{
+                new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_stop_produce_title))
+                    .setMessage(activity.getString(R.string.flow_stop_produce_body))
+                    .setNegativeButton(activity.getString(R.string.flow_keep_running),null).setPositiveButton(activity.getString(R.string.flow_stop_request),(d,w)->{
                         disable(initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);
                         requestRunningStop(task,dialog,dialogActive,busy,reload[0]);
                     }).show();
@@ -175,12 +175,12 @@ final class VideoTaskDialogs {
                            TextView message,Button diagnostics,Button refresh,TextView diagnosticDetails,Button diagnosticDetailsToggle,
                            Button initialize,Button storyboard,Button approve,Button cancel,Button stop,Button stopStatus,Button retry,Button reconcile){
         AgentConnectionStore.Config c=connections.get(task.connectionId);boolean bound=task.matches(c);
-        if(!bound){message.setText("此视频任务仍绑定原连接；连接已撤销或身份已变化。网络暂时不可用时，恢复网络后可刷新重查。若原连接配置已删除或身份信息变化，请按应用的连接流程新建并验证连接；这不会恢复旧任务绑定。旧任务仅保留历史，如需继续请新建任务。始终不会自动批准、配音或渲染。");diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setVisibility(View.GONE);disable(diagnostics,refresh,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);return;}
-        if(!storeHealthy){message.setText("本地视频操作记录无法安全读取，已停用操作以防重复提交。请保留原记录并检查设备存储。");diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setVisibility(View.GONE);disable(diagnostics,refresh,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);return;}
-        if(verifiedStop)message.append("\n当前任务的分镜已由电脑端核实停止，原材料与历史仍保留。请返回笔记新建视频任务继续。");
+        if(!bound){message.setText(activity.getString(R.string.flow_bound_connection_changed));diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setVisibility(View.GONE);disable(diagnostics,refresh,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);return;}
+        if(!storeHealthy){message.setText(activity.getString(R.string.flow_local_video_store_unreadable));diagnosticDetails.setVisibility(View.GONE);diagnosticDetailsToggle.setVisibility(View.GONE);disable(diagnostics,refresh,initialize,storyboard,approve,cancel,stop,stopStatus,retry,reconcile);return;}
+        if(verifiedStop)message.append(activity.getString(R.string.flow_verified_stop_done));
         boolean cap=c.capabilities.contains("video_operations");
         boolean runningStoryboard=op!=null&&"storyboard".equals(op.action)&&"running".equals(op.status);
-        if(!cap&&!runningStoryboard)message.setText("这台电脑尚未确认支持视频操作。请重新验证连接后查看详情；旧任务不会自动绑定到变化后的连接。");
+        if(!cap&&!runningStoryboard)message.setText(activity.getString(R.string.flow_video_capability_unverified));
         boolean active=op!=null&&!VideoOperationStore.terminal(op.status);
         initialize.setVisibility(active||initializedSuccessfully?View.GONE:View.VISIBLE);
         storyboard.setVisibility(active||verifiedStop||visibleReview!=null?View.GONE:View.VISIBLE);
@@ -188,10 +188,10 @@ final class VideoTaskDialogs {
         boolean reviewReady=imagesReady&&visibleReview!=null;boolean canApprove=!verifiedStop&&reviewReady&&"awaiting_storyboard_review".equals(visibleReview.optString("status"));
         boolean approved=inspection!=null&&"approved".equals(inspection.optString("status"))&&"approval_pending".equals(inspection.optString("phase"));
         boolean canProduce=approved&&c.capabilities.contains("video_production")&&op!=null&&"approve".equals(op.action)&&"succeeded".equals(op.status);
-        storyboard.setText(canProduce?"生成视频（配音与渲染）…":"生成分镜");
+        storyboard.setText(activity.getString(canProduce?R.string.flow_video_production:R.string.flow_new_storyboard));
         storyboard.setVisibility(active||verifiedStop||(!initialized&&!canProduce)?View.GONE:View.VISIBLE);
         storyboard.setEnabled(cap&&!active&&!verifiedStop&&(initialized||canProduce));
-        approve.setText(canApprove?"批准第"+visibleReview.optInt("revision")+"版分镜":"批准当前分镜");
+        approve.setText(canApprove?activity.getString(R.string.flow_video_approve_revision,visibleReview.optInt("revision")):activity.getString(R.string.flow_approve_storyboard));
         approve.setVisibility(canApprove?View.VISIBLE:View.GONE);approve.setEnabled(cap&&imagesReady&&canApprove&&!active);
         boolean queued=op!=null&&"queued".equals(op.status)&&!op.operationId.isEmpty();cancel.setVisibility(queued?View.VISIBLE:View.GONE);cancel.setEnabled(cap);
         boolean stopSupported=op!=null&&("storyboard".equals(op.action)||"produce".equals(op.action))&&
@@ -200,13 +200,13 @@ final class VideoTaskDialogs {
         boolean repeatedStop=operationStatusFresh&&stopSupported&&op.cancelControl!=null&&
                 ("pending".equals(op.cancelControl.optString("status"))||"unconfirmed".equals(op.cancelControl.optString("status")));
         canStop=canStop||repeatedStop;
-        stop.setText(repeatedStop?"再次请求停止":op!=null&&"produce".equals(op.action)?"请求停止配音与渲染":"请求停止生成分镜");stop.setVisibility(canStop?View.VISIBLE:View.GONE);stop.setEnabled(canStop);
+        stop.setText(repeatedStop?activity.getString(R.string.flow_stop_again):op!=null&&"produce".equals(op.action)?activity.getString(R.string.flow_stop_production):activity.getString(R.string.flow_stop_storyboard));stop.setVisibility(canStop?View.VISIBLE:View.GONE);stop.setEnabled(canStop);
         boolean canViewStop=op!=null&&op.cancelControl!=null&&("running".equals(op.status)||"unknown".equals(op.status));
         stopStatus.setVisibility(canViewStop?View.VISIBLE:View.GONE);stopStatus.setEnabled(canViewStop);
-        if(op!=null&&op.cancelControl!=null){String control=op.cancelControl.optString("status");if("pending".equals(control))message.append("\n停止请求尚未确认是否送达；请查看电脑端停止状态，不会重跑原操作。");else if("requested".equals(control))message.append("\n电脑端已记录停止请求，尚未核实操作已结束；这不会撤回已发生的费用或写入。");else if("unconfirmed".equals(control))message.append("\n电脑端暂时不能确认分镜已停止；原操作不会重跑。费用与已写入内容不会撤回。");}
+        if(op!=null&&op.cancelControl!=null){String control=op.cancelControl.optString("status");if("pending".equals(control))message.append(activity.getString(R.string.flow_video_stop_pending));else if("requested".equals(control))message.append(activity.getString(R.string.flow_video_stop_requested));else if("unconfirmed".equals(control))message.append(activity.getString(R.string.flow_video_stop_unconfirmed));}
         boolean canRetry=op!=null&&"submission_uncertain".equals(op.status)&&op.operationId.isEmpty();retry.setVisibility(canRetry?View.VISIBLE:View.GONE);retry.setEnabled(cap);
         boolean canReconcile=op!=null&&"unknown".equals(op.status)&&!op.operationId.isEmpty();
-        reconcile.setText(op!=null&&op.cancelControl!=null?"核对电脑端停止或操作结果":"核对电脑端结果");reconcile.setVisibility(canReconcile?View.VISIBLE:View.GONE);reconcile.setEnabled(canReconcile);
+        reconcile.setText(op!=null&&op.cancelControl!=null?activity.getString(R.string.flow_reconcile_stop_result):activity.getString(R.string.flow_reconcile_result));reconcile.setVisibility(canReconcile?View.VISIBLE:View.GONE);reconcile.setEnabled(canReconcile);
         initialize.setEnabled(cap&&!active&&!initializedSuccessfully);diagnostics.setEnabled(true);refresh.setEnabled(true);diagnosticDetailsToggle.setEnabled(true);
     }
 
@@ -251,17 +251,17 @@ final class VideoTaskDialogs {
         worker.execute(()->{VideoOperationStore.Operation[] intent={null};try{
             AgentConnectionStore.Config config=current(task);store.bind(task);
             if(("storyboard".equals(action)||"approve".equals(action))&&store.hasVerifiedStoryboardStop(task))
-                throw new IllegalStateException("此任务的分镜已由电脑端核实停止；请返回笔记新建视频任务");
+                throw new IllegalStateException(activity.getString(R.string.flow_video_stop_result_done));
             JSONObject parameters=new JSONObject();
-            if(!config.capabilities.contains("video_operations"))throw new IllegalStateException("请先刷新连接能力");
+            if(!config.capabilities.contains("video_operations"))throw new IllegalStateException(activity.getString(R.string.flow_video_refresh_capability));
             if("storyboard".equals(action)){
                 JSONObject review=displayedReview;if(review==null)review=store.review(task);
-                if(review!=null){VideoTaskClient.validateReview(review,task);long revision=review.getLong("revision"),cursor=review.getLong("event_cursor");if(revision>=9007199254740991L||cursor>9007199254740989L)throw new IllegalStateException("分镜版本或事件游标已超出安全范围");parameters.put("revision",revision+1).put("event_cursor",cursor);}
-                else {JSONObject inspection=latestInspection(task);if(inspection==null||!"initialized".equals(inspection.optString("status"))||!"idle".equals(inspection.optString("phase")))throw new IllegalStateException("请先初始化并刷新任务状态");long cursor=inspection.getLong("event_cursor");if(cursor>9007199254740989L)throw new IllegalStateException("事件游标已超出安全范围");parameters.put("revision",1).put("event_cursor",cursor);}
+                if(review!=null){VideoTaskClient.validateReview(review,task);long revision=review.getLong("revision"),cursor=review.getLong("event_cursor");if(revision>=9007199254740991L||cursor>9007199254740989L)throw new IllegalStateException(activity.getString(R.string.flow_video_cursor_unsafe));parameters.put("revision",revision+1).put("event_cursor",cursor);}
+                else {JSONObject inspection=latestInspection(task);if(inspection==null||!"initialized".equals(inspection.optString("status"))||!"idle".equals(inspection.optString("phase")))throw new IllegalStateException(activity.getString(R.string.flow_video_initialize_refresh));long cursor=inspection.getLong("event_cursor");if(cursor>9007199254740989L)throw new IllegalStateException(activity.getString(R.string.flow_video_cursor_range));parameters.put("revision",1).put("event_cursor",cursor);}
             } else if("approve".equals(action)){
-                if(displayedReview==null)throw new IllegalStateException("请先刷新并完整查看当前分镜与图片");VideoTaskClient.validateReview(displayedReview,task);
-                JSONObject saved=store.review(task);if(saved==null||!sameReview(saved,displayedReview))throw new IllegalStateException("审阅版本已变化，请刷新后重新查看");
-                long cursor=displayedReview.getLong("event_cursor");if(cursor>=9007199254740991L)throw new IllegalStateException("事件游标已超出安全范围");
+                if(displayedReview==null)throw new IllegalStateException(activity.getString(R.string.flow_video_review_first));VideoTaskClient.validateReview(displayedReview,task);
+                JSONObject saved=store.review(task);if(saved==null||!sameReview(saved,displayedReview))throw new IllegalStateException(activity.getString(R.string.flow_video_review_changed));
+                long cursor=displayedReview.getLong("event_cursor");if(cursor>=9007199254740991L)throw new IllegalStateException(activity.getString(R.string.flow_video_cursor_range));
                 parameters.put("revision",displayedReview.getLong("revision")).put("event_cursor",cursor)
                         .put("review_sha256",displayedReview.getString("review_sha256")).put("lesson_ir_sha256",displayedReview.getString("lesson_ir_sha256"));
             } else if("produce".equals(action)){
@@ -271,7 +271,7 @@ final class VideoTaskDialogs {
                         review==null||!"approved".equals(review.optString("status"))||
                         approved.optLong("revision",-1)!=review.optLong("revision",-2)||approved.optLong("event_cursor",-1)!=review.optLong("event_cursor",-2)||
                         !approved.optString("review_sha256").equals(review.optString("review_sha256"))||!approved.optString("lesson_ir_sha256").equals(review.optString("lesson_ir_sha256")))
-                    throw new IllegalStateException("请刷新并核对已批准版本后再生成");
+                    throw new IllegalStateException(activity.getString(R.string.flow_video_approved_review));
                 parameters.put("revision",approved.getLong("revision")).put("event_cursor",approved.getLong("event_cursor"))
                         .put("review_sha256",approved.getString("review_sha256")).put("lesson_ir_sha256",approved.getString("lesson_ir_sha256"))
                         .put("allow_cloud_tts",true);
@@ -281,13 +281,13 @@ final class VideoTaskDialogs {
             intent[0]=operation;
             if("submission_uncertain".equals(operation.status)&&operation.operationId.isEmpty()){
                 // Explicit retry reuses the exact key and body.
-            }else if(!"prepared".equals(operation.status))throw new IllegalStateException("已有同版本视频操作，请刷新其状态");
+            }else if(!"prepared".equals(operation.status))throw new IllegalStateException(activity.getString(R.string.flow_video_duplicate_operation));
             JSONObject response=client.submit(task,current(task),operation);
             current(task);
             store.updateIfCurrent(task,operation,response.getString("operation_id"),response.getString("status"),
                     response.isNull("error")?"":response.getString("error"),response.isNull("result")?null:response.getJSONObject("result"),false);
         }catch(Exception e){try{if(intent[0]!=null&&intent[0].operationId.isEmpty())store.updateIfCurrent(task,intent[0],"","submission_uncertain","",null,true);}catch(Exception ignored){}
-            main.post(()->toast("操作未能确认；保留原幂等键，可刷新或同键重试。"+friendlyFailure(e,task)));}
+            main.post(()->toast(activity.getString(R.string.flow_video_uncertain_keep_key)+friendlyFailure(e,task)));}
             main.post(()->{busy.set(false);if(dialog.isShowing())reload.run();});
         });
     }
@@ -303,23 +303,23 @@ final class VideoTaskDialogs {
                 AgentConnectionStore.Config config=current(currentTask);
                 VideoOperationStore.Operation expected=store.latest(currentTask);
                 if(expected==null||!"unknown".equals(expected.status)||expected.operationId.isEmpty())
-                    throw new IllegalStateException("当前没有可核对的未知操作");
+                    throw new IllegalStateException(activity.getString(R.string.flow_video_no_unknown_op));
                 JSONObject response=client.reconcile(currentTask,config,expected);
                 current(currentTask);
                 VideoOperationStore.Operation applied=store.updateReconciledIfCurrent(currentTask,expected,
                         response.getString("operation_id"),response.getString("status"),
                         response.isNull("error")?"":response.getString("error"),
                         response.isNull("result")?null:response.getJSONObject("result"));
-                if(applied==null)notice="本地操作状态刚刚发生变化；已忽略较早的核对响应。请刷新查看当前结果。";
-                else if("unknown".equals(applied.status))notice="电脑端当前仍无法确认结果；原操作不会重跑。稍后可以再次核对。";
-                else if("cancelled".equals(applied.status))notice="电脑端已核实分镜停止。已发生的费用或写入不会撤回。";
+                if(applied==null)notice=activity.getString(R.string.flow_video_reconcile_stale);
+                else if("unknown".equals(applied.status))notice=activity.getString(R.string.flow_video_reconcile_unknown);
+                else if("cancelled".equals(applied.status))notice=activity.getString(R.string.flow_video_verified_stop_notice);
             }catch(Exception error){
                 if(!task.matches(connections.get(task.connectionId)))
-                    notice="连接身份已变化，已忽略核对响应。旧任务仍绑定原连接。";
+                    notice=activity.getString(R.string.flow_video_identity_reconcile);
                 else if(error instanceof VideoTaskClient.HttpError
                         &&(((VideoTaskClient.HttpError)error).status==409||((VideoTaskClient.HttpError)error).status==503))
-                    notice="电脑端当前无法核对结果。原操作不会重跑，请稍后再试。";
-                else notice="核对未完成，原操作仍保留为结果未知，不会重新提交。";
+                    notice=activity.getString(R.string.flow_video_reconcile_failed);
+                else notice=activity.getString(R.string.flow_video_reconcile_incomplete);
             }
             final String message=notice;
             main.post(()->{busy.set(false);if(!isDialogActive(dialog,dialogActive))return;if(!message.isEmpty())toast(message);reload.run();});
@@ -327,10 +327,10 @@ final class VideoTaskDialogs {
     }
 
     private void retrySubmission(AgentTaskStore.Task task,AlertDialog dialog,AtomicBoolean busy,Runnable reload){
-        if(!busy.compareAndSet(false,true))return;worker.execute(()->{try{AgentTaskStore.Task currentTask=tasks.get(task.clientTaskId);AgentConnectionStore.Config c=current(currentTask);VideoOperationStore.Operation op=store.active(currentTask);if(op==null||!"submission_uncertain".equals(op.status)||!op.operationId.isEmpty())throw new IllegalStateException("没有可安全同键重试的提交");JSONObject response=client.submit(currentTask,c,op);current(currentTask);store.updateIfCurrent(currentTask,op,response.getString("operation_id"),response.getString("status"),response.isNull("error")?"":response.getString("error"),response.isNull("result")?null:response.getJSONObject("result"),false);}catch(Exception e){main.post(()->toast("同键重试仍未确认："+friendlyFailure(e,task)));}main.post(()->{busy.set(false);if(dialog.isShowing())reload.run();});});
+        if(!busy.compareAndSet(false,true))return;worker.execute(()->{try{AgentTaskStore.Task currentTask=tasks.get(task.clientTaskId);AgentConnectionStore.Config c=current(currentTask);VideoOperationStore.Operation op=store.active(currentTask);if(op==null||!"submission_uncertain".equals(op.status)||!op.operationId.isEmpty())throw new IllegalStateException(activity.getString(R.string.flow_video_no_safe_retry));JSONObject response=client.submit(currentTask,c,op);current(currentTask);store.updateIfCurrent(currentTask,op,response.getString("operation_id"),response.getString("status"),response.isNull("error")?"":response.getString("error"),response.isNull("result")?null:response.getJSONObject("result"),false);}catch(Exception e){main.post(()->toast(activity.getString(R.string.flow_video_retry_still_unknown,friendlyFailure(e,task))));}main.post(()->{busy.set(false);if(dialog.isShowing())reload.run();});});
     }
     private void cancel(AgentTaskStore.Task task,AlertDialog dialog,AtomicBoolean busy,Runnable reload){
-        if(!busy.compareAndSet(false,true))return;worker.execute(()->{try{AgentTaskStore.Task t=tasks.get(task.clientTaskId);AgentConnectionStore.Config c=current(t);VideoOperationStore.Operation op=store.active(t);if(op==null||!"queued".equals(op.status))throw new IllegalStateException("只有排队中的操作可以取消");JSONObject response=client.cancel(t,c,op);current(t);store.updateIfCurrent(t,op,response.getString("operation_id"),response.getString("status"),response.isNull("error")?"":response.getString("error"),response.isNull("result")?null:response.getJSONObject("result"),false);}catch(Exception e){main.post(()->toast("取消未确认，请刷新电脑端状态："+friendlyFailure(e,task)));}main.post(()->{busy.set(false);if(dialog.isShowing())reload.run();});});
+        if(!busy.compareAndSet(false,true))return;worker.execute(()->{try{AgentTaskStore.Task t=tasks.get(task.clientTaskId);AgentConnectionStore.Config c=current(t);VideoOperationStore.Operation op=store.active(t);if(op==null||!"queued".equals(op.status))throw new IllegalStateException(activity.getString(R.string.flow_video_cancel_queued_only));JSONObject response=client.cancel(t,c,op);current(t);store.updateIfCurrent(t,op,response.getString("operation_id"),response.getString("status"),response.isNull("error")?"":response.getString("error"),response.isNull("result")?null:response.getJSONObject("result"),false);}catch(Exception e){main.post(()->toast(activity.getString(R.string.flow_video_cancel_unconfirmed,friendlyFailure(e,task))));}main.post(()->{busy.set(false);if(dialog.isShowing())reload.run();});});
     }
     private void requestRunningStop(AgentTaskStore.Task task,AlertDialog dialog,AtomicBoolean dialogActive,AtomicBoolean busy,Runnable reload){
         if(!busy.compareAndSet(false,true))return;
@@ -339,26 +339,26 @@ final class VideoTaskDialogs {
             AgentTaskStore.Task currentTask=tasks.get(task.clientTaskId);AgentConnectionStore.Config config=current(currentTask);
             VideoOperationStore.Operation expected=store.latest(currentTask);
             if(expected==null||!("storyboard".equals(expected.action)||"produce".equals(expected.action))||
-                    !("running".equals(expected.status)||"produce".equals(expected.action)&&"unknown".equals(expected.status)))throw new IllegalStateException("当前没有可停止的运行中操作");
+                    !("running".equals(expected.status)||"produce".equals(expected.action)&&"unknown".equals(expected.status)))throw new IllegalStateException(activity.getString(R.string.flow_video_no_running_op));
             boolean createdIntent=expected.cancelControl==null;
             VideoOperationStore.Operation intent=store.prepareRunningCancel(currentTask,expected);
-            if(intent==null)throw new IllegalStateException("操作状态已变化，请刷新后再试");
+            if(intent==null)throw new IllegalStateException(activity.getString(R.string.flow_video_operation_changed));
             if(!isDialogActive(dialog,dialogActive)){if(createdIntent)store.clearUnsentRunningCancel(currentTask,intent);busy.set(false);return;}
             JSONObject response=client.cancelRunning(currentTask,config,intent);
             current(currentTask);
             VideoOperationStore.Operation applied=store.applyCancelControl(currentTask,intent,response);
-            if(applied==null)notice="任务状态刚刚变化；停止响应未应用，请刷新查看。";
-            else if("verified_cancelled".equals(response.getString("status")))notice="电脑端已核实操作停止。已发生的供应商费用或写入不会撤回。";
-            else if("too_late".equals(response.getString("status")))notice="电脑端操作已先结束；停止没有改变原结果。";
-            else if("unconfirmed".equals(response.getString("status")))notice="电脑端暂时不能确认分镜已停止；原操作不会重跑。费用与已写入内容不会撤回。";
-            else notice="电脑端已记录停止请求，但尚未核实操作已结束；费用与已写入内容不会撤回。";
+            if(applied==null)notice=activity.getString(R.string.flow_video_task_changed_stop);
+            else if("verified_cancelled".equals(response.getString("status")))notice=activity.getString(R.string.flow_video_stop_success);
+            else if("too_late".equals(response.getString("status")))notice=activity.getString(R.string.flow_video_stop_too_late);
+            else if("unconfirmed".equals(response.getString("status")))notice=activity.getString(R.string.flow_video_stop_unconfirmed_full);
+            else notice=activity.getString(R.string.flow_video_stop_requested_short);
             if(applied!=null&&"too_late".equals(response.getString("status"))){
                 JSONObject operation=client.operation(currentTask,current(currentTask),applied);current(currentTask);
                 store.updateIfCurrent(currentTask,applied,operation.getString("operation_id"),operation.getString("status"),
                         operation.isNull("error")?"":operation.getString("error"),operation.isNull("result")?null:operation.getJSONObject("result"),false);
             }
         }catch(Exception error){notice=error instanceof VideoTaskClient.HttpError&&((VideoTaskClient.HttpError)error).status==404?
-                "此电脑助手尚未提供运行中停止功能；原分镜仍在本机保留。":"停止请求结果尚未确认；请刷新查看电脑端状态。未知操作不会重跑。";}
+                activity.getString(R.string.flow_video_stop_unsupported_running):activity.getString(R.string.flow_video_stop_pending_no_run);}
             final String message=notice;main.post(()->{busy.set(false);if(!isDialogActive(dialog,dialogActive))return;if(!message.isEmpty())toast(message);reload.run();});
         });}catch(java.util.concurrent.RejectedExecutionException closed){busy.set(false);}
     }
@@ -368,15 +368,15 @@ final class VideoTaskDialogs {
             if(!isDialogActive(dialog,dialogActive)){busy.set(false);return;}
             AgentTaskStore.Task currentTask=tasks.get(task.clientTaskId);AgentConnectionStore.Config config=current(currentTask);
             VideoOperationStore.Operation expected=store.latest(currentTask);
-            if(expected==null||expected.cancelControl==null||expected.operationId.isEmpty())throw new IllegalStateException("没有已保存的停止请求");
+            if(expected==null||expected.cancelControl==null||expected.operationId.isEmpty())throw new IllegalStateException(activity.getString(R.string.flow_video_no_saved_stop));
             JSONObject response=client.cancelRequest(currentTask,config,expected);current(currentTask);
             VideoOperationStore.Operation applied=store.applyCancelControl(currentTask,expected,response);
-            if(applied==null)notice="任务状态已变化；旧的停止状态未应用。";
+            if(applied==null)notice=activity.getString(R.string.flow_video_old_stop_ignored);
             else switch(response.getString("status")){
-                case "verified_cancelled":notice="电脑端已核实操作停止；已发生的供应商费用或写入不会撤回。";break;
-                case "too_late":notice="电脑端操作已先结束；请刷新查看实际结果。";break;
-                case "unconfirmed":notice="电脑端暂时不能确认分镜已停止。原操作不会重跑；可核对电脑端操作结果。";break;
-                default:notice="电脑端已记录停止请求，但尚未核实操作已结束。费用与已写入内容不会撤回。";
+                case "verified_cancelled":notice=activity.getString(R.string.flow_video_stop_verified_full);break;
+                case "too_late":notice=activity.getString(R.string.flow_video_stop_too_late_full);break;
+                case "unconfirmed":notice=activity.getString(R.string.flow_video_stop_unconfirmed_result);break;
+                default:notice=activity.getString(R.string.flow_video_stop_recorded_full);
             }
             if(applied!=null&&"too_late".equals(response.getString("status"))&&"running".equals(applied.status)){
                 JSONObject operation=client.operation(currentTask,current(currentTask),applied);current(currentTask);
@@ -385,45 +385,45 @@ final class VideoTaskDialogs {
             }
         }catch(Exception error){
             if(error instanceof VideoTaskClient.HttpError&&((VideoTaskClient.HttpError)error).status==404)
-                notice="这台电脑助手没有运行中停止接口；本机仍保留请求与分镜，更新电脑助手后可继续查看。";
+                notice=activity.getString(R.string.flow_video_no_stop_support);
             else if(error instanceof VideoTaskClient.HttpError&&((VideoTaskClient.HttpError)error).status==409)
-                notice="电脑端还没有找到停止请求。刷新确认分镜仍在执行后，可明确选择“再次请求停止”。";
-            else notice="暂时无法读取停止状态。原请求仍保留，恢复连接后可再次查看。";
+                notice=activity.getString(R.string.flow_video_stop_request_not_found);
+            else notice=activity.getString(R.string.flow_video_stop_status_unavailable);
         }
             final String message=notice;main.post(()->{busy.set(false);if(!isDialogActive(dialog,dialogActive))return;if(!message.isEmpty())toast(message);reload.run();});
         });}catch(java.util.concurrent.RejectedExecutionException closed){busy.set(false);}
     }
     private void run(AgentTaskStore.Task task,AlertDialog dialog,AtomicBoolean busy,Throwing action,Runnable reload){if(!busy.compareAndSet(false,true))return;worker.execute(()->{Exception failure=null;try{current(task);action.run();}catch(Exception e){failure=e;}final Exception error=failure;main.post(()->{busy.set(false);if(error!=null){toast(friendlyFailure(error,task));if(dialog.isShowing())reload.run();}});});}
-    private static void renderReviewText(LinearLayout scenes,JSONObject review){try{
-        TextView heading=new TextView(scenes.getContext());heading.setText("第 "+review.getInt("revision")+" 版 · "+review.getJSONObject("episode").getString("title")+"\n缓存文字仅供查看；完整图片未缓存，不能据此批准。批准也不会启动配音或渲染。\n");scenes.addView(heading);
-        JSONArray items=review.getJSONArray("scenes");for(int i=0;i<items.length();i++){JSONObject scene=items.getJSONObject(i);TextView text=new TextView(scenes.getContext());text.setText("场景 "+(i+1)+" · "+scene.getString("visual_kind")+"\n"+scene.getString("learning_objective")+"\n解说："+scene.getString("narration")+"\n屏幕文字："+join(scene.getJSONArray("screen_text"))+"\n");scenes.addView(text);}
+    private void renderReviewText(LinearLayout scenes,JSONObject review){try{
+        TextView heading=new TextView(scenes.getContext());heading.setText(activity.getString(R.string.flow_video_review_revision,review.getInt("revision"),review.getJSONObject("episode").getString("title"))+"\n"+activity.getString(R.string.flow_cached_text_only)+"\n");scenes.addView(heading);
+        JSONArray items=review.getJSONArray("scenes");for(int i=0;i<items.length();i++){JSONObject scene=items.getJSONObject(i);TextView text=new TextView(scenes.getContext());text.setText(activity.getString(R.string.flow_video_scene_line,i+1,scene.getString("visual_kind"))+"\n"+scene.getString("learning_objective")+"\n"+activity.getString(R.string.flow_video_narration_line,scene.getString("narration"))+"\n"+activity.getString(R.string.flow_video_screen_text_line,join(scene.getJSONArray("screen_text")))+"\n");scenes.addView(text);}
     }catch(Exception ignored){scenes.removeAllViews();}}
     private String friendlyFailure(Exception e,AgentTaskStore.Task task){
-        if(!task.matches(connections.get(task.connectionId)))return "此视频任务连接已撤销或身份已变化，旧任务不会自动重新绑定；请保留本地历史并新建任务。";
-        if(e instanceof java.io.IOException)return "暂时无法连接电脑。请检查网络后刷新重查；未确认的操作不会自动重放。";
-        if(e instanceof VideoTaskClient.HttpError)return "电脑端暂未返回可验证状态。刷新只读取状态；结果未知时不会自动重放。";
-        return "视频操作未能完成或尚未确认。请刷新查看；不要据此重复发起未知操作。";
+        if(!task.matches(connections.get(task.connectionId)))return activity.getString(R.string.flow_video_identity_revoked_full);
+        if(e instanceof java.io.IOException)return activity.getString(R.string.flow_video_offline_full);
+        if(e instanceof VideoTaskClient.HttpError)return activity.getString(R.string.flow_video_state_unverified_full);
+        return activity.getString(R.string.flow_video_action_unconfirmed_full);
     }
     private JSONObject latestInspection(AgentTaskStore.Task task)throws Exception{JSONObject result=null;for(VideoOperationStore.Operation o:store.operations(task))if("succeeded".equals(o.status)&&o.result!=null)result=o.result;return result;}
-    private static void validateReviewMatchesInspection(JSONObject review,JSONObject inspection)throws Exception{
+    private void validateReviewMatchesInspection(JSONObject review,JSONObject inspection)throws Exception{
         if(inspection==null||!review.getString("task_id").equals(inspection.getString("task_id"))||
                 !review.getString("status").equals(inspection.getString("status"))||review.getLong("event_cursor")!=inspection.getLong("event_cursor"))
-            throw new IllegalStateException("审阅与当前视频操作inspection不一致");
+            throw new IllegalStateException(activity.getString(R.string.flow_video_inconsistent_inspection));
         if(inspection.has("revision")&&(review.getLong("revision")!=inspection.getLong("revision")||
                 !review.getString("review_sha256").equals(inspection.getString("review_sha256"))||
                 !review.getString("lesson_ir_sha256").equals(inspection.getString("lesson_ir_sha256"))))
-            throw new IllegalStateException("审阅版本摘要与当前状态不一致");
+            throw new IllegalStateException(activity.getString(R.string.flow_video_inconsistent_revision));
     }
     private static boolean sameReview(JSONObject a,JSONObject b){return a.toString().equals(b.toString());}
-    private AgentConnectionStore.Config current(AgentTaskStore.Task task){AgentConnectionStore.Config c=connections.get(task.connectionId);if(!task.matches(c))throw new IllegalStateException("任务连接已撤销或身份已变化");return c;}
-    private String summary(AgentTaskStore.Task task,VideoOperationStore.Operation op,JSONObject diagnostics,JSONObject inspection,String error){StringBuilder s=new StringBuilder("视频任务 · ").append(task.title).append('\n');if(op!=null)s.append("当前操作：").append(actionLabel(op.action)).append(" · ").append(statusLabel(op.status)).append('\n');if(op!=null&&!op.error.isEmpty()&&!(("cancelled".equals(op.status))&&op.cancelControl!=null&&"verified_cancelled".equals(op.cancelControl.optString("status"))))s.append(errorLabel(op.error)).append('\n');if(op!=null&&"unknown".equals(op.status))s.append("执行结果尚未确认。可点“核对电脑端结果”读取电脑端保存记录；不会重跑。\n");if(op!=null&&op.cancelControl!=null&&"pending".equals(op.cancelControl.optString("status"))){if("succeeded".equals(op.status)||"failed".equals(op.status))s.append("电脑端操作已先结束；停止请求没有改变原结果。\n");else s.append("停止请求尚未确认是否送达；原操作不会重跑。\n");}if(op!=null&&op.cancelControl!=null&&"requested".equals(op.cancelControl.optString("status")))s.append("电脑端已记录停止请求，尚未核实操作已结束；不会重跑，也不会撤回已发生的费用或写入。\n");if(op!=null&&op.cancelControl!=null&&"unconfirmed".equals(op.cancelControl.optString("status")))s.append("电脑端暂时不能确认分镜已停止；原操作不会重跑，也不会撤回已发生的费用或写入。\n");if(op!=null&&"cancelled".equals(op.status)&&op.cancelControl!=null&&"verified_cancelled".equals(op.cancelControl.optString("status")))s.append("电脑端已核实分镜停止。已发生的费用或写入不会撤回。\n");if(op!=null&&"submission_uncertain".equals(op.status))s.append("尚未收到电脑端操作编号，可使用原提交安全重试；不会生成新幂等键。\n");if(op!=null&&"failed".equals(op.status))s.append("电脑端已确认本次失败。修复后可由你显式重新操作。\n");if(inspection!=null)s.append("电脑端进度：").append(workerStatusLabel(inspection.optString("status"))).append(" · ").append(workerPhaseLabel(inspection.optString("phase"))).append('\n');if(diagnostics!=null)s.append("完整运行环境尚未核验；配音/渲染以依赖详情为准，批准不启动生产。\n");if(!error.isEmpty())s.append(error).append('\n');return s.toString();}
-    private static String actionLabel(String action){switch(action){case"initialize":return"初始化";case"storyboard":return"分镜生成";case"approve":return"批准分镜";default:return"视频操作";}}
-    private static String statusLabel(String status){switch(status){case"prepared":return"准备提交";case"submission_uncertain":return"提交结果待确认";case"queued":return"排队中";case"running":return"执行中";case"succeeded":return"已完成";case"failed":return"已确认失败";case"unknown":return"结果未知";case"cancelled":return"已取消";default:return"状态待确认";}}
-    private static String errorLabel(String code){switch(code){case"worker_failed":return"电脑端报告操作失败。";case"worker_unknown":return"电脑端暂时无法确认执行结果。";case"worker_interrupted":return"电脑端在操作过程中退出。";case"worker_timeout":return"电脑端操作超时，结果需核对。";case"worker_result_invalid":return"电脑端返回的结果未通过校验。";case"authorization_revoked":return"此设备的电脑端授权已撤销。";case"instance_retired":return"原电脑助手实例已停用。";case"run_unavailable":return"原任务不可用。";case"source_changed":return"原材料已变化，操作未继续。";case"binding_changed":return"任务或连接身份已变化。";case"cancelled":return"电脑端已取消排队操作。";default:return"电脑端返回了需要核对的状态。";}}
-    private static String workerStatusLabel(String status){switch(status){case"initialized":return"已初始化";case"awaiting_storyboard_review":return"等待审阅";case"approved":return"分镜已批准";case"ready_to_render":return"等待后续制作";case"running":return"执行中";case"interrupted":return"已中断";case"failed":return"失败";case"cancelling":return"正在取消";case"cancelled":return"已取消";case"completed":return"已完成";default:return"状态待确认";}}
-    private static String workerPhaseLabel(String phase){switch(phase){case"idle":return"等待操作";case"storyboard":return"生成分镜";case"awaiting_approval":return"等待批准";case"approval_pending":return"批准已记录";case"approval_consumed":return"批准已使用";case"tts_starting":return"准备配音";case"audio_ready":return"音频已准备";case"render_starting":return"准备渲染";case"completed":return"已完成";case"cancelling":return"正在取消";case"cancelled":return"已取消";default:return"处理中";}}
-    private static String diagnosticName(String key){switch(key){case"worker_modules":return"任务模块";case"storyboard_browser":return"分镜浏览器";case"render_browser":return"渲染浏览器";case"ffmpeg":return"视频编码器";case"ffprobe":return"媒体检查器";case"tts":return"语音服务";default:return"电脑依赖";}}
-    private static String diagnosticStatus(String status){switch(status){case"available":return"可用";case"missing":return"缺失";case"not_configured":return"未配置";default:return"尚未检查";}}
+    private AgentConnectionStore.Config current(AgentTaskStore.Task task){AgentConnectionStore.Config c=connections.get(task.connectionId);if(!task.matches(c))throw new IllegalStateException(activity.getString(R.string.flow_video_task_identity_changed));return c;}
+    private String summary(AgentTaskStore.Task task,VideoOperationStore.Operation op,JSONObject diagnostics,JSONObject inspection,String error){StringBuilder s=new StringBuilder(activity.getString(R.string.flow_video_task_title,task.title)).append('\n');if(op!=null)s.append(activity.getString(R.string.flow_video_current_action)).append(actionLabel(op.action)).append(" · ").append(statusLabel(op.status)).append('\n');if(op!=null&&!op.error.isEmpty()&&!(("cancelled".equals(op.status))&&op.cancelControl!=null&&"verified_cancelled".equals(op.cancelControl.optString("status"))))s.append(errorLabel(op.error)).append('\n');if(op!=null&&"unknown".equals(op.status))s.append(activity.getString(R.string.flow_video_unknown_result_notice)+"\n");if(op!=null&&op.cancelControl!=null&&"pending".equals(op.cancelControl.optString("status"))){if("succeeded".equals(op.status)||"failed".equals(op.status))s.append(activity.getString(R.string.flow_video_stop_no_effect_notice)+"\n");else s.append(activity.getString(R.string.flow_video_stop_delivery_unknown)+"\n");}if(op!=null&&op.cancelControl!=null&&"requested".equals(op.cancelControl.optString("status")))s.append(activity.getString(R.string.flow_video_stop_pending_summary)+"\n");if(op!=null&&op.cancelControl!=null&&"unconfirmed".equals(op.cancelControl.optString("status")))s.append(activity.getString(R.string.flow_video_stop_unconfirmed_summary)+"\n");if(op!=null&&"cancelled".equals(op.status)&&op.cancelControl!=null&&"verified_cancelled".equals(op.cancelControl.optString("status")))s.append(activity.getString(R.string.flow_video_verified_stop_summary)+"\n");if(op!=null&&"submission_uncertain".equals(op.status))s.append(activity.getString(R.string.flow_video_retry_same_key_notice)+"\n");if(op!=null&&"failed".equals(op.status))s.append(activity.getString(R.string.flow_video_confirmed_failure_notice)+"\n");if(inspection!=null)s.append(activity.getString(R.string.flow_video_progress_label)).append(workerStatusLabel(inspection.optString("status"))).append(" · ").append(workerPhaseLabel(inspection.optString("phase"))).append('\n');if(diagnostics!=null)s.append(activity.getString(R.string.flow_video_runtime_notice)+"\n");if(!error.isEmpty())s.append(error).append('\n');return s.toString();}
+    private String actionLabel(String action){switch(action){case"initialize":return activity.getString(R.string.flow_video_action_initialize);case"storyboard":return activity.getString(R.string.flow_video_action_storyboard);case"approve":return activity.getString(R.string.flow_video_action_approve);default:return activity.getString(R.string.flow_video_action_other);}}
+    private String statusLabel(String status){switch(status){case"prepared":return activity.getString(R.string.flow_video_status_prepared);case"submission_uncertain":return activity.getString(R.string.flow_video_status_uncertain);case"queued":return activity.getString(R.string.flow_video_status_queued);case"running":return activity.getString(R.string.flow_video_status_running);case"succeeded":return activity.getString(R.string.flow_video_status_succeeded);case"failed":return activity.getString(R.string.flow_video_status_failed);case"unknown":return activity.getString(R.string.flow_video_status_unknown);case"cancelled":return activity.getString(R.string.flow_video_status_cancelled);default:return activity.getString(R.string.flow_video_status_default);}}
+    private String errorLabel(String code){switch(code){case"worker_failed":return activity.getString(R.string.flow_video_error_worker_failed);case"worker_unknown":return activity.getString(R.string.flow_video_error_worker_unknown);case"worker_interrupted":return activity.getString(R.string.flow_video_error_worker_interrupted);case"worker_timeout":return activity.getString(R.string.flow_video_error_worker_timeout);case"worker_result_invalid":return activity.getString(R.string.flow_video_error_invalid_result);case"authorization_revoked":return activity.getString(R.string.flow_video_error_authorization_revoked);case"instance_retired":return activity.getString(R.string.flow_video_error_instance_retired);case"run_unavailable":return activity.getString(R.string.flow_video_error_run_unavailable);case"source_changed":return activity.getString(R.string.flow_video_error_source_changed);case"binding_changed":return activity.getString(R.string.flow_video_error_binding_changed);case"cancelled":return activity.getString(R.string.flow_video_error_cancelled);default:return activity.getString(R.string.flow_video_error_other);}}
+    private String workerStatusLabel(String status){switch(status){case"initialized":return activity.getString(R.string.flow_video_worker_initialized);case"awaiting_storyboard_review":return activity.getString(R.string.flow_video_worker_awaiting_review);case"approved":return activity.getString(R.string.flow_video_worker_approved);case"ready_to_render":return activity.getString(R.string.flow_video_worker_ready);case"running":return activity.getString(R.string.flow_video_status_running);case"interrupted":return activity.getString(R.string.flow_video_worker_interrupted);case"failed":return activity.getString(R.string.flow_video_worker_failed);case"cancelling":return activity.getString(R.string.flow_video_worker_cancelling);case"cancelled":return activity.getString(R.string.flow_video_status_cancelled);case"completed":return activity.getString(R.string.flow_video_worker_completed);default:return activity.getString(R.string.flow_video_status_default);}}
+    private String workerPhaseLabel(String phase){switch(phase){case"idle":return activity.getString(R.string.flow_video_phase_idle);case"storyboard":return activity.getString(R.string.flow_video_phase_storyboard);case"awaiting_approval":return activity.getString(R.string.flow_video_phase_approval);case"approval_pending":return activity.getString(R.string.flow_video_phase_approval_pending);case"approval_consumed":return activity.getString(R.string.flow_video_phase_approval_used);case"tts_starting":return activity.getString(R.string.flow_video_phase_tts);case"audio_ready":return activity.getString(R.string.flow_video_phase_audio);case"render_starting":return activity.getString(R.string.flow_video_phase_render);case"completed":return activity.getString(R.string.flow_video_status_succeeded);case"cancelling":return activity.getString(R.string.flow_video_worker_cancelling);case"cancelled":return activity.getString(R.string.flow_video_status_cancelled);default:return activity.getString(R.string.flow_video_phase_processing);}}
+    private String diagnosticName(String key){switch(key){case"worker_modules":return activity.getString(R.string.flow_video_diagnostic_worker);case"storyboard_browser":return activity.getString(R.string.flow_video_diagnostic_storyboard_browser);case"render_browser":return activity.getString(R.string.flow_video_diagnostic_render_browser);case"ffmpeg":return activity.getString(R.string.flow_video_diagnostic_encoder);case"ffprobe":return activity.getString(R.string.flow_video_diagnostic_media);case"tts":return activity.getString(R.string.flow_video_diagnostic_voice);default:return activity.getString(R.string.flow_video_diagnostic_dependencies);}}
+    private String diagnosticStatus(String status){switch(status){case"available":return activity.getString(R.string.flow_available);case"missing":return activity.getString(R.string.flow_video_diag_missing);case"not_configured":return activity.getString(R.string.flow_video_diag_not_configured);default:return activity.getString(R.string.flow_video_diag_not_checked);}}
     private static String join(JSONArray array){StringBuilder s=new StringBuilder();for(int i=0;i<array.length();i++){if(i>0)s.append(" / ");s.append(array.optString(i));}return s.toString();}
     private Button button(String text){Button b=new Button(activity);b.setText(text);return b;}
     private static void disable(Button...buttons){for(Button b:buttons)b.setEnabled(false);}

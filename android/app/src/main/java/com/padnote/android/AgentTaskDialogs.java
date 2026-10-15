@@ -96,46 +96,45 @@ final class AgentTaskDialogs {
     void showForNote(String noteId) {
         List<AgentTaskStore.Task> values=new ArrayList<>();
         for(AgentTaskStore.Task task:tasks.list())if(noteId.equals(task.noteId))values.add(task);
-        if(values.isEmpty()){new AlertDialog.Builder(activity).setTitle("本笔记任务历史")
-                .setMessage("还没有关联的电脑任务。生成视频任务后，任务和产物会显示在这里。")
-                .setNegativeButton("关闭",null).show();return;}
+        if(values.isEmpty()){new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_history_title))
+                .setMessage(activity.getString(R.string.flow_no_video_tasks))
+                .setNegativeButton(activity.getString(R.string.flow_close),null).show();return;}
         List<String> labels=new ArrayList<>();for(AgentTaskStore.Task t:values){
-            labels.add(historyRow(t)+"\n来源修订 "+t.noteRevision);}
-        ChoiceRows.builder(activity).setTitle("本笔记任务历史")
+            labels.add(historyRow(t)+"\n"+activity.getString(R.string.flow_source_revision_value,t.noteRevision));}
+        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_history_title))
                 .setAdapter(ChoiceRows.adapter(activity, labels.toArray(new String[0])),
                         (d,w)->showDetail(values.get(w).clientTaskId))
-                .setNegativeButton("关闭",null).show();
+                .setNegativeButton(activity.getString(R.string.flow_close),null).show();
     }
 
     void showList() {
         List<AgentTaskStore.Task> values=tasks.list();
         int corruptCount=tasks.corruptCount();
         if(values.isEmpty()){
-            String message="还没有电脑任务。你可以选择现有连接，或添加/配对连接。任务只会在当前能力检查通过并由你确认后发送。";
-            if(corruptCount>0)message+="\n\n另有 "+corruptCount+
-                    " 条任务记录损坏，原文件未覆盖。";
-            new AlertDialog.Builder(activity).setTitle("电脑任务").setMessage(message)
-                    .setNegativeButton("关闭",null)
-                    .setPositiveButton("选择或添加连接",(dialog,which)->
+            String message=activity.getString(R.string.flow_task_list_empty);
+            if(corruptCount>0)message+="\n"+activity.getString(R.string.flow_corrupt_records_tail,corruptCount);
+            new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_computer_tasks)).setMessage(message)
+                    .setNegativeButton(activity.getString(R.string.flow_close),null)
+                    .setPositiveButton(activity.getString(R.string.flow_choose_add_connection),(dialog,which)->
                             new AgentConnectionDialogs(activity,connections,worker,()->{},null,
                                     artifactSaveLauncher).show())
                     .show();
             return;
         }
         List<String> labels=new ArrayList<>();
-        if(corruptCount>0)labels.add("⚠ 有 "+corruptCount+" 条任务记录损坏，未覆盖原文件");
+        if(corruptCount>0)labels.add(activity.getString(R.string.flow_corrupt_records_warning,corruptCount));
         int warningRows=labels.size();
         for(AgentTaskStore.Task task:values)labels.add(historyRow(task)+
                 (task.error.isEmpty()?"":"\n"+task.error));
-        new AlertDialog.Builder(activity).setTitle("电脑任务")
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_computer_tasks))
                 .setAdapter(multilineRows(labels),(d,w)->{if(w>=warningRows)
                     showDetail(values.get(w-warningRows).clientTaskId);})
-                .setNegativeButton("关闭",null).show();
+                .setNegativeButton(activity.getString(R.string.flow_close),null).show();
     }
 
-    private static String historyRow(AgentTaskStore.Task task) {
-        return task.title+"\n"+status(task.status)+"\n目标："+
-                AgentTaskDestinationLabel.forTask(task);
+    private String historyRow(AgentTaskStore.Task task) {
+        return task.title+"\n"+status(task.status)+"\n"+activity.getString(R.string.flow_task_target_line,
+                AgentTaskDestinationLabel.forTask(activity,task));
     }
 
     private ArrayAdapter<String> multilineRows(List<String> labels) {
@@ -151,14 +150,14 @@ final class AgentTaskDialogs {
     }
 
     void showNewText(AgentConnectionStore.Config profile) {
-        EditText input=new EditText(activity);input.setHint("说明希望电脑 Agent 完成什么");
+        EditText input=new EditText(activity);input.setHint(activity.getString(R.string.flow_text_task_hint));
         input.setMinLines(6);input.setGravity(android.view.Gravity.TOP);input.setInputType(
                 InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        new AlertDialog.Builder(activity).setTitle("发送文本任务到 "+destinationLabel(profile)).setView(input)
-                .setNegativeButton("取消",null).setPositiveButton("发送",(d,w)->{
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_send_text_to,destinationLabel(activity, profile))).setView(input)
+                .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send),(d,w)->{
                     String text=input.getText().toString().trim();
-                    if(text.isEmpty()){toast("任务说明不能为空");return;}
-                    createAndSubmit(profile,"PadNote 文本任务",text,"",1,null);
+                    if(text.isEmpty()){toast(activity.getString(R.string.flow_empty_task));return;}
+                    createAndSubmit(profile,activity.getString(R.string.flow_plain_text_task),text,"",1,null);
                 }).show();
     }
 
@@ -168,19 +167,19 @@ final class AgentTaskDialogs {
         for(AgentConnectionStore.Config c:taskConnectionSource.list())if(c.verified()&&
                 c.transport==AgentConnectionStore.Transport.BRIDGE&&c.capabilities.contains("task_bundle")&&
                 (c.kind!=AgentConnectionStore.Kind.BUILTIN_VIDEO||c.capabilities.contains("video_task_submission")))profiles.add(c);
-        if(profiles.isEmpty()){toast("没有已验证且支持任务包的 Bridge Agent");return;}
-        String[] labels=new String[profiles.size()];for(int i=0;i<labels.length;i++)labels[i]=destinationLabel(profiles.get(i));
-        ChoiceRows.builder(activity).setTitle("发送到哪一个 Agent？").setAdapter(ChoiceRows.adapter(activity, labels),(d,w)->{
+        if(profiles.isEmpty()){toast(activity.getString(R.string.flow_no_bridge));return;}
+        String[] labels=new String[profiles.size()];for(int i=0;i<labels.length;i++)labels[i]=destinationLabel(activity, profiles.get(i));
+        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_choose_agent)).setAdapter(ChoiceRows.adapter(activity, labels),(d,w)->{
                     AgentConnectionStore.Config selected=profiles.get(w);
-                    new AlertDialog.Builder(activity).setTitle("确认发送任务包")
-                            .setMessage("目标："+destinationLabel(selected)+"\n材料："+title+
-                                    "\n确认后会将所选材料发送给此电脑 Agent。")
-                            .setNegativeButton("取消",null).setPositiveButton("发送到此 Agent",(confirm,which)->
+                    new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_confirm_package))
+                            .setMessage(activity.getString(R.string.flow_target)+": "+destinationLabel(activity, selected)+"\n"+activity.getString(R.string.flow_material)+": "+title+
+                                    activity.getString(R.string.flow_confirm_package_body))
+                            .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send_to_agent),(confirm,which)->
                                     worker.execute(()->{try{byte[] bundle=factory.make();main.post(()->
                                             createAndSubmit(selected,title,input,noteId,noteRevision,bundle));}
-                                        catch(Exception e){main.post(()->toast("生成任务包失败："+message(e)));}})).show();
+                                        catch(Exception e){main.post(()->toast(activity.getString(R.string.flow_package_failed,message(e))));}})).show();
                 })
-                .setNegativeButton("取消",null).show();
+                .setNegativeButton(activity.getString(R.string.flow_cancel),null).show();
     }
 
     void sendNoteWork(AgentConnectionStore.Config selected,NoteWorkBundleIO.Frozen frozen,
@@ -191,19 +190,24 @@ final class AgentTaskDialogs {
                 !Boolean.TRUE.equals(selected.featureMap.get("task_bundle"))||
                 !Boolean.TRUE.equals(selected.featureMap.get("note_context_bundle"))||
                 !Boolean.TRUE.equals(selected.featureMap.get("run_submission"))) {
-            toast("目标连接不再支持纸面上下文任务包；本次未发送");return;
+            toast(activity.getString(R.string.flow_task_package_unsupported));return;
         }
         worker.execute(()->{
             final AgentTaskStore.Task task;
             try{task=tasks.create(selected,title,input,noteId,frozen.noteRevision,
                     frozen.zip.clone(),"note_context_bundle");}
-            catch(Exception error){main.post(()->toast("无法创建任务（未发送）："+message(error)));return;}
+            catch(Exception error){main.post(()->toast(activity.getString(R.string.flow_task_create_failed,message(error))));return;}
             main.post(()->submit(task));
         });
     }
 
     static String destinationLabel(AgentConnectionStore.Config profile) {
         return AgentTaskDestinationLabel.forProfile(profile);
+    }
+
+    static String destinationLabel(android.content.Context context,
+                                  AgentConnectionStore.Config profile) {
+        return AgentTaskDestinationLabel.forProfile(context, profile);
     }
 
     private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
@@ -215,37 +219,37 @@ final class AgentTaskDialogs {
                                  String noteId,long noteRevision,byte[] bundle,String requiredCapability) {
         final AgentTaskStore.Task task;
         try{task=tasks.create(profile,title,input,noteId,noteRevision,bundle,requiredCapability);}
-        catch(Exception e){toast("无法创建任务："+message(e));return;}
+        catch(Exception e){toast(activity.getString(R.string.flow_task_create_failed_short,message(e)));return;}
         submit(task);
     }
 
     private void submit(AgentTaskStore.Task task) {
-        toast("任务已保存，正在提交…");
+        toast(activity.getString(R.string.flow_task_submitting));
         worker.execute(()->{
             final AgentConnectionStore.Config connection;
             try{connection=taskConnectionSource.get(task.connectionId);}
             catch(Exception error){
                 boolean persisted=false;
                 try{persisted=tasks.markFailed(task.clientTaskId,task.updatedAt,
-                        "读取目标连接失败，本次尚未发送。请重新打开连接设置后再试。");}
+                        activity.getString(R.string.flow_task_read_target_failed));}
                 catch(Exception ignored){}
                 final boolean failureRecorded=persisted;
                 main.post(()->{
                     if(!failureRecorded){
-                        toast("本次未发送；任务状态保存失败，请勿重复提交，先重新打开任务查看。");
+                        toast(activity.getString(R.string.flow_task_state_save_failed));
                         return;
                     }
                     showDetail(task.clientTaskId);
                 });return;
             }
             if(!task.matches(connection)){try{tasks.markLocal(task.clientTaskId,
-                    AgentTaskStore.Status.INTERRUPTED,"连接身份已变化，请新建任务");}catch(Exception ignored){}
+                    AgentTaskStore.Status.INTERRUPTED,activity.getString(R.string.flow_identity_changed_new));}catch(Exception ignored){}
                 main.post(()->showDetail(task.clientTaskId));return;}
             try{
                 AgentTaskClient.Submission result=taskClientFactory.create().submit(task,connection);
                 AgentConnectionStore.Config latest=taskConnectionSource.get(task.connectionId);
                 if(!task.matches(latest))throw new IllegalStateException(
-                        "连接在提交期间发生变化，响应未写入任务");
+                        activity.getString(R.string.flow_task_changed_during_submit));
                 boolean applied=tasks.applySubmission(task.clientTaskId,task.connectionId,task.connectionRevision,
                         result.remoteTaskId,result.status,result.conversationId,result.parentTaskId);
                 if(applied&&result.status==AgentTaskStore.Status.COMPLETED){
@@ -256,7 +260,7 @@ final class AgentTaskDialogs {
                 try{if(e instanceof AgentTaskClient.HttpStatusException)
                     tasks.markFailed(task.clientTaskId,task.updatedAt,message(e));
                 else tasks.markError(task.clientTaskId,task.updatedAt,
-                        "提交结果未知，可用同一任务重试："+message(e));}catch(Exception ignored){}
+                        activity.getString(R.string.flow_submit_unknown,message(e)));}catch(Exception ignored){}
             }
             main.post(()->showDetail(task.clientTaskId));
         });
@@ -264,14 +268,14 @@ final class AgentTaskDialogs {
 
     private void askFollowup(String parentId,AlertDialog parentDialog) {
         AgentTaskStore.Task parent=tasks.get(parentId);if(parent==null)return;
-        EditText input=new EditText(activity);input.setHint("补充说明，沿用本轮已确认的电脑会话");
+        EditText input=new EditText(activity);input.setHint(activity.getString(R.string.flow_followup_hint));
         input.setMinLines(4);input.setGravity(android.view.Gravity.TOP);input.setInputType(
                 InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        new AlertDialog.Builder(activity).setTitle("继续沟通").setView(input)
-                .setNegativeButton("取消",null).setPositiveButton("发送",(d,w)->{
-                    String text=input.getText().toString().trim();if(text.isEmpty()){toast("追问不能为空");return;}
+        new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_continue_chat)).setView(input)
+                .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send),(d,w)->{
+                    String text=input.getText().toString().trim();if(text.isEmpty()){toast(activity.getString(R.string.flow_followup_empty));return;}
                     AgentConnectionStore.Config connection=taskConnectionSource.get(parent.connectionId);
-                    if(!parent.matches(connection)){toast("连接身份已变化，不能继续沟通");return;}
+                    if(!parent.matches(connection)){toast(activity.getString(R.string.flow_identity_changed_followup));return;}
                     try {
                         AgentTaskStore.Task child=tasks.createFollowup(parent,connection,text);
                         parentDialog.dismiss();
@@ -279,28 +283,28 @@ final class AgentTaskDialogs {
                         else showDetail(child.clientTaskId);
                     } catch(Exception e){
                         List<AgentTaskStore.Task> existing=tasks.children(parentId);
-                        if(!existing.isEmpty()&&message(e).contains("新文字未发送")){
-                            toast("旧追问已保存，新文字未发送，已打开后续轮次");
+                        if(!existing.isEmpty()&&message(e).contains(activity.getString(R.string.flow_new_text_not_sent))){
+                            toast(activity.getString(R.string.flow_followup_saved_not_sent));
                             parentDialog.dismiss();showDetail(existing.get(0).clientTaskId);
-                        }else toast("无法继续沟通："+message(e));
+                        }else toast(activity.getString(R.string.flow_continue_failed,message(e)));
                     }
                 }).show();
     }
 
     void showDetail(String clientId) {
-        AgentTaskStore.Task initial=tasks.get(clientId);if(initial==null){toast("任务记录不存在");return;}
+        AgentTaskStore.Task initial=tasks.get(clientId);if(initial==null){toast(activity.getString(R.string.flow_record_missing));return;}
         final boolean videoBundleValid=VideoTaskClient.isVideoBundle(initial);
         LinearLayout body=new LinearLayout(activity);body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(20),dp(8),dp(20),dp(8));
         TextView content=new TextView(activity);body.addView(content,new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout actions=new LinearLayout(activity);actions.setOrientation(LinearLayout.VERTICAL);
-        Button openSource=button("打开来源手写笔记");
+        Button openSource=button(activity.getString(R.string.flow_open_source_note));
         if(initial.noteId.isEmpty()||sourceNoteOpener==null)openSource.setVisibility(View.GONE);
         addAction(actions,openSource);
-        Button refresh=button("刷新"),retry=button("重试提交"),stop=button("停止"),once=button("允许一次"),deny=button("拒绝");
+        Button refresh=button(activity.getString(R.string.flow_refresh)),retry=button(activity.getString(R.string.flow_retry_submit)),stop=button(activity.getString(R.string.flow_stop)),once=button(activity.getString(R.string.flow_closed_approval)),deny=button(activity.getString(R.string.flow_deny));
         addAction(actions,refresh);addAction(actions,retry);addAction(actions,stop);addAction(actions,once);addAction(actions,deny);body.addView(actions);
-        Button continueTask=button("继续沟通"),previous=button("上一轮"),video=button("视频分镜");
+        Button continueTask=button(activity.getString(R.string.flow_continue_chat)),previous=button(activity.getString(R.string.flow_previous_round)),video=button(activity.getString(R.string.flow_video_storyboard));
         addAction(actions,continueTask);addAction(actions,previous);
         addAction(actions,video);
         LinearLayout history=new LinearLayout(activity);history.setOrientation(LinearLayout.VERTICAL);
@@ -308,7 +312,7 @@ final class AgentTaskDialogs {
         LinearLayout artifacts=new LinearLayout(activity);artifacts.setOrientation(LinearLayout.VERTICAL);
         body.addView(artifacts);
         AlertDialog dialog=new AlertDialog.Builder(activity).setTitle(initial.title).setView(scroll(body))
-                .setNegativeButton("关闭",null).create();
+                .setNegativeButton(activity.getString(R.string.flow_close),null).create();
         AtomicBoolean polling=new AtomicBoolean();
         long[] retryDelay={2500L};
         Runnable[] update=new Runnable[1];
@@ -326,7 +330,7 @@ final class AgentTaskDialogs {
             history.removeAllViews();
             for(AgentTaskStore.Task child:tasks.children(clientId)){
                 String input=inputText(child);String summary=input.length()>48?input.substring(0,48)+"…":input;
-                Button open=button("打开后续轮 · "+status(child.status)+" · "+summary);
+                Button open=button(activity.getString(R.string.flow_open_followup_round,status(child.status))+" · "+summary);
                 open.setOnClickListener(v->{dialog.dismiss();showDetail(child.clientTaskId);});history.addView(open);
             }
             stop.setVisibility(!task.status.terminal()&&!task.remoteTaskId.isEmpty()?View.VISIBLE:View.GONE);
@@ -334,7 +338,7 @@ final class AgentTaskDialogs {
             once.setVisibility(approval?View.VISIBLE:View.GONE);deny.setVisibility(approval?View.VISIBLE:View.GONE);
             artifacts.removeAllViews();
             if(artifactSaveLauncher!=null)for(AgentTaskStore.Artifact artifact:task.artifacts){
-                Button save=button("保存产物："+artifact.name+"（"+size(artifact.sizeBytes)+"）");
+                Button save=button(activity.getString(R.string.flow_save_artifact,artifact.name,size(artifact.sizeBytes)));
                 save.setOnClickListener(v->artifactSaveLauncher.choose(task,artifact));artifacts.addView(save);
             }
             if(activity.getWindow().getDecorView().getWindowVisibility()!=View.VISIBLE){
@@ -346,7 +350,7 @@ final class AgentTaskDialogs {
                     main.postDelayed(update[0],retryDelay[0]);});
         };
         refresh.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null)worker.execute(()->{if(refresh(t))retryDelay[0]=2500L;main.post(update[0]);});});
-        openSource.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&sourceNoteOpener.open(t.noteId))dialog.dismiss();else toast("找不到原笔记；任务与视频快照仍保留");});
+        openSource.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&sourceNoteOpener.open(t.noteId))dialog.dismiss();else toast(activity.getString(R.string.flow_no_source_note));});
         retry.setOnClickListener(v->{dialog.dismiss();AgentTaskStore.Task t=tasks.get(clientId);if(t!=null)submit(t);});
         continueTask.setOnClickListener(v->askFollowup(clientId,dialog));
         previous.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&!t.parentClientTaskId.isEmpty()){dialog.dismiss();showDetail(t.parentClientTaskId);}});
@@ -357,42 +361,42 @@ final class AgentTaskDialogs {
 
     private boolean refresh(AgentTaskStore.Task task) {
         try{AgentConnectionStore.Config c=taskConnectionSource.get(task.connectionId);if(!task.matches(c)){
-            tasks.markLocal(task.clientTaskId,AgentTaskStore.Status.INTERRUPTED,"连接身份已变化，已停止自动请求");return true;}
+            tasks.markLocal(task.clientTaskId,AgentTaskStore.Status.INTERRUPTED,activity.getString(R.string.flow_connection_revoked));return true;}
             AgentTaskClient.RemoteStatus remote=taskClientFactory.create().status(task,c);
             AgentConnectionStore.Config latest=taskConnectionSource.get(task.connectionId);
             if(!task.matches(latest))throw new IllegalStateException(
-                    "连接在刷新期间发生变化，响应未写入任务");
+                    activity.getString(R.string.flow_task_refresh_changed));
             tasks.applyStatus(task.clientTaskId,task.connectionId,task.connectionRevision,
                     task.remoteTaskId,remote);
             return true;
         }catch(Exception e){try{tasks.markError(task.clientTaskId,task.updatedAt,
-                "刷新失败："+message(e));}catch(Exception ignored){}return false;}
+                activity.getString(R.string.flow_task_refresh_error,message(e)));}catch(Exception ignored){}return false;}
     }
 
     private void control(String id,String action,AlertDialog dialog){
         AgentTaskStore.Task task=tasks.get(id);if(task==null)return;worker.execute(()->{try{
-            AgentConnectionStore.Config c=taskConnectionSource.get(task.connectionId);if(!task.matches(c))throw new IllegalStateException("连接身份已变化");
+            AgentConnectionStore.Config c=taskConnectionSource.get(task.connectionId);if(!task.matches(c))throw new IllegalStateException(activity.getString(R.string.flow_connection_identity_changed));
             AgentTaskClient client=taskClientFactory.create();if("stop".equals(action))client.stop(task,c);
             else client.approve(task,c,action);
             AgentConnectionStore.Config latest=taskConnectionSource.get(task.connectionId);
-            if(!task.matches(latest))throw new IllegalStateException("连接在操作期间发生变化，响应已忽略");
+            if(!task.matches(latest))throw new IllegalStateException(activity.getString(R.string.flow_task_operation_changed));
             if("stop".equals(action))tasks.markLocal(id,AgentTaskStore.Status.STOPPING,"");
         }catch(Exception e){try{tasks.markError(id,task.updatedAt,
-                "操作失败："+message(e));}catch(Exception ignored){}}
+                activity.getString(R.string.flow_task_operation_error,message(e)));}catch(Exception ignored){}}
             main.post(()->{dialog.dismiss();showDetail(id);});});
     }
 
-    private String detail(AgentTaskStore.Task t){StringBuilder s=new StringBuilder();s.append("状态：").append(status(t.status)).append("\n目标：").append(AgentTaskDestinationLabel.forTask(t)).append("\n连接修订：").append(t.connectionRevision);if(!t.remoteTaskId.isEmpty())s.append("\n任务ID：").append(t.remoteTaskId);if(!t.noteId.isEmpty()){s.append("\n来源笔记：").append(t.noteId).append(" · 修订 ").append(t.noteRevision);String bundleSha=bundleSha(t);if(!bundleSha.isEmpty())s.append(" · 输入包 SHA-256 ").append(bundleSha);}if(!t.parentClientTaskId.isEmpty())s.append("\n追问自：第 ").append(round(t)-1).append(" 轮");if(t.transport==AgentConnectionStore.Transport.BRIDGE)s.append("\n继续沟通：").append(t.followupAvailable?"电脑已确认可继续":(t.followupReason.isEmpty()?"暂不可用":t.followupReason));s.append("\n\n本轮说明：\n").append(inputText(t));if(!t.approvalTitle.isEmpty())s.append("\n\n待审批：").append(t.approvalTitle).append("\n").append(t.approvalDescription);if(!t.output.isEmpty())s.append("\n\n结果：\n").append(t.output);if(!t.error.isEmpty())s.append("\n\n提示：").append(t.error);if(!t.artifacts.isEmpty())s.append("\n\n产物：").append(t.artifacts.size()).append(" 个");return s.toString();}
+    private String detail(AgentTaskStore.Task t){StringBuilder s=new StringBuilder();s.append(activity.getString(R.string.flow_status_label)).append(": ").append(status(t.status)).append("\n").append(activity.getString(R.string.flow_target)).append(": ").append(AgentTaskDestinationLabel.forTask(activity,t)).append("\n").append(activity.getString(R.string.flow_connection_revision_label)).append(": ").append(t.connectionRevision);if(!t.remoteTaskId.isEmpty())s.append("\n").append(activity.getString(R.string.flow_task_id_label)).append(": ").append(t.remoteTaskId);if(!t.noteId.isEmpty()){s.append("\n").append(activity.getString(R.string.flow_source_note_label)).append(": ").append(t.noteId).append(" · ").append(activity.getString(R.string.flow_revision_label)).append(" ").append(t.noteRevision);String bundleSha=bundleSha(t);if(!bundleSha.isEmpty())s.append(" · ").append(activity.getString(R.string.flow_input_bundle_label)).append(" ").append(bundleSha);}if(!t.parentClientTaskId.isEmpty())s.append("\n").append(activity.getString(R.string.flow_followup_from_label,round(t)-1));if(t.transport==AgentConnectionStore.Transport.BRIDGE)s.append("\n").append(activity.getString(R.string.flow_continue_status_label)).append(": ").append(t.followupAvailable?activity.getString(R.string.flow_computer_can_continue):(t.followupReason.isEmpty()?activity.getString(R.string.flow_not_available):t.followupReason));s.append("\n\n").append(activity.getString(R.string.flow_round_note)).append("\n").append(inputText(t));if(!t.approvalTitle.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_pending_approval_label)).append(" ").append(t.approvalTitle).append("\n").append(t.approvalDescription);if(!t.output.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_result_label)).append("\n").append(t.output);if(!t.error.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_tip_label)).append(" ").append(t.error);if(!t.artifacts.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_artifacts_count,t.artifacts.size()));return s.toString();}
     private String bundleSha(AgentTaskStore.Task task){try{return new org.json.JSONObject(task.submissionJson).optString("bundle_sha256","");}catch(Exception ignored){return "";}}
     private String inputText(AgentTaskStore.Task t){try{return new org.json.JSONObject(t.submissionJson).optString("input","");}catch(Exception ignored){return "";}}
     private int round(AgentTaskStore.Task t){int result=1;while(!t.parentClientTaskId.isEmpty()){result++;AgentTaskStore.Task p=tasks.get(t.parentClientTaskId);if(p==null)break;t=p;}return result;}
-    private static String size(long bytes){if(bytes>=1024L*1024L)return String.format(java.util.Locale.CHINA,"%.1f MiB",bytes/(1024f*1024f));if(bytes>=1024L)return String.format(java.util.Locale.CHINA,"%.1f KiB",bytes/1024f);return bytes+" B";}
-    private static String status(AgentTaskStore.Status s){switch(s){case SUBMITTING:return"提交中/结果待确认";case RUNNING:return"运行中";case WAITING_FOR_APPROVAL:return"等待批准";case STOPPING:return"正在停止";case COMPLETED:return"已完成";case FAILED:return"失败";case CANCELLED:return"已取消";default:return"已中断";}}
+    private static String size(long bytes){if(bytes>=1024L*1024L)return String.format(java.util.Locale.getDefault(),"%.1f MiB",bytes/(1024f*1024f));if(bytes>=1024L)return String.format(java.util.Locale.getDefault(),"%.1f KiB",bytes/1024f);return bytes+" B";}
+    private String status(AgentTaskStore.Status s){switch(s){case SUBMITTING:return activity.getString(R.string.flow_status_submitting);case RUNNING:return activity.getString(R.string.flow_status_running);case WAITING_FOR_APPROVAL:return activity.getString(R.string.flow_status_waiting);case STOPPING:return activity.getString(R.string.flow_status_stopping);case COMPLETED:return activity.getString(R.string.flow_status_completed);case FAILED:return activity.getString(R.string.flow_status_failed);case CANCELLED:return activity.getString(R.string.flow_status_cancelled);default:return activity.getString(R.string.flow_status_interrupted);}}
     private Button button(String text){Button b=new Button(activity);b.setText(text);return b;}
     private void addAction(LinearLayout parent,Button button){parent.addView(button,new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));}
     private ScrollView scroll(View v){ScrollView s=new ScrollView(activity);s.addView(v);return s;}
     private int dp(int v){return Math.round(v*activity.getResources().getDisplayMetrics().density);}
     private void toast(String m){Toast.makeText(activity,m,Toast.LENGTH_LONG).show();}
-    private static String message(Throwable e){return e.getMessage()==null?"未知错误":e.getMessage();}
+    private String message(Throwable e){return e.getMessage()==null?activity.getString(R.string.flow_unknown_error):e.getMessage();}
 }

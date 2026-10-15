@@ -137,7 +137,7 @@ final class NoteTextBoxView extends FrameLayout {
     private boolean errorMarkerGesture;
     private boolean moved;
     private boolean renderFailed;
-    private String renderFailureReason = "文字对象显示失败";
+    private String renderFailureReason = getContext().getString(R.string.widget_render_failed);
     private float downRawX;
     private float downRawY;
     private float startScreenX;
@@ -176,7 +176,7 @@ final class NoteTextBoxView extends FrameLayout {
         renderErrorPanel.setBackground(roundedBackground(Color.rgb(255, 245, 241),
                 Color.rgb(205, 98, 83), 7));
         renderErrorPanel.setVisibility(GONE);
-        renderErrorPanel.setContentDescription("显示失败，点按查看原因和修复");
+        renderErrorPanel.setContentDescription(getContext().getString(R.string.widget_render_failure_hint));
         renderErrorPanel.setClickable(true);
         renderErrorStatus = new TextView(context);
         renderErrorStatus.setTextSize(9);
@@ -205,7 +205,7 @@ final class NoteTextBoxView extends FrameLayout {
         HorizontalScrollView formatScroll = new HorizontalScrollView(context);
         formatScroll.setHorizontalScrollBarEnabled(false);
         formatScroll.setFillViewport(false);
-        formatScroll.setContentDescription("文字格式工具栏，可横向滚动");
+        formatScroll.setContentDescription(getContext().getString(R.string.widget_format_toolbar));
         LinearLayout formatControls = new LinearLayout(context);
         formatControls.setOrientation(LinearLayout.HORIZONTAL);
         formatControls.setGravity(Gravity.CENTER_VERTICAL);
@@ -214,14 +214,14 @@ final class NoteTextBoxView extends FrameLayout {
         editorToolbar.addView(formatScroll,
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        latexButton = actionButton("LaTeX", "使用 LaTeX 编译");
-        markdownButton = actionButton("MD", "使用 Markdown 编译");
+        latexButton = actionButton("LaTeX", getContext().getString(R.string.widget_use_latex));
+        markdownButton = actionButton("MD", getContext().getString(R.string.widget_use_markdown));
         formatControls.addView(latexButton, new LinearLayout.LayoutParams(dp(64), dp(35)));
         LinearLayout.LayoutParams mdParams = new LinearLayout.LayoutParams(dp(48), dp(35));
         mdParams.setMargins(dp(5), 0, 0, 0);
         formatControls.addView(markdownButton, mdParams);
-        fontDecreaseButton = actionButton("A−", "减小文字字号");
-        fontIncreaseButton = actionButton("A+", "增大文字字号");
+        fontDecreaseButton = actionButton("A−", getContext().getString(R.string.widget_decrease_text_size));
+        fontIncreaseButton = actionButton("A+", getContext().getString(R.string.widget_increase_text_size));
         LinearLayout.LayoutParams decreaseParams = new LinearLayout.LayoutParams(dp(40), dp(35));
         decreaseParams.setMargins(dp(5), 0, 0, 0);
         formatControls.addView(fontDecreaseButton, decreaseParams);
@@ -229,8 +229,8 @@ final class NoteTextBoxView extends FrameLayout {
         increaseParams.setMargins(dp(4), 0, 0, 0);
         formatControls.addView(fontIncreaseButton, increaseParams);
         // Line height is less common, so keep it in the same horizontal strip.
-        lineHeightDecreaseButton = actionButton("⇱", "减小行距");
-        lineHeightIncreaseButton = actionButton("⇲", "增大行距");
+        lineHeightDecreaseButton = actionButton("⇱", getContext().getString(R.string.widget_decrease_line_spacing));
+        lineHeightIncreaseButton = actionButton("⇲", getContext().getString(R.string.widget_increase_line_spacing));
         LinearLayout.LayoutParams leadingDownParams =
                 new LinearLayout.LayoutParams(dp(38), dp(35));
         leadingDownParams.setMargins(dp(8), 0, 0, 0);
@@ -245,9 +245,9 @@ final class NoteTextBoxView extends FrameLayout {
         editActions.setGravity(Gravity.CENTER_VERTICAL);
         editorToolbar.addView(editActions, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        TextView deleteButton = actionButton("删", "删除文字对象");
-        TextView cancelButton = actionButton("取消", "取消本次编辑");
-        TextView doneButton = actionButton("完成", "完成文字输入");
+        TextView deleteButton = actionButton(getContext().getString(R.string.widget_delete_short), getContext().getString(R.string.widget_delete_text_object));
+        TextView cancelButton = actionButton(getContext().getString(R.string.widget_cancel_short), getContext().getString(R.string.widget_cancel_edit));
+        TextView doneButton = actionButton(getContext().getString(R.string.widget_done_short), getContext().getString(R.string.widget_finish_text_input));
         editActions.addView(deleteButton, new LinearLayout.LayoutParams(dp(42), dp(35)));
         LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(dp(52), dp(35));
         cancelParams.setMargins(dp(4), 0, 0, 0);
@@ -283,7 +283,7 @@ final class NoteTextBoxView extends FrameLayout {
         selectedDeleteButton.setTextSize(23);
         selectedDeleteButton.setTextColor(Color.WHITE);
         selectedDeleteButton.setGravity(Gravity.CENTER);
-        selectedDeleteButton.setContentDescription("删除这个文字框");
+        selectedDeleteButton.setContentDescription(getContext().getString(R.string.widget_delete_this_box));
         selectedDeleteButton.setClickable(true);
         selectedDeleteButton.setFocusable(true);
         GradientDrawable deleteBackground = new GradientDrawable();
@@ -314,12 +314,12 @@ final class NoteTextBoxView extends FrameLayout {
         selectedStyleBar.setElevation(dp(3));
         selectedStyleBar.setVisibility(GONE);
 
-        selectedFontDecreaseButton = actionButton("A−", "减小文字字号");
+        selectedFontDecreaseButton = actionButton("A−", getContext().getString(R.string.widget_decrease_text_size));
         selectedFontSizeLabel = new TextView(context);
         selectedFontSizeLabel.setTextSize(12);
         selectedFontSizeLabel.setTextColor(INK);
         selectedFontSizeLabel.setGravity(Gravity.CENTER);
-        selectedFontIncreaseButton = actionButton("A+", "增大文字字号");
+        selectedFontIncreaseButton = actionButton("A+", getContext().getString(R.string.widget_increase_text_size));
         selectedStyleBar.addView(selectedFontDecreaseButton,
                 new LinearLayout.LayoutParams(dp(40), dp(33)));
         LinearLayout.LayoutParams labelParams =
@@ -389,7 +389,7 @@ final class NoteTextBoxView extends FrameLayout {
             renderFailed = true;
             renderErrorStatus.setText("!");
             renderErrorStatus.setContentDescription(null);
-            renderFailureReason = "显示失败：" + state.message;
+            renderFailureReason = getContext().getString(R.string.widget_render_failed_prefix) + " " + state.message;
             renderErrorPanel.setVisibility(VISIBLE);
             if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
                 post(() -> replaceDeadCompiledView(view));
@@ -420,7 +420,7 @@ final class NoteTextBoxView extends FrameLayout {
     }
 
     private void showRenderRecoveryDialog() {
-        String[] actions = new String[]{"查看源码", "复制源码", "编辑", "重新显示"};
+        String[] actions = new String[]{getContext().getString(R.string.widget_view_source), getContext().getString(R.string.widget_copy_source), getContext().getString(R.string.widget_edit), getContext().getString(R.string.widget_retry_render)};
         ChoiceRows.builder(getContext()).setTitle(renderFailureReason)
                 .setAdapter(ChoiceRows.adapter(getContext(), actions), (dialog, which) -> {
                     if (which == 0) showFailedSource();
@@ -430,7 +430,7 @@ final class NoteTextBoxView extends FrameLayout {
                         renderErrorStatus.setText("…");
                         retryCompiledRender();
                     }
-                }).setNegativeButton("关闭", null).show();
+                }).setNegativeButton(getContext().getString(R.string.widget_close), null).show();
     }
 
     void bind(NoteTextBox replacement, float scale, float panX, float panY,
@@ -525,7 +525,7 @@ final class NoteTextBoxView extends FrameLayout {
         }
         String source = sourceEditor.getText().toString();
         if (source.trim().isEmpty()) {
-            Toast.makeText(getContext(), "空文字对象已取消", Toast.LENGTH_SHORT).show();
+            Toast.makeText(getContext(), getContext().getString(R.string.widget_cancel_empty_text), Toast.LENGTH_SHORT).show();
             cancelInlineEditing();
             return;
         }
@@ -560,17 +560,17 @@ final class NoteTextBoxView extends FrameLayout {
         ScrollView scroll = new ScrollView(getContext());
         scroll.addView(source, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        new AlertDialog.Builder(getContext()).setTitle("显示失败对象的源码")
-                .setView(scroll).setNegativeButton("关闭", null)
-                .setPositiveButton("复制", (dialog, which) -> copyFailedSource()).show();
+        new AlertDialog.Builder(getContext()).setTitle(getContext().getString(R.string.widget_failed_source_title))
+                .setView(scroll).setNegativeButton(getContext().getString(R.string.widget_close), null)
+                .setPositiveButton(getContext().getString(R.string.widget_copy), (dialog, which) -> copyFailedSource()).show();
     }
 
     private void copyFailedSource() {
         ClipboardManager clipboard = (ClipboardManager) getContext()
                 .getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) {
-            clipboard.setPrimaryClip(ClipData.newPlainText("PadNote 文字源码", failedSource()));
-            Toast.makeText(getContext(), "源码已复制", Toast.LENGTH_SHORT).show();
+            clipboard.setPrimaryClip(ClipData.newPlainText(getContext().getString(R.string.widget_source_clip_label), failedSource()));
+            Toast.makeText(getContext(), getContext().getString(R.string.widget_source_copied), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -834,8 +834,8 @@ final class NoteTextBoxView extends FrameLayout {
         }
         int size = Math.round(model.fontSizeSp);
         selectedFontSizeLabel.setText(String.valueOf(size));
-        selectedFontDecreaseButton.setContentDescription("减小文字字号，当前 " + size);
-        selectedFontIncreaseButton.setContentDescription("增大文字字号，当前 " + size);
+        selectedFontDecreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_decrease_text_size), size));
+        selectedFontIncreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_increase_text_size), size));
         selectedFontDecreaseButton.setEnabled(model.fontSizeSp > 10.01f);
         selectedFontIncreaseButton.setEnabled(model.fontSizeSp < 31.99f);
         selectedFontDecreaseButton.setAlpha(model.fontSizeSp > 10.01f ? 1f : 0.4f);
@@ -852,8 +852,8 @@ final class NoteTextBoxView extends FrameLayout {
         }
         draftLineHeight = replacement;
         String label = String.format(java.util.Locale.US, "%.1f", replacement);
-        lineHeightDecreaseButton.setContentDescription("减小行距，当前 " + label);
-        lineHeightIncreaseButton.setContentDescription("增大行距，当前 " + label);
+        lineHeightDecreaseButton.setContentDescription(getContext().getString(R.string.widget_current_line_spacing, getContext().getString(R.string.widget_decrease_line_spacing), label));
+        lineHeightIncreaseButton.setContentDescription(getContext().getString(R.string.widget_current_line_spacing, getContext().getString(R.string.widget_increase_line_spacing), label));
         lineHeightDecreaseButton.setEnabled(replacement > TextFlow.MIN_LINE_HEIGHT + 0.001f);
         lineHeightIncreaseButton.setEnabled(replacement < TextFlow.MAX_LINE_HEIGHT - 0.001f);
         scheduleDraftRender();
@@ -868,10 +868,8 @@ final class NoteTextBoxView extends FrameLayout {
             return;
         }
         draftFontSizeSp = replacement;
-        fontDecreaseButton.setContentDescription("减小文字字号，当前 " +
-                Math.round(draftFontSizeSp));
-        fontIncreaseButton.setContentDescription("增大文字字号，当前 " +
-                Math.round(draftFontSizeSp));
+        fontDecreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_decrease_text_size), Math.round(draftFontSizeSp)));
+        fontIncreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_increase_text_size), Math.round(draftFontSizeSp)));
         scheduleDraftRender();
     }
 
@@ -919,17 +917,15 @@ final class NoteTextBoxView extends FrameLayout {
     private void updateFormatButtons() {
         styleFormatButton(latexButton, draftFormat == NoteTextBox.Format.LATEX);
         styleFormatButton(markdownButton, draftFormat == NoteTextBox.Format.MARKDOWN);
-        fontDecreaseButton.setContentDescription("减小文字字号，当前 " +
-                Math.round(draftFontSizeSp));
-        fontIncreaseButton.setContentDescription("增大文字字号，当前 " +
-                Math.round(draftFontSizeSp));
+        fontDecreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_decrease_text_size), Math.round(draftFontSizeSp)));
+        fontIncreaseButton.setContentDescription(getContext().getString(R.string.widget_current_text_size, getContext().getString(R.string.widget_increase_text_size), Math.round(draftFontSizeSp)));
         updateSourceHint();
     }
 
     private void updateSourceHint() {
         sourceEditor.setHint(draftFormat == NoteTextBox.Format.LATEX
-                ? "直接输入 LaTeX，例如：\\frac{a}{b}"
-                : "直接输入 Markdown，可包含 $...$ 公式");
+                ? getContext().getString(R.string.widget_hint_latex)
+                : getContext().getString(R.string.widget_hint_markdown));
     }
 
     private void styleFormatButton(TextView button, boolean active) {

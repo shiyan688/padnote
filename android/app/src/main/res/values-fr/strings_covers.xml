@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cover_target_version_error">Impossible de vérifier la version de la note cible</string>
+    <string name="cover_builtin_section">Couvertures intégrées</string>
+    <string name="cover_user_presets_section">Mes préréglages</string>
+    <string name="cover_import_button">Importer une couverture depuis Photos…</string>
+    <string name="cover_import_hint">À l’étape suivante, vous pourrez ajouter les images importées aux préréglages pour les réutiliser dans de futures notes.</string>
+    <string name="cover_new_note_title">Choisir une couverture pour la nouvelle note</string>
+    <string name="cover_change_title">Changer la couverture</string>
+    <string name="cover_accessibility_label">Couverture : %1$s</string>
+    <string name="cover_selected">Couverture sélectionnée : %1$s</string>
+    <string name="cover_save_failed">Impossible d’enregistrer la couverture : %1$s</string>
+    <string name="cover_remove_failed">La couverture n’a pas été supprimée : %1$s</string>
+    <string name="cover_preset_confirm_title">Ajouter cette image aux préréglages de couverture ?</string>
+    <string name="cover_preset_confirm_message">Une fois ajoutée, vous pourrez l’utiliser dans de nouvelles notes et dans d’autres notes.</string>
+    <string name="cover_preset_decline">Pas maintenant</string>
+    <string name="cover_preset_add_button">Ajouter aux préréglages</string>
+    <string name="cover_preset_added">Couverture ajoutée aux préréglages</string>
+    <string name="cover_preset_add_failed">Impossible d’ajouter le préréglage : %1$s</string>
+    <string name="cover_preset_cream_ruled">Lignes crème</string>
+    <string name="cover_preset_light_blue_grid">Grille bleu clair</string>
+    <string name="cover_preset_forest_dots">Points vert forêt</string>
+    <string name="cover_preset_writing_blue">Bleu écriture</string>
+    <string name="cover_preset_knowledge_green">Vert savoir</string>
+    <string name="cover_preset_ochre">Ocre</string>
+</resources>

@@ -8,7 +8,7 @@
     },
     {
       "title": "1 · 打开电脑连接助手",
-      "body": "Windows / WSL2：解压连接助手，运行 Start-PadNote.cmd，选择已经安装 Hermes 的 WSL 发行版。助手和 Hermes 必须在同一 WSL 环境中，才能共享本次任务的文件。Hermes 已能在终端对话时，保留原有安装和模型配置。\n电脑管理页默认在 http://127.0.0.1:8766 打开。只在自己的电脑打开这个页面；它不会出现在局域网上。"
+      "body": "Windows Setup 安装的是适用于本机 Windows Hermes 的原生 Windows 助手，不会直接控制 WSL 内的 Hermes。若要使用 WSL 中的 Hermes，请打开安装了 Hermes 的同一个 WSL 发行版，并在其中从助手 bundle 运行 `python3 start.py --lan`。助手与 Hermes 要在同一个 WSL 环境中运行，才能访问相同的任务文件。\n本机管理页地址为 http://127.0.0.1:8766。请只在自己的电脑上打开；它不会暴露到局域网。"
     },
     {
       "title": "2 · 选择 Hermes 并检查接口",

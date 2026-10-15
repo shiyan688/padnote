@@ -1,3 +1,3 @@
 <resources>
-    <string name="app_name">PadNote Beta</string>
+    <string name="app_name" translatable="false">PadNote Beta</string>
 </resources>

@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.Intent;
+import android.content.Context;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
@@ -113,9 +114,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Color.rgb(47, 128, 91),
             Color.rgb(125, 79, 164)
     };
-    private static final String[] PRESET_COLOR_NAMES = new String[]{
-            "墨蓝色", "书写蓝", "朱红色", "墨绿色", "紫色"
-    };
+    private String presetColorName(int index) {
+        switch (index) {
+            case 0: return getString(R.string.core_color_navy);
+            case 1: return getString(R.string.core_color_ink_blue);
+            case 2: return getString(R.string.core_color_vermilion);
+            case 3: return getString(R.string.core_color_forest);
+            default: return getString(R.string.core_color_purple);
+        }
+    }
 
     // ---- 视觉系统：纸面工作室 ----
     // 书架与对话框共用一套令牌：暖纸底、纯白圆角卡、书写蓝主色、
@@ -207,6 +214,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private Button aiMaterialsButton;
     private Button aiMaterialsPreviewButton;
     private EditText aiInputView;
+    private String aiInputDraftKey;
+    private String pendingAiInputDraftKey;
+    private Runnable pendingAiInputDraftWrite;
     private Button aiSendButton;
     private Button aiRetryButton;
     private CheckBox aiReviewTranscriptCheck;
@@ -306,7 +316,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private AiReadScope aiReadScope;
     /**
      * Authority for the current task. Tied to the existing page-output switch:
-     * "仅卡片" withholds write access entirely, so the toggle now means
+     * getString(R.string.core_ai_only_card) withholds write access entirely, so the toggle now means
      * "may the model touch the note" rather than "where does the answer go".
      */
     private NoteTool.Permission aiGrantedPermission = NoteTool.Permission.READ_ONLY;
@@ -506,6 +516,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private final Runnable delayedSave = () -> saveDocument(false);
 
     @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(AppLanguage.wrap(newBase));
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if(savedInstanceState!=null){
@@ -575,6 +590,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (editorVisible) {
             commitInlineTextEditorExcept(null);
         }
+        flushPendingAiInputDraft();
         handler.removeCallbacks(delayedSave);
         if (editorVisible) {
             saveDocument(false);
@@ -620,14 +636,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         strokeCount = strokes;
         pointCount = points;
         updateStatsText();
-        pressureView.setText(String.format(Locale.CHINA, "压力 %.3f · %s", pressure, inputStatus));
+        pressureView.setText(String.format(getResources().getConfiguration().getLocales().get(0),
+                getString(R.string.core_pressure_status), pressure, inputStatus));
     }
 
     @Override
     public void onDocumentChanged() {
         documentRevision += 1;
         refreshAiEditCards();
-        saveStatusView.setText("等待自动保存");
+        saveStatusView.setText(R.string.core_waiting_autosave);
         handler.removeCallbacks(delayedSave);
         handler.postDelayed(delayedSave, 600);
     }
@@ -679,7 +696,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             updateTextBoxOverlays(canvasView.getTextBoxes());
         }
         if (pressureView != null && textFlowId != null) {
-            pressureView.setText("套索已选中文字流 · 整组移动/删除 · 双击统一编辑");
+            pressureView.setText(R.string.core_text_flow_selected);
         }
     }
 
@@ -706,6 +723,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showBookshelf() {
+        flushPendingAiInputDraft();
         bookshelfCatalogRenderedForTest=false;
         pendingVideoHubAfterSave=false;
         if (digitizationController != null) digitizationController.pause();
@@ -743,9 +761,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         TextView title = text("PadNote", 28, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleGroup.addView(title);
-        titleGroup.addView(text("我的书架  ·  本地多笔记", 14, Color.rgb(103, 116, 126)));
+        titleGroup.addView(text(getString(R.string.core_shelf_subtitle), 14, Color.rgb(103, 116, 126)));
         brandRow.addView(titleGroup, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button languageButton = pillButton(getString(R.string.core_language), BUTTON_QUIET);
+        brandRow.addView(languageButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
+        languageButton.setOnClickListener(view -> showLanguagePicker());
         header.addView(brandRow, matchWrap());
 
         LinearLayout actions = new LinearLayout(this);
@@ -753,41 +775,45 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams actionsParams = matchWrap();
         actionsParams.topMargin = dp(18);
-        header.addView(actions, actionsParams);
-        Button pendingVideoButton=pillButton("待处理视频",BUTTON_QUIET);
-        pendingVideoButton.setContentDescription("查看、另存或删除待处理视频结果");
+        HorizontalScrollView actionsScroll = new HorizontalScrollView(this);
+        actionsScroll.setHorizontalScrollBarEnabled(false);
+        actionsScroll.setFillViewport(true);
+        actionsScroll.addView(actions, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        header.addView(actionsScroll, actionsParams);
+        Button createButton = pillButton(getString(R.string.core_create_note), BUTTON_PRIMARY);
+        createButton.setOnClickListener(view -> showCreateNoteDialog());
+        actions.addView(createButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        Button pendingVideoButton=pillButton(getString(R.string.core_pending_videos),BUTTON_QUIET);
+        pendingVideoButton.setContentDescription(getString(R.string.core_pending_videos_desc));
         pendingVideoButton.setOnClickListener(view->{if(android.os.Build.VERSION.SDK_INT>=27)showPendingVideoArtifacts(null);});
         actions.addView(pendingVideoButton,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(42)));
-        Button importButton = pillButton("导入笔记", BUTTON_QUIET);
+        Button importButton = pillButton(getString(R.string.core_import_note), BUTTON_QUIET);
         importButton.setOnClickListener(view -> launchImportNote());
         actions.addView(importButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
-        Button agentButton = pillButton("电脑 Agent", BUTTON_QUIET);
+        Button agentButton = pillButton(getString(R.string.core_agent), BUTTON_QUIET);
         List<AgentConnectionStore.Config> agentProfiles = agentConnectionStore.listSummaries();
         long verifiedAgents = agentProfiles.stream().filter(AgentConnectionStore.Config::verified).count();
-        agentButton.setContentDescription(agentProfiles.isEmpty() ? "设置电脑 Agent" :
-                "已保存 " + agentProfiles.size() + " 个电脑 Agent，其中 " + verifiedAgents + " 个已验证");
+        agentButton.setContentDescription(agentProfiles.isEmpty()
+                ? getString(R.string.core_agent_button_setup)
+                : getString(R.string.core_agent_button_summary, agentProfiles.size(), verifiedAgents));
         agentButton.setOnClickListener(view -> showAgentConnectionDialog());
         LinearLayout.LayoutParams agentParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         agentParams.leftMargin = dp(8);
         actions.addView(agentButton, agentParams);
-        Button libraryButton = pillButton("整库", BUTTON_TONAL);
-        libraryButton.setContentDescription("整库备份、恢复与离线材料");
+        Button libraryButton = pillButton(getString(R.string.core_library_button), BUTTON_TONAL);
+        libraryButton.setContentDescription(getString(R.string.core_library_desc));
         libraryButton.setOnClickListener(view -> showLibraryActions());
         LinearLayout.LayoutParams libraryParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         libraryParams.leftMargin = dp(8);
         actions.addView(libraryButton, libraryParams);
-        Button createButton = pillButton("＋ 新建笔记", BUTTON_PRIMARY);
-        createButton.setOnClickListener(view -> showCreateNoteDialog());
-        LinearLayout.LayoutParams createParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        createParams.setMargins(dp(10), 0, 0, 0);
-        actions.addView(createButton, createParams);
         root.addView(header);
 
-        TextView sectionTitle = text("最近笔记", 17, INK_COLOR);
+        TextView sectionTitle = text(getString(R.string.core_recent_notes), 17, INK_COLOR);
         sectionTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         sectionTitle.setPadding(dp(30), dp(18), dp(30), dp(12));
         shelfSectionTitle = sectionTitle;
@@ -798,7 +824,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         bookshelfList = new LinearLayout(this);
         bookshelfList.setOrientation(LinearLayout.VERTICAL);
         bookshelfList.setPadding(dp(20), dp(4), dp(20), dp(34));
-        TextView loading = text("正在整理书架…", 14, Color.rgb(104, 116, 126));
+        TextView loading = text(getString(R.string.core_loading_shelf), 14, Color.rgb(104, 116, 126));
         loading.setGravity(Gravity.CENTER);
         bookshelfList.addView(loading, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(160)));
@@ -807,6 +833,27 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
+    }
+
+    private void showLanguagePicker() {
+        if (aiBusy || aiMaterialLoading || aiConversationLoading) {
+            new AlertDialog.Builder(this).setMessage(R.string.core_language_busy)
+                    .setPositiveButton(R.string.core_done, null).show();
+            return;
+        }
+        String[] names = {getString(R.string.core_follow_system), "简体中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"};
+        int selected = AppLanguage.selectedIndex(this);
+        names[selected] = "✓  " + names[selected];
+        ChoiceRows.builder(this).setTitle(getString(R.string.core_language))
+                .setAdapter(ChoiceRows.adapter(this, names), (dialog, which) -> {
+                    String tag = AppLanguage.TAGS[which];
+                    if (which == selected) return;
+                    AppLanguage.set(this, tag);
+                    dialog.dismiss();
+                    if (android.os.Build.VERSION.SDK_INT < 33) recreate();
+                })
+                .setNegativeButton(R.string.core_cancel, null)
+                .show();
     }
 
     /**
@@ -940,7 +987,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         FrameLayout slot=shelfCoverSlots.get(item.getKey());
                         if(slot==null||slot.getParent()==null)continue;
                         slot.removeAllViews();ImageView image=new ImageView(this);image.setImageBitmap(item.getValue());
-                        image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setContentDescription("笔记封面");
+                        image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setContentDescription(getString(R.string.core_note_cover_alt));
                         slot.addView(image,new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));
                     }
                     if(!recovery.isEmpty())renderRecoverySection(recovery);
@@ -952,7 +999,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     if (!editorVisible && generation == bookshelfLoadGeneration) {
                         if(!bookshelfCatalogRenderedForTest){
                             bookshelfList.removeAllViews();
-                            TextView message = text("书架读取失败：" + safeError(error),14,Color.rgb(143, 47, 43));
+                            TextView message = text(getString(R.string.core_bookshelf_load_error,safeError(error)),14,Color.rgb(143, 47, 43));
                             message.setGravity(Gravity.CENTER);
                             bookshelfList.addView(message, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
                         }
@@ -976,8 +1023,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         lastShelfEntries = entries;
         bookshelfCatalogRenderedForTest=true;
         lastRecoveryEntries = recoveryEntries;
-        shelfSectionTitle.setText(entries.isEmpty() ? "最近笔记"
-                : String.format(Locale.CHINA, "最近笔记 · %d", entries.size()));
+        shelfSectionTitle.setText(entries.isEmpty() ? getString(R.string.core_recent_notes)
+                : getString(R.string.core_recent_count, entries.size()));
         addFirstRunGuideCard();
         if (entries.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
@@ -987,11 +1034,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(92), dp(76));
             iconParams.bottomMargin = dp(16);
             empty.addView(icon, iconParams);
-            TextView message = text("书架还是空的\n新建第一本笔记，或导入 .padnote.json",
+            TextView message = text(getString(R.string.core_empty_shelf),
                     15, SECONDARY_TEXT);
             message.setGravity(Gravity.CENTER);
             empty.addView(message);
-            Button create = pillButton("新建笔记", BUTTON_PRIMARY);
+            Button create = pillButton(getString(R.string.core_create_note), BUTTON_PRIMARY);
             create.setOnClickListener(view -> showCreateNoteDialog());
             LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
@@ -1013,16 +1060,31 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             for (int column = 0; column < columns; column++) {
                 int index = start + column;
                 View child = index < entries.size() ? createNoteCard(entries.get(index)) : new View(this);
-                LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(0, dp(292), 1f);
+                child.setMinimumHeight(dp(292));
+                LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
                 cardParams.setMargins(dp(10), dp(9), dp(10), dp(9));
                 row.addView(child, cardParams);
             }
-            // Reserve the full card height (292dp) plus its vertical margins
-            // (9dp each). With WRAP_CONTENT this weighted horizontal row can be
-            // measured shorter than its children; later shelf sections then
-            // overlap the note card and steal its center tap.
+            row.setMinimumHeight(dp(310));
+            // Let multiline titles and metadata expand the row, and keep the row
+            // below its measured children so later shelf sections cannot overlap it.
+            row.addOnLayoutChangeListener((view, left, top, right, bottom,
+                    oldLeft, oldTop, oldRight, oldBottom) -> {
+                int requiredHeight = dp(310);
+                for (int i = 0; i < row.getChildCount(); i++) {
+                    View card = row.getChildAt(i);
+                    LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) card.getLayoutParams();
+                    requiredHeight = Math.max(requiredHeight, card.getMeasuredHeight()
+                            + params.topMargin + params.bottomMargin);
+                }
+                if (row.getMeasuredHeight() < requiredHeight) {
+                    row.setMinimumHeight(requiredHeight);
+                    row.requestLayout();
+                }
+            });
             bookshelfList.addView(row, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(310)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
         renderRecoverySection(recoveryEntries);
         renderVaultSection();
@@ -1030,23 +1092,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void renderRecoverySection(List<NoteStore.RecoveryEntry> entries) {
         if (entries == null || entries.isEmpty()) return;
-        TextView heading = text("需要恢复 · " + entries.size(), 17, Color.rgb(143, 47, 43));
+        TextView heading = text(getString(R.string.core_recovery_needed,entries.size()), 17, Color.rgb(143, 47, 43));
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         heading.setPadding(dp(30), dp(24), dp(30), dp(8));
         bookshelfList.addView(heading, matchWrap());
         for (NoteStore.RecoveryEntry entry : entries) {
             LinearLayout card = cardSurface(16f, 18);
             card.addView(text(entry.label + " · " + entry.noteId, 14, INK_COLOR));
-            card.addView(text("原文件仍保留。可先导出；未保存副本可确认恢复。",
+            card.addView(text(getString(R.string.core_recovery_explanation),
                     12, SECONDARY_TEXT));
             LinearLayout actions = new LinearLayout(this);
             actions.setOrientation(LinearLayout.HORIZONTAL);
             if (entry.unsavedDraft) {
-                Button restore = pillButton("恢复副本", BUTTON_TONAL);
+                Button restore = pillButton(getString(R.string.core_recovery_restore), BUTTON_TONAL);
                 restore.setOnClickListener(view -> restoreRecoveryDraft(entry));
                 actions.addView(restore, new LinearLayout.LayoutParams(0, dp(40), 1f));
             }
-            Button export = pillButton("导出原文件", BUTTON_QUIET);
+            Button export = pillButton(getString(R.string.core_recovery_export), BUTTON_QUIET);
             export.setOnClickListener(view -> launchRecoveryExport(entry));
             LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
             exportParams.leftMargin = dp(8);
@@ -1065,12 +1127,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             try {
                 NoteStore.Entry restored = NoteStore.restoreDraft(this, recovery.noteId);
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "未保存修改已恢复", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, getString(R.string.core_recovery_restored), Toast.LENGTH_SHORT).show();
                     openNote(restored);
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "恢复失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.core_recovery_restore_failed,safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -1103,14 +1165,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text("三步上手 PadNote", 16, INK_COLOR);
+        TextView title = text(getString(R.string.core_guide_title), 16, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         head.addView(title, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView dismiss = text("✕", 14, FAINT_TEXT);
         dismiss.setPadding(dp(12), dp(6), dp(4), dp(6));
         dismiss.setClickable(true);
-        dismiss.setContentDescription("关闭新手引导");
+        dismiss.setContentDescription(getString(R.string.core_guide_close));
         dismiss.setOnClickListener(view -> {
             preferences.edit().putBoolean("guideDismissedV1", true).apply();
             card.setVisibility(View.GONE);
@@ -1118,14 +1180,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         head.addView(dismiss);
         card.addView(head);
 
-        card.addView(guideStep("01", "写与圈选",
-                "用笔书写，双指缩放画布；套索工具可圈选任意手写内容。", ACCENT_COLOR));
-        card.addView(guideStep("02", "问 AI",
-                "圈选后点 AI 图标：讲解、整理 Markdown 或自由提问——"
-                        + "也可以问「我之前的笔记里…」。", ACCENT_COLOR));
-        card.addView(guideStep("03", "转成格式笔记",
-                "笔记卡片「更多 → 转为格式笔记」：整本变成 Obsidian 兼容的 "
-                        + "Markdown 知识库；在 AI 卡片明确选定后才会读取。", ACCENT_COLOR));
+        card.addView(guideStep("01", getString(R.string.core_guide_write_title),
+                getString(R.string.core_guide_write_detail), ACCENT_COLOR));
+        card.addView(guideStep("02", getString(R.string.core_guide_ai_title),
+                getString(R.string.core_guide_ai_detail), ACCENT_COLOR));
+        card.addView(guideStep("03", getString(R.string.core_guide_vault_title),
+                getString(R.string.core_guide_vault_detail), ACCENT_COLOR));
     }
 
     /** One icon + bold lead + caption line, used by every guide surface. */
@@ -1167,15 +1227,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         TextView sectionTitle = text(vaultNotes.isEmpty()
-                ? "知识库 · 格式笔记"
-                : String.format(Locale.CHINA, "知识库 · 格式笔记 · %d", vaultNotes.size()),
+                ? getString(R.string.core_vault_title)
+                : getString(R.string.core_vault_title_count,getString(R.string.core_vault_title),vaultNotes.size()),
                 17, INK_COLOR);
         sectionTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titles.addView(sectionTitle);
-        titles.addView(sectionCaption("手写笔记的 Markdown 版 · 可整体拷入 Obsidian"));
+        titles.addView(sectionCaption(getString(R.string.core_vault_caption)));
         header.addView(titles, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button what = pillButton("这是什么？", BUTTON_QUIET);
+        Button what = pillButton(getString(R.string.core_vault_what), BUTTON_QUIET);
         what.setOnClickListener(view -> showVaultGuideDialog());
         header.addView(what, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)));
@@ -1211,18 +1271,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         // would give the view two parents and crash every shelf render (the
         // 0.17.0/0.17.1 launch-loop crash).
 
-        TextView headline = text("把一本手写笔记，变成可检索的格式笔记", 14, INK_COLOR);
+        TextView headline = text(getString(R.string.core_vault_headline), 14, INK_COLOR);
         headline.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         guide.addView(headline);
-        guide.addView(guideStep("①", "打开一本写好的手写笔记",
-                "公式推导、流程图都没问题。", VAULT_COLOR));
-        guide.addView(guideStep("②", "点卡片「更多 → 转为格式笔记」",
-                "需要先在 AI 卡片里配置一次模型。", VAULT_COLOR));
-        guide.addView(guideStep("③", "转换结果出现在这里",
-                "可阅读、导出 .md 拷入 Obsidian；也可在 AI 卡片选它作为本次额外材料。",
-                VAULT_COLOR));
-        TextView privacy = text("上传说明：数字化会把整页内容发送给你配置的模型，"
-                + "而不只是圈选区域；转换前会再次确认。", 11, AMBER_TEXT);
+        guide.addView(guideStep("①", getString(R.string.core_vault_step_open),
+                getString(R.string.core_vault_step_open_detail), VAULT_COLOR));
+        guide.addView(guideStep("②", getString(R.string.core_vault_step_convert),
+                getString(R.string.core_vault_step_convert_detail), VAULT_COLOR));
+        guide.addView(guideStep("③", getString(R.string.core_vault_step_result),
+                getString(R.string.core_vault_step_result_detail), VAULT_COLOR));
+        TextView privacy = text(getString(R.string.core_vault_privacy), 11, AMBER_TEXT);
         privacy.setPadding(0, dp(10), 0, 0);
         guide.addView(privacy);
         return guide;
@@ -1233,19 +1291,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(14), dp(24), dp(8));
-        body.addView(dialogParagraph("「格式笔记」是手写笔记的机器可读版本："
-                + "逐页转写成 Markdown（公式 LaTeX、流程图 Mermaid），"
-                + "人读美观、软件可读，整个目录可以直接拷进 Obsidian。", INK_COLOR));
-        body.addView(dialogParagraph("生成方式：书架笔记卡片 → 更多 → 转为格式笔记。"
-                + "每一页发给你配置的视觉模型转写后按页合并，原手写稿不受影响。", INK_COLOR));
-        body.addView(dialogParagraph("与 AI 的关系：知识库默认不会发给模型。"
-                + "圈选后可在 AI 卡片选择具体格式笔记，预览并冻结本次可读副本。", INK_COLOR));
-        body.addView(dialogParagraph("存储与隐私：文件保存在应用私有目录，"
-                + "只有数字化和你的主动提问会把内容发送到模型端点。", SECONDARY_TEXT));
+        body.addView(dialogParagraph(getString(R.string.core_vault_what_para1), INK_COLOR));
+        body.addView(dialogParagraph(getString(R.string.core_vault_what_para2), INK_COLOR));
+        body.addView(dialogParagraph(getString(R.string.core_vault_what_para3), INK_COLOR));
+        body.addView(dialogParagraph(getString(R.string.core_vault_what_para4), SECONDARY_TEXT));
         new AlertDialog.Builder(this)
-                .setTitle("知识库是什么")
+                .setTitle(R.string.core_vault_guide_title)
                 .setView(body)
-                .setPositiveButton("知道了", null)
+                .setPositiveButton(R.string.core_got_it, null)
                 .show();
     }
 
@@ -1263,7 +1316,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.setLayoutParams(rowParams);
         row.setClickable(true);
         row.setFocusable(true);
-        row.setContentDescription("打开格式笔记 " + note.title);
+        row.setContentDescription(getString(R.string.core_vault_open_desc,note.title));
         row.setOnClickListener(view -> showVaultReader(note));
 
         LinearLayout top = new LinearLayout(this);
@@ -1285,10 +1338,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         column.addView(title);
         String date = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
                 .format(new Date(note.digitizedAt));
-        column.addView(sectionCaption(note.pageCount + " 页 · 数字化于 " + date));
+        column.addView(sectionCaption(getString(R.string.core_vault_date,note.pageCount,date)));
         boolean stale = sourceUpdatedAt != null && sourceUpdatedAt > note.sourceModifiedAt;
         if (stale) {
-            TextView chip = text("原笔记已修改 · 建议重新生成", 11, AMBER_TEXT);
+            TextView chip = text(getString(R.string.core_vault_stale), 11, AMBER_TEXT);
             chip.setBackgroundResource(0);
             GradientDrawable chipBackground = new GradientDrawable();
             chipBackground.setColor(AMBER_TINT);
@@ -1307,13 +1360,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        Button open = pillButton("打开", BUTTON_TONAL);
+        Button open = pillButton(getString(R.string.core_vault_open_action), BUTTON_TONAL);
         open.setOnClickListener(view -> showVaultReader(note));
         actions.addView(open, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)));
         Button more = pillButton("⋮", BUTTON_QUIET);
         more.setTextSize(16);
-        more.setContentDescription("格式笔记更多操作：导出、删除");
+        more.setContentDescription(getString(R.string.core_vault_more_desc));
         more.setOnClickListener(view -> showVaultMoreMenu(note));
         LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(40), dp(36));
         moreParams.leftMargin = dp(8);
@@ -1326,7 +1379,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     /** Per-vault-note overflow: export and delete live here, not on the card face. */
     private void showVaultMoreMenu(VaultStore.VaultNote note) {
-        String[] actions = new String[]{"导出 .md", "生成讲解视频", "本笔记任务与成果", "删除"};
+        String[] actions = new String[]{getString(R.string.core_vault_export), getString(R.string.core_video_generate), getString(R.string.core_video_tasks), getString(R.string.core_delete)};
         ChoiceRows.builder(this)
                 .setTitle(note.title)
                 .setAdapter(ChoiceRows.adapter(this, actions), (dialog, which) -> {
@@ -1338,10 +1391,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         showNoteVideoHub(findNoteEntry(note.noteId));
                     } else {
                         new AlertDialog.Builder(this)
-                                .setTitle("删除格式笔记？")
-                                .setMessage("将删除《" + note.title + "》。手写原稿不受影响。")
-                                .setNegativeButton("取消", null)
-                                .setPositiveButton("删除", (ignored, whichInner) -> {
+                                .setTitle(R.string.core_vault_delete_title)
+                                .setMessage(getString(R.string.core_vault_delete_message,note.title))
+                                .setNegativeButton(getString(R.string.core_cancel), null)
+                                .setPositiveButton(getString(R.string.core_delete), (ignored, whichInner) -> {
                                     vaultStore.delete(note.fileName);
                                     refreshBookshelf();
                                 })
@@ -1365,7 +1418,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showVideoHubForCurrentNote() {
-        if(!editorVisible||currentNoteId==null){Toast.makeText(this,"找不到当前笔记",Toast.LENGTH_SHORT).show();return;}
+        if(!editorVisible||currentNoteId==null){Toast.makeText(this,R.string.core_video_current_note_missing,Toast.LENGTH_SHORT).show();return;}
         commitInlineTextEditorExcept(null);
         // This entry synchronously requests a save when the canvas is dirty. A
         // previously queued debounce must not write a second revision after the
@@ -1373,33 +1426,33 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         handler.removeCallbacks(delayedSave);
         if(saveInFlight||documentRevision!=lastSavedRevision){
             pendingVideoHubAfterSave=true;saveDocument(false);
-            Toast.makeText(this,"先保存当前笔记，再打开视频入口",Toast.LENGTH_SHORT).show();return;
+            Toast.makeText(this,R.string.core_video_save_before_open,Toast.LENGTH_SHORT).show();return;
         }
         NoteStore.Entry entry=findNoteEntry(currentNoteId);
-        if(entry==null){Toast.makeText(this,"当前笔记尚未保存到书架",Toast.LENGTH_SHORT).show();return;}
+        if(entry==null){Toast.makeText(this,R.string.core_video_note_not_saved,Toast.LENGTH_SHORT).show();return;}
         showNoteVideoHub(entry);
     }
 
     private void showPaperHandoffForCurrentNote() {
         if(!editorVisible||currentNoteId==null||!restoreCompleted||canvasView==null){
-            Toast.makeText(this,"当前笔记尚未安全恢复，未分享或发送",Toast.LENGTH_LONG).show();return;
+            Toast.makeText(this,R.string.core_paper_current_note_not_restored,Toast.LENGTH_LONG).show();return;
         }
         commitInlineTextEditorExcept(null);
         handler.removeCallbacks(delayedSave);
         if(saveInFlight||documentRevision!=lastSavedRevision){
             pendingPaperHandoffAfterSave=true;
             saveDocument(false);
-            Toast.makeText(this,"先保存当前笔记；保存成功后再继续",Toast.LENGTH_LONG).show();return;
+            Toast.makeText(this,R.string.core_paper_save_before_continue,Toast.LENGTH_LONG).show();return;
         }
         showPaperHandoffActions();
     }
 
     private void showPaperHandoffActions() {
-        ChoiceRows.builder(this).setTitle("分享与交给 Agent")
-                .setAdapter(ChoiceRows.adapter(this, new String[]{"分享当前纸面 PDF…","交给电脑 Agent…"}),(dialog,which)->{
+        ChoiceRows.builder(this).setTitle(getString(R.string.core_paper_handoff))
+                .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_paper_share_action),getString(R.string.core_paper_agent_action)}),(dialog,which)->{
                     if(which==0)freezeCurrentPaperPdf(true,this::sharePaperPdf);
                     else freezeCurrentPaperPdf(false,this::showNoteWorkComposer);
-                }).setNegativeButton("取消",null).show();
+                }).setNegativeButton(getString(R.string.core_cancel),null).show();
     }
 
     private static final class PaperCapture {
@@ -1435,10 +1488,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showPaperAgentUnavailableDialog() {
         new AlertDialog.Builder(this)
-                .setTitle("先连接电脑 Agent")
-                .setMessage("还没有能接收这份笔记的电脑连接。请先连接电脑，或检查现有连接是否已验证并支持接收笔记任务。笔记没有发送。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("连接设置", (dialog, which) -> showAgentConnectionDialog())
+                .setTitle(R.string.core_paper_agent_missing_title)
+                .setMessage(R.string.core_paper_agent_missing)
+                .setNegativeButton(R.string.core_later, null)
+                .setPositiveButton(R.string.core_connection_settings, (dialog, which) -> showAgentConnectionDialog())
                 .show();
     }
 
@@ -1446,20 +1499,18 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(frozenPaper==null||frozenPaper.file==null||frozenPaper.capture==null)return;
         final File pdf=frozenPaper.file;
         final PaperCapture capture=frozenPaper.capture;
-        if(!isPaperRevisionCurrent(capture)){pdf.delete();Toast.makeText(this,"笔记在冻结 PDF 后发生变化，未发送；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+        if(!isPaperRevisionCurrent(capture)){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_changed),Toast.LENGTH_LONG).show();return;}
         final NoteStore.Entry source=findNoteEntry(capture.noteId);
-        if(source==null){pdf.delete();Toast.makeText(this,"来源笔记已不存在，未发送",Toast.LENGTH_LONG).show();return;}
+        if(source==null){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_source_missing),Toast.LENGTH_LONG).show();return;}
         final long capturedSourceRevision=capture.sourceRevision;
         final long capturedDocumentRevision=capture.documentRevision;
-        String[] presets={"继续按我的要求工作","整理成可分享讲义","找理解漏洞并出练习","生成讲解视频"};
+        String[] presets={getString(R.string.core_preset_continue),getString(R.string.core_preset_lecture),getString(R.string.core_preset_gaps),getString(R.string.core_preset_video)};
         String[] ids={"continue","shareable_handout","find_gaps_and_practice","explain_video"};
-        String[] styles={"清晰讲义","手写白板","类比讲解","逐步推导","一分钟复习"};
+        String[] styles={getString(R.string.core_style_lecture),getString(R.string.core_style_whiteboard),getString(R.string.core_style_analogy),getString(R.string.core_style_derivation),getString(R.string.core_style_review)};
         String[] stylePrompts={
-                "用清晰的讲义式画面讲解。每个画面聚焦一个概念，标题简短，公式、图和解释放在一起。例题按步骤展开，减少装饰和套话。",
-                "像老师在白板上边写边讲。从问题开始，逐步画出图、写出关键公式和批注，让观看者看清每一步怎样产生。避免一次铺满整张白板。",
-                "先用一个贴近日常的类比建立直觉，再回到材料中的准确概念。明确指出类比适用的范围和容易误解的地方。",
-                "围绕一个问题展开完整推导。每一步说明使用的前提、公式或变换，突出本步变化的符号，不跳过影响理解的步骤。",
-                "做一个约一分钟的复习视频，选出最值得记住的三个要点，指出一个常见误区，最后留一道简短自测题。保留必要条件和单位，不为缩短时长改变结论。"};
+                getString(R.string.core_style_prompt_lecture),getString(R.string.core_style_prompt_whiteboard),
+                getString(R.string.core_style_prompt_analogy),getString(R.string.core_style_prompt_derivation),
+                getString(R.string.core_style_prompt_review)};
         List<AgentConnectionStore.Config> supported=new ArrayList<>();
         for(AgentConnectionStore.Config profile:agentConnectionStore.list())if(profile.verified()&&
                 profile.transport==AgentConnectionStore.Transport.BRIDGE&&
@@ -1474,22 +1525,22 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         LinearLayout body=verticalPanel();
-        String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(supported.get(i));
+        String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(this,supported.get(i));
         Spinner connection=new Spinner(this);ChoiceRows.styleSpinner(connection);connection.setAdapter(ChoiceRows.spinnerAdapter(connection,connectionLabels));
-        body.addView(labeledField("接收 Agent",connection));
+        body.addView(labeledField(getString(R.string.core_agent_recipient),connection));
         Spinner preset=new Spinner(this);ChoiceRows.styleSpinner(preset);
         preset.setAdapter(ChoiceRows.spinnerAdapter(preset,presets));
-        body.addView(labeledField("任务预设（可编辑）",preset));
+        body.addView(labeledField(getString(R.string.core_task_preset),preset));
         EditText instruction=new EditText(this);instruction.setMinLines(3);
         instruction.setGravity(Gravity.TOP);instruction.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        instruction.setText("请结合这份笔记的纸面和可读上下文完成我的要求。");
-        body.addView(labeledField("具体要求",instruction));
+        instruction.setText(R.string.core_default_task_prompt);
+        body.addView(labeledField(getString(R.string.core_specific_request),instruction));
         Spinner style=new Spinner(this);ChoiceRows.styleSpinner(style);
         style.setAdapter(ChoiceRows.spinnerAdapter(style,styles));
-        View styleField=labeledField("视频讲解风格（可选）",style);body.addView(styleField);
+        View styleField=labeledField(getString(R.string.core_video_style_optional),style);body.addView(styleField);
         EditText stylePrompt=new EditText(this);stylePrompt.setMinLines(3);
         stylePrompt.setGravity(Gravity.TOP);stylePrompt.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField("风格提示（可编辑）",stylePrompt);body.addView(stylePromptField);
+        stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField(getString(R.string.core_style_prompt_editable),stylePrompt);body.addView(stylePromptField);
         styleField.setVisibility(View.GONE);stylePromptField.setVisibility(View.GONE);
         style.setVisibility(View.GONE);stylePrompt.setVisibility(View.GONE);
         style.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
@@ -1501,34 +1552,33 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 int visibility=position==3?View.VISIBLE:View.GONE;
                 styleField.setVisibility(visibility);stylePromptField.setVisibility(visibility);
                 style.setVisibility(visibility);stylePrompt.setVisibility(visibility);
-                if(position==0)instruction.setText("请结合这份笔记的纸面和可读上下文，继续按我的具体要求工作。");
-                else if(position==1)instruction.setText("请把这份笔记整理成结构清晰、适合分享的讲义，保留关键定义、推导和结论。");
-                else if(position==2)instruction.setText("请找出我可能没有理解牢的关键点，并给出有答案的练习题。");
-                else instruction.setText("请结合这份笔记的纸面和可读上下文，生成可分享的讲解视频；按所选风格完成必要的策划、素材生成与制作，并遵循目标 Agent 的授权和必要审阅流程。");
+                if(position==0)instruction.setText(R.string.core_instruction_continue);
+                else if(position==1)instruction.setText(R.string.core_instruction_lecture);
+                else if(position==2)instruction.setText(R.string.core_instruction_gaps);
+                else instruction.setText(R.string.core_instruction_video);
             }
             @Override public void onNothingSelected(AdapterView<?> parent){}
         });
         final String content;
         try{content=currentReadablePaperContext(capture.pageCount);}
-        catch(Exception error){pdf.delete();Toast.makeText(this,"无法读取本笔记的交流上下文（未发送）："+safeError(error),Toast.LENGTH_LONG).show();return;}
-        TextView scope=text("发送范围：当前整份笔记 · "+capture.pageCount+" 页 PDF · "+formatBytes(pdf.length())+
-                "\n纸面来自已冻结的页面渲染，包含背景和实际可见内容；手写墨迹、图片与其中文字通过 PDF 提供。下方是笔记原文与交流预览。\n不会附带其它笔记、连接配置或令牌。",12,SECONDARY_TEXT);
+        catch(Exception error){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_read_error,safeError(error)),Toast.LENGTH_LONG).show();return;}
+        TextView scope=text(getString(R.string.core_paper_scope,capture.pageCount,formatBytes(pdf.length())),12,SECONDARY_TEXT);
         body.addView(scope,matchWrap());
         TextView readable=text(content,12,INK_COLOR);readable.setTextIsSelectable(true);
         ScrollView contentScroll=new ScrollView(this);contentScroll.addView(readable);
         body.addView(contentScroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(190)));
         ScrollView formScroll=new ScrollView(this);formScroll.addView(body);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("分享与交给电脑 Agent")
-                .setView(formScroll).setNegativeButton("取消",(d,w)->pdf.delete())
-                .setPositiveButton("确认并发送",(d,w)->{
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(R.string.core_paper_composer_title)
+                .setView(formScroll).setNegativeButton(getString(R.string.core_cancel),(d,w)->pdf.delete())
+                .setPositiveButton(R.string.core_confirm_send,(d,w)->{
                     int selected=preset.getSelectedItemPosition();String instructionText=instruction.getText().toString().trim();
-                    if(instructionText.isEmpty()){pdf.delete();Toast.makeText(this,"任务要求不能为空，未发送",Toast.LENGTH_LONG).show();return;}
+                    if(instructionText.isEmpty()){pdf.delete();Toast.makeText(this,getString(R.string.core_task_empty),Toast.LENGTH_LONG).show();return;}
                     NoteStore.Entry latest=findNoteEntry(currentNoteId);
                     if(!isPaperRevisionCurrent(capture)||documentRevision!=capturedDocumentRevision||saveInFlight||latest==null||
-                            latest.updatedAt!=capturedSourceRevision){pdf.delete();Toast.makeText(this,"笔记在确认期间发生变化，请重新打开入口；未发送",Toast.LENGTH_LONG).show();return;}
+                            latest.updatedAt!=capturedSourceRevision){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_confirm_changed),Toast.LENGTH_LONG).show();return;}
                     String styleValue=selected==3?stylePrompt.getText().toString().trim():"";
-                    String taskInput="请按任务包要求完成「"+presets[selected]+"」。实际纸面见 input/paper.pdf，可读笔记和本笔记 AI 交流见 input/content.md。\n\n"+
-                            instructionText+(styleValue.isEmpty()?"":"\n讲解风格："+styleValue);
+                    String taskInput=getString(R.string.core_task_bundle_intro,presets[selected])+"\n\n"+
+                            instructionText+(styleValue.isEmpty()?"":"\n"+getString(R.string.core_video_style_prefix,styleValue));
                     AgentConnectionStore.Config target=supported.get(connection.getSelectedItemPosition());
                     aiExecutor.execute(()->{
                         try {
@@ -1537,9 +1587,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                     capture.title,instructionText,ids[selected],styleValue,content,paper);
                             runOnUiThread(()->new AgentTaskDialogs(this,agentConnectionStore,aiExecutor,
                                     this::launchCreateAgentArtifactDocument).sendNoteWork(target,frozen,
-                                    "纸面任务 · "+capture.title,taskInput,capture.noteId));
+                                    getString(R.string.core_paper_task_title,capture.title),taskInput,capture.noteId));
                         }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                                "无法冻结或打包笔记（未发送）："+safeError(error),Toast.LENGTH_LONG).show());}
+                                getString(R.string.core_paper_package_error,safeError(error)),Toast.LENGTH_LONG).show());}
                         finally{pdf.delete();}
                     });
                 }).create();
@@ -1601,10 +1651,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void sharePaperPdf(FrozenPaper frozenPaper) {
         if(frozenPaper==null||frozenPaper.file==null)return;
         File pdf=frozenPaper.file;
-        if(!isPaperRevisionCurrent(frozenPaper.capture)){pdf.delete();Toast.makeText(this,"笔记在冻结 PDF 后发生变化，未分享；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+        if(!isPaperRevisionCurrent(frozenPaper.capture)){pdf.delete();Toast.makeText(this,getString(R.string.core_pdf_stale_share),Toast.LENGTH_LONG).show();return;}
         try {
             File directory=new File(getCacheDir(),"paper-share");
-            if(!directory.isDirectory()&&!directory.mkdirs())throw new java.io.IOException("无法建立分享缓存");
+            if(!directory.isDirectory()&&!directory.mkdirs())throw new java.io.IOException(getString(R.string.core_pdf_share_cache_error));
             File retained=new File(directory,UUID.randomUUID()+".pdf");
             try(InputStream input=new FileInputStream(pdf);OutputStream output=new FileOutputStream(retained)){
                 byte[] buffer=new byte[32*1024];int count;while((count=input.read(buffer))!=-1)output.write(buffer,0,count);
@@ -1614,8 +1664,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Intent send=new Intent(Intent.ACTION_SEND).setType("application/pdf")
                     .putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             send.setClipData(ClipData.newUri(getContentResolver(),frozenPaper.capture.title+".pdf",uri));
-            startActivity(Intent.createChooser(send,"分享纸面 PDF"));
-        } catch(Exception error){Toast.makeText(this,"分享 PDF 失败："+safeError(error),Toast.LENGTH_LONG).show();}
+            startActivity(Intent.createChooser(send,getString(R.string.core_paper_share_action)));
+        } catch(Exception error){Toast.makeText(this,getString(R.string.core_pdf_share_failed,safeError(error)),Toast.LENGTH_LONG).show();}
         finally {if(pdf!=null)pdf.delete();}
     }
 
@@ -1626,16 +1676,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             capture=capturePaperRevision();
             snapshot=canvasView.createPdfExportSnapshot();
             PdfNoteIO.chooseRasterLongEdge(snapshot.getPageCount(),snapshot.getPageWidth(),snapshot.getPageHeight());
-        } catch(Exception error){Toast.makeText(this,"无法准备纸面 PDF（未发送）："+safeError(error),Toast.LENGTH_LONG).show();return;}
+        } catch(Exception error){Toast.makeText(this,getString(R.string.core_pdf_prepare_error,safeError(error)),Toast.LENGTH_LONG).show();return;}
         File directory=new File(getCacheDir(),retainForShare?"paper-share":"paper-work");
-        if(!directory.isDirectory()&&!directory.mkdirs()){snapshot.close();Toast.makeText(this,"无法准备 PDF 缓存",Toast.LENGTH_LONG).show();return;}
+        if(!directory.isDirectory()&&!directory.mkdirs()){snapshot.close();Toast.makeText(this,getString(R.string.core_pdf_cache_error),Toast.LENGTH_LONG).show();return;}
         FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);
         appFrame.addView(host,new FrameLayout.LayoutParams(1,1));
-        ProgressDialog progress=new ProgressDialog(this);progress.setTitle("正在冻结整份纸面");progress.setMessage("渲染 PDF 页面…");progress.setCancelable(false);
+        ProgressDialog progress=new ProgressDialog(this);progress.setTitle(getString(R.string.core_pdf_freeze_title));progress.setMessage(getString(R.string.core_pdf_rendering));progress.setCancelable(false);
         AtomicBoolean cancelled=new AtomicBoolean(false),finished=new AtomicBoolean(false),started=new AtomicBoolean(false);
         Future<?>[] future={null};
         Runnable cleanup=()->{if(!finished.compareAndSet(false,true))return;snapshot.close();if(host.getParent()==appFrame)appFrame.removeView(host);if(progress.isShowing())progress.dismiss();};
-        progress.setButton(ProgressDialog.BUTTON_NEGATIVE,"取消",(dialog,which)->{cancelled.set(true);snapshot.close();Future<?> running=future[0];if(running!=null&&running.cancel(true)&&!started.get()){cleanup.run();}});
+        progress.setButton(ProgressDialog.BUTTON_NEGATIVE,getString(R.string.core_cancel),(dialog,which)->{cancelled.set(true);snapshot.close();Future<?> running=future[0];if(running!=null&&running.cancel(true)&&!started.get()){cleanup.run();}});
         progress.show();
         File[] produced={null};
         try { future[0]=storageExecutor.submit(()->{
@@ -1645,20 +1695,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 File output=File.createTempFile("paper-",".pdf",directory);produced[0]=output;
                 try(OutputStream stream=new FileOutputStream(output)){
                     PdfNoteIO.exportFlattenedPdf(snapshot,host,stream,new Handler(Looper.getMainLooper()),
-                            (page,total)->runOnUiThread(()->{if(progress.isShowing())progress.setMessage("正在渲染第 "+page+" / "+total+" 页…");}),cancelled::get);
+                            (page,total)->runOnUiThread(()->{if(progress.isShowing())progress.setMessage(getString(R.string.core_pdf_rendering_page,page,total));}),cancelled::get);
                 }
                 if(cancelled.get()||Thread.currentThread().isInterrupted())throw new PdfNoteIO.ExportCancelledException();
-                if(output.length()<8||output.length()>PdfNoteIO.MAX_PDF_BYTES)throw new java.io.IOException("导出 PDF 无效或超过上限");
+                if(output.length()<8||output.length()>PdfNoteIO.MAX_PDF_BYTES)throw new java.io.IOException(getString(R.string.core_pdf_invalid_error));
             } catch(Exception error){failure=error;}
-            catch(OutOfMemoryError error){failure=new java.io.IOException("PDF 渲染内存不足",error);}
+            catch(OutOfMemoryError error){failure=new java.io.IOException(getString(R.string.core_pdf_oom_error),error);}
             final Exception result=failure;runOnUiThread(()->{
                 cleanup.run();
-                if(result!=null){if(produced[0]!=null)produced[0].delete();if(!cancelled.get())Toast.makeText(this,"PDF 未完成（未分享或发送）："+safeError(result),Toast.LENGTH_LONG).show();return;}
-                if(!isPaperRevisionCurrent(capture)){if(produced[0]!=null)produced[0].delete();Toast.makeText(this,"笔记在冻结 PDF 期间发生变化，未分享或发送；请重新打开入口",Toast.LENGTH_LONG).show();return;}
+                if(result!=null){if(produced[0]!=null)produced[0].delete();if(!cancelled.get())Toast.makeText(this,getString(R.string.core_pdf_incomplete_error,safeError(result)),Toast.LENGTH_LONG).show();return;}
+                if(!isPaperRevisionCurrent(capture)){if(produced[0]!=null)produced[0].delete();Toast.makeText(this,getString(R.string.core_pdf_changed_while_freezing),Toast.LENGTH_LONG).show();return;}
                 onSuccess.accept(new FrozenPaper(produced[0],capture));
             });
         }); } catch(java.util.concurrent.RejectedExecutionException rejected) {
-            cleanup.run();Toast.makeText(this,"导出任务无法启动（未分享或发送）",Toast.LENGTH_LONG).show();
+            cleanup.run();Toast.makeText(this,getString(R.string.core_pdf_task_start_failed),Toast.LENGTH_LONG).show();
         }
     }
 
@@ -1669,16 +1719,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showNoteVideoHub(NoteStore.Entry source) {
-        if (source == null) { Toast.makeText(this, "找不到原笔记", Toast.LENGTH_SHORT).show(); return; }
+        if (source == null) { Toast.makeText(this, getString(R.string.core_video_hub_no_source), Toast.LENGTH_SHORT).show(); return; }
         String[] actions = android.os.Build.VERSION.SDK_INT>=27
-                ?new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频", "待处理关联视频"}
-                :new String[]{"生成讲解视频", "本笔记任务历史", "已关联视频"};
+                ?new String[]{getString(R.string.core_video_hub_generate),getString(R.string.core_video_hub_history),getString(R.string.core_video_hub_attached),getString(R.string.core_video_hub_pending)}
+                :new String[]{getString(R.string.core_video_hub_generate),getString(R.string.core_video_hub_history),getString(R.string.core_video_hub_attached)};
         ChoiceRows.builder(this).setTitle(source.title).setAdapter(ChoiceRows.adapter(this, actions), (dialog, which) -> {
             if (which == 0) startVideoForOriginalNote(source);
             else if (which == 1) newVideoTaskDialogs().showForNote(source.id);
             else if(which==2)showVideoAttachments(source);
             else if(android.os.Build.VERSION.SDK_INT>=27)showPendingVideoArtifacts(source.id);
-        }).setNegativeButton("关闭", null).show();
+        }).setNegativeButton(getString(R.string.core_close), null).show();
     }
 
     private AgentTaskDialogs newVideoTaskDialogs() {
@@ -1715,7 +1765,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showVideoAttachments(NoteStore.Entry source) {
-        if(source==null){Toast.makeText(this,"原笔记已不存在；无法从笔记入口管理附件",Toast.LENGTH_LONG).show();return;}
+        if(source==null){Toast.makeText(this,getString(R.string.core_video_source_deleted),Toast.LENGTH_LONG).show();return;}
         showVideoAttachments(source.id,source.title,source);
     }
 
@@ -1725,31 +1775,31 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 VideoActionList loaded=readVideoActionList(noteId,title);
                 List<VideoAttachmentStore.Attachment> values=loaded.values;
                 runOnUiThread(()->{
-                    if(values.isEmpty()){new AlertDialog.Builder(this).setTitle("已关联视频")
-                            .setMessage("这份笔记还没有本机离线视频。生成任务并下载校验成果后，可在任务产物菜单中关联。")
-                            .setNegativeButton("关闭",null).show();return;}
+                    if(values.isEmpty()){new AlertDialog.Builder(this).setTitle(R.string.core_video_attached_title)
+                            .setMessage(R.string.core_video_attached_empty)
+                            .setNegativeButton(getString(R.string.core_close),null).show();return;}
                     String[] labels=new String[values.size()];for(int i=0;i<labels.length;i++){
                         VideoAttachmentStore.Attachment a=values.get(i);boolean stale=VideoAttachmentStore.isSourceStale(source,a);
-                        labels[i]=a.name+" · "+(source==null?"原笔记已删除":stale?"来源已更新，旧快照":"修订 "+a.sourceRevision)+" · "+formatBytes(a.sizeBytes);}
-                    ChoiceRows.builder(this).setTitle((source==null?"原笔记已删除 · ":title+" · ")+"已关联视频（本机离线）")
+                        labels[i]=a.name+" · "+(source==null?getString(R.string.core_video_source_deleted):stale?getString(R.string.core_video_source_updated):getString(R.string.core_video_revision,a.sourceRevision))+" · "+formatBytes(a.sizeBytes);}
+                    ChoiceRows.builder(this).setTitle((source==null?getString(R.string.core_video_source_deleted)+" · ":title+" · ")+getString(R.string.core_video_attached_title)+" ("+getString(R.string.core_offline)+")")
                             .setAdapter(ChoiceRows.adapter(this, labels),(d,w)->showAttachedVideoActions(new VideoActionSelection(loaded.base,values.get(w))))
-                            .setNegativeButton("关闭",null).show();
+                            .setNegativeButton(getString(R.string.core_close),null).show();
                 });
-            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"无法验证笔记视频；没有读取或修改附件",Toast.LENGTH_LONG).show());}
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,getString(R.string.core_video_verify_no_change),Toast.LENGTH_LONG).show());}
         });
     }
 
     private void showAttachedVideoActions(VideoActionSelection selection){
         VideoAttachmentStore.Attachment attachment=selection.attachment;
         ChoiceRows.builder(this).setTitle(attachment.name)
-                .setAdapter(ChoiceRows.adapter(this, new String[]{"离线播放","另存到文件","另存后分享","移除本笔记关联"}),(d,w)->{
+                .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_video_attachment_menu_play),getString(R.string.core_video_attachment_menu_save),getString(R.string.core_video_attachment_menu_share),getString(R.string.core_video_attachment_menu_remove)}),(d,w)->{
                     if(w==0)playAttachedVideo(selection);
                     else if(w==1||w==2)launchSaveAttachedVideo(selection,w==2);
-                    else new AlertDialog.Builder(this).setTitle("移除视频关联？")
+                    else new AlertDialog.Builder(this).setTitle(R.string.core_video_remove_title)
                             .setMessage(selection.base.grouped
-                                    ?"这会从当前笔记版本移除视频关联；旧版本仍保留该视频。"
-                                    :"这会移除本机视频文件和本笔记的关联；已另存到其他位置的副本不受影响。")
-                            .setNegativeButton("取消",null).setPositiveButton("移除",(confirm,which)->removeVideoSelection(selection)).show();
+                                    ?getString(R.string.core_video_remove_grouped)
+                                    :getString(R.string.core_video_remove_regular))
+                            .setNegativeButton(getString(R.string.core_cancel),null).setPositiveButton(R.string.core_remove,(confirm,which)->removeVideoSelection(selection)).show();
                 }).show();
     }
 
@@ -1759,13 +1809,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             try{File verified=openVideoSelection(selection);runOnUiThread(()->{
                 VideoView player=new VideoView(this);player.setMediaController(new android.widget.MediaController(this));
                 AlertDialog dialog=new AlertDialog.Builder(this).setTitle(attachment.name).setView(player)
-                        .setPositiveButton("关闭",null).create();
+                        .setPositiveButton(getString(R.string.core_close),null).create();
                 showVideoPlayer(player,dialog,()->{});
                 player.setVideoURI(android.net.Uri.fromFile(verified));
             });}catch(Exception error){
                 java.util.function.Consumer<Exception> testSink=videoAttachmentFailureForTest;
                 if(testSink!=null)testSink.accept(error);
-                runOnUiThread(()->Toast.makeText(this,"离线视频无法校验或打开："+safeError(error),Toast.LENGTH_LONG).show());
+                runOnUiThread(()->Toast.makeText(this,getString(R.string.core_video_play_error,safeError(error)),Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -1784,10 +1834,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void startVideoForOriginalNote(NoteStore.Entry source) {
         VaultStore.VaultNote prepared = findPreparedVideoSource(source.id);
         if (prepared == null) {
-            new AlertDialog.Builder(this).setTitle("先整理笔记材料")
-                    .setMessage("当前笔记还没有已整理的文字材料。本次视频流程只发送已整理文本，不会把手写墨迹、图片或选区当作已发送材料。可以先使用现有整理流程，完成后再从格式笔记生成视频。")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("开始整理", (d, w) -> openNoteThenDigitize(source)).show();
+            new AlertDialog.Builder(this).setTitle(R.string.core_video_unavailable_title)
+                    .setMessage(R.string.core_video_unavailable_message)
+                    .setNegativeButton(getString(R.string.core_cancel), null)
+                    .setPositiveButton(R.string.core_start_organizing, (d, w) -> openNoteThenDigitize(source)).show();
             return;
         }
         showVideoTaskDialog(prepared, source);
@@ -1796,43 +1846,43 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** Collects the small amount of human intent an explainer Agent cannot infer from notes. */
     private void showVideoTaskDialog(VaultStore.VaultNote note, NoteStore.Entry sourceEntry) {
         if (sourceEntry == null || !sourceEntry.id.equals(note.noteId)) {
-            Toast.makeText(this, "找不到来源手写笔记；不能创建关联任务", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.core_video_source_task_missing), Toast.LENGTH_LONG).show();
             return;
         }
         LinearLayout body = verticalPanel();
         EditText audience = new EditText(this);
-        audience.setHint("例如：高中生");
+        audience.setHint(getString(R.string.core_video_audience_hint));
         audience.setSingleLine(true);
-        audience.setText("希望理解这份笔记的学习者");
-        body.addView(labeledField("面向谁", audience));
+        audience.setText(R.string.core_video_audience_default);
+        body.addView(labeledField(getString(R.string.core_video_audience_label), audience));
         EditText goal = new EditText(this);
-        goal.setHint("例如：看完后能解释核心概念");
+        goal.setHint(getString(R.string.core_video_goal_hint));
         goal.setSingleLine(true);
-        goal.setText("理解并记住这份笔记的核心概念");
-        body.addView(labeledField("讲完要达到什么", goal));
+        goal.setText(R.string.core_video_goal_default);
+        body.addView(labeledField(getString(R.string.core_video_goal_label), goal));
         EditText duration = new EditText(this);
         duration.setInputType(InputType.TYPE_CLASS_NUMBER);
         duration.setSingleLine(true);
         duration.setText("120");
-        body.addView(labeledField("目标时长（秒）", duration));
+        body.addView(labeledField(getString(R.string.core_video_duration_label), duration));
         new AlertDialog.Builder(this)
-                .setTitle("生成讲解视频任务")
-                .setMessage("本次只发送这份已整理文本，不包含原手写、图片或选区。确认后会固定正文、来源修订和摘要；视频生成仍需你在电脑上审阅并明确批准。任务包不含 API Key。")
+                .setTitle(R.string.core_video_task_title)
+                .setMessage(R.string.core_video_task_policy)
                 .setView(body)
-                .setNegativeButton("取消", null)
-                .setNeutralButton("发送到电脑", (dialog, which) -> {
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setNeutralButton(R.string.core_video_send_computer, (dialog, which) -> {
                     String selectedAudience = audience.getText().toString().trim();
                     String selectedGoal = goal.getText().toString().trim();
                     int selectedDuration = parseVideoDuration(duration.getText().toString());
                     captureVideoBundle(note, sourceEntry, selectedAudience, selectedGoal,
                             selectedDuration, frozen -> {
                                 AgentTaskDialogs tasks = newVideoTaskDialogs();
-                                tasks.chooseAndSubmitBundle("生成讲解视频 · " + note.title,
-                                        "请按任务包 request.json 先生成分镜和审阅产物，等待用户确认，不开始完整视频渲染。",
+                                tasks.chooseAndSubmitBundle(getString(R.string.core_video_task_request_title,note.title),
+                                        getString(R.string.core_video_task_request),
                                         frozen.noteId, frozen.noteRevision, frozen::copyBytes);
                             });
                 })
-                .setPositiveButton("导出任务包", (dialog, which) -> {
+                .setPositiveButton(R.string.core_video_export_bundle, (dialog, which) -> {
                     captureVideoBundle(note, sourceEntry, audience.getText().toString().trim(),
                             goal.getText().toString().trim(),
                             parseVideoDuration(duration.getText().toString()),
@@ -1847,13 +1897,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             try {
                 NoteStore.Entry before = findNoteEntry(source.noteId);
-                if (before == null) throw new IllegalStateException("来源手写笔记已删除，不能创建视频任务");
+                if (before == null) throw new IllegalStateException(getString(R.string.core_video_task_source_missing));
                 String markdown = vaultStore.read(source.fileName);
                 VideoTaskBundleIO.FrozenBundle frozen = VideoTaskBundleIO.freeze(source.noteId,
                         source.sourceModifiedAt > 0 ? source.sourceModifiedAt : before.updatedAt,
                         source.title, markdown,
-                        audience.isEmpty() ? "希望理解这份笔记的学习者" : audience,
-                        goal.isEmpty() ? "理解并记住这份笔记的核心概念" : goal,
+                        audience.isEmpty() ? getString(R.string.core_video_audience_default) : audience,
+                        goal.isEmpty() ? getString(R.string.core_video_goal_default) : goal,
                         duration, "zh-CN-neutral", 1f);
                 String markdownAfterFreeze=vaultStore.read(source.fileName);
                 if(!markdown.equals(markdownAfterFreeze))throw new IllegalStateException(
@@ -1866,7 +1916,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 boolean outdated = source.sourceModifiedAt <= 0 || source.sourceModifiedAt != after.updatedAt;
                 runOnUiThread(() -> confirmFrozenVideoBundle(source, after, frozen, outdated, continuation));
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this, "无法冻结视频材料：" + safeError(error), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> Toast.makeText(this, getString(R.string.core_video_freeze_error,safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -1874,10 +1924,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void confirmFrozenVideoBundle(VaultStore.VaultNote source, NoteStore.Entry current,
                                           VideoTaskBundleIO.FrozenBundle frozen, boolean outdated,
                                           Consumer<VideoTaskBundleIO.FrozenBundle> continuation) {
-        String revision = frozen.noteRevision + " · 文本 SHA-256 " + frozen.contentSha256;
+        String revision = getString(R.string.core_video_revision_digest,frozen.noteRevision,frozen.contentSha256);
         LinearLayout preview = verticalPanel();
-        preview.addView(text("来源笔记：" + current.title + "\n已整理源修订：" + revision
-                + (outdated ? "\n\n原笔记已更新；下方仍是当前选择的旧整理文本。继续只会发送这份固定快照，不会自动换成新内容。" : ""),
+        preview.addView(text(getString(R.string.core_video_frozen_source,current.title,revision,
+                outdated ? "\n\n"+getString(R.string.core_video_frozen_outdated) : ""),
                 12, SECONDARY_TEXT), matchWrap());
         TextView contents = text(sourceMarkdownForPreview(frozen), 12, INK_COLOR);
         contents.setTextIsSelectable(true);
@@ -1888,14 +1938,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         preview.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle("确认本次视频材料")
+                .setTitle(R.string.core_video_frozen_title)
                 .setView(preview)
-                .setNegativeButton("取消", null);
+                .setNegativeButton(getString(R.string.core_cancel), null);
         if (outdated) {
-            builder.setNeutralButton("返回原笔记并重新整理", (d, w) -> openNoteThenDigitize(current));
-            builder.setPositiveButton("保留这份快照", (d, w) -> revalidateFrozenSource(source,current,frozen,continuation));
+            builder.setNeutralButton(R.string.core_video_return_reorganize, (d, w) -> openNoteThenDigitize(current));
+            builder.setPositiveButton(R.string.core_video_keep_snapshot, (d, w) -> revalidateFrozenSource(source,current,frozen,continuation));
         } else {
-            builder.setPositiveButton("确认使用", (d, w) -> revalidateFrozenSource(source,current,frozen,continuation));
+            builder.setPositiveButton(R.string.core_video_confirm_use, (d, w) -> revalidateFrozenSource(source,current,frozen,continuation));
         }
         builder.show();
     }
@@ -1913,14 +1963,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         !prepared.fileName.equals(latestPrepared.fileName)||
                         !frozen.markdownPreview().equals(vaultStore.read(latestPrepared.fileName));
                 runOnUiThread(()->{
-                    if(changed)new AlertDialog.Builder(this).setTitle("原材料已更新")
-                            .setMessage("当前笔记或已整理文本与任务快照不同。可以继续使用已确认的旧快照，也可以返回笔记重新整理；不会自动替换快照内容。")
-                            .setNegativeButton("取消",null)
-                            .setNeutralButton("返回笔记",(d,w)->openNoteThenDigitize(latest))
-                            .setPositiveButton("使用旧快照",(d,w)->continuation.accept(frozen)).show();
+                    if(changed)new AlertDialog.Builder(this).setTitle(R.string.core_video_source_changed_title)
+                            .setMessage(R.string.core_video_source_changed_message)
+                            .setNegativeButton(getString(R.string.core_cancel),null)
+                            .setNeutralButton(R.string.core_video_return_note,(d,w)->openNoteThenDigitize(latest))
+                            .setPositiveButton(R.string.core_video_use_old_snapshot,(d,w)->continuation.accept(frozen)).show();
                     else continuation.accept(frozen);
                 });
-            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"无法确认来源状态："+safeError(error),Toast.LENGTH_LONG).show());}
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,getString(R.string.core_video_source_verify_error,safeError(error)),Toast.LENGTH_LONG).show());}
         });
     }
 
@@ -1938,7 +1988,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void launchAgentPairingQr() {
         new IntentIntegrator(this).setDesiredBarcodeFormats(
                         java.util.Collections.singletonList(IntentIntegrator.QR_CODE))
-                .setPrompt("扫描电脑连接助手显示的二维码")
+                .setPrompt(getString(R.string.core_agent_qr_scan_prompt))
                 .setBeepEnabled(false).setOrientationLocked(false).initiateScan();
     }
 
@@ -1946,7 +1996,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                                    AgentTaskStore.Artifact artifact) {
         if ("video/mp4".equals(artifact.mediaType)) {
             ChoiceRows.builder(this).setTitle(artifact.name)
-                    .setAdapter(ChoiceRows.adapter(this, new String[]{"播放已校验视频", "保存到文件", "保存后分享", "关联到来源笔记"}), (dialog, which) -> {
+                    .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_agent_video_play), getString(R.string.core_agent_save_file),
+                            getString(R.string.core_agent_save_share), getString(R.string.core_agent_attach_source)}), (dialog, which) -> {
                         if (which == 0) playAgentVideo(task, artifact);
                         else if(which==3) attachAgentArtifact(task,artifact);
                         else launchAgentArtifactSave(task, artifact, which == 2);
@@ -1957,7 +2008,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void attachAgentArtifact(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact) {
-        if(task.noteId==null||task.noteId.isEmpty()){Toast.makeText(this,"此任务没有来源笔记",Toast.LENGTH_LONG).show();return;}
+        if(task.noteId==null||task.noteId.isEmpty()){Toast.makeText(this,getString(R.string.core_video_task_without_note),Toast.LENGTH_LONG).show();return;}
         storageExecutor.execute(()->{
             try{
                 NoteStore.Entry source=findNoteEntry(task.noteId);
@@ -1965,7 +2016,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 VideoActionBase base=captureVideoActionBase(task.noteId,source.title);
                 runOnUiThread(()->confirmAgentArtifactAttach(task,artifact,base));
             }catch(Exception error){
-                runOnUiThread(()->Toast.makeText(this,"无法验证来源笔记当前版本；视频没有下载或关联。",Toast.LENGTH_LONG).show());
+                runOnUiThread(()->Toast.makeText(this,getString(R.string.core_video_source_verify_no_change),Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -2016,10 +2067,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     }
                 }
                 committed=true;
-                String success="视频已校验并关联到原笔记："+metadata.name;
+                String success=getString(R.string.core_video_attach_success,metadata.name);
                 if(operation!=null){
                     try{pendingStore.remove(operation);}
-                    catch(Exception cleanup){success+="；待处理副本仍保留，请在书架的待处理视频中检查";}
+                    catch(Exception cleanup){success=getString(R.string.core_video_attach_success_cleanup);}
                 }
                 String shown=success;runOnUiThread(()->Toast.makeText(this,shown,Toast.LENGTH_LONG).show());
             }catch(Exception error){
@@ -2050,13 +2101,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     }
                 }
                 final String message;
-                if(alreadyPublished)message=pendingCleared?"已在当前笔记版本确认这份视频；重复结果已安全收拢。":
-                        "已确认视频在当前笔记版本中；待处理副本清理未完成，请在书架的待处理视频中检查。";
-                else if(durable&&payloadAvailable)message="附加状态未确认；已校验结果保存在书架的待处理视频中。请先检查当前笔记，再决定是否重试。";
-                else if(payloadAvailable)message="附加状态未确认；视频字节当前可校验，但持久性未确认，请立即另存。任务产物也仍在任务历史。";
-                else if(durable)message="下载或关联未完成；待处理列表保留了状态记录，原任务产物仍可从任务历史重新打开。";
-                else if(temporary!=null||reservedApi)message="视频尚未完成关联；任务产物仍可从任务历史重新打开。未验证的本地文件不会显示为已保存。";
-                else message="附加状态未确认；请从任务历史重新打开视频产物并检查当前笔记。";
+                if(alreadyPublished)message=pendingCleared?getString(R.string.core_pending_link_confirmed_repeat):
+                        getString(R.string.core_pending_link_cleanup_failed);
+                else if(durable&&payloadAvailable)message=getString(R.string.core_pending_verified_message);
+                else if(payloadAvailable)message=getString(R.string.core_pending_durable_message);
+                else if(durable||temporary!=null||reservedApi)message=getString(R.string.core_pending_unverified_message);
+                else message=getString(R.string.core_pending_verify_error);
                 final String shown=message;
                 runOnUiThread(()->Toast.makeText(this,shown,Toast.LENGTH_LONG).show());
             }finally{
@@ -2067,14 +2117,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void confirmAgentArtifactAttach(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
             VideoActionBase base){
-        String version=base.grouped?"当前版本 "+base.revision.substring(0,Math.min(12,base.revision.length())):"当前本机笔记";
+        String version=base.grouped?getString(R.string.core_video_current_revision,
+                base.revision.substring(0,Math.min(12,base.revision.length()))):
+                getString(R.string.core_video_current_local_note);
         String failureOutcome=android.os.Build.VERSION.SDK_INT>=27
-                ?"若下载期间笔记更新，本次关联会取消，视频会保留在待处理列表。"
-                :"若下载期间笔记更新，本次关联会取消；视频仍可从任务历史重新打开。";
-        new AlertDialog.Builder(this).setTitle("关联已校验视频")
-                .setMessage("将任务产物“"+artifact.name+"”关联到“"+base.title+"”的"+version+"。"+failureOutcome)
-                .setNegativeButton("取消",null)
-                .setPositiveButton("下载并关联",(dialog,which)->downloadAndAttachAgentArtifact(task,artifact,base)).show();
+                ?getString(R.string.core_video_attach_confirm_grouped_note_changed)
+                :getString(R.string.core_video_attach_confirm_local_note_changed);
+        new AlertDialog.Builder(this).setTitle(R.string.core_video_attach_confirm_title)
+                .setMessage(getString(R.string.core_video_attach_confirm_message,
+                        artifact.name,base.title,version,failureOutcome))
+                .setNegativeButton(getString(R.string.core_cancel),null)
+                .setPositiveButton(R.string.core_video_attach_confirm_button,(dialog,which)->downloadAndAttachAgentArtifact(task,artifact,base)).show();
     }
 
     private void launchAgentArtifactSave(AgentTaskStore.Task task, AgentTaskStore.Artifact artifact,
@@ -2102,13 +2155,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     VideoView player = new VideoView(this);
                     player.setMediaController(new android.widget.MediaController(this));
                     AlertDialog dialog = new AlertDialog.Builder(this).setTitle(artifact.name)
-                            .setView(player).setPositiveButton("关闭", null).create();
+                            .setView(player).setPositiveButton(getString(R.string.core_close), null).create();
                     showVideoPlayer(player,dialog,ready::delete);
                     player.setVideoURI(android.net.Uri.fromFile(ready));
                 });
             } catch (Exception error) {
                 if (verified != null) verified.delete();
-                runOnUiThread(() -> Toast.makeText(this, "视频下载或校验失败：" + safeError(error),
+                runOnUiThread(() -> Toast.makeText(this, getString(R.string.core_video_attachment_download_error, safeError(error)),
                         Toast.LENGTH_LONG).show());
             }
         });
@@ -2133,7 +2186,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         });
         player.setOnErrorListener((media,what,extra)->{
             if(dialog.isShowing()&&!isFinishing()&&!isDestroyed())
-                Toast.makeText(this,"视频解码失败，可另存后用其他播放器打开",Toast.LENGTH_LONG).show();
+                Toast.makeText(this,getString(R.string.core_video_decode_failed),Toast.LENGTH_LONG).show();
             return true;
         });
         dialog.show();
@@ -2171,8 +2224,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         applyPressFeedback(card, 20f);
         card.setClickable(true);
         card.setFocusable(true);
-        card.setContentDescription("打开笔记 " + entry.title
-                + "。长按可重命名或更换封面。");
+        card.setContentDescription(getString(R.string.core_note_card_open_desc, entry.title));
         card.setOnClickListener(view -> openNote(entry));
         card.setOnLongClickListener(view -> {
             showNoteMoreMenu(entry);
@@ -2181,13 +2233,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
         Bitmap cover = lastShelfCovers.get(entry.id);
         FrameLayout coverSlot = new FrameLayout(this);
-        coverSlot.setContentDescription("笔记封面槽位");
+        coverSlot.setContentDescription(getString(R.string.core_note_cover_slot));
         shelfCoverSlots.put(entry.id, coverSlot);
         if (cover != null) {
             ImageView image = new ImageView(this);
             image.setImageBitmap(cover);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            image.setContentDescription("笔记封面");
+            image.setContentDescription(getString(R.string.core_note_cover_alt));
             coverSlot.addView(image, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         } else {
@@ -2202,24 +2254,26 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setMaxLines(2);
         card.addView(title);
-        String date = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+        Locale locale = getResources().getConfiguration().getLocales().get(0);
+        String date = java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT, java.text.DateFormat.SHORT, locale)
                 .format(new Date(entry.updatedAt));
-        TextView meta = text(entry.pageCount + " 页 · " + entry.strokeCount + " 笔 · " + date,
-                12, SECONDARY_TEXT);
+        TextView meta = text(getString(R.string.core_note_card_meta,
+                entry.pageCount, entry.strokeCount, date), 12, SECONDARY_TEXT);
         meta.setPadding(0, dp(4), 0, 0);
         card.addView(meta);
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.BOTTOM);
-        Button open = pillButton("打开", BUTTON_TONAL);
+        Button open = pillButton(getString(R.string.core_vault_open_action), BUTTON_TONAL);
         open.setOnClickListener(view -> openNote(entry));
-        actions.addView(open, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        actions.addView(open, new LinearLayout.LayoutParams(0, dp(48), 1f));
         Button more = pillButton("⋮", BUTTON_QUIET);
         more.setTextSize(16);
-        more.setContentDescription("笔记更多操作：重命名、导出、转为格式笔记、删除");
+        more.setContentDescription(getString(R.string.core_note_card_more_desc));
         more.setOnClickListener(view -> showNoteMoreMenu(entry));
-        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(44), dp(38));
+        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(48), dp(48));
         moreParams.leftMargin = dp(8);
         actions.addView(more, moreParams);
         LinearLayout.LayoutParams actionsParams = matchWrap();
@@ -2244,43 +2298,55 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         pendingCoverNoteId=noteId;pendingCoverGroupRevision=null;pendingCoverGroupDigest=null;
         if(noteId!=null)try{com.padnote.android.streaming.StreamingGroupStore.Snapshot base=new NoteGroupFacade(this).openGroup(noteId);
             if(base!=null){pendingCoverGroupRevision=base.revision;pendingCoverGroupDigest=base.digest;}}
-        catch(Exception error){Toast.makeText(this,"无法确认封面目标版本",Toast.LENGTH_LONG).show();return;}
+        catch(Exception error){Toast.makeText(this,getString(R.string.cover_target_version_error),Toast.LENGTH_LONG).show();return;}
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(14), dp(24), dp(6));
 
-        body.addView(sectionCaption("内置封面"));
+        body.addView(sectionCaption(getString(R.string.cover_builtin_section)));
         body.addView(horizontalThumbStrip(CoverStore.builtinPresets(), noteId),
                 matchWrap());
 
         List<CoverStore.Preset> userPresets = CoverStore.userPresets(this);
         if (!userPresets.isEmpty()) {
-            TextView userLabel = sectionCaption("我的预设");
+            TextView userLabel = sectionCaption(getString(R.string.cover_user_presets_section));
             userLabel.setPadding(0, dp(14), 0, 0);
             body.addView(userLabel);
             body.addView(horizontalThumbStrip(userPresets, noteId), matchWrap());
         }
 
-        Button importButton = pillButton("从相册导入封面…", BUTTON_TONAL);
+        Button importButton = pillButton(getString(R.string.cover_import_button), BUTTON_TONAL);
         importButton.setOnClickListener(view -> launchImportCover(noteId));
         LinearLayout.LayoutParams importParams = matchWrap();
         importParams.topMargin = dp(16);
         body.addView(importButton, importParams);
         if (noteId == null) {
-            TextView hint = text("导入的图片可以在下一步加入预设，供以后新建时选用。",
+            TextView hint = text(getString(R.string.cover_import_hint),
                     11, FAINT_TEXT);
             hint.setPadding(0, dp(8), 0, 0);
             body.addView(hint);
         }
 
         android.app.Dialog dialog = new AlertDialog.Builder(this)
-                .setTitle(noteId == null ? "为新笔记选封面" : "更换封面")
+                .setTitle(noteId == null ? getString(R.string.cover_new_note_title) : getString(R.string.cover_change_title))
                 .setView(body)
-                .setNegativeButton("完成", null)
+                .setNegativeButton(getString(R.string.core_done), null)
                 .create();
         dialog.setOnDismissListener(ignored -> coverPickerDialog = null);
         coverPickerDialog = dialog;
         dialog.show();
+    }
+
+    private String localizedCoverPresetLabel(CoverStore.Preset preset) {
+        switch (preset.id) {
+            case "builtin-ruled": return getString(R.string.cover_preset_cream_ruled);
+            case "builtin-grid": return getString(R.string.cover_preset_light_blue_grid);
+            case "builtin-dots": return getString(R.string.cover_preset_forest_dots);
+            case "builtin-blue": return getString(R.string.cover_preset_writing_blue);
+            case "builtin-vault": return getString(R.string.cover_preset_knowledge_green);
+            case "builtin-ochre": return getString(R.string.cover_preset_ochre);
+            default: return preset.label;
+        }
     }
 
     private View horizontalThumbStrip(List<CoverStore.Preset> presets, String noteId) {
@@ -2289,9 +2355,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         int padding = dp(4);
         row.setPadding(0, padding, 0, 0);
         for (CoverStore.Preset preset : presets) {
-            row.addView(coverThumb(preset.bitmap, preset.label, () -> {
+            String displayLabel = localizedCoverPresetLabel(preset);
+            row.addView(coverThumb(preset.bitmap, displayLabel, () -> {
                 Bitmap copy = preset.bitmap.copy(preset.bitmap.getConfig(), false);
-                applyCoverChoice(noteId, copy, preset.label);
+                applyCoverChoice(noteId, copy, displayLabel);
                 if (coverPickerDialog != null) {
                     coverPickerDialog.dismiss();
                 }
@@ -2322,7 +2389,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         ImageView image = new ImageView(this);
         image.setImageBitmap(bitmap);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setContentDescription("封面：" + label);
+        image.setContentDescription(getString(R.string.cover_accessibility_label, label));
         frame.addView(image, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.setOnClickListener(view -> onPicked.run());
@@ -2346,7 +2413,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             pendingNewNoteCover = bitmap;
             pendingNewNoteCoverLabel = label;
             updateNewNoteCoverStatus();
-            Toast.makeText(this, "已选封面：" + label, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.cover_selected, label), Toast.LENGTH_SHORT).show();
             return;
         }
         final String revision=noteId.equals(pendingCoverNoteId)?pendingCoverGroupRevision:null;
@@ -2361,7 +2428,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             } catch (Exception error) {
                 coverMutationResult="FAILED";coverMutationFailure=error.getClass().getSimpleName()+":"+safeError(error);
                 runOnUiThread(() -> Toast.makeText(this,
-                        "封面保存失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.cover_save_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -2376,23 +2443,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             else CoverStore.remove(this,noteId);
             coverMutationResult="PUBLISHED";runOnUiThread(this::refreshBookshelf);
         }catch(Exception error){coverMutationResult="FAILED";coverMutationFailure=error.getClass().getSimpleName()+":"+safeError(error);
-            runOnUiThread(()->Toast.makeText(this,"封面未移除："+safeError(error),Toast.LENGTH_LONG).show());}});
+            runOnUiThread(()->Toast.makeText(this,getString(R.string.cover_remove_failed, safeError(error)),Toast.LENGTH_LONG).show());}});
     }
 
     private void promptAddToPresets(Bitmap bitmap) {
         new AlertDialog.Builder(this)
-                .setTitle("把这张图加入预设封面？")
-                .setMessage("加入后，新建笔记和其他笔记都能直接选用它。")
-                .setNegativeButton("不用", null)
-                .setPositiveButton("加入预设", (dialog, which) ->
+                .setTitle(getString(R.string.cover_preset_confirm_title))
+                .setMessage(getString(R.string.cover_preset_confirm_message))
+                .setNegativeButton(getString(R.string.cover_preset_decline), null)
+                .setPositiveButton(getString(R.string.cover_preset_add_button), (dialog, which) ->
                         storageExecutor.execute(() -> {
                     try {
                         CoverStore.addToPresets(this, bitmap);
                         runOnUiThread(() -> Toast.makeText(this,
-                                "已加入预设封面", Toast.LENGTH_SHORT).show());
+                                getString(R.string.cover_preset_added), Toast.LENGTH_SHORT).show());
                     } catch (Exception error) {
                         runOnUiThread(() -> Toast.makeText(this,
-                                "加入预设失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                                getString(R.string.cover_preset_add_failed, safeError(error)), Toast.LENGTH_LONG).show());
                     }
                 }))
                 .show();
@@ -2433,8 +2500,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showCreateNoteDialog() {
         EditText input = createNoteTitleInput(
-                pendingNewNoteTitle.isEmpty() ? "未命名笔记" : pendingNewNoteTitle,
-                "例如：数学笔记");
+                pendingNewNoteTitle.isEmpty() ? getString(R.string.core_unnamed_note) : pendingNewNoteTitle,
+                getString(R.string.core_note_title_hint));
         input.addTextChangedListener(new android.text.TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -2454,7 +2521,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         body.setOrientation(LinearLayout.VERTICAL);
         body.addView(createNoteDialogBodyWithStyle(input, choice), matchWrap());
 
-        TextView coverHeader = text("封面", 12, SECONDARY_TEXT);
+        TextView coverHeader = text(getString(R.string.core_cover), 12, SECONDARY_TEXT);
         coverHeader.setPadding(dp(24), dp(12), dp(24), 0);
         body.addView(coverHeader);
 
@@ -2463,7 +2530,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(dp(20), dp(6), dp(4), 0);
-        Button noneButton = pillButton("不用封面", pendingNewNoteCover == null
+        Button noneButton = pillButton(getString(R.string.core_no_cover), pendingNewNoteCover == null
                 ? BUTTON_TONAL : BUTTON_QUIET);
         noneButton.setOnClickListener(view -> {
             pendingNewNoteCover = null;
@@ -2484,7 +2551,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 updateNewNoteCoverStatus();
             }));
         }
-        Button moreButton = pillButton("更多…", BUTTON_QUIET);
+        Button moreButton = pillButton(getString(R.string.core_more), BUTTON_QUIET);
         moreButton.setOnClickListener(view -> showCoverPicker(null));
         LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(66));
@@ -2494,17 +2561,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         body.addView(strip, matchWrap());
 
-        newNoteCoverStatus = sectionCaption("封面：未使用");
+        newNoteCoverStatus = sectionCaption(getString(R.string.core_cover_status,getString(R.string.core_cover),getString(R.string.core_unused)));
         newNoteCoverStatus.setPadding(dp(24), dp(4), dp(24), dp(2));
         body.addView(newNoteCoverStatus);
         updateNewNoteCoverStatus();
 
         final Bitmap chosenCover = pendingNewNoteCover;
         new AlertDialog.Builder(this)
-                .setTitle("新建笔记")
+                .setTitle(getString(R.string.core_create_note))
                 .setView(body)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("创建", (dialog, which) ->
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_create), (dialog, which) ->
                         createNote(input.getText().toString(), choice.build(), chosenCover))
                 .show();
     }
@@ -2515,13 +2582,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         String shown;
         if (pendingNewNoteCover == null) {
-            shown = "未使用";
+            shown = getString(R.string.core_unused);
         } else if (pendingNewNoteCoverLabel.isEmpty()) {
-            shown = "自定义图片";
+            shown = getString(R.string.core_custom_image);
         } else {
             shown = pendingNewNoteCoverLabel;
         }
-        newNoteCoverStatus.setText("封面：" + shown);
+        newNoteCoverStatus.setText(getString(R.string.core_cover_status,getString(R.string.core_cover),shown));
     }
 
     /** Mutable selection backing the new-note style picker. */
@@ -2561,10 +2628,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.addView(options, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView styleLabel = text("纸张", 12, Color.rgb(103, 116, 126));
+        TextView styleLabel = text(getString(R.string.core_paper), 12, Color.rgb(103, 116, 126));
         options.addView(styleLabel);
         options.addView(styleSegmentedRow(
-                new String[]{"横线", "白纸", "方格", "点阵"},
+                new String[]{getString(R.string.core_lined), getString(R.string.core_blank), getString(R.string.core_grid), getString(R.string.core_dotted)},
                 index -> {
                     choice.paper = index == 1 ? PageStyle.Paper.BLANK
                             : index == 2 ? PageStyle.Paper.GRID
@@ -2573,27 +2640,27 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     preview.setStyle(choice.build());
                 }, 0));
 
-        TextView ratioLabel = text("比例", 12, Color.rgb(103, 116, 126));
+        TextView ratioLabel = text(getString(R.string.core_ratio), 12, Color.rgb(103, 116, 126));
         ratioLabel.setPadding(0, dp(12), 0, 0);
         options.addView(ratioLabel);
         options.addView(styleSegmentedRow(
-                new String[]{"适应屏幕", "A4"},
+                new String[]{getString(R.string.core_fit_screen), "A4"},
                 index -> {
                     choice.ratio = index == 1 ? PageStyle.Ratio.A4 : PageStyle.Ratio.SCREEN;
                     preview.setStyle(choice.build());
                 }, 0));
 
-        TextView orientationLabel = text("方向", 12, Color.rgb(103, 116, 126));
+        TextView orientationLabel = text(getString(R.string.core_orientation), 12, Color.rgb(103, 116, 126));
         orientationLabel.setPadding(0, dp(12), 0, 0);
         options.addView(orientationLabel);
         options.addView(styleSegmentedRow(
-                new String[]{"竖向", "横向"},
+                new String[]{getString(R.string.core_portrait), getString(R.string.core_landscape)},
                 index -> {
                     choice.landscape = index == 1;
                     preview.setStyle(choice.build());
                 }, 0));
 
-        TextView helper = text("创建后纸张样式不可更改", 12, Color.rgb(103, 116, 126));
+        TextView helper = text(getString(R.string.core_paper_immutable), 12, Color.rgb(103, 116, 126));
         helper.setPadding(dp(4), dp(14), dp(4), dp(4));
         body.addView(helper);
         return body;
@@ -2663,7 +2730,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "新建失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.core_note_create_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -2677,6 +2744,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        flushPendingAiInputDraft();
         pendingPaperHandoffAfterRestore = false;
         if (!entry.id.equals(currentNoteId)) pendingPaperHandoffAfterSave = false;
         if(!entry.id.equals(currentNoteId))pendingVideoHubAfterSave=false;
@@ -2729,7 +2797,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         ImageView image = new ImageView(this);
         image.setImageBitmap(cover);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setContentDescription("笔记封面");
+        image.setContentDescription(getString(R.string.core_note_cover_content_desc));
         plate.addView(image, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         return plate;
@@ -2738,30 +2806,33 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showNoteMoreMenu(NoteStore.Entry entry) {
         // Long-press and the ⋮ button both land here; the list adapts to whether
         // the note currently has a cover.
-        List<String> items = new ArrayList<>(java.util.Arrays.asList(
-                "重命名", "更换封面", "导出", "分享与交给 Agent", "转为格式笔记", "视频任务与成果", "删除"));
+        List<Integer> actions = new ArrayList<>(java.util.Arrays.asList(
+                R.string.core_rename_title, R.string.core_change_cover, R.string.core_export_note,
+                R.string.core_share_agent, R.string.core_convert_formatted_note,
+                R.string.core_video_tasks, R.string.core_delete));
         if (CoverStore.has(this, entry.id)) {
-            items.add(2, "移除封面");
+            actions.add(2, R.string.core_remove_cover);
         }
-        final List<String> labels = items;
+        String[] labels = new String[actions.size()];
+        for (int index = 0; index < actions.size(); index++) labels[index] = getString(actions.get(index));
         ChoiceRows.builder(this)
                 .setTitle(entry.title)
-                .setAdapter(ChoiceRows.adapter(this, labels.toArray(new String[0])), (dialog, which) -> {
-                    String label = labels.get(which);
-                    if ("重命名".equals(label)) {
+                .setAdapter(ChoiceRows.adapter(this, labels), (dialog, which) -> {
+                    int action = actions.get(which);
+                    if (action == R.string.core_rename_title) {
                         showRenameNoteDialog(entry);
-                    } else if ("更换封面".equals(label)) {
+                    } else if (action == R.string.core_change_cover) {
                         showCoverPicker(entry.id);
-                    } else if ("移除封面".equals(label)) {
+                    } else if (action == R.string.core_remove_cover) {
                         removeCoverForNote(entry.id);
-                    } else if ("导出".equals(label)) {
+                    } else if (action == R.string.core_export_note) {
                         launchExportNote(entry);
-                    } else if ("分享与交给 Agent".equals(label)) {
+                    } else if (action == R.string.core_share_agent) {
                         openNote(entry);
                         pendingPaperHandoffAfterRestore = true;
-                    } else if ("转为格式笔记".equals(label)) {
+                    } else if (action == R.string.core_convert_formatted_note) {
                         openNoteThenDigitize(entry);
-                    } else if ("视频任务与成果".equals(label)) {
+                    } else if (action == R.string.core_video_tasks) {
                         showNoteVideoHub(entry);
                     } else {
                         confirmDeleteNote(entry);
@@ -2773,15 +2844,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showRenameNoteDialog(NoteStore.Entry entry) {
         com.padnote.android.streaming.StreamingGroupStore.Snapshot groupBase=null;
         try{groupBase=new NoteGroupFacade(this).openGroup(entry.id);}
-        catch(Exception error){shelfRenameState="SOURCE_SNAPSHOT_FAILED";shelfRenameFailure=error.getClass().getSimpleName();Toast.makeText(this,"无法确认笔记版本",Toast.LENGTH_LONG).show();return;}
+        catch(Exception error){shelfRenameState="SOURCE_SNAPSHOT_FAILED";shelfRenameFailure=error.getClass().getSimpleName();Toast.makeText(this,getString(R.string.core_rename_version_error),Toast.LENGTH_LONG).show();return;}
         final com.padnote.android.streaming.StreamingGroupStore.Snapshot capturedBase=groupBase;
         shelfRenameState="DIALOG_SHOWN";shelfRenameFailure="NONE";
-        EditText input = createNoteTitleInput(entry.title, "输入新的笔记名称");
+        EditText input = createNoteTitleInput(entry.title, getString(R.string.core_rename_hint));
         new AlertDialog.Builder(this)
-                .setTitle("重命名笔记")
-                .setView(createNoteTitleDialogBody(input, "当前名称：" + entry.title))
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (dialog, which) -> {
+                .setTitle(R.string.core_rename_title)
+                .setView(createNoteTitleDialogBody(input, getString(R.string.core_rename_current_name,entry.title)))
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_save), (dialog, which) -> {
                     String title = input.getText().toString();
                     shelfRenameState="RENAME_PUBLISH_PENDING";
                     shelfRenameFailure="NONE";
@@ -2796,7 +2867,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             shelfRenameFailure=error.getClass().getSimpleName()+((code!=null&&code.matches("[A-Z0-9_]{1,64}"))?":"+code:"");
                             shelfRenameState="BASE_CAS_CONFLICT".equals(code)?"RENAME_FAILED_CONFLICT":"GROUP_NOTE_RETIRED".equals(code)?"RENAME_FAILED_RETIRED":"RENAME_FAILED";
                             runOnUiThread(() -> Toast.makeText(this,
-                                    "重命名失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                                    getString(R.string.core_rename_failed,safeError(error)), Toast.LENGTH_LONG).show());
                         }
                     });
                 })
@@ -2838,21 +2909,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void confirmDeleteNote(NoteStore.Entry entry) {
         com.padnote.android.streaming.StreamingGroupStore.Snapshot groupBase=null;
         try{groupBase=new NoteGroupFacade(this).openGroup(entry.id);}
-        catch(Exception error){shelfDeleteState="SOURCE_SNAPSHOT_FAILED";shelfDeleteFailure=error.getClass().getSimpleName();Toast.makeText(this,"无法核对笔记版本",Toast.LENGTH_LONG).show();return;}
+        catch(Exception error){shelfDeleteState="SOURCE_SNAPSHOT_FAILED";shelfDeleteFailure=error.getClass().getSimpleName();Toast.makeText(this,getString(R.string.core_delete_version_error),Toast.LENGTH_LONG).show();return;}
         final com.padnote.android.streaming.StreamingGroupStore.Snapshot capturedBase=groupBase;
         int attachmentCount = 0;
         try { attachmentCount = videoAttachmentStore.countForNote(entry.id); }
-        catch (Exception error) { Toast.makeText(this, "无法核对视频附件：" + safeError(error), Toast.LENGTH_LONG).show(); return; }
+        catch (Exception error) { Toast.makeText(this, getString(R.string.core_delete_video_verify_error,safeError(error)), Toast.LENGTH_LONG).show(); return; }
         final int attachedVideos = attachmentCount;
         new AlertDialog.Builder(this)
-                .setTitle("删除“" + entry.title + "”？")
+                .setTitle(getString(R.string.core_delete_title,entry.title))
                 .setMessage(capturedBase==null
-                        ? "删除后将从本机书架移除，无法在应用内撤销。"
-                            + (attachedVideos == 0 ? "" : "将同时删除 " + attachedVideos + " 个已关联的视频附件；此前另存到其他位置的副本不受影响。")
-                        : "将从本机书架移除这篇笔记。完整版本和历史会保留在本机；目前应用内的历史恢复入口尚未开放。"
-                            + (attachedVideos == 0 ? "" : "其中的 " + attachedVideos + " 个已关联视频也会随完整历史保留。"))
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> {
+                        ? (attachedVideos == 0 ? getString(R.string.core_delete_simple)
+                            : getString(R.string.core_delete_simple_videos,attachedVideos))
+                        : (attachedVideos == 0 ? getString(R.string.core_delete_history)
+                            : getString(R.string.core_delete_history_videos,attachedVideos)))
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_delete), (dialog, which) -> {
                     shelfDeleteState="DELETE_PUBLISH_PENDING";
                     shelfDeleteFailure="NONE";
                     storageExecutor.execute(() -> {
@@ -2861,6 +2932,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         if(capturedBase!=null)NoteStore.delete(this,entry.id,capturedBase.revision,capturedBase.digest);
                         else{videoAttachmentStore.removeForNote(entry.id);CoverStore.remove(this,entry.id);aiConversationStore.clear(entry.id);NoteStore.delete(this,entry.id);}
                         noteDeleted=true;
+                        clearAiInputDraft("note:" + entry.id);
                         shelfDeleteState="DELETE_PUBLISHED";
                         runOnUiThread(this::refreshBookshelf);
                     } catch (Exception error) {
@@ -2869,8 +2941,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         final boolean deleted=noteDeleted;
                         runOnUiThread(() -> {
                             if(deleted)refreshBookshelf();
-                            Toast.makeText(this,deleted?"笔记已删除，但视频附件清理未完成："+safeError(error):
-                                    "删除失败："+safeError(error),Toast.LENGTH_LONG).show();
+                            Toast.makeText(this,deleted?getString(R.string.core_delete_cleanup_failed,safeError(error)):
+                                    getString(R.string.core_delete_failed,safeError(error)),Toast.LENGTH_LONG).show();
                         });
                     }
                     });
@@ -2899,7 +2971,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         root.addView(canvasFrame, canvasParams);
 
         root.addView(createStatusBar(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         canvasView.setListener(this);
         canvasView.setSelectedColor(selectedInkColor);
@@ -2911,9 +2983,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         updateSwatchSelection();
         penOnlyButton.setSelected(penOnlyEnabled);
         selectTool(NoteCanvasView.Tool.PEN);
-        onInkStatsChanged(0, 0, 0, "画笔就绪");
+        onInkStatsChanged(0, 0, 0, getString(R.string.core_status_ready));
         onSelectionChanged(0, false, false);
-        onViewportChanged(1, 1, 100, "单指拖动画布 · 双指缩放");
+        onViewportChanged(1, 1, 100, getString(R.string.core_status_pan_zoom));
 
         appFrame = new FrameLayout(this);
         appFrame.addView(root, new FrameLayout.LayoutParams(
@@ -2961,36 +3033,36 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         header.setPadding(dp(20), dp(8), dp(20), dp(8));
 
         ToolIconButton back = iconButton(ToolIconButton.Icon.BOOKSHELF,
-                "返回书架", view -> leaveEditorToBookshelf());
+                getString(R.string.core_back_shelf), view -> leaveEditorToBookshelf());
         header.addView(back);
 
         LinearLayout titleGroup = new LinearLayout(this);
         titleGroup.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(currentNoteTitle == null ? "未命名笔记" : currentNoteTitle,
+        TextView title = text(currentNoteTitle == null ? getString(R.string.core_unnamed_note) : currentNoteTitle,
                 20, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleGroup.addView(title);
-        titleGroup.addView(text("纸面 · 双指缩放",
+        titleGroup.addView(text(getString(R.string.core_paper_zoom),
                 12, SECONDARY_TEXT));
         header.addView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button video = pillButton("视频", BUTTON_TONAL);
-        video.setContentDescription("当前笔记的视频任务与成果");
+        Button video = pillButton(getString(R.string.core_video), BUTTON_TONAL);
+        video.setContentDescription(getString(R.string.core_video_tasks));
         video.setOnClickListener(view -> showVideoHubForCurrentNote());
         LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         videoParams.leftMargin = dp(8);
         header.addView(video, videoParams);
 
-        Button paper = pillButton("分享/Agent", BUTTON_TONAL);
-        paper.setContentDescription("分享当前纸面 PDF，或将纸面和可读上下文交给电脑 Agent");
+        Button paper = pillButton(getString(R.string.core_share_agent), BUTTON_TONAL);
+        paper.setContentDescription(getString(R.string.core_share_paper));
         paper.setOnClickListener(view -> showPaperHandoffForCurrentNote());
         LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         paperParams.leftMargin = dp(6);
         header.addView(paper, paperParams);
 
-        statsView = text("1/1 页 · 100%", 12, SECONDARY_TEXT);
+        statsView = text(getString(R.string.core_page_stats_visual, 1, 1, 100), 12, SECONDARY_TEXT);
         statsView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
         statsView.setSingleLine(true);
         statsView.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -3010,26 +3082,27 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(8), dp(6), dp(8), dp(6));
 
-        penButton = iconButton(ToolIconButton.Icon.PEN, "画笔设置", view -> {
+        penButton = iconButton(ToolIconButton.Icon.PEN, getString(R.string.core_pen_settings), view -> {
             selectTool(NoteCanvasView.Tool.PEN);
             showToolSettingsCard(NoteCanvasView.Tool.PEN, penButton);
         });
         textButton = iconButton(ToolIconButton.Icon.TEXT_BOX,
-                "文字笔：点击页面插入", view -> selectTool(NoteCanvasView.Tool.TEXT));
-        eraserButton = iconButton(ToolIconButton.Icon.ERASER, "局部橡皮设置", view -> {
+                getString(R.string.core_text_tool), view -> selectTool(NoteCanvasView.Tool.TEXT));
+        eraserButton = iconButton(ToolIconButton.Icon.ERASER, getString(R.string.core_eraser_settings), view -> {
             selectTool(NoteCanvasView.Tool.ERASER);
             showToolSettingsCard(NoteCanvasView.Tool.ERASER, eraserButton);
         });
-        lassoButton = iconButton(ToolIconButton.Icon.LASSO, "套索选择", view -> selectTool(NoteCanvasView.Tool.LASSO));
-        highlighterButton = iconButton(ToolIconButton.Icon.HIGHLIGHTER, "高亮笔设置", view -> {
+        lassoButton = iconButton(ToolIconButton.Icon.LASSO, getString(R.string.core_lasso), view -> selectTool(NoteCanvasView.Tool.LASSO));
+        highlighterButton = iconButton(ToolIconButton.Icon.HIGHLIGHTER, getString(R.string.core_highlighter_settings), view -> {
             selectTool(NoteCanvasView.Tool.HIGHLIGHTER);
             showToolSettingsCard(NoteCanvasView.Tool.HIGHLIGHTER, highlighterButton);
         });
         highlighterButton.setAccentColor(highlighterColor);
-        shapeButton = iconButton(ToolIconButton.Icon.SHAPE, "几何图形：拖动绘制矩形", view -> {
+        shapeButton = iconButton(ToolIconButton.Icon.SHAPE, getString(R.string.core_shape_draw), view -> {
             selectTool(NoteCanvasView.Tool.SHAPE);
-            ChoiceRows.builder(this).setTitle("几何图形")
-                    .setAdapter(ChoiceRows.adapter(this, new String[]{"矩形", "直线", "椭圆"}), (dialog, which) -> {
+            ChoiceRows.builder(this).setTitle(R.string.core_shapes_title)
+                    .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_shape_rectangle),
+                            getString(R.string.core_shape_line), getString(R.string.core_shape_ellipse)}), (dialog, which) -> {
                         canvasView.setShapeType(which);
                         canvasView.setTool(NoteCanvasView.Tool.SHAPE);
                     }).show();
@@ -3040,16 +3113,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.addView(textButton);
         row.addView(eraserButton);
         row.addView(lassoButton);
-        aiButton = iconButton(ToolIconButton.Icon.AI, "打开 AI 对话卡", view -> openAiCardForSelection());
+        aiButton = iconButton(ToolIconButton.Icon.AI, getString(R.string.core_ai_open), view -> openAiCardForSelection());
         row.addView(aiButton);
         row.addView(separator());
 
-        paletteButton = iconButton(ToolIconButton.Icon.PALETTE, "打开调色盘", view -> showColorPalette());
+        paletteButton = iconButton(ToolIconButton.Icon.PALETTE, getString(R.string.core_palette), view -> showColorPalette());
         row.addView(paletteButton);
         for (int index = 0; index < PRESET_COLORS.length; index++) {
             int color = PRESET_COLORS[index];
             ColorSwatchButton swatch = new ColorSwatchButton(
-                    this, color, "使用" + PRESET_COLOR_NAMES[index]);
+                    this, color, getString(R.string.core_use_color, presetColorName(index)));
             swatch.setOnClickListener(view -> applyInkColor(color));
             colorSwatches.add(swatch);
             LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(48), dp(48));
@@ -3057,35 +3130,37 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
 
         row.addView(separator());
-        undoButton = iconButton(ToolIconButton.Icon.UNDO, "撤销", view -> canvasView.undo());
-        redoButton = iconButton(ToolIconButton.Icon.REDO, "重做", view -> canvasView.redo());
+        undoButton = iconButton(ToolIconButton.Icon.UNDO, getString(R.string.core_undo), view -> canvasView.undo());
+        redoButton = iconButton(ToolIconButton.Icon.REDO, getString(R.string.core_redo), view -> canvasView.redo());
         row.addView(undoButton);
         row.addView(redoButton);
 
         row.addView(separator());
-        duplicateButton = iconButton(ToolIconButton.Icon.DUPLICATE, "复制选区", view -> canvasView.duplicateSelection());
-        deleteSelectionButton = iconButton(ToolIconButton.Icon.DELETE, "删除选区", view -> canvasView.deleteSelection());
-        cancelSelectionButton = iconButton(ToolIconButton.Icon.CANCEL, "取消选择", view -> canvasView.cancelSelection());
+        duplicateButton = iconButton(ToolIconButton.Icon.DUPLICATE, getString(R.string.core_duplicate_selection), view -> canvasView.duplicateSelection());
+        deleteSelectionButton = iconButton(ToolIconButton.Icon.DELETE, getString(R.string.core_delete_selection), view -> canvasView.deleteSelection());
+        cancelSelectionButton = iconButton(ToolIconButton.Icon.CANCEL, getString(R.string.core_cancel_selection), view -> canvasView.cancelSelection());
         row.addView(duplicateButton);
         row.addView(deleteSelectionButton);
         row.addView(cancelSelectionButton);
 
         row.addView(separator());
-        row.addView(iconButton(ToolIconButton.Icon.CLEAR, "清空笔记", view -> confirmClear()));
-        row.addView(iconButton(ToolIconButton.Icon.PAGE_ADD, "添加新页面", view -> canvasView.addPage()));
-        row.addView(iconButton(ToolIconButton.Icon.PAGE_MENU, "页面管理", view -> showPageActions()));
-        row.addView(iconButton(ToolIconButton.Icon.IMAGE, "插入图片", view -> launchImportImage()));
-        row.addView(iconButton(ToolIconButton.Icon.SAVE, "立即保存", view -> {
+        row.addView(iconButton(ToolIconButton.Icon.CLEAR, getString(R.string.core_clear_note), view -> confirmClear()));
+        row.addView(iconButton(ToolIconButton.Icon.PAGE_ADD, getString(R.string.core_add_page), view -> canvasView.addPage()));
+        row.addView(iconButton(ToolIconButton.Icon.PAGE_MENU, getString(R.string.core_page_manager), view -> showPageActions()));
+        row.addView(iconButton(ToolIconButton.Icon.IMAGE, getString(R.string.core_insert_image), view -> launchImportImage()));
+        row.addView(iconButton(ToolIconButton.Icon.SAVE, getString(R.string.core_save_now), view -> {
             commitInlineTextEditorExcept(null);
             handler.removeCallbacks(delayedSave);
             saveDocument(true);
         }));
-        row.addView(iconButton(ToolIconButton.Icon.EXPORT, "导出笔记", view -> exportCurrentNote()));
-        Button outlineButton = pillButton("内容大纲", BUTTON_QUIET);
-        outlineButton.setContentDescription("按页查看文字、公式、图片和手写状态");
+        row.addView(iconButton(ToolIconButton.Icon.EXPORT,
+                getString(R.string.core_export_note_button), view -> exportCurrentNote()));
+        Button outlineButton = pillButton(getString(R.string.core_content_outline_button), BUTTON_QUIET);
+        outlineButton.setContentDescription(getString(R.string.core_content_outline_desc));
         outlineButton.setOnClickListener(view -> showContentOutline());
         row.addView(outlineButton);
-        penOnlyButton = iconButton(ToolIconButton.Icon.PEN_ONLY, "仅手写笔模式", view -> togglePenOnly());
+        penOnlyButton = iconButton(ToolIconButton.Icon.PEN_ONLY,
+                getString(R.string.core_pen_only_label), view -> togglePenOnly());
         row.addView(penOnlyButton);
 
         scroll.addView(row, new HorizontalScrollView.LayoutParams(
@@ -3101,12 +3176,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showContentOutline() {
         if (!restoreCompleted || canvasView == null) {
-            Toast.makeText(this, "笔记仍在载入，请稍候", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.core_outline_loading, Toast.LENGTH_SHORT).show();
             return;
         }
         for (NoteTextBoxView editor : textBoxViews.values()) {
             if (editor.isInlineEditing()) {
-                Toast.makeText(this, "请先完成或退出当前文字编辑，再查看内容大纲。", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, R.string.core_outline_edit_first, Toast.LENGTH_SHORT).show();
                 return;
             }
         }
@@ -3116,29 +3191,31 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         for (ContentOutlineSnapshot.Page page : snapshot.pages) {
             int pageIndex = page.index;
             if (page.hasPdfBackground) {
-                labels.add("第 " + (pageIndex + 1) + " 页 · PDF 原文背景（没有提取文字）");
+                labels.add(getString(R.string.core_outline_pdf_page, pageIndex + 1));
                 actions.add(new ContentOutlineAction(pageIndex, null));
             }
             for (ContentOutlineSnapshot.Flow flow : page.textFlows) {
                 boolean formula = "latex".equalsIgnoreCase(flow.format);
-                labels.add("第 " + (pageIndex + 1) + " 页 · " + (formula ? "公式 LaTeX 源码" : "正文 Markdown")
-                        + " · " + flow.source.replace('\n', ' ').substring(0, Math.min(120, flow.source.replace('\n', ' ').length())));
+                String excerpt = flow.source.replace('\n', ' ').substring(0,
+                        Math.min(120, flow.source.replace('\n', ' ').length()));
+                labels.add(getString(formula ? R.string.core_outline_formula_page
+                        : R.string.core_outline_markdown_page, pageIndex + 1, excerpt));
                 actions.add(new ContentOutlineAction(pageIndex, flow.id));
             }
             for (String imageId : page.imageIds) {
-                labels.add("第 " + (pageIndex + 1) + " 页 · 图片（未添加说明）");
+                labels.add(getString(R.string.core_outline_image_page, pageIndex + 1));
                 actions.add(new ContentOutlineAction(pageIndex, null));
             }
             if (page.hasHandwriting) {
-                labels.add("第 " + (pageIndex + 1) + " 页 · 手写笔迹尚未识别");
+                labels.add(getString(R.string.core_outline_handwriting_page, pageIndex + 1));
                 actions.add(new ContentOutlineAction(pageIndex, null));
             }
             if (labels.isEmpty() || actions.get(actions.size() - 1).pageIndex != pageIndex) {
-                labels.add("第 " + (pageIndex + 1) + " 页 · 此页没有可导出的文字对象");
+                labels.add(getString(R.string.core_outline_empty_page, pageIndex + 1));
                 actions.add(new ContentOutlineAction(pageIndex, null));
             }
         }
-        AlertDialog dialog = ChoiceRows.builder(this).setTitle("内容大纲 · 文字对象按起始页归组")
+        AlertDialog dialog = ChoiceRows.builder(this).setTitle(R.string.core_outline_title)
                 .setAdapter(ChoiceRows.adapter(this, labels.toArray(new String[0])), (shown, which) -> {
                     ContentOutlineAction action = actions.get(which);
                     if (action.flowId == null) { canvasView.goToPage(action.pageIndex); return; }
@@ -3149,22 +3226,22 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             return;
                         }
                     }
-                    Toast.makeText(this, "这段文字已不存在，无法打开编辑器。", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, R.string.core_outline_missing_text, Toast.LENGTH_SHORT).show();
                 })
-                .setNeutralButton("复制 Markdown", (shown, which) -> copyContentOutline(snapshot.markdown()))
-                .setPositiveButton("导出 Markdown", (shown, which) -> launchContentOutlineExport(snapshot))
-                .setNegativeButton("关闭", null).create();
+                .setNeutralButton(R.string.core_outline_copy_markdown, (shown, which) -> copyContentOutline(snapshot.markdown()))
+                .setPositiveButton(R.string.core_outline_export_markdown, (shown, which) -> launchContentOutlineExport(snapshot))
+                .setNegativeButton(getString(R.string.core_close), null).create();
         dialog.show();
     }
 
     private void copyContentOutline(String markdown) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard == null) {
-            Toast.makeText(this, "当前无法使用剪贴板", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.core_outline_clipboard_unavailable, Toast.LENGTH_SHORT).show();
             return;
         }
-        clipboard.setPrimaryClip(ClipData.newPlainText("PadNote 内容大纲", markdown));
-        Toast.makeText(this, "已复制 Markdown", Toast.LENGTH_SHORT).show();
+        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.core_outline_clip_label), markdown));
+        Toast.makeText(this, R.string.core_outline_copied, Toast.LENGTH_SHORT).show();
     }
 
     private void launchContentOutlineExport(ContentOutlineSnapshot snapshot) {
@@ -3172,7 +3249,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/markdown");
-        intent.putExtra(Intent.EXTRA_TITLE, safeFileName(currentNoteTitle) + "-内容大纲.md");
+        intent.putExtra(Intent.EXTRA_TITLE, safeFileName(currentNoteTitle)
+                + getString(R.string.core_outline_filename_suffix) + ".md");
         startActivityForResult(intent, REQUEST_EXPORT_CONTENT_OUTLINE);
     }
 
@@ -3183,14 +3261,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             try {
                 try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                    if (output == null) throw new java.io.IOException("无法打开所选位置");
+                    if (output == null) throw new java.io.IOException("EXPORT_DESTINATION_UNAVAILABLE");
                     output.write(frozenMarkdown.getBytes(StandardCharsets.UTF_8));
                     output.flush();
                 }
                 // Success is announced only after close() has completed successfully.
-                runOnUiThread(() -> Toast.makeText(this, "已导出 Markdown", Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> Toast.makeText(this, R.string.core_outline_exported, Toast.LENGTH_SHORT).show());
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this, "导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> Toast.makeText(this,
+                        getString(R.string.core_outline_export_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -3211,29 +3290,35 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 preview.setImageBitmap(BitmapFactory.decodeByteArray(png, 0, png.length));
                 preview.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
                 preview.setBackgroundColor(Color.rgb(245, 244, 239));
-                preview.setContentDescription("第 " + (page + 1) + " 页缩略图");
+                preview.setContentDescription(getString(R.string.core_page_thumbnail_desc, page + 1));
                 preview.setOnClickListener(view -> canvasView.goToPage(page));
                 item.addView(preview, new LinearLayout.LayoutParams(dp(150), dp(190)));
             }
-            TextView label = text("第 " + (page + 1) + " 页", 12, INK_COLOR);
+            TextView label = text(getString(R.string.core_page_number_label, page + 1), 12, INK_COLOR);
             label.setGravity(Gravity.CENTER);
             item.addView(label, new LinearLayout.LayoutParams(dp(150), dp(30)));
-            Button copy = pillButton("复制", BUTTON_TONAL);
+            Button copy = pillButton(getString(R.string.core_page_copy), BUTTON_TONAL);
             copy.setOnClickListener(view -> { canvasView.duplicatePage(page); pageDialog[0].dismiss(); showPageActions(); });
-            Button delete = pillButton("删除", BUTTON_DANGER);
+            Button delete = pillButton(getString(R.string.core_delete), BUTTON_DANGER);
             delete.setOnClickListener(view -> { canvasView.deletePage(page); pageDialog[0].dismiss(); showPageActions(); });
             Button up = pillButton("↑", BUTTON_QUIET);
+            up.setContentDescription(getString(R.string.core_page_move_up));
             up.setOnClickListener(view -> { canvasView.movePage(page, page - 1); pageDialog[0].dismiss(); showPageActions(); });
             Button down = pillButton("↓", BUTTON_QUIET);
+            down.setContentDescription(getString(R.string.core_page_move_down));
             down.setOnClickListener(view -> { canvasView.movePage(page, page + 1); pageDialog[0].dismiss(); showPageActions(); });
             LinearLayout actions = new LinearLayout(this);
-            actions.addView(copy, new LinearLayout.LayoutParams(0, dp(36), 1f));
-            actions.addView(delete, new LinearLayout.LayoutParams(0, dp(36), 1f));
-            item.addView(actions, new LinearLayout.LayoutParams(dp(150), dp(40)));
+            actions.addView(copy, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            actions.addView(delete, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            item.addView(actions, new LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT));
             LinearLayout reorder = new LinearLayout(this);
-            reorder.addView(up, new LinearLayout.LayoutParams(0, dp(34), 1f));
-            reorder.addView(down, new LinearLayout.LayoutParams(0, dp(34), 1f));
-            item.addView(reorder, new LinearLayout.LayoutParams(dp(150), dp(38)));
+            reorder.addView(up, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            reorder.addView(down, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            item.addView(reorder, new LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT));
             LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(dp(160), ViewGroup.LayoutParams.WRAP_CONTENT);
             itemParams.setMargins(dp(4), 0, dp(4), 0);
             strip.addView(item, itemParams);
@@ -3241,8 +3326,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         scroll.addView(strip);
-        pageDialog[0] = new AlertDialog.Builder(this).setTitle("页面缩略图与管理").setView(scroll)
-                .setPositiveButton("关闭", null).create();
+        pageDialog[0] = new AlertDialog.Builder(this).setTitle(R.string.core_page_manager_title).setView(scroll)
+                .setPositiveButton(getString(R.string.core_close), null).create();
         pageDialog[0].show();
     }
 
@@ -3253,7 +3338,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     @SuppressLint({"SetTextI18n", "HardcodedText"})
     private void showTextBoxEditor(NoteTextBox existing, boolean newlyInserted) {
         if (!restoreCompleted || canvasView == null) {
-            Toast.makeText(this, "笔记仍在载入，请稍候", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.core_outline_loading, Toast.LENGTH_SHORT).show();
             return;
         }
         NoteTextBox.Format initialFormat = existing == null
@@ -3267,16 +3352,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         body.setPadding(dp(24), dp(8), dp(24), dp(10));
         body.setMinimumWidth(dp(560));
 
-        TextView formatTitle = text("编译格式", 13, Color.rgb(89, 102, 114));
+        TextView formatTitle = text(getString(R.string.core_text_compile_format), 13, Color.rgb(89, 102, 114));
         body.addView(formatTitle);
         LinearLayout formatRow = new LinearLayout(this);
         formatRow.setOrientation(LinearLayout.HORIZONTAL);
         formatRow.setPadding(0, dp(7), 0, dp(10));
         Button latexButton = new Button(this);
-        latexButton.setText("LaTeX（默认）");
+        latexButton.setText(R.string.core_text_latex_default);
         latexButton.setAllCaps(false);
         Button markdownButton = new Button(this);
-        markdownButton.setText("Markdown");
+        markdownButton.setText(R.string.core_text_markdown_format);
         markdownButton.setAllCaps(false);
         formatRow.addView(latexButton, new LinearLayout.LayoutParams(0, dp(46), 1f));
         LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0, dp(46), 1f);
@@ -3287,8 +3372,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         EditText sourceInput = new EditText(this);
         sourceInput.setText(existing == null ? "" : existing.source);
         sourceInput.setHint(initialFormat == NoteTextBox.Format.LATEX
-                ? "输入 LaTeX，例如：\\frac{a}{b} 或 f_n\\longrightarrow 0"
-                : "输入 Markdown，可使用标题、列表、加粗、代码和 $...$ 公式");
+                ? getString(R.string.core_text_latex_hint)
+                : getString(R.string.core_text_markdown_hint));
         sourceInput.setTextSize(16);
         sourceInput.setTextColor(INK_COLOR);
         sourceInput.setHintTextColor(Color.rgb(133, 143, 151));
@@ -3307,7 +3392,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LinearLayout previewTitleRow = new LinearLayout(this);
         previewTitleRow.setGravity(Gravity.CENTER_VERTICAL);
         previewTitleRow.setPadding(0, dp(8), 0, dp(5));
-        previewTitleRow.addView(text("实时编译预览 · 输入时自动更新",
+        previewTitleRow.addView(text(getString(R.string.core_text_preview_live),
                 13, Color.rgb(89, 102, 114)),
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -3329,9 +3414,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             markdownButton.setBackground(roundedBackground(
                     latex ? Color.rgb(240, 242, 243) : Color.rgb(40, 94, 168),
                     Color.rgb(157, 173, 187), 9));
-            sourceInput.setHint(latex
-                    ? "输入 LaTeX，例如：\\frac{a}{b} 或 f_n\\longrightarrow 0"
-                    : "输入 Markdown，可使用标题、列表、加粗、代码和 $...$ 公式");
+            sourceInput.setHint(latex ? getString(R.string.core_text_latex_hint)
+                    : getString(R.string.core_text_markdown_hint));
         };
         Runnable renderPreview = () -> {
             if (previewView[0] == null) {
@@ -3385,21 +3469,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         renderPreview.run();
 
         AlertDialog.Builder dialogBuilder = new AlertDialog.Builder(this)
-                .setTitle(newlyInserted ? "在此处插入文字" :
-                        (existing == null ? "添加文字对象" : "编辑文字对象"))
+                .setTitle(newlyInserted ? getString(R.string.core_text_insert_title) :
+                        (existing == null ? getString(R.string.core_text_add_title)
+                                : getString(R.string.core_text_edit_title)))
                 .setView(body)
-                .setNegativeButton("取消", null)
-                .setPositiveButton(newlyInserted ? "完成" :
-                        (existing == null ? "添加" : "保存"), null);
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(newlyInserted ? getString(R.string.core_done) :
+                        (existing == null ? getString(R.string.core_text_add_button)
+                                : getString(R.string.core_save)), null);
         if (existing != null && !newlyInserted) {
-            dialogBuilder.setNeutralButton("删除文字对象", null);
+            dialogBuilder.setNeutralButton(R.string.core_text_delete_action, null);
         }
         AlertDialog dialog = dialogBuilder.create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                     String source = sourceInput.getText().toString().trim();
                     if (source.isEmpty()) {
-                        Toast.makeText(this, "请输入要编译的内容", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, R.string.core_text_compile_empty, Toast.LENGTH_SHORT).show();
                         return;
                     }
                     if (newlyInserted && existing != null) {
@@ -3487,7 +3573,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         selectedTextFlowId = selected.flowId;
                         updateTextBoxOverlays(canvasView.getTextBoxes());
                         if (pressureView != null) {
-                            pressureView.setText("文字对象已选中 · 拖动移动 · 右下角缩放 · 双击直接输入");
+                            pressureView.setText(R.string.core_textbox_selected_hint);
                         }
                     }
 
@@ -3554,7 +3640,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         selectedTextFlowId = null;
                         updateTextBoxOverlays(canvasView.getTextBoxes());
                         if (pressureView != null) {
-                            pressureView.setText("文字已自动排版 · 用套索选中后可继续编辑");
+                            pressureView.setText(R.string.core_textbox_autoflow_hint);
                         }
                     }
 
@@ -3633,7 +3719,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (view != null) {
             view.beginInlineEditing();
             if (pressureView != null) {
-                pressureView.setText("页内输入 · 上方编辑源码 · 下方实时编译预览");
+                pressureView.setText(R.string.core_inline_edit_hint);
             }
         }
     }
@@ -3650,16 +3736,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void confirmDeleteTextBox(NoteTextBox textBox) {
+        String formatLabel = getString(textBox.format == NoteTextBox.Format.LATEX
+                ? R.string.core_format_latex_label : R.string.core_format_markdown_label);
         new AlertDialog.Builder(this)
                 .setTitle(textBox.flowCount > 1
-                        ? "删除整个跨页文字流？"
-                        : "删除" + textBox.format.displayName() + "文本框？")
+                        ? getString(R.string.core_delete_flow_title)
+                        : getString(R.string.core_delete_textbox_title, formatLabel))
                 .setMessage(textBox.flowCount > 1
-                        ? "将删除这组文字在所有页面上的 " + textBox.flowCount +
-                        " 个片段；删除后可以使用撤销恢复。"
-                        : "删除后可以使用撤销恢复。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> {
+                        ? getString(R.string.core_delete_flow_message, textBox.flowCount)
+                        : getString(R.string.core_delete_textbox_message))
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_delete), (dialog, which) -> {
                     newlyInsertedTextBoxIds.remove(textBox.id);
                     if (textBox.id.equals(selectedTextBoxId)) {
                         selectedTextBoxId = null;
@@ -3687,16 +3774,36 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private View createStatusBar() {
+        boolean largeFont = getResources().getConfiguration().fontScale >= 1.3f;
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), 0, dp(16), 0);
+        bar.setOrientation(largeFont ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        bar.setGravity(largeFont ? Gravity.START : Gravity.CENTER_VERTICAL);
+        int verticalPadding = largeFont ? dp(4) : 0;
+        bar.setPadding(dp(16), verticalPadding, dp(16), verticalPadding);
+        ViewCompat.setOnApplyWindowInsetsListener(bar, (view, insets) -> {
+            int navigationBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
+            bar.setPadding(dp(16), verticalPadding, dp(16), verticalPadding + navigationBottom);
+            return insets;
+        });
+        bar.setMinimumHeight(dp(38));
         bar.setBackgroundColor(Color.rgb(240, 238, 232));
 
-        saveStatusView = text("尚未书写", 12, Color.rgb(101, 113, 123));
-        bar.addView(saveStatusView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        pressureView = text("压力 0.000 · 画笔就绪", 12, Color.rgb(101, 113, 123));
-        bar.addView(pressureView);
+        saveStatusView = text(getString(R.string.core_status_not_written), 12, Color.rgb(101, 113, 123));
+        pressureView = text(getString(R.string.core_pressure_ready), 12, Color.rgb(101, 113, 123));
+        if (largeFont) {
+            saveStatusView.setMaxLines(2);
+            saveStatusView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            pressureView.setMaxLines(1);
+            pressureView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            bar.addView(saveStatusView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            bar.addView(pressureView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            bar.addView(saveStatusView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            bar.addView(pressureView);
+        }
         return bar;
     }
 
@@ -3764,33 +3871,33 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (eraser) {
             slider.setMax(Math.round(MAX_ERASER_SIZE_DP - MIN_ERASER_SIZE_DP));
             slider.setProgress(Math.round(eraserSizeDp - MIN_ERASER_SIZE_DP));
-            slider.setContentDescription("橡皮擦除直径");
+            slider.setContentDescription(getString(R.string.core_eraser_diameter_desc));
         } else if (highlighter) {
             slider.setMax(28);
             slider.setProgress(Math.round(highlighterWidthDp - 4));
-            slider.setContentDescription("高亮笔粗细");
+            slider.setContentDescription(getString(R.string.core_highlighter_width_desc));
         } else {
             slider.setMax(Math.round((MAX_PEN_WIDTH_DP - MIN_PEN_WIDTH_DP) * 10));
             slider.setProgress(Math.round((penWidthDp - MIN_PEN_WIDTH_DP) * 10));
-            slider.setContentDescription("画笔粗细");
+            slider.setContentDescription(getString(R.string.core_pen_width_desc));
         }
         card.addView(slider, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
-        TextView hint = text("拖动滑杆调节 · 点卡片外关闭", 12, Color.rgb(108, 119, 128));
+        TextView hint = text(getString(R.string.core_tool_slider_hint), 12, Color.rgb(108, 119, 128));
         hint.setGravity(Gravity.CENTER);
         card.addView(hint, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         Runnable updateCard = () -> {
             if (eraser) {
-                valueLabel.setText(String.format(Locale.CHINA, "橡皮直径 · %.0f", eraserSizeDp));
+                valueLabel.setText(getString(R.string.core_eraser_diameter, eraserSizeDp));
                 preview.setPreview(eraserSizeDp, selectedInkColor, true);
             } else if (highlighter) {
-                valueLabel.setText(String.format(Locale.CHINA, "高亮笔粗细 · %.0f", highlighterWidthDp));
+                valueLabel.setText(getString(R.string.core_highlighter_width, highlighterWidthDp));
                 preview.setPreview(highlighterWidthDp, 0x69000000 | (highlighterColor & 0xffffff), false);
             } else {
-                valueLabel.setText(String.format(Locale.CHINA, "画笔粗细 · %.1f", penWidthDp));
+                valueLabel.setText(getString(R.string.core_pen_width, penWidthDp));
                 preview.setPreview(penWidthDp, selectedInkColor, false);
             }
         };
@@ -3863,7 +3970,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         SeekBar brightness = new SeekBar(this);
         brightness.setMax(100);
         brightness.setProgress(Math.round(wheel.getBrightness() * 100));
-        brightness.setContentDescription("颜色明度");
+        brightness.setContentDescription(getString(R.string.core_color_brightness));
         brightnessRow.addView(brightness, new LinearLayout.LayoutParams(0, dp(48), 1f));
         content.addView(brightnessRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -3891,10 +3998,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         });
 
         new AlertDialog.Builder(this)
-                .setTitle("选择墨水颜色")
+                .setTitle(R.string.core_ink_color_title)
                 .setView(content)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("使用", (dialog, which) -> applyInkColor(pendingColor[0]))
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(R.string.core_ink_color_use, (dialog, which) -> applyInkColor(pendingColor[0]))
                 .show();
     }
 
@@ -3922,6 +4029,24 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
     }
 
+    private void flushPendingAiInputDraft() {
+        Runnable pending = pendingAiInputDraftWrite;
+        if (pending != null) {
+            handler.removeCallbacks(pending);
+            pending.run();
+        }
+    }
+
+    private void clearAiInputDraft(String key) {
+        if (key == null) return;
+        if (key.equals(pendingAiInputDraftKey) && pendingAiInputDraftWrite != null) {
+            handler.removeCallbacks(pendingAiInputDraftWrite);
+            pendingAiInputDraftWrite = null;
+            pendingAiInputDraftKey = null;
+        }
+        getSharedPreferences("padnote-ai-input-drafts", MODE_PRIVATE).edit().remove(key).apply();
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private LinearLayout createAiCard() {
         LinearLayout card = new LinearLayout(this);
@@ -3932,33 +4057,54 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         card.setClipToOutline(true);
 
         LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(dp(12), dp(4), dp(8), dp(4));
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.setMinimumHeight(dp(48));
+        header.addView(titleRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         header.setBackgroundColor(ACCENT_TINT);
 
-        aiCardTitle = text("AI 助手", 15, INK_COLOR);
+        aiCardTitle = text(getString(R.string.ai_card_drag), 15, INK_COLOR);
         aiCardTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         aiCardTitle.setGravity(Gravity.CENTER_VERTICAL);
         aiCardTitle.setSingleLine(true);
-        aiCardTitle.setContentDescription("AI 助手；拖动标题移动对话卡");
+        aiCardTitle.setContentDescription(getString(R.string.core_ai_title_drag));
         aiCardTitle.setOnTouchListener(this::handleAiCardDrag);
-        header.addView(aiCardTitle, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        titleRow.addView(aiCardTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        aiSettingsButton = aiHeaderControl("设置", "配置 AI API");
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(controls, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout firstControlRow = new LinearLayout(this);
+        firstControlRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout secondControlRow = new LinearLayout(this);
+        secondControlRow.setOrientation(LinearLayout.HORIZONTAL);
+        controls.addView(firstControlRow, matchWrap());
+        controls.addView(secondControlRow, matchWrap());
+        aiSettingsButton = aiHeaderControl(getString(R.string.core_ai_settings_label), getString(R.string.core_ai_settings_desc));
         aiSettingsButton.setOnClickListener(view -> showAiManagerDialog(null));
-        header.addView(aiSettingsButton);
-        aiMinimizeButton = aiHeaderControl("收起", "最小化 AI 卡片");
+        firstControlRow.addView(aiSettingsButton, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        aiMinimizeButton = aiHeaderControl(getString(R.string.core_ai_minimize), getString(R.string.core_ai_minimize_desc));
         aiMinimizeButton.setOnClickListener(view -> setAiCardMinimized(!aiCardMinimized));
-        header.addView(aiMinimizeButton);
-        TextView clearConversation = aiHeaderControl("清空", "清空本笔记 AI 对话");
+        firstControlRow.addView(aiMinimizeButton, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView clearConversation = aiHeaderControl(getString(R.string.core_ai_clear), getString(R.string.core_ai_clear_desc));
         clearConversation.setOnClickListener(view -> confirmClearAiConversation());
-        header.addView(clearConversation);
-        TextView close = aiHeaderControl("关闭", "关闭 AI 卡片");
+        secondControlRow.addView(clearConversation, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView close = aiHeaderControl(getString(R.string.core_close), getString(R.string.core_ai_close_desc));
         close.setOnClickListener(view -> closeAiCard());
-        header.addView(close);
+        secondControlRow.addView(close, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(header, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         aiCardBody = new LinearLayout(this);
         aiCardBody.setOrientation(LinearLayout.VERTICAL);
@@ -3971,7 +4117,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         aiSelectionPreview = new ImageView(this);
-        aiSelectionPreview.setContentDescription("本次 AI 对话使用的圈选图片");
+        aiSelectionPreview.setContentDescription(getString(R.string.core_ai_selection_image));
         aiSelectionPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         aiSelectionPreview.setBackgroundColor(SURFACE_COLOR);
         scrollContent.addView(aiSelectionPreview, new LinearLayout.LayoutParams(
@@ -3985,30 +4131,31 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         scrollContent.addView(aiConversationView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        aiStatusView = text("等待选择笔记", 12, SECONDARY_TEXT);
+        aiStatusView = text(getString(R.string.core_ai_wait_selection), 12, SECONDARY_TEXT);
         aiStatusView.setPadding(dp(2), dp(7), dp(2), dp(5));
         aiCardBody.addView(aiStatusView);
 
         LinearLayout outputModeRow = new LinearLayout(this);
         outputModeRow.setOrientation(LinearLayout.HORIZONTAL);
         outputModeRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView outputModeLabel = text("回答显示", 12, SECONDARY_TEXT);
+        TextView outputModeLabel = text(getString(R.string.core_ai_output_display), 12, SECONDARY_TEXT);
         outputModeRow.addView(outputModeLabel,
-                new LinearLayout.LayoutParams(0, dp(48), 0.7f));
-        aiInlineOutputButton = aiCardButton("允许写入");
-        aiInlineOutputButton.setContentDescription("允许 AI 使用笔记工具在空白处写入");
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f));
+        aiInlineOutputButton = aiCardButton(getString(R.string.core_ai_write_allowed));
+        aiInlineOutputButton.setContentDescription(getString(R.string.core_ai_write_desc));
         aiInlineOutputButton.setOnClickListener(view -> setAiOutputInline(true, true));
         outputModeRow.addView(aiInlineOutputButton,
-                new LinearLayout.LayoutParams(0, dp(48), 1f));
-        aiCardOutputButton = aiCardButton("仅卡片");
-        aiCardOutputButton.setContentDescription("AI 回答只显示在对话卡片中");
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        aiCardOutputButton = aiCardButton(getString(R.string.core_ai_only_card));
+        aiCardOutputButton.setContentDescription(getString(R.string.core_ai_only_card_desc));
         aiCardOutputButton.setOnClickListener(view -> setAiOutputInline(false, true));
-        LinearLayout.LayoutParams cardModeParams = new LinearLayout.LayoutParams(0, dp(48), 0.85f);
+        LinearLayout.LayoutParams cardModeParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.85f);
         cardModeParams.setMargins(dp(6), 0, 0, 0);
         outputModeRow.addView(aiCardOutputButton, cardModeParams);
         scrollContent.addView(outputModeRow);
 
-        TextView quickActionsLabel = text("快捷动作", 12, SECONDARY_TEXT);
+        TextView quickActionsLabel = text(getString(R.string.core_ai_quick_actions), 12, SECONDARY_TEXT);
         quickActionsLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams quickActionsLabelParams = matchWrap();
         quickActionsLabelParams.topMargin = dp(8);
@@ -4016,43 +4163,46 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
         LinearLayout presets = new LinearLayout(this);
         presets.setOrientation(LinearLayout.HORIZONTAL);
-        aiExplainButton = aiCardButton("讲解");
+        aiExplainButton = aiCardButton(getString(R.string.core_ai_explain));
         aiExplainButton.setOnClickListener(view -> requestAiMessage(
-                "请分步骤讲解圈选笔记，保留公式和推导，并明确标记无法辨认的内容。"));
-        aiMarkdownButton = aiCardButton("整理 Markdown");
+                getString(R.string.core_prompt_explain)));
+        aiMarkdownButton = aiCardButton(getString(R.string.core_ai_markdown));
         aiMarkdownButton.setOnClickListener(view -> requestAiMessage(
-                "请把圈选笔记整理成结构清晰的 Markdown，保留原意、层级、公式和待办项。"));
-        presets.addView(aiExplainButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0, dp(48), 1.35f);
+                getString(R.string.core_prompt_markdown)));
+        presets.addView(aiExplainButton, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams markdownParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1.35f);
         markdownParams.setMargins(dp(8), 0, 0, 0);
         presets.addView(aiMarkdownButton, markdownParams);
         scrollContent.addView(presets);
 
-        aiDiagramButton = aiCardButton("画示意图 · Beta");
+        aiDiagramButton = aiCardButton(getString(R.string.core_ai_diagram));
         aiDiagramButton.setOnClickListener(view -> requestAiMessage(
-                "请把圈选内容中最适合图解的关系画成一张简明示意图，调用 draw_diagram 写入笔记。"
-                        + "先查看页面空白，默认放在相关原文下方；不要遮挡手写。标签用中文，辨认不清时先问我。"));
+                getString(R.string.core_prompt_diagram)));
         scrollContent.addView(aiDiagramButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        aiMaterialsSummary = text("额外材料：未选择（默认不读取知识库）", 12, FAINT_TEXT);
+        aiMaterialsSummary = text(getString(R.string.core_ai_material_summary), 12, FAINT_TEXT);
         aiMaterialsSummary.setPadding(dp(4), dp(7), dp(4), dp(2));
         scrollContent.addView(aiMaterialsSummary);
         LinearLayout materialRow = new LinearLayout(this);
         materialRow.setOrientation(LinearLayout.HORIZONTAL);
-        aiMaterialsButton = aiCardButton("选择额外材料");
+        aiMaterialsButton = aiCardButton(getString(R.string.core_ai_extra_materials));
         aiMaterialsButton.setOnClickListener(view -> showAiMaterialPicker());
-        materialRow.addView(aiMaterialsButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        aiMaterialsPreviewButton = aiCardButton("预览");
+        materialRow.addView(aiMaterialsButton, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        aiMaterialsPreviewButton = aiCardButton(getString(R.string.core_ai_preview));
         aiMaterialsPreviewButton.setEnabled(false);
         aiMaterialsPreviewButton.setOnClickListener(view -> showAiMaterialPreview());
-        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(0, dp(48), 0.55f);
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.55f);
         previewParams.setMargins(dp(6), 0, 0, 0);
         materialRow.addView(aiMaterialsPreviewButton, previewParams);
         scrollContent.addView(materialRow);
 
         aiReviewTranscriptCheck = new CheckBox(this);
-        aiReviewTranscriptCheck.setText("两段式转写后先校对");
+        aiReviewTranscriptCheck.setText(getString(R.string.core_ai_review_transcript));
         aiReviewTranscriptCheck.setTextSize(12);
         aiReviewTranscriptCheck.setTextColor(SECONDARY_TEXT);
         aiReviewTranscriptCheck.setChecked(
@@ -4060,7 +4210,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiReviewTranscriptCheck.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("aiReviewTranscription", checked).apply());
         aiReviewTranscriptCheck.setContentDescription(
-                "可选：先编辑手写转写，再交给回答模型；默认直接继续");
+                getString(R.string.core_ai_review_transcript_desc));
         scrollContent.addView(aiReviewTranscriptCheck,
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
@@ -4073,7 +4223,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.BOTTOM);
         aiInputView = new EditText(this);
-        aiInputView.setHint("继续提问或输入自定义要求…");
+        aiInputView.setHint(getString(R.string.core_ai_input_hint));
         aiInputView.setTextSize(14);
         aiInputView.setTextColor(INK_COLOR);
         aiInputView.setHintTextColor(Color.rgb(137, 147, 155));
@@ -4085,14 +4235,47 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         stylePaperInput(aiInputView);
+        aiInputDraftKey = currentNoteId == null ? null : "note:" + currentNoteId;
+        if (aiInputDraftKey != null) {
+            String draft = getSharedPreferences("padnote-ai-input-drafts", MODE_PRIVATE)
+                    .getString(aiInputDraftKey, "");
+            if (!draft.isEmpty()) aiInputView.setText(draft);
+        }
+        final String inputDraftKey = aiInputDraftKey;
+        aiInputView.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (inputDraftKey == null) return;
+                if (pendingAiInputDraftWrite != null) handler.removeCallbacks(pendingAiInputDraftWrite);
+                final String value = s.toString();
+                pendingAiInputDraftWrite = () -> {
+                    android.content.SharedPreferences.Editor edit = getSharedPreferences(
+                            "padnote-ai-input-drafts", MODE_PRIVATE).edit();
+                    if (value.isEmpty()) edit.remove(inputDraftKey);
+                    else edit.putString(inputDraftKey, value);
+                    edit.apply();
+                    if (inputDraftKey.equals(pendingAiInputDraftKey)) {
+                        pendingAiInputDraftWrite = null;
+                        pendingAiInputDraftKey = null;
+                    }
+                };
+                pendingAiInputDraftKey = inputDraftKey;
+                handler.postDelayed(pendingAiInputDraftWrite, 350);
+            }
+            @Override public void afterTextChanged(android.text.Editable s) {}
+        });
         // Let two or three lines grow with the user's font scale; longer prompts scroll
         // inside the editor while the adjacent 48dp Send target stays reachable.
         aiInputView.setMinHeight(dp(62));
         inputRow.addView(aiInputView, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        aiSendButton = aiCardButton("发送");
+        aiSendButton = aiCardButton(getString(R.string.core_send));
         styleAiSendButton(aiSendButton);
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(80), dp(48));
+        aiSendButton.setMinWidth(dp(80));
+        aiSendButton.setMaxWidth(dp(120));
+        aiSendButton.setMinHeight(dp(48));
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sendParams.setMargins(dp(8), 0, 0, 0);
         inputRow.addView(aiSendButton, sendParams);
         aiSendButton.setOnClickListener(view -> {
@@ -4105,11 +4288,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 requestAiMessage(message);
             }
         });
-        aiRetryButton = aiCardButton("重试");
+        aiRetryButton = aiCardButton(getString(R.string.core_ai_retry));
         aiRetryButton.setVisibility(View.GONE);
-        aiRetryButton.setContentDescription("使用原请求、材料范围和接收地址重试");
+        aiRetryButton.setContentDescription(getString(R.string.core_ai_retry_desc));
         aiRetryButton.setOnClickListener(view -> retryAiRequest());
-        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(dp(72), dp(48));
+        aiRetryButton.setMinWidth(dp(72));
+        aiRetryButton.setMaxWidth(dp(128));
+        aiRetryButton.setMinHeight(dp(48));
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         retryParams.setMargins(dp(6), 0, 0, 0);
         inputRow.addView(aiRetryButton, retryParams);
         aiCardBody.addView(inputRow);
@@ -4120,7 +4307,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiResizeHandle = text("↘", 17, Color.rgb(79, 100, 118));
         aiResizeHandle.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         aiResizeHandle.setPadding(0, 0, dp(10), 0);
-        aiResizeHandle.setContentDescription("拖动调整 AI 卡片宽高");
+        aiResizeHandle.setContentDescription(getString(R.string.core_ai_resize_desc));
         aiResizeHandle.setClickable(true);
         aiResizeHandle.setFocusable(true);
         aiResizeHandle.setOnTouchListener(this::handleAiCardResize);
@@ -4131,13 +4318,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private TextView aiHeaderControl(String symbol, String description) {
-        TextView control = text(symbol, 11, ACCENT_COLOR);
+        TextView control = text(symbol, 13, ACCENT_COLOR);
         control.setGravity(Gravity.CENTER);
         control.setContentDescription(description);
         control.setClickable(true);
         control.setFocusable(true);
         control.setMinWidth(dp(48));
         control.setMinHeight(dp(48));
+        control.setPadding(dp(6), dp(4), dp(6), dp(4));
         control.setBackground(roundedBackground(ACCENT_TINT, Color.TRANSPARENT, 19f));
         applyPressFeedback(control, 19f);
         return control;
@@ -4182,8 +4370,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     void setAiOutputInline(boolean inline, boolean persist) {
         if (aiBusy || aiMaterialLoading) {
             Toast.makeText(this, aiMaterialLoading
-                            ? "正在冻结材料，请完成或取消后再修改写入权限"
-                            : "当前请求已冻结写入权限；完成或取消后再修改",
+                            ? R.string.core_ai_permission_busy_freeze
+                            : R.string.core_ai_permission_frozen,
                     Toast.LENGTH_SHORT).show();
             return;
         }
@@ -4205,9 +4393,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if (aiConversationView != null && aiCard != null &&
                     aiCard.getVisibility() == View.VISIBLE) {
                 addAiNotice(inline
-                        ? "已允许 AI 写入笔记。它会自行判断哪些内容值得留在页面上，"
-                        + "其余说明只显示在卡片里。"
-                        : "AI 只能读取笔记结构，不会写入页面；回答只显示在卡片中。");
+                        ? getString(R.string.core_ai_write_mode_detail)
+                        : getString(R.string.core_ai_card_mode_detail));
             }
         }
     }
@@ -4235,7 +4422,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             aiReadScope = AiReadScope.selectionOnly(currentNoteId, aiSessionSerial,
                     aiProfileIdentity(active)).withVault(retainedVault);
         }
-        appendAiBoundary("发送范围或权限已变化；此前聊天仅保留供查看，不会继续发送。");
+        appendAiBoundary(getString(R.string.core_ai_boundary_changed));
         refreshAiRecipientBindingPreservingSource();
         updateAiMaterialsUi();
     }
@@ -4373,20 +4560,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if (aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty()) {
                 showAiCard();
             } else if (aiConversationLoading) {
-                Toast.makeText(this, "正在恢复本笔记的 AI 对话", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.core_ai_restore_loading), Toast.LENGTH_SHORT).show();
             } else {
-                Toast.makeText(this, "请先圈选内容，或打开已有对话", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.core_ai_selection_required), Toast.LENGTH_SHORT).show();
             }
             return;
         }
         if (aiConversationSnapshot != null && aiSelectionSnapshot != null) {
             new AlertDialog.Builder(this)
-                    .setTitle("继续旧材料，还是使用当前圈选？")
-                    .setMessage("继续会保留可发送上下文。使用当前圈选会保留可见聊天，"
-                            + "但旧聊天和旧图片不会继续发送。")
-                    .setNegativeButton("取消", null)
-                    .setNeutralButton("继续旧材料", (dialog, which) -> showAiCard())
-                    .setPositiveButton("使用当前圈选", (dialog, which) ->
+                    .setTitle(R.string.core_ai_scope_choice_title)
+                    .setMessage(R.string.core_ai_scope_choice_message)
+                    .setNegativeButton(getString(R.string.core_cancel), null)
+                    .setNeutralButton(R.string.core_ai_continue_old, (dialog, which) -> showAiCard())
+                    .setPositiveButton(R.string.core_ai_use_current_selection, (dialog, which) ->
                             replaceAiSelectionWithCurrent())
                     .show();
             return;
@@ -4397,7 +4583,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void replaceAiSelectionWithCurrent() {
         NoteCanvasView.AiSelectionSnapshot snapshot = canvasView.renderAiSelection(1600);
         if (snapshot == null) {
-            Toast.makeText(this, "无法生成当前选区", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_ai_selection_not_available), Toast.LENGTH_SHORT).show();
             return;
         }
         boolean replacingContext = aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty();
@@ -4419,16 +4605,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         clearAiConversationViews();
         renderAiTimeline();
         aiSelectionPreview.setImageBitmap(snapshot.bitmap);
-        String mask = snapshot.lassoMaskApplied ? "套索遮罩已生效" : "矩形选区";
-        aiStatusView.setText(String.format(Locale.CHINA,
-                "%d × %d · %.1f KB · %s · 首次发送前会确认",
+        String mask = getString(snapshot.lassoMaskApplied
+                ? R.string.core_ai_selection_masked : R.string.core_ai_selection_rectangular);
+        aiStatusView.setText(getString(R.string.core_ai_selection_summary,
                 snapshot.bitmap.getWidth(), snapshot.bitmap.getHeight(),
                 snapshot.pngBytes.length / 1024f, mask));
         addAiNotice(replacingContext
-                ? "已用当前圈选开始新的发送上下文；旧聊天仅保留供查看，不会发送给模型。"
+                ? getString(R.string.core_ai_selection_new_context)
                 : (aiOutputInline
-                ? "选区已载入。已允许模型按需调用笔记工具；普通文字回答仍先留在卡片。"
-                : "选区已载入。回答只显示在对话卡片，模型不能写入页面。"));
+                ? getString(R.string.core_ai_selection_loaded_write)
+                : getString(R.string.core_ai_selection_loaded_card)));
         initializeAiConversationForSelection(activeProfile);
         showAiCard();
     }
@@ -4458,7 +4644,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         List<String> titles = aiReadScope == null
                 ? java.util.Collections.emptyList() : aiReadScope.vaultTitles();
         if (titles.isEmpty()) {
-            aiMaterialsSummary.setText("额外材料：未选择（默认不读取知识库）");
+            aiMaterialsSummary.setText(getString(R.string.core_ai_material_summary));
             aiMaterialsButton.setEnabled(!aiBusy && !aiMaterialLoading);
             aiMaterialsPreviewButton.setEnabled(false);
             return;
@@ -4466,11 +4652,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         StringBuilder names = new StringBuilder();
         for (int index = 0; index < titles.size(); index++) {
             if (index > 0) {
-                names.append("、");
+                names.append(getString(R.string.core_material_title_separator));
             }
             names.append(titles.get(index));
         }
-        aiMaterialsSummary.setText("额外材料：" + titles.size() + " 本 · " + names);
+        aiMaterialsSummary.setText(getString(R.string.core_ai_material_summary_count,
+                titles.size(), names.toString()));
         aiMaterialsButton.setEnabled(!aiBusy && !aiMaterialLoading);
         aiMaterialsPreviewButton.setEnabled(!aiBusy && !aiMaterialLoading);
     }
@@ -4478,19 +4665,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** Lets the user freeze an explicit subset; merely opening the list grants nothing. */
     private void showAiMaterialPicker() {
         if (aiBusy || aiMaterialLoading) {
-            Toast.makeText(this, "请等待当前回答完成", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_ai_wait), Toast.LENGTH_SHORT).show();
             return;
         }
         if (aiReadScope == null || aiSelectionSnapshot == null) {
-            Toast.makeText(this, "请先圈选笔记", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_ai_need_selection), Toast.LENGTH_SHORT).show();
             return;
         }
         List<VaultStore.VaultNote> available = vaultStore.list();
         if (available.isEmpty()) {
             new AlertDialog.Builder(this)
-                    .setTitle("选择额外材料")
-                    .setMessage("知识库还没有格式笔记。请先在书架将具体笔记转为格式笔记。")
-                    .setPositiveButton("知道了", null)
+                    .setTitle(getString(R.string.core_ai_extra_materials))
+                    .setMessage(getString(R.string.core_ai_materials_empty))
+                    .setPositiveButton(R.string.core_got_it, null)
                     .show();
             return;
         }
@@ -4508,10 +4695,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     final int sourceSession = aiSessionSerial;
                     if (ids.isEmpty()) {
                         replaceAiReadScope(sourceScope.withVault(null),
-                                "已取消额外材料权限，新对话只读取圈选内容。");
+                                getString(R.string.core_ai_scope_removed));
                         return;
                     }
-                    aiStatusView.setText("正在冻结已选材料…");
+                    aiStatusView.setText(getString(R.string.core_ai_material_freezing));
                     setAiMaterialLoading(true);
                     storageExecutor.execute(() -> {
                         try {
@@ -4523,18 +4710,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                 }
                                 setAiMaterialLoading(false);
                                 replaceAiReadScope(sourceScope.withVault(snapshot),
-                                        "已冻结 " + snapshot.titles().size()
-                                                + " 本额外材料，新对话仅可读取这些副本。");
+                                        getString(R.string.core_ai_material_frozen_count,snapshot.titles().size()));
                             });
                         } catch (Exception error) {
                             runOnUiThread(() -> {
                                 if (sourceSession != aiSessionSerial) {
                                     return;
                                 }
-                                aiStatusView.setText("额外材料未加入");
+                                aiStatusView.setText(getString(R.string.core_ai_material_failed));
                                 setAiMaterialLoading(false);
                                 Toast.makeText(this, error.getMessage() == null
-                                                ? "读取材料失败" : error.getMessage(),
+                                                ? getString(R.string.core_ai_material_read_failed) : error.getMessage(),
                                         Toast.LENGTH_LONG).show();
                             });
                         }
@@ -4547,11 +4733,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                                String[] labels, boolean[] checked,
                                                Consumer<Set<String>> onConfirm) {
         return ChoiceRows.builder(this)
-                .setTitle("选择本次可读材料（改变后开始新对话）")
+                .setTitle(getString(R.string.core_ai_material_picker_title))
                 .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) ->
                         checked[which] = isChecked)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("冻结选定材料", (dialog, which) -> {
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_ai_material_freeze), (dialog, which) -> {
                     Set<String> ids = new java.util.LinkedHashSet<>();
                     for (int index = 0; index < available.size(); index++) {
                         if (checked[index]) {
@@ -4578,7 +4764,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             int limit = Math.min(content.length(), 8000);
             preview.append(content, 0, limit);
             if (limit < content.length()) {
-                preview.append("\n…（预览已截断）");
+                preview.append("\n… ").append(getString(R.string.core_ai_preview_truncated));
             }
         }
         TextView content = text(preview.toString(), 12, INK_COLOR);
@@ -4587,9 +4773,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(content, matchWrap());
         new AlertDialog.Builder(this)
-                .setTitle("本次可读材料预览")
+                .setTitle(getString(R.string.core_ai_material_preview_title))
                 .setView(scroll)
-                .setPositiveButton("关闭", null)
+                .setPositiveButton(getString(R.string.core_close), null)
                 .show();
     }
 
@@ -4616,7 +4802,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         appendAiBoundary(notice);
         refreshAiRecipientBindingPreservingSource();
         if (aiStatusView != null) {
-            aiStatusView.setText("材料范围已更新 · 发送前会重新确认");
+            aiStatusView.setText(getString(R.string.core_ai_scope_updated));
         }
         updateAiMaterialsUi();
     }
@@ -4628,7 +4814,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         clearAiRequestState();
         if (aiReadScope != null) {
             replaceAiReadScope(aiReadScope.withProfile(aiProfileIdentity(profile)),
-                    "AI 配置已变更，已开始新对话并保留当前已选材料副本。");
+                    getString(R.string.core_ai_profile_changed));
             return;
         }
         aiSessionSerial += 1;
@@ -4638,7 +4824,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiToolsHonoured = false;
         aiUploadConfirmed = false;
         if (aiConversationSnapshot != null) {
-            appendAiBoundary("AI 配置已变更；旧聊天仅保留供查看，不会发送给新的接收模型。");
+            appendAiBoundary(getString(R.string.core_ai_profile_changed_boundary));
             refreshAiRecipientBindingPreservingSource();
         }
     }
@@ -4649,9 +4835,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private boolean requireAiRecipientChangeAllowed() {
         if (aiRecipientChangeAllowed()) return true;
-        String message = aiMaterialLoading
-                ? "正在冻结材料，请完成或取消后再修改 AI 配置"
-                : "AI 请求进行中，请完成或取消后再修改接收模型";
+        String message = getString(aiMaterialLoading
+                ? R.string.core_ai_permission_busy_freeze : R.string.core_ai_profile_change_busy);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         if (aiStatusView != null) aiStatusView.setText(message);
         return false;
@@ -4711,8 +4896,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiCardMinimized = minimized;
         aiCardBody.setVisibility(minimized ? View.GONE : View.VISIBLE);
         aiResizeHandle.setVisibility(minimized ? View.GONE : View.VISIBLE);
-        aiMinimizeButton.setText(minimized ? "展开" : "收起");
-        aiMinimizeButton.setContentDescription(minimized ? "恢复 AI 卡片" : "最小化 AI 卡片");
+        aiMinimizeButton.setText(minimized ? getString(R.string.core_ai_expand) : getString(R.string.core_ai_minimize));
+        aiMinimizeButton.setContentDescription(minimized ? getString(R.string.core_ai_expand_desc) : getString(R.string.core_ai_minimize_desc));
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiCard.getLayoutParams();
         params.width = minimized ? dp(280) : Math.max(dp(330), aiCardExpandedWidthPx);
         params.height = minimized ? ViewGroup.LayoutParams.WRAP_CONTENT
@@ -4866,36 +5051,38 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void closeAiCard() {
+        flushPendingAiInputDraft();
         collapseAiCard(true);
     }
 
     private void collapseAiCard(boolean userVisible) {
+        flushPendingAiInputDraft();
         boolean cancelledRequest = activeAiRequest != null;
         clearAiRequestState();
         aiSessionSerial += 1;
         aiMaterialLoading = false;
         setAiBusy(false);
         if (cancelledRequest) {
-            addAiNotice("收起卡片时已停止本机等待；请求若已到达服务商，处理或计费可能仍继续。");
+            addAiNotice(getString(R.string.core_ai_collapsed_notice));
         }
         persistAiConversation();
         if (aiCard != null) {
             aiCard.setVisibility(View.GONE);
         }
         if (userVisible && saveStatusView != null) {
-            saveStatusView.setText("AI 对话已收起，可从工具栏恢复");
+            saveStatusView.setText(R.string.core_ai_collapsed_status);
         }
     }
 
     private void confirmClearAiConversation() {
         if (aiBusy || aiMaterialLoading) {
-            Toast.makeText(this, "请先取消当前请求，再清空对话", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_ai_clear_busy), Toast.LENGTH_SHORT).show();
             return;
         }
-        new AlertDialog.Builder(this).setTitle("清空本笔记的 AI 对话？")
-                .setMessage("可见聊天、发送上下文和冻结材料都会从本机删除。笔记内容不会改变。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("清空", (dialog, which) -> clearAiConversationExplicitly())
+        new AlertDialog.Builder(this).setTitle(R.string.core_ai_clear_title)
+                .setMessage(R.string.core_ai_clear_message)
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_ai_clear), (dialog, which) -> clearAiConversationExplicitly())
                 .show();
     }
 
@@ -4923,7 +5110,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         releaseAiSelectionSnapshot();
         clearAiConversationViews();
         updateAiMaterialsUi();
-        aiStatusView.setText("对话已清空 · 圈选内容可开始新对话");
+        aiStatusView.setText(R.string.core_ai_cleared_status);
         if (noteId != null) storageExecutor.execute(() -> {
             try { aiConversationStore.clear(noteId); }
             catch (Exception error) { runOnUiThread(() -> {
@@ -4948,7 +5135,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     } catch (Exception ignored) { aiSelectionSnapshot = null; }
                     renderAiTimeline();
                 }
-                aiStatusView.setText("对话清空失败，原记录仍保留：" + safeError(error));
+                aiStatusView.setText(getString(R.string.core_ai_clear_failed,safeError(error)));
             }); }
         });
     }
@@ -4993,7 +5180,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 receiptDigest = receiptJson.optString("digest");
             } catch (Exception ignored) { }
             aiVisibleTimeline.add(new AiConversationStore.VisibleEntry("result", "assistant",
-                    "本轮已写入 " + request.edits.changedFlowCount() + " 处文字修改",
+                    getString(R.string.core_ai_edit_count_summary,
+                            request.edits.changedFlowCount()),
                     request.answerExecutorLabel, false, request.edits.changedFlowIds(),
                     receiptDigest, receipt));
             persistAiConversation();
@@ -5011,27 +5199,29 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         card.setBackground(roundedBackground(Color.rgb(241, 246, 250),
                 Color.rgb(180, 197, 210), 10));
         TextView status = text("", 12, INK_COLOR);
-        status.setContentDescription("AI 修改状态");
+        status.setContentDescription(getString(R.string.core_ai_edit_status_accessibility));
         card.addView(status, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button locate = aiCardButton("定位结果");
-        locate.setContentDescription("定位本次 AI 修改结果");
+        Button locate = aiCardButton(getString(R.string.core_ai_edit_locate_result));
+        locate.setContentDescription(getString(R.string.core_ai_edit_locate_desc));
         locate.setOnClickListener(view -> {
             if (canvasView != null && canvasView.locateAiEdit(binding.record)) {
-                aiStatusView.setText("已定位本次 AI 修改");
+                aiStatusView.setText(R.string.core_ai_edit_located);
             }
         });
-        actions.addView(locate, new LinearLayout.LayoutParams(0, dp(40), 0.7f));
-        Button action = aiCardButton("撤销本次 AI 修改");
-        action.setContentDescription("撤销或重新应用本次 AI 修改");
+        actions.addView(locate, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f));
+        Button action = aiCardButton(getString(R.string.core_ai_edit_undo));
+        action.setContentDescription(getString(R.string.core_ai_edit_undo_or_reapply_desc));
         action.setOnClickListener(view -> applyAiEditCard(binding));
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         actionParams.setMargins(dp(6), 0, 0, 0);
         actions.addView(action, actionParams);
         LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         actionsParams.setMargins(0, dp(8), 0, 0);
         card.addView(actions, actionsParams);
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
@@ -5050,7 +5240,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void applyAiEditCard(AiEditCardBinding binding) {
         if (binding == null || canvasView == null || aiBusy) return;
         if (!java.util.Objects.equals(binding.noteId, currentNoteId)) {
-            binding.status.setText("这项结果属于另一份笔记，无法在当前页面操作");
+            binding.status.setText(R.string.core_ai_edit_other_note);
             binding.action.setEnabled(false);
             return;
         }
@@ -5061,9 +5251,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (result.changedFlows > 0) {
             updateTextBoxOverlays(canvasView.getTextBoxes());
         } else if (result.state == NoteCanvasView.AiEditState.CONFLICT) {
-            addAiNotice("相关文字已被编辑或删除。为保护当前内容，本次操作没有修改任何对象。");
+            addAiNotice(getString(R.string.core_ai_edit_conflict_notice));
         } else if (result.state == NoteCanvasView.AiEditState.BUSY) {
-            addAiNotice("请先结束当前书写或拖动，再操作本次 AI 修改。");
+            addAiNotice(getString(R.string.core_ai_edit_busy_notice));
         }
         refreshAiEditCards();
     }
@@ -5079,7 +5269,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (binding == null || binding.status == null || binding.action == null
                 || binding.locate == null) return;
         if (!java.util.Objects.equals(binding.noteId, currentNoteId)) {
-            binding.status.setText("本次 AI 修改属于另一份笔记");
+            binding.status.setText(R.string.core_ai_edit_other_note_status);
             binding.action.setEnabled(false);
             binding.locate.setEnabled(false);
             return;
@@ -5089,32 +5279,32 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         binding.locate.setEnabled(!aiBusy && canvasView.hasAiEditTarget(binding.record));
         switch (state) {
             case APPLIED:
-                binding.status.setText("本次 AI 修改已写入笔记 · " + count + "处文字修改");
-                binding.action.setText("撤销本次 AI 修改");
+                binding.status.setText(getString(R.string.core_ai_edit_applied, count));
+                binding.action.setText(R.string.core_ai_edit_undo);
                 binding.action.setEnabled(!aiBusy);
                 break;
             case UNDONE:
-                binding.status.setText("本次 AI 修改已撤销");
-                binding.action.setText("重新应用本次 AI 修改");
+                binding.status.setText(R.string.core_ai_edit_undone);
+                binding.action.setText(R.string.core_ai_edit_reapply);
                 binding.action.setEnabled(!aiBusy);
                 break;
             case MIXED:
-                binding.status.setText("本次 AI 修改已被普通撤销部分改变");
-                binding.action.setText("撤销剩余 AI 修改");
+                binding.status.setText(R.string.core_ai_edit_mixed);
+                binding.action.setText(R.string.core_ai_edit_undo_remaining);
                 binding.action.setEnabled(!aiBusy);
                 break;
             case CONFLICT:
-                binding.status.setText("相关文字已被编辑或删除 · 已保护当前内容");
-                binding.action.setText("无法安全覆盖");
+                binding.status.setText(R.string.core_ai_edit_conflict_status);
+                binding.action.setText(R.string.core_ai_edit_cannot_override);
                 binding.action.setEnabled(false);
                 break;
             case BUSY:
-                binding.status.setText("请先结束当前书写或拖动");
+                binding.status.setText(R.string.core_ai_edit_busy_status);
                 binding.action.setEnabled(false);
                 break;
             case EMPTY:
             default:
-                binding.status.setText("本次请求没有修改笔记");
+                binding.status.setText(R.string.core_ai_edit_empty);
                 binding.action.setVisibility(View.GONE);
                 break;
         }
@@ -5147,7 +5337,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.setGravity("user".equals(role) ? Gravity.END : Gravity.START);
         if (executorLabel != null && !executorLabel.isEmpty()) {
             TextView executor = text(executorLabel, 10, Color.rgb(102, 113, 122));
-            executor.setContentDescription("本轮实际执行者");
+            executor.setContentDescription(getString(R.string.core_ai_executor_accessibility));
             row.addView(executor, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
@@ -5159,7 +5349,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!error && "assistant".equals(role) && AiMathWebView.containsMath(message)) {
             AiMathWebView formulaView = new AiMathWebView(this, message, false);
             AiMathWebView[] formulaHolder = new AiMathWebView[]{formulaView};
-            formulaView.setContentDescription("AI 回答；LaTeX 公式已本地可视化");
+            formulaView.setContentDescription(getString(R.string.core_ai_answer_formula_desc));
             LinearLayout formulaContainer = new LinearLayout(this);
             formulaContainer.setOrientation(LinearLayout.VERTICAL);
             formulaContainer.setBackground(roundedBackground(fill, stroke, 12));
@@ -5169,15 +5359,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             recovery.setOrientation(LinearLayout.VERTICAL);
             recovery.setPadding(dp(10), dp(7), dp(10), dp(9));
             recovery.setVisibility(View.GONE);
-            recovery.setContentDescription("AI 回答公式显示失败");
-            TextView recoveryStatus = text("显示失败", 12, Color.rgb(143, 47, 43));
+            recovery.setContentDescription(getString(R.string.core_ai_formula_failed_desc));
+            TextView recoveryStatus = text(getString(R.string.core_ai_formula_failed), 12, Color.rgb(143, 47, 43));
             recovery.addView(recoveryStatus, matchWrap());
             LinearLayout actions = new LinearLayout(this);
             actions.setOrientation(LinearLayout.HORIZONTAL);
-            Button viewSource = pillButton("查看源码", BUTTON_QUIET);
-            Button copySource = pillButton("复制", BUTTON_QUIET);
-            Button editDisplay = pillButton("编辑", BUTTON_QUIET);
-            Button retry = pillButton("重新显示", BUTTON_TONAL);
+            Button viewSource = pillButton(getString(R.string.core_ai_view_source), BUTTON_QUIET);
+            Button copySource = pillButton(getString(R.string.core_copy_source), BUTTON_QUIET);
+            Button editDisplay = pillButton(getString(R.string.core_edit), BUTTON_QUIET);
+            Button retry = pillButton(getString(R.string.core_ai_retry_display), BUTTON_TONAL);
             actions.addView(viewSource, new LinearLayout.LayoutParams(0, dp(38), 1f));
             actions.addView(copySource, new LinearLayout.LayoutParams(0, dp(38), .7f));
             actions.addView(editDisplay, new LinearLayout.LayoutParams(0, dp(38), .7f));
@@ -5185,16 +5375,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             recovery.addView(actions, matchWrap());
             formulaContainer.addView(recovery, matchWrap());
             viewSource.setOnClickListener(view -> showLocalSource(
-                    "AI 回答源码", formulaHolder[0].displaySource()));
+                    getString(R.string.core_ai_answer_source), formulaHolder[0].displaySource()));
             copySource.setOnClickListener(view -> copyLocalSource(
-                    "PadNote AI 回答源码", formulaHolder[0].displaySource()));
+                    getString(R.string.core_ai_answer_file_title), formulaHolder[0].displaySource()));
             editDisplay.setOnClickListener(view -> editLocalDisplaySource(
-                    "编辑本次显示副本", formulaHolder[0].displaySource(),
+                    getString(R.string.core_ai_edit_display_copy), formulaHolder[0].displaySource(),
                     edited -> formulaHolder[0].renderDisplayCopy(edited),
-                    "只修改本次本地显示，不会改变对话记录，也不会再次请求模型。"));
+                    getString(R.string.core_ai_edit_display_copy_detail)));
             retry.setOnClickListener(view -> {
                 retry.setEnabled(false);
-                recoveryStatus.setText("正在重新显示…");
+                recoveryStatus.setText(R.string.core_ai_retrying_display);
                 formulaHolder[0].retryCurrentRender();
             });
             configureAiMathRecovery(formulaView, formulaHolder, formulaContainer,
@@ -5236,7 +5426,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 recovery.setVisibility(View.GONE);
                 return;
             }
-            status.setText("显示失败 · " + state.message);
+            status.setText(getString(R.string.core_ai_formula_failed) + " · " + state.message);
             recovery.setVisibility(View.VISIBLE);
             if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
                 String source = view.displaySource();
@@ -5247,7 +5437,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     // another attempt. Attach a fresh blank renderer and wait for
                     // the user's explicit "重新显示" action.
                     AiMathWebView replacement = new AiMathWebView(this, source, false);
-                    replacement.setContentDescription("AI 回答；LaTeX 公式本地显示");
+                    replacement.setContentDescription(getString(R.string.core_ai_answer_formula_local));
                     holder[0] = replacement;
                     container.addView(replacement, 0, new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
@@ -5261,7 +5451,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void presentAiAnswer(String answer) {
         if (!aiOutputInline || canvasView == null || aiSelectionSnapshot == null) {
             addAiMessageBubble("assistant", answer, false);
-            aiStatusView.setText("回答完成 · 已显示在卡片 · 可继续追问");
+            aiStatusView.setText(R.string.core_ai_answer_ready);
             return;
         }
         RectF anchor = aiResultAnchorBounds == null
@@ -5272,14 +5462,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     NoteTextBox.Format.MARKDOWN, answer, anchor);
         } catch (TextFlowCapacity.Rejection capacity) {
             addAiMessageBubble("assistant", answer, false);
-            addAiNotice(capacity.getMessage() + " 结果卡可复制完整回答；拆成较短段落后可分别插入。 ");
-            aiStatusView.setText("回答未写入笔记 · 完整内容仍在结果卡");
+            addAiNotice(getString(R.string.core_ai_answer_too_long_detail));
+            aiStatusView.setText(R.string.core_ai_answer_not_written);
             return;
         }
         if (inserted == null) {
             addAiMessageBubble("assistant", answer, false);
-            addAiNotice("页面正被操作，回答已暂时显示在卡片中；可稍后复制或重新发送。");
-            aiStatusView.setText("页面写入忙 · 已回退到卡片显示");
+            addAiNotice(getString(R.string.core_ai_page_write_busy));
+            aiStatusView.setText(R.string.core_ai_page_write_busy);
             return;
         }
         selectedTextBoxId = null;
@@ -5287,8 +5477,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         aiResultAnchorBounds = new RectF(inserted.x, inserted.y,
                 inserted.x + inserted.width, inserted.y + inserted.height);
         updateTextBoxOverlays(canvasView.getTextBoxes());
-        addAiNotice("回答已写入原文附近并自动跨页排版 · 套索选中任一片段可统一编辑");
-        aiStatusView.setText("回答完成 · 已写入页面文本流 · 可恢复卡片继续追问");
+        addAiNotice(getString(R.string.core_ai_answer_written_flow_notice));
+        aiStatusView.setText(R.string.core_ai_answer_written_status);
         setAiCardMinimized(true);
     }
 
@@ -5343,12 +5533,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         card.setBackground(roundedBackground(Color.rgb(241, 246, 250),
                 Color.rgb(180, 197, 210), 10));
-        card.setContentDescription("历史 AI 修改结果卡");
+        card.setContentDescription(getString(R.string.core_ai_history_card));
         TextView title = text(entry.text, 12, INK_COLOR);
         card.addView(title, matchWrap());
-        TextView status = text("重新打开后仅供核对；未保存可完整验证的对象凭据，"
-                + "因此不会开放撤销或重新应用。", 11, Color.rgb(94, 107, 117));
-        status.setContentDescription("历史 AI 修改操作不可用");
+        TextView status = text(getString(R.string.core_ai_history_status), 11, Color.rgb(94, 107, 117));
+        status.setContentDescription(getString(R.string.core_ai_history_unavailable));
         status.setPadding(0, dp(5), 0, 0);
         card.addView(status, matchWrap());
         aiConversationView.addView(card, matchWrap());
@@ -5357,11 +5546,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void addAnswerAdoptionAction(AiConversationStore.VisibleEntry entry,
                                          int timelineIndex, String liveDigest) {
         if (aiConversationView == null || entry == null || entry.adoptionAnchor == null) return;
-        Button apply = aiCardButton("写入笔记");
-        apply.setContentDescription("将这条回答写入笔记");
+        Button apply = aiCardButton(getString(R.string.core_ai_insert_answer));
+        apply.setContentDescription(getString(R.string.core_ai_insert_answer_desc));
         boolean available = canAdoptAnswer(entry, liveDigest);
         apply.setEnabled(available);
-        if (!available) apply.setText("来源已变化，不能写入");
+        if (!available) apply.setText(R.string.core_ai_source_changed_cannot_write);
         apply.setOnClickListener(view -> applyAdoptableAnswer(entry.adoptionId,
                 timelineIndex, apply));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
@@ -5406,7 +5595,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (index < 0) return;
         AiConversationStore.VisibleEntry entry = aiVisibleTimeline.get(index);
         if (aiBusy || aiMaterialLoading || !canAdoptAnswer(entry)) {
-            aiStatusView.setText("来源、权限或页面已变化，未写入旧回答");
+            aiStatusView.setText(R.string.core_ai_old_answer_not_written);
             button.setEnabled(false);
             return;
         }
@@ -5432,16 +5621,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 // one-click adoption capability so it cannot be retried against
                 // a changed note after a cold reopen.
                 aiVisibleTimeline.set(index, entry.withoutAdoption());
-                button.setText("内容过长，未写入笔记");
+                button.setText(R.string.core_ai_answer_too_long);
                 button.setEnabled(false);
-                addAiNotice("完整回答未写入笔记，原文仍保留在上方结果卡且可复制。"
-                        + "可复制后拆成较短部分，再分别插入页面；本次未改变笔记或撤销状态。");
-                aiStatusView.setText(insertionFailure.getMessage());
+                addAiNotice(getString(R.string.core_ai_answer_too_long_detail));
+                aiStatusView.setText(R.string.core_ai_answer_not_written);
                 return;
             }
             aiStatusView.setText(insertionFailure == null
-                    ? "页面正被操作或没有可用位置，回答未写入"
-                    : "回答写入失败，原回答仍保留在卡片中");
+                    ? getString(R.string.core_ai_answer_not_written_busy)
+                    : getString(R.string.core_ai_answer_write_failed));
             button.setEnabled(false);
             return;
         }
@@ -5458,14 +5646,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         saveDocument(false);
         recordCompletedAiEdit(record, entry.executorLabel, true);
         aiStatusView.setText(insertionFailure == null
-                ? "回答已写入笔记，可从结果卡撤销"
-                : "回答部分写入后显示异常，可从结果卡安全撤销");
+                ? getString(R.string.core_ai_answer_written_undoable)
+                : getString(R.string.core_ai_answer_partial_write_error));
         button.setEnabled(false);
     }
 
     private void appendAiBoundary(String message) {
         if (message == null || message.trim().isEmpty()) return;
-        addAiNotice("上下文边界 · " + message);
+        addAiNotice(getString(R.string.core_ai_context_boundary_label, message));
     }
 
     private AiConversationStore.Binding currentAiBinding(AiConfigStore.Profile profile,
@@ -5480,7 +5668,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void initializeAiConversationForSelection(AiConfigStore.Profile profile) {
         if (currentNoteId == null || aiSelectionSnapshot == null) return;
         if (!aiPdfDigestAvailable) {
-            aiStatusView.setText("PDF 原文无法校验，未建立可发送上下文");
+            aiStatusView.setText(R.string.core_ai_pdf_unverified);
             return;
         }
         AiVaultSnapshot vault = aiReadScope == null ? null : aiReadScope.vaultSnapshot();
@@ -5516,7 +5704,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             || !noteId.equals(currentNoteId)) return;
                     aiConversationLoading = false;
                     updateAiInteractionEnabled();
-                    aiStatusView.setText("对话未保存：" + safeError(error));
+                    aiStatusView.setText(getString(R.string.core_ai_not_saved_status,safeError(error)));
                 });
             }
         });
@@ -5578,14 +5766,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         && aiConversationSnapshot.conversationId.equals(value.conversationId)
                         && aiConversationSnapshot.revision == value.revision
                         && aiStatusView != null) {
-                    aiStatusView.setText("对话未保存：" + safeError(error));
+                    aiStatusView.setText(getString(R.string.core_ai_not_saved_status,safeError(error)));
                     if (!aiConversationSaveFailureShown) {
                         aiConversationSaveFailureShown = true;
-                        new AlertDialog.Builder(this).setTitle("AI 对话未能保存")
-                                .setMessage("当前卡片仍保留在内存中，磁盘上的上一份记录没有被覆盖。"
-                                        + "可先导出恢复文件；空间不足时导出也可能失败。")
-                                .setNegativeButton("继续查看", null)
-                                .setPositiveButton("导出当前未保存对话", (dialog, which) ->
+                        new AlertDialog.Builder(this).setTitle(R.string.core_ai_saved_error_title)
+                                .setMessage(R.string.core_ai_saved_error_message)
+                                .setNegativeButton(R.string.core_ai_saved_continue, null)
+                                .setPositiveButton(R.string.core_ai_saved_export, (dialog, which) ->
                                         launchAiConversationRecoveryExport(value))
                                 .show();
                     }
@@ -5612,8 +5799,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         String model = profile.split
                 ? (transcription ? profile.transcribeModel : profile.answerModel)
                 : profile.directModel;
-        return (transcription ? "转写模型" : "回答模型") + " · "
-                + profile.name + " · " + model;
+        return getString(R.string.core_ai_executor_label,
+                getString(transcription ? R.string.core_ai_executor_transcription
+                        : R.string.core_ai_executor_answer), profile.name, model);
     }
 
     // Package-visible hooks exercise the production state/store paths without a paid request.
@@ -5660,7 +5848,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         try { digest = new JSONObject(receipt).optString("digest"); }
         catch (Exception ignored) { }
         aiVisibleTimeline.add(new AiConversationStore.VisibleEntry("result", "assistant",
-                "本轮已写入 " + record.changedFlowCount() + " 处文字修改",
+                getString(R.string.core_ai_written_changes, record.changedFlowCount()),
                 executor, false, record.changedFlowIds(), digest, receipt));
         persistAiConversation();
         if (render) renderAiTimeline();
@@ -5769,8 +5957,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             rotateAiWireContextPreservingMaterials();
             releaseAiSelectionSnapshot();
             aiReadScope = null;
-            aiStatusView.setText("笔记内容已变化 · 请重新圈选后发送");
-            appendAiBoundary("笔记内容或 PDF 原文已变化；旧发送上下文已隔离。");
+            aiStatusView.setText(R.string.core_ai_note_changed_reselect);
+            appendAiBoundary(getString(R.string.core_ai_note_changed_boundary));
             return;
         }
         final AiConfigStore.Profile profile = aiConfigStore.activeProfile();
@@ -5788,27 +5976,24 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showAiUploadConfirmation(AiConfigStore.Profile profile, String prompt) {
         String target;
         if (profile.split) {
-            target = "转写：" + OpenAiCompatibleClient.resolveChatCompletionsUrl(
-                    profile.transcribeEndpoint)
-                    + "\n回答：" + OpenAiCompatibleClient.resolveChatCompletionsUrl(
-                    profile.answerEndpoint);
+            target = getString(R.string.core_ai_route_transcribe,OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.transcribeEndpoint))
+                    + "\n" + getString(R.string.core_ai_route_answer,OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.answerEndpoint));
         } else {
             target = OpenAiCompatibleClient.resolveChatCompletionsUrl(profile.directEndpoint);
         }
         List<String> materialTitles = aiReadScope == null
                 ? java.util.Collections.emptyList() : aiReadScope.vaultTitles();
         String materials = materialTitles.isEmpty()
-                ? "额外材料：无（不读取知识库）"
-                : "额外材料：" + materialTitles.size() + " 本已冻结（"
-                        + joinChinese(materialTitles) + "）";
+                ? getString(R.string.core_ai_material_none)
+                : getString(R.string.core_ai_material_count,materialTitles.size(),android.text.TextUtils.join(getString(R.string.core_list_separator),materialTitles));
+        String message=getString(R.string.core_ai_upload_scope,
+                aiSelectionSnapshot.bitmap.getWidth(),aiSelectionSnapshot.bitmap.getHeight(),
+                aiSelectionSnapshot.pngBytes.length/1024f,target,materials);
         new AlertDialog.Builder(this)
-                .setTitle("确认发送圈选内容？")
-                .setMessage(String.format(Locale.CHINA,
-                        "将卡片中的 %d × %d PNG（%.1f KB）、本次对话和以下明确材料发送至：\n\n%s\n\n%s\n\n页面地图包含整本笔记的页数、各页结构统计及页面布局信息，不含文字正文。不会发送整页图像或未选的知识库笔记。此确认在当前对话内有效。",
-                        aiSelectionSnapshot.bitmap.getWidth(), aiSelectionSnapshot.bitmap.getHeight(),
-                        aiSelectionSnapshot.pngBytes.length / 1024f, target, materials))
-                .setNegativeButton("取消", null)
-                .setPositiveButton("确认发送", (dialog, which) -> {
+                .setTitle(R.string.core_ai_upload_confirm_title)
+                .setMessage(message)
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(R.string.core_ai_confirm_send, (dialog, which) -> {
                     aiUploadConfirmed = true;
                     executeAiMessage(profile, prompt);
                 })
@@ -5828,13 +6013,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             transcribeConfig = profile.split ? aiConfigStore.transcribeConfig(profile) : null;
             answerConfig = profile.split ? aiConfigStore.answerConfig(profile) : null;
         } catch (Exception error) {
-            addAiMessageBubble("assistant", "无法读取当前 AI 配置：" + safeError(error), true);
-            aiStatusView.setText("AI 配置不可用");
+            addAiMessageBubble("assistant",
+                    getString(R.string.core_ai_profile_read_error, safeError(error)), true);
+            aiStatusView.setText(R.string.core_ai_config_unavailable);
             return;
         }
 
         clearRetryableAiRequest();
+        String sentDraftKey = aiInputDraftKey;
         aiInputView.setText("");
+        clearAiInputDraft(sentDraftKey);
         OpenAiCompatibleClient.Message userMessage =
                 new OpenAiCompatibleClient.Message("user", prompt.trim());
         aiMessages.add(userMessage);
@@ -5869,7 +6057,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (aiConversationSnapshot == null) return false;
         if (aiVisibleTimeline.size() > AiConversationStore.MAX_TIMELINE_ENTRIES - 4
                 || aiMessages.size() > AiConversationStore.MAX_WIRE_MESSAGES - 16) {
-            aiStatusView.setText("本次对话已达容量上限 · 请明确清空后开始新上下文");
+            aiStatusView.setText(R.string.core_ai_conversation_limit);
             return false;
         }
         try {
@@ -5890,7 +6078,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
             return true;
         } catch (Exception tooLarge) {
-            aiStatusView.setText("本次内容超过会话保存上限，未发送；请清空后开始新上下文");
+            aiStatusView.setText(R.string.core_ai_send_size_limit);
             return false;
         }
     }
@@ -5902,7 +6090,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         if (retry) {
-            addAiNotice("正在使用原请求、原材料范围和原接收地址重试；不会重复添加提问。");
+            addAiNotice(getString(R.string.core_ai_retry_original));
         }
         retryableAiRequest = null;
         activeAiRequest = request;
@@ -5923,7 +6111,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     break;
             }
         } else {
-            aiStatusView.setText("正在安全连接模型…");
+            aiStatusView.setText(R.string.core_ai_secure_connect);
             startCompletionRequest(request, request.directConfig, request.pngBytes,
                     request.pageMap, request.offeredTools, 0, request.cancellation);
         }
@@ -5933,7 +6121,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void startTranscriptionLeg(AiPendingRequest request,
                                        OpenAiCompatibleClient.Cancellation cancellation) {
         if (!ensureAiRecipientCurrent(request)) return;
-        aiStatusView.setText("正在转写手写内容…");
+        aiStatusView.setText(R.string.core_ai_transcribing);
         aiExecutor.execute(() -> {
             try {
                 if (!aiRecipientMatchesCurrent(request)) {
@@ -5957,7 +6145,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 });
             } catch (Exception error) {
                 failAiRequest(request, cancellation, error,
-                        "转写失败，本次未消耗回答模型调用。");
+                        getString(R.string.core_ai_transcription_failed));
             }
         });
     }
@@ -5975,7 +6163,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             cancelActiveAiRequest(true);
         });
         aiTranscriptReviewDialog = dialog;
-        aiStatusView.setText("转写完成 · 等待本地校对");
+        aiStatusView.setText(R.string.core_ai_transcript_ready);
         dialog.show();
     }
 
@@ -5989,14 +6177,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         editor.setMinLines(8);
         editor.setMaxLines(16);
         editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        editor.setContentDescription("可编辑的手写转写文本");
+        editor.setContentDescription(getString(R.string.core_ai_transcription_editable));
         AtomicBoolean resolved = new AtomicBoolean();
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("校对手写转写")
-                .setMessage("修改后会直接交给回答模型，不会重新识别图片。")
+                .setTitle(R.string.core_ai_transcript_title)
+                .setMessage(R.string.core_ai_transcript_message)
                 .setView(editor)
-                .setNegativeButton("取消本次", null)
-                .setPositiveButton("使用校对文本并继续", null)
+                .setNegativeButton(R.string.core_ai_cancel_this, null)
+                .setPositiveButton(R.string.core_ai_transcript_continue, null)
                 .create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
@@ -6006,7 +6194,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 String corrected = editor.getText().toString().trim();
                 if (corrected.isEmpty()) {
-                    editor.setError("转写不能为空");
+                    editor.setError(getString(R.string.core_ai_transcription_empty));
                     return;
                 }
                 if (resolved.compareAndSet(false, true)) onConfirm.accept(corrected);
@@ -6027,9 +6215,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         request.transcriptAccepted = true;
         aiSessionTranscript = transcript;
         if (!request.transcriptFolded) {
-            addAiNotice(corrected ? "已采用校对后的转写，正在交给回答模型。"
-                    : "两段式 · 转写完成，已直接交给回答模型：");
-            addAiMessageBubble("assistant", "【手写转写】\n" + transcript, false,
+            addAiNotice(getString(corrected ? R.string.core_ai_transcription_corrected
+                    : R.string.core_ai_transcription_passed));
+            addAiMessageBubble("assistant",
+                    getString(R.string.core_ai_transcription_message, transcript), false,
                     request.transcriptionExecutorLabel);
             foldTranscriptIntoConversation(request, transcript);
             request.transcriptFolded = true;
@@ -6041,7 +6230,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** The answer leg reasons over the frozen transcript as plain text. */
     private void startAnswerLeg(AiPendingRequest request,
                                 OpenAiCompatibleClient.Cancellation cancellation) {
-        aiStatusView.setText("正在安全连接回答模型…");
+        aiStatusView.setText(R.string.core_ai_answer_connecting);
         startCompletionRequest(request, request.answerConfig, null, request.pageMap,
                 request.offeredTools, 0, cancellation);
     }
@@ -6081,8 +6270,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private boolean ensureAiRecipientCurrent(AiPendingRequest request) {
         if (request != null && aiRecipientMatchesCurrent(request)) return true;
         rotateAiWireContextPreservingMaterials();
-        aiStatusView.setText("接收模型已变化 · 本次未发送");
-        addAiNotice("AI 配置或凭据已变化。旧对话不会发送给新的接收模型，请重新发送。");
+        aiStatusView.setText(R.string.core_ai_recipient_changed);
+        addAiNotice(getString(R.string.core_ai_recipient_changed_notice));
         return false;
     }
 
@@ -6163,18 +6352,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             retryableAiRequest = request.canRetry() ? request : null;
             setAiBusy(false);
             if (cancelled) {
-                aiStatusView.setText("已在本机取消 · 服务商可能仍已计费");
-                addAiNotice("已停止等待并断开本地请求；已发送到服务商的内容或计费无法撤回。");
+                aiStatusView.setText(R.string.core_ai_cancelled_status);
+                addAiNotice(getString(R.string.core_ai_cancelled_notice));
             } else if (request.toolsStarted) {
-                aiStatusView.setText("工具结果已保留 · 后续回复失败");
-                addAiNotice("工具结果已保留，但后续回复失败：" + safeError(error)
-                        + "。为避免重复执行，本次不能重放；可继续提问。");
+                aiStatusView.setText(R.string.core_ai_tool_result_followup_status);
+                addAiNotice(getString(R.string.core_ai_tool_followup_error,safeError(error)));
             } else {
                 String failedExecutor = request.split && request.transcript == null
                         ? request.transcriptionExecutorLabel : request.answerExecutorLabel;
-                addAiMessageBubble("assistant", "请求失败：" + safeError(error), true,
+                addAiMessageBubble("assistant", getString(R.string.core_ai_request_failed,safeError(error)), true,
                         failedExecutor);
-                aiStatusView.setText("请求失败 · 可用原快照重试");
+                aiStatusView.setText(R.string.core_ai_retryable_failure);
                 if (extraNotice != null) addAiNotice(extraNotice);
             }
             updateAiRetryButton();
@@ -6187,14 +6375,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!mayRetryAiRequest(request.toolsStarted, request.session, aiSessionSerial,
                 aiSelectionSnapshot != null)) {
             clearRetryableAiRequest();
-            aiStatusView.setText("原请求上下文已变化，请重新发送");
+            aiStatusView.setText(R.string.core_ai_context_changed);
             return;
         }
         if (!matchesAiDocument(request)) {
             clearRetryableAiRequest();
-            aiStatusView.setText("笔记已变化 · 原请求不能安全重试");
-            addAiNotice("失败后笔记内容已变化。为避免旧范围或旧位置覆盖新内容，"
-                    + "请按当前页面重新发送。");
+            aiStatusView.setText(R.string.core_ai_note_changed_retry);
+            addAiNotice(getString(R.string.core_ai_note_changed_action_notice));
             return;
         }
         startAiAttempt(request, true);
@@ -6220,12 +6407,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         setAiBusy(false);
         if (userVisible) {
             if (request.toolsStarted) {
-                aiStatusView.setText("已停止后续请求 · 工具结果已保留");
-                addAiNotice("已停止后续模型请求；本轮工具结果已保留且不会自动重放。"
-                        + "其中若有笔记修改，可用撤销恢复。");
+                aiStatusView.setText(R.string.core_ai_stop_followup_status);
+                addAiNotice(getString(R.string.core_ai_stop_followup_action_notice));
             } else {
-                aiStatusView.setText("已在本机取消 · 服务商可能仍已计费");
-                addAiNotice("已停止等待并断开本地请求；已发送到服务商的内容或计费无法撤回。");
+                aiStatusView.setText(R.string.core_ai_cancelled_status);
+                addAiNotice(getString(R.string.core_ai_cancelled_notice));
             }
         }
         updateAiRetryButton();
@@ -6281,9 +6467,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 activeAiRequest = null;
                 retryableAiRequest = null;
                 setAiBusy(false);
-                addAiNotice("请求期间笔记内容已变化，为避免把旧布局操作写到错误位置，"
-                        + "本次工具调用未执行；回答文字仍保留在卡片中。请重新发送。");
-                aiStatusView.setText("笔记已变化 · 未执行旧请求操作");
+                addAiNotice(getString(R.string.core_ai_note_changed_tools_not_run));
+                aiStatusView.setText(R.string.core_ai_note_changed_tools_status);
                 return;
             }
             appendAiHistory(request, new OpenAiCompatibleClient.Message("assistant",
@@ -6304,8 +6489,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             addLegacyWriteOffer(request, completion.displayContent, sameDocument);
             return;
         }
-        aiStatusView.setText(round > 0 ? "操作完成 · 可继续追问"
-                : "回答完成 · 已显示在卡片 · 可继续追问");
+        aiStatusView.setText(round > 0 ? R.string.core_ai_tool_summary_status
+                : R.string.core_ai_answer_complete_status);
     }
 
     static boolean mayApplyLegacyFallback(NoteTool.Permission frozenPermission,
@@ -6318,13 +6503,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void addLegacyWriteOffer(AiPendingRequest request, String answer,
                                      boolean sameDocument) {
         int answerIndex = registerAdoptableAnswer(answer, request.permission, sameDocument);
-        addAiNotice("模型返回了普通文字；这不能证明它不支持工具。回答未自动写入笔记。若需要，可明确选择写入。");
+        addAiNotice(getString(R.string.core_ai_plain_answer_notice));
         if (answerIndex >= 0) {
             addAnswerAdoptionAction(aiVisibleTimeline.get(answerIndex), answerIndex,
                     canvasView.aiConversationFingerprint());
-            aiStatusView.setText("回答完成 · 可明确选择写入笔记");
+            aiStatusView.setText(R.string.core_ai_answer_ready_to_write);
         } else {
-            aiStatusView.setText("回答完成 · 当前来源或权限不允许写入");
+            aiStatusView.setText(R.string.core_ai_answer_write_blocked);
         }
     }
 
@@ -6436,7 +6621,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         request.toolsStarted = true;
         retryableAiRequest = null;
         updateAiRetryButton();
-        aiStatusView.setText(String.format(Locale.CHINA, "正在执行 %d 个笔记操作…",
+        aiStatusView.setText(getString(R.string.core_ai_tool_calls_running,
                 completion.toolCalls.size()));
         if (canvasView.isUserInteractionActive()) {
             for (OpenAiCompatibleClient.ToolCall call : completion.toolCalls) {
@@ -6448,18 +6633,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     // consistency and must never imply that it is safe to rerun.
                     payload = cached.payload;
                 } else if (cached != null) {
-                    payload = toolErrorPayload(
-                            "同一 tool_call_id 的工具或参数发生变化，未重复执行");
+                    payload = toolErrorPayload("同一 tool_call_id 的工具或参数发生变化，未重复执行");
                 } else {
-                    NoteTool.Result rejected = NoteTool.Result.error(
-                            "用户正在书写或拖动，本批工具未执行");
+                    NoteTool.Result rejected = NoteTool.Result.error("用户正在书写或拖动，本批工具未执行");
                     request.toolReplay.record(call, rejected);
                     payload = rejected.payload.toString();
                 }
                 appendAiHistory(request, OpenAiCompatibleClient.Message.toolResult(
                         call.id, payload));
             }
-            addAiNotice("你正在书写或拖动：新笔记操作未执行，已完成的调用仍回放原结果。");
+            addAiNotice(getString(R.string.core_ai_tool_interaction_busy));
             startCompletionRequest(request, config, pngBytes, pageMap,
                     round < MAX_AI_TOOL_ROUNDS ? request.offeredTools : null,
                     round, cancellation);
@@ -6477,17 +6660,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     boolean ok;
                     if (cached.matches(call)) {
                         payload = cached.payload;
-                        summary = "已复用先前结果：" + cached.summary;
+                        summary = getString(R.string.core_ai_tool_cached_result, cached.summary);
                         ok = cached.ok;
                     } else {
                         payload = toolErrorPayload(
                                 "同一 tool_call_id 的工具或参数发生变化，未重复执行");
-                        summary = "调用编号重复但内容不同，已拒绝执行";
+                        summary = getString(R.string.core_ai_tool_duplicate_rejected);
                         ok = false;
                     }
                     appendAiHistory(request,
                             OpenAiCompatibleClient.Message.toolResult(call.id, payload));
-                    addAiNotice((ok ? "已执行 " : "未执行 ") + call.name + "：" + summary);
+                    addAiNotice(getString(R.string.core_ai_tool_action_result,
+                            getString(ok ? R.string.core_ai_tool_executed : R.string.core_ai_tool_not_executed),
+                            call.name, summary));
                     continue;
                 }
                 request.executedToolCallIds.add(call.id);
@@ -6497,8 +6682,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 request.toolReplay.record(call, result);
                 appendAiHistory(request, OpenAiCompatibleClient.Message.toolResult(call.id,
                         result.payload.toString()));
-                addAiNotice((result.ok ? "已执行 " : "未执行 ") + call.name
-                        + "：" + result.summary);
+                addAiNotice(getString(R.string.core_ai_tool_action_result,
+                        getString(result.ok ? R.string.core_ai_tool_executed : R.string.core_ai_tool_not_executed),
+                        call.name, result.summary));
             }
         } finally {
             mutated = finishAiMutation(request.edits, before);
@@ -6521,7 +6707,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 nextTools = null;
             }
         } else {
-            addAiNotice("已达到本次任务的操作轮次上限，接下来只做总结。");
+            addAiNotice(getString(R.string.core_ai_tool_round_limit));
         }
         JSONObject refreshedMap = mutated && allowMoreTools
                 ? request.toolContext.readPageMap(
@@ -6565,7 +6751,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             // active. It stays usable even though all request-shaping controls
             // are frozen until this turn ends.
             aiSendButton.setEnabled(!aiMaterialLoading);
-            aiSendButton.setText(aiBusy ? "取消" : "发送");
+            aiSendButton.setText(aiBusy ? getString(R.string.core_cancel) : getString(R.string.core_send));
             aiExplainButton.setEnabled(enabled);
             aiMarkdownButton.setEnabled(enabled);
             aiDiagramButton.setEnabled(enabled);
@@ -6605,7 +6791,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      */
     private void showAiManagerDialog(Runnable afterSave) {
         if (aiBusy || aiMaterialLoading) {
-            Toast.makeText(this, "请等待当前回答完成", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_ai_wait), Toast.LENGTH_SHORT).show();
             return;
         }
         LinearLayout content = new LinearLayout(this);
@@ -6613,11 +6799,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.setPadding(dp(22), dp(8), dp(22), 0);
 
         AiConfigStore.Profile active = aiConfigStore.activeProfile();
-        TextView activeLabel = text("当前配置：" + (active == null ? "未配置" : active.name),
+        TextView activeLabel = text(getString(R.string.core_active_profile, active == null ? getString(R.string.core_unconfigured) : active.name),
                 14, INK_COLOR);
         activeLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         content.addView(activeLabel);
-        TextView managerHint = text("点选一项切换使用；直连和两段式配置可并存。",
+        TextView managerHint = text(getString(R.string.core_manager_hint),
                 12, SECONDARY_TEXT);
         LinearLayout.LayoutParams managerHintParams = matchWrap();
         managerHintParams.topMargin = dp(4);
@@ -6631,18 +6817,18 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.addView(listScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
 
-        Button newButton = pillButton("新建配置", BUTTON_PRIMARY);
+        Button newButton = pillButton(getString(R.string.core_new_profile), BUTTON_PRIMARY);
         newButton.setMinHeight(dp(48));
         LinearLayout.LayoutParams newButtonParams = matchWrap();
         newButtonParams.topMargin = dp(8);
         content.addView(newButton, newButtonParams);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("AI 配置")
-                .setMessage("OpenAI-compatible 消息格式，只接受 HTTPS；Key 由 Android Keystore 加密，不写入笔记或日志。")
+                .setTitle(getString(R.string.core_ai_config))
+                .setMessage(getString(R.string.core_ai_security))
                 .setView(content)
-                .setNegativeButton("关闭", null)
-                .setPositiveButton("完成", (ignored, which) -> {
+                .setNegativeButton(getString(R.string.core_close), null)
+                .setPositiveButton(getString(R.string.core_done), (ignored, which) -> {
                     if (afterSave != null) {
                         afterSave.run();
                     }
@@ -6659,7 +6845,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         List<AiConfigStore.Profile> profiles = aiConfigStore.listProfiles();
         String activeId = aiConfigStore.activeProfileId();
         if (profiles.isEmpty()) {
-            TextView empty = text("还没有配置。点“新建配置”添加一个：\n选厂商预设 → 粘贴 API Key → 保存。",
+            TextView empty = text(getString(R.string.core_no_profiles),
                     12, Color.rgb(91, 103, 113));
             empty.setPadding(0, dp(16), 0, dp(8));
             container.addView(empty, matchWrap());
@@ -6696,9 +6882,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         info.addView(nameView);
         String capability;
         switch (profile.toolCapability) {
-            case CONFIRMED: capability = "工具能力：已由真实调用确认"; break;
-            case EXPLICITLY_REJECTED: capability = "工具能力：服务端明确拒绝工具参数"; break;
-            default: capability = "工具能力：尚未确认";
+            case CONFIRMED: capability = getString(R.string.core_capability_confirmed); break;
+            case EXPLICITLY_REJECTED: capability = getString(R.string.core_capability_rejected); break;
+            default: capability = getString(R.string.core_capability_unknown);
         }
         info.addView(text(profile.summary() + " · " + capability,
                 12, Color.rgb(91, 103, 113)));
@@ -6709,26 +6895,26 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 return;
             }
             if (!activateAiProfile(profile)) return;
-            Toast.makeText(this, "已切换到：" + profile.name, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.core_profile_switched, profile.name), Toast.LENGTH_SHORT).show();
             onChanged.run();
         });
 
-        Button editButton = pillButton("编辑", BUTTON_QUIET);
+        Button editButton = pillButton(getString(R.string.core_edit), BUTTON_QUIET);
         editButton.setTextSize(12);
         editButton.setMinHeight(dp(48));
         editButton.setMinWidth(dp(56));
         editButton.setOnClickListener(view -> showProfileEditorDialog(profile.id, onChanged));
         row.addView(editButton);
 
-        Button deleteButton = pillButton("删除", BUTTON_DANGER);
+        Button deleteButton = pillButton(getString(R.string.core_delete), BUTTON_DANGER);
         deleteButton.setTextSize(12);
         deleteButton.setMinHeight(dp(48));
         deleteButton.setMinWidth(dp(56));
         deleteButton.setOnClickListener(view -> new AlertDialog.Builder(this)
-                .setTitle("删除配置？")
-                .setMessage("将删除“" + profile.name + "”。已保存的 Key 会一并清除。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (ignored, which) -> {
+                .setTitle(getString(R.string.core_delete_profile_title))
+                .setMessage(getString(R.string.core_profile_deleted, profile.name))
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_delete), (ignored, which) -> {
                     if (!deleteAiProfile(profile)) return;
                     onChanged.run();
                 })
@@ -6763,54 +6949,54 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         ArrayAdapter<String> presetAdapter = ChoiceRows.spinnerAdapter(presetSpinner, presetLabels);
         presetSpinner.setAdapter(presetAdapter);
-        content.addView(labeledField("厂商预设（自动填地址与推荐模型，不改 Key）", presetSpinner), matchWrap());
+        content.addView(labeledField(getString(R.string.core_vendor_preset), presetSpinner), matchWrap());
         TextView presetHint = text(presets[0].hint, 12, SECONDARY_TEXT);
         presetHint.setPadding(dp(4), dp(2), dp(4), 0);
         content.addView(presetHint, matchWrap());
 
         EditText nameInput = new EditText(this);
         nameInput.setSingleLine(true);
-        nameInput.setHint("例如：智谱免费 / DeepSeek 两段式");
+        nameInput.setHint(getString(R.string.core_profile_example));
         nameInput.setText(current.name);
-        content.addView(labeledField("配置名称", nameInput), matchWrap());
+        content.addView(labeledField(getString(R.string.core_profile_name), nameInput), matchWrap());
 
         Spinner modeSpinner = new Spinner(this);
         ChoiceRows.styleSpinner(modeSpinner);
         ArrayAdapter<String> modeAdapter = ChoiceRows.spinnerAdapter(modeSpinner,
-                new String[]{"直连多模态（一个模型看图并回答）",
-                        "转写 + 回答（两段式）"});
+                new String[]{getString(R.string.core_direct_multimodal),
+                        getString(R.string.core_two_step)});
         modeSpinner.setAdapter(modeAdapter);
         modeSpinner.setSelection(current.split ? 1 : 0);
-        content.addView(labeledField("路线", modeSpinner), matchWrap());
+        content.addView(labeledField(getString(R.string.core_route), modeSpinner), matchWrap());
 
         LinearLayout directGroup = new LinearLayout(this);
         directGroup.setOrientation(LinearLayout.VERTICAL);
         content.addView(directGroup, matchWrap());
         LinearLayout splitGroup = new LinearLayout(this);
         splitGroup.setOrientation(LinearLayout.VERTICAL);
-        splitGroup.addView(text("两段式：转写模型先把圈选手写转成文字，回答模型只读文字并执行笔记操作。",
+        splitGroup.addView(text(getString(R.string.core_two_step_help),
                 12, Color.rgb(91, 103, 113)));
         content.addView(splitGroup, matchWrap());
 
-        EditText directEndpointInput = labeledInput(directGroup, "API 基址或完整 Chat Completions 地址",
-                "https://example.com/v1", current.directEndpoint);
-        EditText directModelInput = labeledInput(directGroup, "支持图像输入的模型名称",
-                "vision-model-name", current.directModel);
-        EditText directKeyInput = labeledInput(directGroup, "API Key（Android Keystore 加密）",
-                current.hasDirectKey() ? "已安全保存；留空保持不变" : "请输入 API Key", "");
+        EditText directEndpointInput = labeledInput(directGroup, getString(R.string.core_api_base),
+                "https://example.com/v1", current.directEndpoint, false);
+        EditText directModelInput = labeledInput(directGroup, getString(R.string.core_image_model),
+                "vision-model-name", current.directModel, false);
+        EditText directKeyInput = labeledInput(directGroup, getString(R.string.core_keystore_key),
+                current.hasDirectKey() ? getString(R.string.core_saved_key_hint) : getString(R.string.core_enter_api_key), "", true);
 
-        EditText transcribeEndpointInput = labeledInput(splitGroup, "转写 API 基址",
-                "https://example.com/v1", current.transcribeEndpoint);
-        EditText transcribeModelInput = labeledInput(splitGroup, "转写模型名称（需支持图像）",
-                "vision-or-ocr-model", current.transcribeModel);
-        EditText transcribeKeyInput = labeledInput(splitGroup, "转写 API Key",
-                current.hasTranscribeKey() ? "已安全保存；留空保持不变" : "请输入 API Key", "");
-        EditText answerEndpointInput = labeledInput(splitGroup, "回答 API 基址",
-                "https://example.com/v1", current.answerEndpoint);
-        EditText answerModelInput = labeledInput(splitGroup, "回答模型名称（纯文本即可）",
-                "text-model", current.answerModel);
-        EditText answerKeyInput = labeledInput(splitGroup, "回答 API Key",
-                current.hasAnswerKey() ? "已安全保存；留空保持不变" : "请输入 API Key", "");
+        EditText transcribeEndpointInput = labeledInput(splitGroup, getString(R.string.core_transcription_api),
+                "https://example.com/v1", current.transcribeEndpoint, false);
+        EditText transcribeModelInput = labeledInput(splitGroup, getString(R.string.core_transcription_model),
+                "vision-or-ocr-model", current.transcribeModel, false);
+        EditText transcribeKeyInput = labeledInput(splitGroup, getString(R.string.core_transcription_key),
+                current.hasTranscribeKey() ? getString(R.string.core_saved_key_hint) : getString(R.string.core_enter_api_key), "", true);
+        EditText answerEndpointInput = labeledInput(splitGroup, getString(R.string.core_response_api),
+                "https://example.com/v1", current.answerEndpoint, false);
+        EditText answerModelInput = labeledInput(splitGroup, getString(R.string.core_response_model),
+                "text-model", current.answerModel, false);
+        EditText answerKeyInput = labeledInput(splitGroup, getString(R.string.core_response_key),
+                current.hasAnswerKey() ? getString(R.string.core_saved_key_hint) : getString(R.string.core_enter_api_key), "", true);
 
         Runnable applyModeVisibility = () -> {
             boolean split = modeSpinner.getSelectedItemPosition() == 1;
@@ -6854,16 +7040,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(creating ? "新建 AI 配置" : "编辑 AI 配置")
+                .setTitle(creating ? getString(R.string.core_new_ai_profile) : getString(R.string.core_edit_ai_profile))
                 .setView(content)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("安全保存", null)
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_secure_save), null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(view -> {
                     String name = nameInput.getText().toString().trim();
                     if (name.isEmpty()) {
-                        nameInput.setError("请给配置起个名字");
+                        nameInput.setError(getString(R.string.core_profile_name_error));
                         return;
                     }
                     boolean split = modeSpinner.getSelectedItemPosition() == 1;
@@ -6879,16 +7065,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             String endpoint = directEndpointInput.getText().toString().trim();
                             String model = directModelInput.getText().toString().trim();
                             if (!isValidHttpsEndpoint(endpoint)) {
-                                directEndpointInput.setError("请输入有效的 HTTPS API 地址");
+                                directEndpointInput.setError(getString(R.string.core_https_endpoint_required));
                                 return;
                             }
                             if (model.isEmpty()) {
-                                directModelInput.setError("请输入模型名称");
+                                directModelInput.setError(getString(R.string.core_model_name_required));
                                 return;
                             }
                             String key = directKeyInput.getText().toString().trim();
                             if (key.isEmpty() && !current.hasDirectKey()) {
-                                directKeyInput.setError("请输入 API Key");
+                                directKeyInput.setError(getString(R.string.core_enter_api_key));
                                 return;
                             }
                             directKey = key;
@@ -6900,30 +7086,30 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             String answerEndpoint = answerEndpointInput.getText().toString().trim();
                             String answerModel = answerModelInput.getText().toString().trim();
                             if (!isValidHttpsEndpoint(transcribeEndpoint)) {
-                                transcribeEndpointInput.setError("请输入有效的 HTTPS API 地址");
+                                transcribeEndpointInput.setError(getString(R.string.core_https_endpoint_required));
                                 return;
                             }
                             if (transcribeModel.isEmpty()) {
-                                transcribeModelInput.setError("请输入转写模型名称");
+                                transcribeModelInput.setError(getString(R.string.core_transcription_model_required));
                                 return;
                             }
                             if (!isValidHttpsEndpoint(answerEndpoint)) {
-                                answerEndpointInput.setError("请输入有效的 HTTPS API 地址");
+                                answerEndpointInput.setError(getString(R.string.core_https_endpoint_required));
                                 return;
                             }
                             if (answerModel.isEmpty()) {
-                                answerModelInput.setError("请输入回答模型名称");
+                                answerModelInput.setError(getString(R.string.core_response_model_required));
                                 return;
                             }
                             String key = transcribeKeyInput.getText().toString().trim();
                             if (key.isEmpty() && !current.hasTranscribeKey()) {
-                                transcribeKeyInput.setError("请输入转写 API Key");
+                                transcribeKeyInput.setError(getString(R.string.core_transcription_key_required));
                                 return;
                             }
                             transcribeKey = key;
                             String answerKeyValue = answerKeyInput.getText().toString().trim();
                             if (answerKeyValue.isEmpty() && !current.hasAnswerKey()) {
-                                answerKeyInput.setError("请输入回答 API Key");
+                                answerKeyInput.setError(getString(R.string.core_response_key_required));
                                 return;
                             }
                             answerKey = answerKeyValue;
@@ -6942,20 +7128,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             afterSave.run();
                         }
                     } catch (Exception error) {
-                        Toast.makeText(this, "安全保存失败", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, R.string.core_secure_save_failed, Toast.LENGTH_LONG).show();
                     }
                 }));
         dialog.show();
     }
 
-    private EditText labeledInput(LinearLayout group, String label, String hint, String value) {
+    private EditText labeledInput(LinearLayout group, String label, String hint, String value, boolean secret) {
         TextView caption = text(label, 12, SECONDARY_TEXT);
         caption.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         group.addView(caption);
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setHint(hint);
-        input.setInputType(label.contains("Key")
+        input.setInputType(secret
                 ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
                 : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         input.setText(value == null ? "" : value);
@@ -7024,7 +7210,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 config = profile.split ? aiConfigStore.transcribeConfig(profile) : aiConfigStore.directConfig(profile);
             }
         } catch (Exception error) {
-            Toast.makeText(this, "模型凭据无法读取，可先查看已保存的整理稿", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, R.string.core_model_credentials_unavailable, Toast.LENGTH_LONG).show();
         }
         long sourceUpdatedAt = System.currentTimeMillis();
         if (documentRevision == lastSavedRevision) {
@@ -7046,8 +7232,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(source, matchWrap());
         new AlertDialog.Builder(this).setTitle(title).setView(scroll)
-                .setNegativeButton("关闭", null)
-                .setPositiveButton("复制", (dialog, which) ->
+                .setNegativeButton(getString(R.string.core_close), null)
+                .setPositiveButton(getString(R.string.core_copy_source), (dialog, which) ->
                         copyLocalSource(title, sourceValue)).show();
     }
 
@@ -7056,7 +7242,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (clipboard != null) {
             clipboard.setPrimaryClip(ClipData.newPlainText(label,
                     source == null ? "" : source));
-            Toast.makeText(this, "源码已复制", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.core_source_copied, Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -7070,8 +7256,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         editor.setFilters(new InputFilter[]{new InputFilter.LengthFilter(500_000)});
         new AlertDialog.Builder(this).setTitle(title).setMessage(explanation).setView(editor)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存并重新显示", (dialog, which) ->
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_save_redisplay), (dialog, which) ->
                         onApply.accept(editor.getText().toString())).show();
     }
 
@@ -7103,23 +7289,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         body.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        Button editCurrent=pillButton("编辑源码",BUTTON_QUIET);
-        editCurrent.setContentDescription("编辑格式笔记源码");
+        Button editCurrent=pillButton(getString(R.string.core_vault_edit_source),BUTTON_QUIET);
+        editCurrent.setContentDescription(getString(R.string.core_vault_edit_source));
         body.addView(editCurrent,new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,dp(42)));
         LinearLayout recovery = new LinearLayout(this);
         recovery.setOrientation(LinearLayout.VERTICAL);
         recovery.setPadding(dp(12), dp(8), dp(12), dp(8));
         recovery.setVisibility(View.GONE);
-        recovery.setContentDescription("格式笔记显示失败");
-        TextView status = text("显示失败", 12, Color.rgb(143, 47, 43));
+        recovery.setContentDescription(getString(R.string.core_vault_reader_accessibility));
+        TextView status = text(getString(R.string.core_vault_display_failed,""), 12, Color.rgb(143, 47, 43));
         recovery.addView(status, matchWrap());
         LinearLayout actions = new LinearLayout(this);
-        Button viewSource = pillButton("查看源码", BUTTON_QUIET);
-        Button copySource = pillButton("复制", BUTTON_QUIET);
-        Button editSource = pillButton("编辑", BUTTON_QUIET);
-        editSource.setContentDescription("编辑格式笔记源码");
-        Button retry = pillButton("重新显示", BUTTON_TONAL);
+        Button viewSource = pillButton(getString(R.string.core_vault_view_source), BUTTON_QUIET);
+        Button copySource = pillButton(getString(R.string.core_vault_copy_source), BUTTON_QUIET);
+        Button editSource = pillButton(getString(R.string.core_edit), BUTTON_QUIET);
+        editSource.setContentDescription(getString(R.string.core_vault_edit_source));
+        Button retry = pillButton(getString(R.string.core_vault_retry_display), BUTTON_TONAL);
         actions.addView(viewSource, new LinearLayout.LayoutParams(0, dp(40), 1f));
         actions.addView(copySource, new LinearLayout.LayoutParams(0, dp(40), .7f));
         actions.addView(editSource, new LinearLayout.LayoutParams(0, dp(40), .7f));
@@ -7127,9 +7313,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         recovery.addView(actions, matchWrap());
         body.addView(recovery, matchWrap());
         viewSource.setOnClickListener(view -> showLocalSource(
-                "格式笔记源码", currentSource[0]));
+                getString(R.string.core_vault_source_label), currentSource[0]));
         copySource.setOnClickListener(view -> copyLocalSource(
-                "PadNote 格式笔记源码", currentSource[0]));
+                getString(R.string.core_vault_source_label), currentSource[0]));
         View.OnClickListener editVaultAction=view -> showVaultEditor(currentSelection[0],currentSource[0],
                 committed -> {
                     if(readerClosed.get())return;
@@ -7142,7 +7328,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         editCurrent.setOnClickListener(editVaultAction);
         retry.setOnClickListener(view -> {
             retry.setEnabled(false);
-            status.setText("正在重新显示…");
+            status.setText(R.string.core_vault_rendering);
             webHolder[0].renderDocument(currentSource[0]);
         });
         configureVaultRenderRecovery(webView, webHolder, scroll, recovery, status, retry,
@@ -7150,7 +7336,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(fileName)
                 .setView(body)
-                .setPositiveButton("关闭", null)
+                .setPositiveButton(getString(R.string.core_close), null)
                 .create();
         dialog.setOnDismissListener(ignored -> {
             readerClosed.set(true);
@@ -7172,7 +7358,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 recovery.setVisibility(View.GONE);
                 return;
             }
-            status.setText("显示失败 · " + state.message);
+            status.setText(getString(R.string.core_vault_display_failed, state.message));
             recovery.setVisibility(View.VISIBLE);
             if (state.failure == CompiledTextWebView.FailureKind.PROCESS_GONE) {
                 scroll.post(() -> {
@@ -7213,7 +7399,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         android.net.Uri uri=data.getData();
         VaultStore.VaultSelection captured=pendingExportVaultSelection;
         pendingExportVaultSelection=null;
-        if(captured==null){Toast.makeText(this,"导出版本已失效；请重新选择格式笔记",Toast.LENGTH_LONG).show();return;}
+        if(captured==null){Toast.makeText(this,R.string.core_vault_invalid_export,Toast.LENGTH_LONG).show();return;}
         storageExecutor.execute(() -> {
             try {
                 if(vaultExportBytesForTest!=null)vaultExportBytesForTest.accept(captured.markdown.clone());
@@ -7221,36 +7407,39 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     if (output == null) throw new IllegalStateException("EXPORT_DESTINATION_UNAVAILABLE");
                     output.write(captured.markdown);
                 }
-                runOnUiThread(() -> {recordVaultRouteResultForTest("export_committed");Toast.makeText(this, "已导出所选版本的 Markdown",
+                runOnUiThread(() -> {recordVaultRouteResultForTest("export_committed");Toast.makeText(this, R.string.core_vault_exported,
                         Toast.LENGTH_SHORT).show();});
             } catch (Exception error) {
                 runOnUiThread(() -> {recordVaultRouteResultForTest("export_failed");Toast.makeText(this,
-                        "导出失败；所选版本未重新读取", Toast.LENGTH_LONG).show();});
+                        R.string.core_vault_export_failed, Toast.LENGTH_LONG).show();});
             }
         });
     }
 
     private void updateStatsText() {
-        String selection = selectionCount > 0 ? " · 选中 " + selectionCount : "";
-        String compactSelection = selectionCount > 0 ? " · 选" + selectionCount : "";
-        statsView.setText(String.format(Locale.CHINA, "%d/%d 页 · %d%%%s",
-                currentPageNumber, totalPageCount, canvasZoomPercent, compactSelection));
-        statsView.setContentDescription(String.format(Locale.CHINA,
-                "%d 笔，%d 点，第 %d 页，共 %d 页，缩放 %d%%%s",
-                strokeCount, pointCount, currentPageNumber, totalPageCount,
-                canvasZoomPercent, selection));
+        if (selectionCount > 0) {
+            statsView.setText(getString(R.string.core_page_stats_visual_selection,
+                    currentPageNumber, totalPageCount, canvasZoomPercent, selectionCount));
+            statsView.setContentDescription(getString(R.string.core_page_stats_accessibility_selection,
+                    strokeCount, pointCount, currentPageNumber, totalPageCount,
+                    canvasZoomPercent, selectionCount));
+        } else {
+            statsView.setText(getString(R.string.core_page_stats_visual,
+                    currentPageNumber, totalPageCount, canvasZoomPercent));
+            statsView.setContentDescription(getString(R.string.core_page_stats_accessibility,
+                    strokeCount, pointCount, currentPageNumber, totalPageCount, canvasZoomPercent));
+        }
     }
 
     private void togglePenOnly() {
         penOnlyEnabled = !canvasView.isPenOnly();
         canvasView.setPenOnly(penOnlyEnabled);
         penOnlyButton.setSelected(penOnlyEnabled);
-        penOnlyButton.setContentDescription(penOnlyEnabled ? "仅手写笔模式已开启" : "仅手写笔模式已关闭");
+        penOnlyButton.setContentDescription(getString(penOnlyEnabled
+                ? R.string.core_pen_only_enabled : R.string.core_pen_only_disabled));
         preferences.edit().putBoolean("penOnly", penOnlyEnabled).apply();
-        Toast.makeText(this,
-                penOnlyEnabled
-                        ? "仅笔开启；单指移动画布，双指缩放，选区仍可手指拖动"
-                        : "单指可以编辑；双指仍可移动和缩放",
+        Toast.makeText(this, penOnlyEnabled
+                ? R.string.core_pen_only_enabled_hint : R.string.core_pen_only_disabled_hint,
                 Toast.LENGTH_SHORT).show();
     }
 
@@ -7259,10 +7448,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         new AlertDialog.Builder(this)
-                .setTitle("清空当前笔记？")
-                .setMessage("清空后仍可使用撤销恢复。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("清空", (dialog, which) -> canvasView.clearAll())
+                .setTitle(R.string.core_clear_title)
+                .setMessage(R.string.core_clear_message)
+                .setNegativeButton(getString(R.string.core_cancel), null)
+                .setPositiveButton(getString(R.string.core_ai_clear), (dialog, which) -> canvasView.clearAll())
                 .show();
     }
 
@@ -7319,21 +7508,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         editor.setText(markdown);editor.setGravity(Gravity.TOP|Gravity.START);editor.setTypeface(Typeface.MONOSPACE);
         editor.setMinLines(10);editor.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         editor.setFilters(new InputFilter[]{new InputFilter.LengthFilter(500_000)});
-        TextView status=text("保存会基于打开时选中的版本。冲突时草稿会保留。",12,SECONDARY_TEXT);
-        Button retryOnCurrent=pillButton("基于当前版本重试",BUTTON_QUIET);retryOnCurrent.setVisibility(View.GONE);
+        TextView status=text(getString(R.string.core_vault_save_base_status),12,SECONDARY_TEXT);
+        Button retryOnCurrent=pillButton(getString(R.string.core_vault_retry_current),BUTTON_QUIET);retryOnCurrent.setVisibility(View.GONE);
         LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);
         content.addView(status,matchWrap());content.addView(editor,new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,dp(360)));content.addView(retryOnCurrent,matchWrap());
         VaultStore.VaultSelection[] selected={base};
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("编辑格式笔记源码")
-                .setView(content).setNegativeButton("关闭",null).setPositiveButton("保存",null).create();
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(R.string.core_vault_editor_title)
+                .setView(content).setNegativeButton(getString(R.string.core_close),null).setPositiveButton(getString(R.string.core_save),null).create();
         retryOnCurrent.setOnClickListener(v->storageExecutor.execute(()->{
             try {
                 VaultStore.VaultSelection latest=vaultStore.captureCurrentSelection(selected[0]);
-                runOnUiThread(()->new AlertDialog.Builder(this).setTitle("确认使用当前版本")
-                        .setMessage("这份草稿来自较早版本。只有确认后才会以当前版本作为新的保存基线；草稿内容保持不变。")
-                        .setNegativeButton("继续保留草稿",null)
-                        .setPositiveButton("确认并保存草稿",(d,w)->{selected[0]=latest;saveVaultDraft(dialog,editor,status,retryOnCurrent,selected,onSaved);})
+                runOnUiThread(()->new AlertDialog.Builder(this).setTitle(R.string.core_vault_confirm_current_title)
+                        .setMessage(R.string.core_vault_confirm_current_message)
+                        .setNegativeButton(R.string.core_vault_keep_draft,null)
+                        .setPositiveButton(R.string.core_vault_confirm_save_draft,(d,w)->{selected[0]=latest;saveVaultDraft(dialog,editor,status,retryOnCurrent,selected,onSaved);})
                         .show());
             } catch(Exception failure) {
                 runOnUiThread(()->status.setText(getString(R.string.vault_failure_draft_retained, vaultFailureMessage(failure))));
@@ -7347,7 +7536,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void saveVaultDraft(AlertDialog dialog,EditText editor,TextView status,Button retryOnCurrent,
                                 VaultStore.VaultSelection[] selected,java.util.function.Consumer<VaultStore.VaultSelection> onSaved) {
         String draft=editor.getText().toString();
-        status.setText("正在保存源码…");dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        status.setText(R.string.core_vault_saving_source);dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
         storageExecutor.execute(()->{
             try {
                 VaultStore.VaultSelection committed=vaultStore.replaceSelection(selected[0],draft);
@@ -7366,10 +7555,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private String vaultFailureMessage(Exception failure) {
         String code=failure==null?"":String.valueOf(failure.getMessage());
-        if(code.contains("BASE_CAS_CONFLICT")||code.contains("BASE_CONTENT_CONFLICT"))return "笔记版本已更新，本次操作未应用";
-        if(code.contains("RETIRED"))return "笔记已归档，格式笔记不可修改";
-        if(code.contains("MARKER")||code.contains("OWNER")||code.contains("GROUP_"))return "笔记材料校验或版本检查失败；请检查当前版本后决定是否重试";
-        return "格式笔记操作失败；草稿仍保留，请检查当前版本后决定是否重试";
+        if(code.contains("BASE_CAS_CONFLICT")||code.contains("BASE_CONTENT_CONFLICT"))return getString(R.string.core_vault_failure_version_changed);
+        if(code.contains("RETIRED"))return getString(R.string.core_vault_failure_archived);
+        if(code.contains("MARKER")||code.contains("OWNER")||code.contains("GROUP_"))return getString(R.string.core_vault_failure_validation);
+        return getString(R.string.core_vault_failure_generic);
     }
 
     private VideoActionList readVideoActionList(String noteId,String title)throws Exception {
@@ -7415,21 +7604,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     new NoteGroupFacade(this).removeVideoRevision(selection.base.noteId,
                             selection.base.revision,selection.base.digest,selection.attachment.id);
                     runOnUiThread(()->{
-                        Toast.makeText(this,"已从当前笔记版本移除；旧版本仍保留该视频",Toast.LENGTH_LONG).show();
+                        Toast.makeText(this,R.string.core_video_removed_current_version,Toast.LENGTH_LONG).show();
                         NoteStore.Entry latest=findNoteEntry(selection.base.noteId);
                         showVideoAttachments(selection.base.noteId,latest==null?selection.base.title:latest.title,latest);
                     });
                 }else{
                     videoAttachmentStore.remove(selection.attachment.id);
                     runOnUiThread(()->{
-                        Toast.makeText(this,"已移除视频关联",Toast.LENGTH_LONG).show();
+                        Toast.makeText(this,R.string.core_video_removed,Toast.LENGTH_LONG).show();
                         NoteStore.Entry latest=findNoteEntry(selection.base.noteId);
                         showVideoAttachments(selection.base.noteId,latest==null?selection.base.title:latest.title,latest);
                     });
                 }
             }catch(Exception error){
-                String message=selection.base.grouped?groupVideoFailureMessage(error,"移除"):
-                        "移除状态未确认；请重新打开视频列表核实后再处理。";
+                String message=selection.base.grouped?groupVideoFailureMessage(error,getString(R.string.core_video_remove_action)):
+                        getString(R.string.core_video_remove_status_uncertain);
                 runOnUiThread(()->Toast.makeText(this,message,Toast.LENGTH_LONG).show());
             }
         });
@@ -7437,9 +7626,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private String groupVideoFailureMessage(Exception error,String action){
         String code=error==null?"":error.getMessage();
-        if("BASE_CAS_CONFLICT".equals(code))return "笔记版本已更新；本次未"+action+"，请重新打开视频列表后再试。";
-        if("GROUP_NOTE_RETIRED".equals(code))return "笔记已删除；本次未"+action+"。";
-        return "无法验证笔记当前版本；本次操作状态未确认，请重新打开视频列表核实。";
+        if("BASE_CAS_CONFLICT".equals(code))return getString(R.string.core_video_note_version_changed_action, action);
+        if("GROUP_NOTE_RETIRED".equals(code))return getString(R.string.core_video_note_deleted_action, action);
+        return getString(R.string.core_video_verify_version_failure);
     }
 
     private void verifyVideoBaseLineage(VideoActionBase base)throws Exception {
@@ -7545,9 +7734,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 if(total!=verified.attachment.sizeBytes||!verified.attachment.sha256.equalsIgnoreCase(sha256Hex(digest.digest())))
                     throw new java.io.IOException("PENDING_VIDEO_EXPORT_HASH_CHANGED");
                 saved=true;String name=verified.attachment.name;
-                runOnUiThread(()->Toast.makeText(this,"待处理视频已校验并另存："+name,Toast.LENGTH_LONG).show());
+                runOnUiThread(()->Toast.makeText(this,getString(R.string.core_pending_save_success,name),Toast.LENGTH_LONG).show());
             }catch(Exception failure){runOnUiThread(()->Toast.makeText(this,
-                    "待处理视频另存失败；待处理副本仍保留。",Toast.LENGTH_LONG).show());}
+                    getString(R.string.core_pending_save_error),Toast.LENGTH_LONG).show());}
             finally{if(!saved)try{getContentResolver().delete(uri,null,null);}catch(Exception ignored){}}
         });
     }
@@ -7558,21 +7747,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 PendingVideoArtifactStore store=new PendingVideoArtifactStore(this);
                 List<PendingVideoArtifactStore.Entry> entries=noteId==null?store.listAll():store.listForNote(noteId);
                 runOnUiThread(()->{
-                    if(entries.isEmpty()){new AlertDialog.Builder(this).setTitle("待处理关联视频")
-                            .setMessage("没有待处理的视频产物。") .setPositiveButton("关闭",null).show();return;}
+                    if(entries.isEmpty()){new AlertDialog.Builder(this).setTitle(R.string.core_pending_title)
+                            .setMessage(R.string.core_pending_empty_message) .setPositiveButton(getString(R.string.core_close),null).show();return;}
                     String[] labels=new String[entries.size()];for(int i=0;i<labels.length;i++){
                         PendingVideoArtifactStore.Entry entry=entries.get(i);
-                        if(entry.attachment==null)labels[i]="有一条无法验证的待处理记录；原文件未删除";
+                        if(entry.attachment==null)labels[i]=getString(R.string.core_pending_invalid_row);
                         else labels[i]=entry.attachment.name+" · "+formatBytes(entry.attachment.sizeBytes)
-                                +(entry.available?(entry.durable?" · 已校验":" · 已校验但持久性未确认")
-                                        :" · 下载/记录待恢复");
+                                +(entry.available?(entry.durable?" · "+getString(R.string.core_pending_label_verified):" · "+getString(R.string.core_pending_label_durable))
+                                        :" · "+getString(R.string.core_pending_label_restore));
                     }
-                    ChoiceRows.builder(this).setTitle("待处理关联视频")
+                    ChoiceRows.builder(this).setTitle(R.string.core_pending_title)
                             .setAdapter(ChoiceRows.adapter(this, labels),(dialog,which)->showPendingVideoActions(entries.get(which)))
-                            .setNegativeButton("关闭",null).show();
+                            .setNegativeButton(getString(R.string.core_close),null).show();
                 });
             }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                    "待处理视频无法验证；本次没有修改文件。",Toast.LENGTH_LONG).show());}
+                    getString(R.string.core_pending_verify_error),Toast.LENGTH_LONG).show());}
         });
     }
 
@@ -7602,37 +7791,37 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showPendingVideoActions(PendingVideoArtifactStore.Entry entry){
         if(entry==null||entry.attachment==null){
-            new AlertDialog.Builder(this).setTitle("待处理记录需要检查")
-                    .setMessage("无法验证这条记录的材料身份。原文件和未知文件均保留，请导出应用数据后再处理。")
-                    .setPositiveButton("关闭",null).show();return;
+            new AlertDialog.Builder(this).setTitle(R.string.core_pending_invalid_title)
+                    .setMessage(R.string.core_pending_invalid_message)
+                    .setPositiveButton(getString(R.string.core_close),null).show();return;
         }
         if(PendingVideoArtifactStore.isDeleteIncomplete(entry)){
-            new AlertDialog.Builder(this).setTitle("清理尚未完成")
-                    .setMessage("上次删除已记录，但中断后仍有本机文件。仅会继续清理本记录中可验证的文件。")
-                    .setPositiveButton("继续清理",(d,w)->removePendingVideo(entry))
-                    .setNegativeButton("关闭",null).show();return;
+            new AlertDialog.Builder(this).setTitle(R.string.core_pending_cleanup_title)
+                    .setMessage(R.string.core_pending_cleanup_message)
+                    .setPositiveButton(R.string.core_pending_cleanup_action,(d,w)->removePendingVideo(entry))
+                    .setNegativeButton(getString(R.string.core_close),null).show();return;
         }
         if(!entry.available){
-            pendingVideoActionList("视频结果尚未验证",
-                    "下载或记录没有完整提交。未验证文件不能重新关联或导出；任务来源仍可从任务历史查看。",
-                    new String[]{"删除这条未完成记录"},(d,w)->confirmPendingVideoRemoval(entry))
-                    .setNegativeButton("关闭",null).show();return;
+            pendingVideoActionList(getString(R.string.core_pending_unverified_title),
+                    getString(R.string.core_pending_unverified_message),
+                    new String[]{getString(R.string.core_pending_unverified_action)},(d,w)->confirmPendingVideoRemoval(entry))
+                    .setNegativeButton(getString(R.string.core_close),null).show();return;
         }
         if(!entry.durable){
             pendingVideoActionList(entry.attachment.name,
-                    "视频字节当前可校验，但文件系统未确认其持久写入。可先另存副本；请勿重新关联。",
-                    new String[]{"另存到文件"},(d,w)->launchSavePendingVideo(entry))
-                    .setNegativeButton("关闭",null).show();return;
+                    getString(R.string.core_pending_durable_message),
+                    new String[]{getString(R.string.core_pending_save_action)},(d,w)->launchSavePendingVideo(entry))
+                    .setNegativeButton(getString(R.string.core_close),null).show();return;
         }
         if(entry.hasUnknownChild){
-            pendingVideoActionList("待处理目录需要检查",
-                    "目录中存在无法识别的文件。已校验视频仍可另存；不会改动未知文件，也不会删除该目录。",
-                    new String[]{"另存到文件"},(d,w)->launchSavePendingVideo(entry))
-                    .setNegativeButton("关闭",null).show();return;
+            pendingVideoActionList(getString(R.string.core_pending_unknown_title),
+                    getString(R.string.core_pending_unknown_message),
+                    new String[]{getString(R.string.core_pending_save_action)},(d,w)->launchSavePendingVideo(entry))
+                    .setNegativeButton(getString(R.string.core_close),null).show();return;
         }
         pendingVideoActionList(entry.attachment.name,
-                "附加状态未确认；已校验视频保存在本机。重新关联前会要求你明确选择来源笔记并确认其当前版本。",
-                new String[]{"重新选择来源笔记并关联","另存到文件","删除待处理副本"},(dialog,which)->{
+                getString(R.string.core_pending_verified_message),
+                new String[]{getString(R.string.core_pending_relink_action),getString(R.string.core_pending_save_action),getString(R.string.core_pending_remove_action)},(dialog,which)->{
                     if(which==0)choosePendingVideoTarget(entry);
                     else if(which==1)launchSavePendingVideo(entry);
                     else confirmPendingVideoRemoval(entry);
@@ -7644,12 +7833,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             try{
                 NoteStore.Entry source=findNoteEntry(entry.attachment.noteId);
                 if(source==null)throw new java.io.IOException("VIDEO_SOURCE_NOTE_UNAVAILABLE");
-                runOnUiThread(()->pendingVideoActionList("选择任务的来源笔记",
-                        "任务来源身份固定为“"+source.title+"”。为保持来源记录一致，此待处理视频只可重新关联到这份笔记。",
+                runOnUiThread(()->pendingVideoActionList(getString(R.string.core_pending_choose_source_title),
+                        getString(R.string.core_pending_choose_source_message,source.title),
                         new String[]{source.title},(dialog,which)->preparePendingVideoRetry(entry,source))
-                        .setNegativeButton("取消",null).show());
+                        .setNegativeButton(getString(R.string.core_cancel),null).show());
             }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                    "原来源笔记不可用；你仍可另存或删除待处理视频。",Toast.LENGTH_LONG).show());}
+                    getString(R.string.core_pending_source_unavailable),Toast.LENGTH_LONG).show());}
         });
     }
 
@@ -7659,19 +7848,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 NoteStore.Entry current=findNoteEntry(selected.id);
                 if(current==null||!current.id.equals(entry.attachment.noteId))throw new java.io.IOException("VIDEO_TARGET_CHANGED");
                 VideoActionBase base=captureVideoActionBase(current.id,current.title);
-                runOnUiThread(()->new AlertDialog.Builder(this).setTitle("重新关联待处理视频")
-                        .setMessage("将“"+entry.attachment.name+"”关联到“"+base.title+"”的已捕获当前版本。任务原始来源信息会保留；这不是原先失败操作的自动重试。")
-                        .setNegativeButton("取消",null)
-                        .setPositiveButton("确认关联",(dialog,which)->retryPendingVideo(entry,base)).show());
+                runOnUiThread(()->new AlertDialog.Builder(this).setTitle(R.string.core_pending_relink_title)
+                        .setMessage(getString(R.string.core_pending_relink_message,entry.attachment.name,base.title))
+                        .setNegativeButton(getString(R.string.core_cancel),null)
+                        .setPositiveButton(R.string.core_pending_relink_confirm,(dialog,which)->retryPendingVideo(entry,base)).show());
             }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                    "无法验证当前笔记版本；待处理视频仍保留。",Toast.LENGTH_LONG).show());}
+                    getString(R.string.core_pending_verify_error),Toast.LENGTH_LONG).show());}
         });
     }
 
     private void confirmPendingVideoRemoval(PendingVideoArtifactStore.Entry entry){
-        new AlertDialog.Builder(this).setTitle("删除待处理副本？")
-                .setMessage("只删除这份已校验的本机待处理副本，不影响任务历史或笔记版本。")
-                .setNegativeButton("取消",null).setPositiveButton("删除",(d,w)->removePendingVideo(entry)).show();
+        new AlertDialog.Builder(this).setTitle(R.string.core_pending_remove_title)
+                .setMessage(R.string.core_pending_remove_message)
+                .setNegativeButton(getString(R.string.core_cancel),null).setPositiveButton(getString(R.string.core_delete),(d,w)->removePendingVideo(entry)).show();
     }
 
     private void removePendingVideo(PendingVideoArtifactStore.Entry entry){
@@ -7679,7 +7868,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             try{new PendingVideoArtifactStore(this).remove(entry);
                 runOnUiThread(()->showPendingVideoArtifacts(null));}
             catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                    "待处理记录仍有文件；未删除未知内容。请重新打开待处理视频查看。",Toast.LENGTH_LONG).show());}
+                    getString(R.string.core_pending_remove_failure),Toast.LENGTH_LONG).show());}
         });
     }
 
@@ -7695,7 +7884,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 if(videoAlreadyPublished(base.noteId,base.grouped?base.lineage:null,entry.attachment)){
                     exactAlreadyPublished=true;
                     store.remove(current);committed=true;
-                    runOnUiThread(()->Toast.makeText(this,"已在当前笔记版本确认这份视频；重复结果已安全收拢。",Toast.LENGTH_LONG).show());
+                    runOnUiThread(()->Toast.makeText(this,R.string.core_pending_link_confirmed_repeat,Toast.LENGTH_LONG).show());
                     return;
                 }
                 if(base.grouped){
@@ -7714,21 +7903,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }
                 committed=true;
                 try{store.remove(current);
-                    runOnUiThread(()->Toast.makeText(this,"待处理视频已关联到当前笔记版本",Toast.LENGTH_LONG).show());
+                    runOnUiThread(()->Toast.makeText(this,R.string.core_pending_link_success,Toast.LENGTH_LONG).show());
                 }catch(Exception cleanup){runOnUiThread(()->Toast.makeText(this,
-                        "视频已关联到当前笔记版本；待处理副本清理失败，仍可在待处理列表中检查。",Toast.LENGTH_LONG).show());}
+                        getString(R.string.core_pending_link_cleanup_failed),Toast.LENGTH_LONG).show());}
             }catch(Exception error){
                 if(!committed&&entry!=null&&entry.attachment!=null){
                     try{if(videoAlreadyPublished(entry.attachment.noteId,
                             base.grouped?base.lineage:null,entry.attachment)){
                         exactAlreadyPublished=true;
                         store.remove(entry);committed=true;
-                        runOnUiThread(()->Toast.makeText(this,"已在当前笔记版本确认这份视频；重复结果已安全收拢。",Toast.LENGTH_LONG).show());
+                        runOnUiThread(()->Toast.makeText(this,R.string.core_pending_link_confirmed_repeat,Toast.LENGTH_LONG).show());
                         return;
                     }}catch(Exception uncertain){/* Preserve the durable entry when exact publication cannot be proved. */}
                 }
-                String message=committed||exactAlreadyPublished?"已确认视频在当前笔记版本中；待处理副本清理未完成，请在书架的待处理视频中检查。":
-                        "附加状态未确认；待处理视频仍保留。请先检查当前笔记，再决定是否再次操作。";
+                String message=committed||exactAlreadyPublished?getString(R.string.core_pending_link_cleanup_failed):
+                        getString(R.string.core_pending_link_status_uncertain);
                 runOnUiThread(()->Toast.makeText(this,message,Toast.LENGTH_LONG).show());
             }
         });
@@ -7753,7 +7942,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void launchImportNote() {
-        Toast.makeText(this, "支持 PDF、PadNote JSON 和包含 PDF 的笔记 ZIP 包", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, R.string.core_import_supported, Toast.LENGTH_LONG).show();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -7764,19 +7953,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showLibraryActions() {
-        String[] actions={"备份整个资料库","从备份恢复为副本","查看离线恢复材料","处理上次未完成的恢复"};
-        ChoiceRows.builder(this).setTitle("资料库备份与恢复")
+        String[] actions={getString(R.string.core_library_backup),getString(R.string.core_library_restore),getString(R.string.core_library_materials),getString(R.string.core_library_resume)};
+        ChoiceRows.builder(this).setTitle(getString(R.string.core_library_title))
                 .setAdapter(ChoiceRows.adapter(this, actions),(dialog,which)->{
                     if(which==0)launchLibraryBackup();
                     else if(which==1)launchLibraryRestore();
                     else if(which==2)showRestoredMaterials();
                     else showPendingRestoreActions();
-                }).setNegativeButton("关闭",null).show();
+                }).setNegativeButton(getString(R.string.core_close),null).show();
     }
 
     private void launchLibraryBackup() {
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("application/zip").putExtra(Intent.EXTRA_TITLE,"PadNote-资料库备份.padnote-library.zip");
+                .setType("application/zip").putExtra(Intent.EXTRA_TITLE,getString(R.string.lib_backup_filename));
         startActivityForResult(intent,REQUEST_LIBRARY_BACKUP);
     }
 
@@ -7787,7 +7976,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void beginLibraryBackup(android.net.Uri uri) {
-        ProgressDialog progress=new ProgressDialog(this);progress.setTitle("正在备份资料库");progress.setMessage("收集笔记与已提交的离线材料…");progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
+        ProgressDialog progress=new ProgressDialog(this);progress.setTitle(getString(R.string.lib_backup_progress_title));progress.setMessage(getString(R.string.lib_backup_progress_body));progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
         storageExecutor.execute(()->{
             File archive=null;
             try{
@@ -7799,8 +7988,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 try(InputStream in=new FileInputStream(archive);OutputStream out=getContentResolver().openOutputStream(uri,"w")){
                     if(out==null)throw new java.io.IOException("BACKUP_DESTINATION_UNAVAILABLE");byte[] buffer=new byte[64*1024];int n;while((n=in.read(buffer))!=-1)out.write(buffer,0,n);out.flush();
                 }
-                runOnUiThread(()->{progress.dismiss();Toast.makeText(this,"资料库备份已保存",Toast.LENGTH_LONG).show();});
-            }catch(Exception error){runOnUiThread(()->{progress.dismiss();showLibraryMessage("备份失败",safeError(error));});}
+                runOnUiThread(()->{progress.dismiss();Toast.makeText(this,getString(R.string.lib_backup_saved),Toast.LENGTH_LONG).show();});
+            }catch(Exception error){runOnUiThread(()->{progress.dismiss();showLibraryMessage(getString(R.string.lib_backup_failed),safeError(error));});}
             finally{if(archive!=null&&archive.exists())archive.delete();}
         });
     }
@@ -7834,13 +8023,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         LibraryBackupArchive.StagedArchive ready;String error;
         synchronized(state){if(state.loading)return;if(state.progress!=null&&state.progress.isShowing())state.progress.dismiss();state.progress=null;ready=state.staged;error=state.error;state.staged=null;state.error=null;}
         if(ready!=null){pendingLibraryRestoreStage=ready;showRestorePreview(ready);}
-        else if(error!=null){restorePreviewState=null;showLibraryMessage("备份无法恢复",error);}
+        else if(error!=null){restorePreviewState=null;showLibraryMessage(getString(R.string.lib_restore_unreadable),error);}
     }
     private void showRetainedRestoreProgress(RestorePreviewRetainedState state){
         synchronized(state){
             if(!state.loading||state.activity()!=this)return;
             if(state.progress!=null&&state.progress.isShowing())return;
-            ProgressDialog progress=new ProgressDialog(this);progress.setTitle("正在检查备份");progress.setMessage("验证归档完整性与资源引用…");progress.setIndeterminate(true);progress.setCancelable(false);progress.show();state.progress=progress;
+            ProgressDialog progress=new ProgressDialog(this);progress.setTitle(getString(R.string.lib_restore_checking));progress.setMessage(getString(R.string.lib_restore_checking_body));progress.setIndeterminate(true);progress.setCancelable(false);progress.show();state.progress=progress;
         }
     }
     private void cancelRetainedRestorePreview(){
@@ -7860,19 +8049,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         restorePreviewState=null;
         pendingLibraryRestoreStage=staged;
         LibraryBackupManifest m=staged.manifest();long pdfs=0,covers=0;for(LibraryBackupManifest.Note note:m.notes){if(note.pdfResourceId!=null)pdfs++;if(note.coverResourceId!=null)covers++;}
-        String summary="笔记："+m.notes.size()+"\nPDF 原件："+pdfs+"\n指定封面："+covers+
-                "\nVault 条目："+m.vaultEntries.size()+"\n视频附件："+m.videoAttachments.size()+"\n封面预设："+m.coverPresets.size()+
-                "\n资源总量："+m.resources.size()+"（"+formatLibraryBytes(m.resources.stream().mapToLong(r->r.byteLength).sum())+"）\n\n恢复会创建新的本机副本，不覆盖现有笔记。验证通过后，笔记及其附件可在书架中查看；知识库资料、离线视频和封面预设可在离线恢复材料中查看。";
-        new AlertDialog.Builder(this).setTitle("备份内容预览").setMessage(summary)
-                .setPositiveButton("恢复为副本",(d,w)->{pendingLibraryRestoreStage=null;startLibraryRestore(staged);})
-                .setNegativeButton("取消",(d,w)->{pendingLibraryRestoreStage=null;closeRestoreStage(staged);})
+        String summary=getString(R.string.lib_restore_preview_summary,m.notes.size(),pdfs,covers,
+                m.vaultEntries.size(),m.videoAttachments.size(),m.coverPresets.size(),m.resources.size(),
+                formatLibraryBytes(m.resources.stream().mapToLong(r->r.byteLength).sum()));
+        new AlertDialog.Builder(this).setTitle(getString(R.string.lib_restore_preview_title)).setMessage(summary)
+                .setPositiveButton(getString(R.string.lib_restore_as_copy),(d,w)->{pendingLibraryRestoreStage=null;startLibraryRestore(staged);})
+                .setNegativeButton(getString(R.string.core_cancel),(d,w)->{pendingLibraryRestoreStage=null;closeRestoreStage(staged);})
                 .setOnCancelListener(d->{pendingLibraryRestoreStage=null;closeRestoreStage(staged);}).show();
     }
 
     private void startLibraryRestore(LibraryBackupArchive.StagedArchive staged) {
         int materialTotal=staged.manifest().vaultEntries.size()+staged.manifest().videoAttachments.size()+staged.manifest().coverPresets.size();
-        ProgressDialog progress=new ProgressDialog(this);progress.setTitle("正在恢复资料库");progress.setMessage("正在安装完整恢复组…");progress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);progress.setIndeterminate(false);progress.setMax(100);progress.setCancelable(false);
-        AtomicBoolean cancelled=new AtomicBoolean(false);progress.setButton(AlertDialog.BUTTON_NEGATIVE,"暂停",(d,w)->cancelled.set(true));progress.show();
+        ProgressDialog progress=new ProgressDialog(this);progress.setTitle(getString(R.string.lib_restore_progress_title));progress.setMessage(getString(R.string.lib_restore_progress_body));progress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);progress.setIndeterminate(false);progress.setMax(100);progress.setCancelable(false);
+        AtomicBoolean cancelled=new AtomicBoolean(false);progress.setButton(AlertDialog.BUTTON_NEGATIVE,getString(R.string.lib_restore_pause),(d,w)->cancelled.set(true));progress.show();
         storageExecutor.execute(()->{
             LibraryRestoreTransaction transaction=null;
             try{
@@ -7884,7 +8073,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     runOnUiThread(()->{progress.dismiss();showPendingRestoreActions();});return;
                 }
                 clearPendingRestoreDirectory(transaction.transactionDirectory());
-                int copiedNotes=restored.size();runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,"恢复完成："+copiedNotes+" 条笔记、"+materialTotal+" 项离线材料",Toast.LENGTH_LONG).show();});
+                int copiedNotes=restored.size();runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,getString(R.string.lib_restore_complete,copiedNotes,materialTotal),Toast.LENGTH_LONG).show();});
             }catch(Exception error){
                 String path=transaction==null?null:transaction.transactionDirectory().getAbsolutePath();
                 if(path!=null)persistPendingRestoreDirectoryForActivity(new File(path));
@@ -7896,50 +8085,51 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showPendingRestoreActions(){showPendingRestoreActions(null);}
     private void showPendingRestoreActions(String detail){
         String path=getSharedPreferences("padnote-library-restore",MODE_PRIVATE).getString("transaction_directory",null);
-        if(path==null){showLibraryMessage("没有待处理的恢复",detail==null?"当前没有未完成的整库恢复。":detail);return;}
+        if(path==null){showLibraryMessage(getString(R.string.lib_no_pending_restore),detail==null?getString(R.string.lib_no_pending_restore_body):detail);return;}
         File directory=new File(path);
         String recoveryState=restoreRecoveryUiState(directory);
         String recoveryFailure=describeRestoreRecoveryFailure(detail);
         if("commit".equals(recoveryState)){
-            String message=(recoveryFailure==null?"某个恢复组已持久化提交预留。":recoveryFailure+"\n\n")+
-                    "该组仍隐藏。继续时会重新验证全部成员并完成提交；此阶段不能回滚。";
-            new AlertDialog.Builder(this).setTitle("恢复提交需要继续").setMessage(message)
-                    .setPositiveButton("继续提交",(d,w)->resumeLibraryRestore(directory,false))
-                    .setNegativeButton("稍后",null).show();
+            String message=recoveryFailure==null?getString(R.string.lib_pending_commit_body)
+                    :recoveryFailure+"\n\n"+getString(R.string.lib_pending_commit_body);
+            new AlertDialog.Builder(this).setTitle(getString(R.string.lib_pending_commit_title)).setMessage(message)
+                    .setPositiveButton(getString(R.string.lib_pending_commit_action),(d,w)->resumeLibraryRestore(directory,false))
+                     .setNegativeButton(getString(R.string.lib_later),null).show();
             return;
         }
         if("rollback".equals(recoveryState)){
-            String message=(recoveryFailure==null?"上次回滚尚未完成。":recoveryFailure+"\n\n")+
-                    "继续时会验证并清理本事务拥有的未提交成员；已提交组和未知对象会保留。";
-            new AlertDialog.Builder(this).setTitle("恢复回滚需要继续").setMessage(message)
-                    .setPositiveButton("继续安全回滚",(d,w)->resumeLibraryRestore(directory,true))
-                    .setNegativeButton("稍后",null).show();
+            String message=recoveryFailure==null?getString(R.string.lib_pending_rollback_body)
+                    :recoveryFailure+"\n\n"+getString(R.string.lib_pending_rollback_body);
+            new AlertDialog.Builder(this).setTitle(getString(R.string.lib_pending_rollback_title)).setMessage(message)
+                    .setPositiveButton(getString(R.string.lib_pending_rollback_action),(d,w)->resumeLibraryRestore(directory,true))
+                     .setNegativeButton(getString(R.string.lib_later),null).show();
             return;
         }
         if("blocked".equals(recoveryState)){
-            String message=(recoveryFailure==null?"事务状态无法安全读取。":recoveryFailure+"\n\n")+
-                    "为避免删除不明文件，当前不提供回滚。可以重新验证并继续，或稍后再处理。";
-            new AlertDialog.Builder(this).setTitle("恢复状态需要检查").setMessage(message)
-                    .setPositiveButton("重新验证并继续",(d,w)->resumeLibraryRestore(directory,false))
-                    .setNegativeButton("稍后",null).show();
+            String message=recoveryFailure==null?getString(R.string.lib_pending_blocked_body)
+                    :recoveryFailure+"\n\n"+getString(R.string.lib_pending_blocked_body);
+            new AlertDialog.Builder(this).setTitle(getString(R.string.lib_pending_blocked_title)).setMessage(message)
+                    .setPositiveButton(getString(R.string.lib_pending_verify_action),(d,w)->resumeLibraryRestore(directory,false))
+                     .setNegativeButton(getString(R.string.lib_later),null).show();
             return;
         }
-        String message=(recoveryFailure==null?"上次恢复尚未完成。":recoveryFailure+"\n\n")+"未提交组仍隐藏。可以继续恢复，或按组验证所有文件归属后安全回滚。";
-        new AlertDialog.Builder(this).setTitle("恢复需要继续处理").setMessage(message)
-                .setPositiveButton("继续恢复",(d,w)->resumeLibraryRestore(new File(path),false))
-                .setNeutralButton("安全回滚",(d,w)->new AlertDialog.Builder(this).setTitle("回滚未提交恢复组？")
-                        .setMessage("已完成并提交的组会保留；未知或已更改的文件会被保留并报告，不能被强制删除。")
-                        .setPositiveButton("验证并回滚",(x,y)->resumeLibraryRestore(new File(path),true)).setNegativeButton("取消",null).show())
-                .setNegativeButton("稍后",null).show();
+        String message=recoveryFailure==null?getString(R.string.lib_pending_general_body)
+                :recoveryFailure+"\n\n"+getString(R.string.lib_pending_general_body);
+        new AlertDialog.Builder(this).setTitle(getString(R.string.lib_pending_general_title)).setMessage(message)
+                .setPositiveButton(getString(R.string.lib_pending_continue_action),(d,w)->resumeLibraryRestore(new File(path),false))
+                 .setNeutralButton(getString(R.string.lib_pending_rollback_option),(d,w)->new AlertDialog.Builder(this).setTitle(getString(R.string.lib_rollback_confirm_title))
+                        .setMessage(getString(R.string.lib_rollback_confirm_body))
+                         .setPositiveButton(getString(R.string.lib_rollback_confirm_action),(x,y)->resumeLibraryRestore(new File(path),true)).setNegativeButton(getString(R.string.core_cancel),null).show())
+                 .setNegativeButton(getString(R.string.lib_later),null).show();
     }
 
     private String describeRestoreRecoveryFailure(String code){
         if(code==null||code.trim().isEmpty())return null;
-        if(code.contains("RESTORE_V2_COMMIT_RECOVERY_REQUIRED"))return "恢复组已进入提交预留阶段，需要继续校验并完成提交。";
-        if(code.contains("RESTORE_V2_ROLLBACK_RECOVERY_REQUIRED"))return "恢复组正在回滚，需要继续安全回滚。";
+        if(code.contains("RESTORE_V2_COMMIT_RECOVERY_REQUIRED"))return getString(R.string.lib_recovery_commit_notice);
+        if(code.contains("RESTORE_V2_ROLLBACK_RECOVERY_REQUIRED"))return getString(R.string.lib_recovery_rollback_notice);
         if(code.contains("RESTORE_V2_MEMBER_VERIFY_FAILED")||code.contains("RESTORE_V2_COMMIT_NOT_DURABLE"))
-            return "恢复组成员校验或提交持久化未完成；该组仍保持隐藏。错误代码："+code;
-        return "上次恢复未完成。错误代码："+code;
+            return getString(R.string.lib_recovery_member_error,code);
+        return getString(R.string.lib_recovery_generic_error,code);
     }
 
     /** Reads only the durable transaction phase to avoid offering rollback after commit reservation. */
@@ -8003,48 +8193,48 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void resumeLibraryRestore(File directory,boolean rollback){
-        ProgressDialog progress=new ProgressDialog(this);progress.setTitle(rollback?"正在检查回滚范围":"正在继续恢复");progress.setMessage("验证事务与已安装内容…");progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
+        ProgressDialog progress=new ProgressDialog(this);progress.setTitle(getString(rollback?R.string.lib_resume_rollback_title:R.string.lib_resume_restore_title));progress.setMessage(getString(R.string.lib_resume_progress_body));progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
         storageExecutor.execute(()->{
             try{
                 LibraryRestoreTransaction transaction=LibraryRestoreTransaction.resume(this,directory);
                 if(rollback){transaction.rollbackUncommitted();clearPendingRestoreDirectory(directory);
-                    runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,"未提交恢复组已安全回滚",Toast.LENGTH_LONG).show();});
+                    runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,getString(R.string.lib_rollback_complete),Toast.LENGTH_LONG).show();});
                 }else{
                     transaction.restoreNotes(null,null);clearPendingRestoreDirectory(directory);
-                    runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,"资料库恢复已完成",Toast.LENGTH_LONG).show();});
+                    runOnUiThread(()->{progress.dismiss();refreshBookshelf();Toast.makeText(this,getString(R.string.lib_library_restore_complete),Toast.LENGTH_LONG).show();});
                 }
             }catch(Exception error){final String message=safeError(error);runOnUiThread(()->{progress.dismiss();showPendingRestoreActions(message);});}
         });
     }
 
     private void showRestoredMaterials(){
-        ProgressDialog progress=new ProgressDialog(this);progress.setMessage("读取已提交的离线材料…");progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
+        ProgressDialog progress=new ProgressDialog(this);progress.setMessage(getString(R.string.lib_materials_loading));progress.setIndeterminate(true);progress.setCancelable(false);progress.show();
         storageExecutor.execute(()->{
             try{
                 RestoredLibraryMaterialStore store=new RestoredLibraryMaterialStore(getFilesDir());
                 RestoredLibraryMaterialStore.ListResult result=store.listDetailed(RestoredLibraryMaterialStore.committedV2Gate(getFilesDir()));
                 if(!result.diagnostics.isEmpty())throw new java.io.IOException("MATERIAL_RECOVERY_REQUIRED");
                 runOnUiThread(()->{progress.dismiss();showRestoredMaterialList(result.records);});
-            }catch(Exception error){final String message=safeError(error);runOnUiThread(()->{progress.dismiss();showLibraryMessage("離线材料无法读取",message);});}
+            }catch(Exception error){final String message=safeError(error);runOnUiThread(()->{progress.dismiss();showLibraryMessage(getString(R.string.lib_materials_unreadable),message);});}
         });
     }
 
     private void showRestoredMaterialList(List<RestoredLibraryMaterialStore.Record> records){
-        if(records.isEmpty()){showLibraryMessage("离线恢复材料","当前没有离线恢复材料。如果备份包含知识库资料、离线视频或封面预设，恢复完成后会显示在这里。");return;}
-        String[] labels=new String[records.size()];for(int i=0;i<records.size();i++){RestoredLibraryMaterialStore.Record r=records.get(i);String kind=r.kind==RestoredLibraryMaterialStore.Kind.VAULT?"知识库资料":r.kind==RestoredLibraryMaterialStore.Kind.VIDEO?"离线视频":"封面预设";labels[i]=kind+" · "+restoredMaterialDisplayName(r);}
-        ChoiceRows.builder(this).setTitle("离线恢复材料 · "+records.size()).setAdapter(ChoiceRows.adapter(this, labels),(d,which)->showRestoredMaterialActions(records.get(which))).setNegativeButton("关闭",null).show();
+        if(records.isEmpty()){showLibraryMessage(getString(R.string.lib_materials_title),getString(R.string.lib_materials_empty));return;}
+        String[] labels=new String[records.size()];for(int i=0;i<records.size();i++){RestoredLibraryMaterialStore.Record r=records.get(i);labels[i]=getString(R.string.lib_material_row,restoredMaterialKindLabel(r.kind),restoredMaterialDisplayName(r));}
+        ChoiceRows.builder(this).setTitle(getString(R.string.lib_materials_count,records.size())).setAdapter(ChoiceRows.adapter(this, labels),(d,which)->showRestoredMaterialActions(records.get(which))).setNegativeButton(getString(R.string.core_close),null).show();
     }
 
-    private static String restoredMaterialDisplayName(RestoredLibraryMaterialStore.Record record){
+    private String restoredMaterialDisplayName(RestoredLibraryMaterialStore.Record record){
         String preferred=record.kind==RestoredLibraryMaterialStore.Kind.VAULT?record.title:record.displayName;
         if(preferred!=null&&!preferred.trim().isEmpty())return preferred.trim();
-        return record.kind==RestoredLibraryMaterialStore.Kind.VAULT?"知识库资料":record.kind==RestoredLibraryMaterialStore.Kind.VIDEO?"离线视频文件":"封面预设";
+        return record.kind==RestoredLibraryMaterialStore.Kind.VAULT?getString(R.string.lib_kind_vault):record.kind==RestoredLibraryMaterialStore.Kind.VIDEO?getString(R.string.lib_kind_video_file):getString(R.string.lib_kind_cover);
     }
 
     private void showRestoredMaterialActions(RestoredLibraryMaterialStore.Record record){
-        new AlertDialog.Builder(this).setTitle(restoredMaterialDisplayName(record)).setMessage("只读恢复材料 · "+record.kind.name()+"\n来源状态："+record.sourceState+"\n大小："+formatLibraryBytes(record.byteLength))
-                .setPositiveButton("另存到文件",(d,w)->launchRestoredMaterialSave(record,false))
-                .setNeutralButton("另存并分享",(d,w)->launchRestoredMaterialSave(record,true)).setNegativeButton("返回",null).show();
+        new AlertDialog.Builder(this).setTitle(restoredMaterialDisplayName(record)) .setMessage(getString(R.string.lib_material_detail,restoredMaterialKindLabel(record.kind),restoredMaterialSourceLabel(record.sourceState),formatLibraryBytes(record.byteLength)))
+                .setPositiveButton(getString(R.string.lib_material_save),(d,w)->launchRestoredMaterialSave(record,false))
+                .setNeutralButton(getString(R.string.lib_material_save_share),(d,w)->launchRestoredMaterialSave(record,true)) .setNegativeButton(getString(R.string.lib_back),null).show();
     }
 
     private void launchRestoredMaterialSave(RestoredLibraryMaterialStore.Record record,boolean share){
@@ -8072,9 +8262,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     out.flush();
                 }
                 String mime=row.kind==RestoredLibraryMaterialStore.Kind.VAULT?"application/json":row.kind==RestoredLibraryMaterialStore.Kind.VIDEO?"video/mp4":"image/png";
-                if(share){Intent send=new Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);send.setClipData(android.content.ClipData.newUri(getContentResolver(),row.displayName,uri));runOnUiThread(()->startActivity(Intent.createChooser(send,"分享离线恢复材料")));}
-                runOnUiThread(()->Toast.makeText(this,share?"已保存，可选择分享目标":"离线材料已保存",Toast.LENGTH_LONG).show());
-            }catch(Exception error){final String message=safeError(error);runOnUiThread(()->showLibraryMessage("材料导出失败",message));}
+                if(share){Intent send=new Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);send.setClipData(android.content.ClipData.newUri(getContentResolver(),row.displayName,uri));runOnUiThread(()->startActivity(Intent.createChooser(send,getString(R.string.lib_share_materials))));}
+                runOnUiThread(()->Toast.makeText(this,share?getString(R.string.lib_saved_share_ready):getString(R.string.lib_material_saved),Toast.LENGTH_LONG).show());
+            }catch(Exception error){final String message=safeError(error);runOnUiThread(()->showLibraryMessage(getString(R.string.lib_material_export_failed),message));}
             finally{if(temp!=null&&temp.exists())temp.delete();}
         });
     }
@@ -8091,8 +8281,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(!prefs.edit().remove("transaction_directory").commit()||prefs.contains("transaction_directory"))throw new IllegalStateException("RESTORE_RECOVERY_POINTER_UNAVAILABLE");
     }
 
+    private String restoredMaterialKindLabel(RestoredLibraryMaterialStore.Kind kind){switch(kind){case VAULT:return getString(R.string.lib_kind_vault);case VIDEO:return getString(R.string.lib_kind_video);default:return getString(R.string.lib_kind_cover);}}
+    private String restoredMaterialSourceLabel(String sourceState){if("independent".equals(sourceState))return getString(R.string.lib_source_independent);if("source_deleted".equals(sourceState))return getString(R.string.lib_source_deleted);if("source_not_selected".equals(sourceState))return getString(R.string.lib_source_not_selected);return sourceState==null||sourceState.isEmpty()?getString(R.string.lib_unidentified_source):sourceState;}
     private static String formatLibraryBytes(long bytes){if(bytes<1024)return bytes+" B";if(bytes<1024*1024)return String.format(Locale.ROOT,"%.1f KB",bytes/1024.0);return String.format(Locale.ROOT,"%.1f MB",bytes/(1024.0*1024.0));}
-    private void showLibraryMessage(String title,String message){new AlertDialog.Builder(this).setTitle(title).setMessage(message==null?"未能完成操作。":message).setPositiveButton("知道了",null).show();}
+    private void showLibraryMessage(String title,String message){new AlertDialog.Builder(this).setTitle(title).setMessage(message==null?getString(R.string.lib_generic_operation_failed):message).setPositiveButton(getString(R.string.lib_got_it),null).show();}
     private void closeRestoreStage(LibraryBackupArchive.StagedArchive stage){if(stage==null)return;try{stage.close();}catch(Exception ignored){}}
 
     private void exportCurrentNote() {
@@ -8100,8 +8292,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         commitInlineTextEditorExcept(null);
-        ChoiceRows.builder(this).setTitle("导出当前笔记")
-                .setAdapter(ChoiceRows.adapter(this, new String[]{"PadNote 可编辑包", "标准 PDF（页面已合并）"}),
+        ChoiceRows.builder(this).setTitle(getString(R.string.core_export_note))
+                .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_editable_package), getString(R.string.core_merged_pdf)}),
                         (dialog, which) -> {
                             if (which == 1) launchCreatePdfDocument();
                             else {
@@ -8111,7 +8303,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                     pendingExportNoteId = null;
                                     launchCreateExportDocument(currentNoteTitle);
                                 } catch (Exception error) {
-                                    Toast.makeText(this, "生成导出数据失败", Toast.LENGTH_LONG).show();
+                                    Toast.makeText(this, getString(R.string.lib_export_data_failed), Toast.LENGTH_LONG).show();
                                 }
                             }
                         }).show();
@@ -8126,11 +8318,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void launchExportNote(NoteStore.Entry entry) {
-        try{if(videoAttachmentStore.countForNote(entry.id)>0)new AlertDialog.Builder(this).setTitle("导出笔记")
-                .setMessage("此笔记导出包不包含应用私有视频附件；如需保存视频，请在“视频任务与成果”中另存。")
-                .setNegativeButton("取消",null).setPositiveButton("继续导出",(d,w)->startNoteExport(entry)).show();
+        try{if(videoAttachmentStore.countForNote(entry.id)>0)new AlertDialog.Builder(this).setTitle(getString(R.string.tail_export_note))
+                .setMessage(getString(R.string.core_export_note_warning))
+                .setNegativeButton(getString(R.string.core_cancel),null).setPositiveButton(getString(R.string.core_continue_export),(d,w)->startNoteExport(entry)).show();
             else startNoteExport(entry);
-        }catch(Exception error){Toast.makeText(this,"无法核对视频附件："+safeError(error),Toast.LENGTH_LONG).show();}
+        }catch(Exception error){Toast.makeText(this,getString(R.string.tail_could_not_verify_video_attachments, safeError(error)),Toast.LENGTH_LONG).show();}
     }
 
     private void startNoteExport(NoteStore.Entry entry) {
@@ -8148,7 +8340,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     ? new JSONObject(pendingExportJson).optInt("pdfPageCount", 0) > 0
                     : NoteStore.pdfFile(this, pendingExportNoteId).exists();
         } catch (Exception error) {
-            Toast.makeText(this, "无法准备导出：" + safeError(error), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.tail_could_not_prepare_export, safeError(error)), Toast.LENGTH_LONG).show();
             return;
         }
         intent.setType(pdf ? "application/zip" : "application/json");
@@ -8235,10 +8427,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             try {
                 if (conversation == null && (source == null || !source.isFile())) {
-                    throw new IllegalStateException("恢复文件已不存在");
+                    throw new IllegalStateException("Recovery source no longer exists");
                 }
                 try (OutputStream output = getContentResolver().openOutputStream(uri, "w")) {
-                    if (output == null) throw new IllegalStateException("无法写入目标文件");
+                    if (output == null) throw new IllegalStateException("Could not write destination");
                     if (conversation != null) {
                         output.write(conversation.toRecoveryJson().toString()
                                 .getBytes(StandardCharsets.UTF_8));
@@ -8254,10 +8446,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     output.flush();
                 }
                 runOnUiThread(() -> Toast.makeText(this,
-                        "恢复文件已导出", Toast.LENGTH_SHORT).show());
+                        getString(R.string.tail_recovery_file_exported), Toast.LENGTH_SHORT).show());
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "恢复文件导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_recovery_file_export_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -8272,12 +8464,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             boolean saved = false;
             try {
                 AgentTaskStore.Task task = new AgentTaskStore(this).get(taskId);
-                if (task == null) throw new IllegalStateException("任务记录不存在");
+                if (task == null) throw new IllegalStateException("Task record is missing");
                 AgentTaskStore.Artifact found = null;
                 for (AgentTaskStore.Artifact candidate : task.artifacts) {
                     if (candidate.id.equals(artifactId)) { found = candidate; break; }
                 }
-                if (found == null) throw new IllegalStateException("产物已不在当前任务清单中");
+                if (found == null) throw new IllegalStateException("Artifact is no longer listed by the task");
                 AgentTaskStore.Artifact artifact = found;
                 AgentConnectionStore.Config connection = agentConnectionStore.get(task.connectionId);
                 temporary = new AgentArtifactDownloader().download(task, connection, artifact,
@@ -8286,7 +8478,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 long copiedBytes = 0L;
                 try (InputStream input = new FileInputStream(temporary);
                      OutputStream output = getContentResolver().openOutputStream(uri)) {
-                    if (output == null) throw new IllegalStateException("无法打开所选位置");
+                    if (output == null) throw new IllegalStateException("Could not open selected destination");
                     byte[] buffer = new byte[64 * 1024]; int count;
                     while ((count = input.read(buffer)) >= 0) if (count > 0) {
                         digest.update(buffer, 0, count);
@@ -8297,15 +8489,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }
                 if (copiedBytes != artifact.sizeBytes ||
                         !artifact.sha256.equalsIgnoreCase(sha256Hex(digest.digest()))) {
-                    throw new IllegalStateException("保存文件SHA-256校验失败");
+                    throw new IllegalStateException("Saved file SHA-256 verification failed");
                 }
                 saved = true;
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "产物已校验并保存", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, getString(R.string.tail_artifact_verified_saved), Toast.LENGTH_LONG).show();
                     if (shareAfterSave) shareAgentArtifact(uri, artifact.name);
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this, "保存产物失败：" + safeError(error),
+                runOnUiThread(() -> Toast.makeText(this, getString(R.string.tail_could_not_save_artifact, safeError(error)),
                         Toast.LENGTH_LONG).show());
             } finally {
                 if (temporary != null) temporary.delete();
@@ -8323,7 +8515,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void shareAgentArtifact(android.net.Uri uri, String displayName) {
         if (uri == null || !"content".equalsIgnoreCase(uri.getScheme())) {
-            Toast.makeText(this, "已保存，无法打开系统分享", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.tail_saved_but_system_sharing_could_not_opened), Toast.LENGTH_LONG).show();
             return;
         }
         try {
@@ -8332,9 +8524,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             send.putExtra(Intent.EXTRA_STREAM, uri);
             send.setClipData(ClipData.newUri(getContentResolver(), displayName, uri));
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(send, "分享视频"));
+            startActivity(Intent.createChooser(send, getString(R.string.tail_share_video)));
         } catch (RuntimeException error) {
-            Toast.makeText(this, "已保存，无法打开系统分享", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.tail_saved_but_system_sharing_could_not_opened), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -8350,19 +8542,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             boolean saved=false;
             try {
-                if(frozen==null)throw new IllegalStateException("任务包快照已失效，请重新准备");
+                if(frozen==null)throw new IllegalStateException("Video task snapshot expired; prepare it again");
                 try (OutputStream output = getContentResolver().openOutputStream(uri)) {
                     if (output == null) {
-                        throw new IllegalStateException("无法打开所选位置");
+                        throw new IllegalStateException("Could not open selected destination");
                     }
                     output.write(frozen.copyBytes());output.flush();
                 }
                 saved=true;
                 runOnUiThread(() -> Toast.makeText(this,
-                        "视频任务包已导出，可交给电脑端 Agent", Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_video_task_bundle_exported_hand_desktop_agent), Toast.LENGTH_LONG).show());
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "导出视频任务失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_could_not_export_video_task, safeError(error)), Toast.LENGTH_LONG).show());
             }finally{if(!saved)try{getContentResolver().delete(uri,null,null);}catch(Exception ignored){}}
         });
     }
@@ -8374,17 +8566,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(()->{
             boolean savedSuccessfully=false;
             try{
-                if(selection==null||!selection.attachment.id.equals(id))throw new IllegalStateException("视频附件选择已失效");
+                if(selection==null||!selection.attachment.id.equals(id))throw new IllegalStateException("Video attachment selection expired");
                 VideoAttachmentStore.Attachment found=selection.attachment;
                 File source=openVideoSelection(selection);MessageDigest digest=MessageDigest.getInstance("SHA-256");long total=0;
                 try(InputStream in=new FileInputStream(source);OutputStream out=getContentResolver().openOutputStream(uri)){
-                    if(out==null)throw new IllegalStateException("无法打开目标文件");byte[] b=new byte[64*1024];int n;
-                    while((n=in.read(b))>=0)if(n>0){total+=n;if(total>found.sizeBytes)throw new IllegalStateException("视频文件大小改变");digest.update(b,0,n);out.write(b,0,n);}out.flush();
+                    if(out==null)throw new IllegalStateException("Could not open destination");byte[] b=new byte[64*1024];int n;
+                    while((n=in.read(b))>=0)if(n>0){total+=n;if(total>found.sizeBytes)throw new IllegalStateException("Video file size changed");digest.update(b,0,n);out.write(b,0,n);}out.flush();
                 }
-                if(total!=found.sizeBytes||!found.sha256.equalsIgnoreCase(sha256Hex(digest.digest())))throw new IllegalStateException("另存视频SHA-256校验失败");
+                if(total!=found.sizeBytes||!found.sha256.equalsIgnoreCase(sha256Hex(digest.digest())))throw new IllegalStateException("Saved video SHA-256 verification failed");
                 savedSuccessfully=true;
-                VideoAttachmentStore.Attachment saved=found;runOnUiThread(()->{Toast.makeText(this,"视频已校验并另存",Toast.LENGTH_LONG).show();if(share)shareAgentArtifact(uri,saved.name);});
-            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,"另存视频失败："+safeError(error),Toast.LENGTH_LONG).show());}
+                VideoAttachmentStore.Attachment saved=found;runOnUiThread(()->{Toast.makeText(this,getString(R.string.tail_video_verified_saved_separately),Toast.LENGTH_LONG).show();if(share)shareAgentArtifact(uri,saved.name);});
+            }catch(Exception error){runOnUiThread(()->Toast.makeText(this,getString(R.string.tail_could_not_save_video_separately, safeError(error)),Toast.LENGTH_LONG).show());}
             finally{if(!savedSuccessfully)try{getContentResolver().delete(uri,null,null);}catch(Exception ignored){}}
         });
     }
@@ -8402,7 +8594,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     preparedSnapshot.getPageWidth(), preparedSnapshot.getPageHeight());
         } catch (Exception error) {
             if (preparedSnapshot != null) preparedSnapshot.close();
-            Toast.makeText(this, "PDF 导出失败：" + safeError(error), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.tail_pdf_export_failed, safeError(error)), Toast.LENGTH_LONG).show();
             return;
         }
         final NoteCanvasView.PdfExportSnapshot snapshot = preparedSnapshot;
@@ -8421,9 +8613,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         appFrame.addView(renderHost, new FrameLayout.LayoutParams(1, 1));
         activePdfExportHost = renderHost;
         AlertDialog progressDialog = new AlertDialog.Builder(this)
-                .setTitle("正在导出 PDF")
-                .setMessage("准备页面…")
-                .setNegativeButton("取消", null)
+                .setTitle(getString(R.string.tail_exporting_pdf))
+                .setMessage(getString(R.string.tail_preparing_pages))
+                .setNegativeButton(getString(R.string.core_cancel), null)
                 .setCancelable(false)
                 .create();
         progressDialog.setOnShowListener(ignored -> progressDialog
@@ -8432,7 +8624,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         if (committed.get() || cancellation.get()) return;
                         cancellation.set(true);
                     }
-                    progressDialog.setMessage("正在取消并清理临时文件…");
+                    progressDialog.setMessage(getString(R.string.tail_cancelling_cleaning_up_temporary_files));
                     progressDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
                     snapshot.close();
                     Future<?> future = activePdfExportFuture;
@@ -8457,7 +8649,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     PdfNoteIO.exportFlattenedPdf(snapshot, renderHost, tempOutput,
                             exportMainHandler, (complete, total) -> {
                                 if (!cancellation.get() && progressDialog.isShowing()) {
-                                    progressDialog.setMessage("正在渲染第 " + complete + " / " + total + " 页");
+                                    progressDialog.setMessage(getString(R.string.tail_pdf_render_progress, complete, total));
                                 }
                             }, cancellation::get);
                 }
@@ -8466,7 +8658,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 // If copying fails or is cancelled, best-effort delete prevents a
                 // partial file from looking like a successful export.
                 try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                    if (output == null) throw new IllegalStateException("无法打开所选位置");
+                    if (output == null) throw new IllegalStateException("Could not open selected destination");
                     destinationTouched = true;
                     try (InputStream input = new FileInputStream(temporary)) {
                         byte[] buffer = new byte[64 * 1024];
@@ -8488,7 +8680,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             } catch (Exception error) {
                 failure = error;
             } catch (OutOfMemoryError error) {
-                failure = new java.io.IOException("导出页面过大，内存不足", error);
+                failure = new java.io.IOException("Export page exceeds available memory", error);
             } finally {
                 snapshot.close();
                 if (temporary != null && !temporary.delete()) temporary.deleteOnExit();
@@ -8500,7 +8692,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }
                 boolean completed = success;
                 Exception result = failure == null
-                        ? new java.io.IOException(cancelled ? "PDF 导出已取消" : "PDF 导出未完成")
+                        ? new java.io.IOException(cancelled ? "PDF export cancelled" : "PDF export did not complete")
                         : failure;
                 exportMainHandler.post(() -> finishPdfExportUi(snapshot, renderHost,
                         progressDialog, uiFinished, completed, cancelled, result));
@@ -8512,7 +8704,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             cancellation.set(true);
             snapshot.close();
             finishPdfExportUi(snapshot, renderHost, progressDialog, uiFinished,
-                    false, false, new java.io.IOException("导出任务无法启动", rejected));
+                    false, false, new java.io.IOException("Export task could not start", rejected));
         }
     }
 
@@ -8529,9 +8721,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (renderHost.getParent() == appFrame) appFrame.removeView(renderHost);
         if (progressDialog.isShowing()) progressDialog.dismiss();
         if (isFinishing() || isDestroyed()) return;
-        String message = success ? "已导出标准 PDF" : cancelled ? "已取消 PDF 导出"
-                : "PDF 导出失败：" + safeError(failure == null
-                ? new java.io.IOException("PDF 导出未完成") : failure);
+        String message = success ? getString(R.string.tail_standard_pdf_exported) : cancelled ? getString(R.string.tail_pdf_export_cancelled)
+                : getString(R.string.tail_pdf_export_failed, safeError(failure == null ? new java.io.IOException("PDF export did not complete") : failure));
         Toast.makeText(this, message, success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
     }
 
@@ -8542,15 +8733,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 runOnUiThread(() -> {
                     try {
                         canvasView.insertImage(image, currentPageNumber - 1);
-                        Toast.makeText(this, "图片已插入", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, getString(R.string.tail_image_inserted), Toast.LENGTH_SHORT).show();
                     } catch (RuntimeException error) {
                         image.bitmap.recycle();
-                        Toast.makeText(this, "图片插入失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, getString(R.string.tail_could_not_insert_image, error.getMessage()), Toast.LENGTH_LONG).show();
                     }
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "图片读取失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_could_not_read_image, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -8562,17 +8753,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             try {
                 Bitmap bitmap = decodeImageUri(uri, 1024);
                 if (bitmap == null) {
-                    throw new IllegalStateException("无法读取所选图片");
+                    throw new IllegalStateException("Selected image is unreadable");
                 }
                 runOnUiThread(() -> {
                     if (target != null) {
-                        applyCoverChoice(target, bitmap, "自定义图片");
+                        applyCoverChoice(target, bitmap, getString(R.string.tail_custom_image));
                         promptAddToPresets(bitmap);
                     } else {
                         pendingNewNoteCover = bitmap;
                         pendingNewNoteCoverLabel = "";
                         updateNewNoteCoverStatus();
-                        Toast.makeText(this, "封面已选择，创建时应用",
+                        Toast.makeText(this, getString(R.string.tail_cover_selected_will_applied_when_note_created),
                                 Toast.LENGTH_SHORT).show();
                     }
                     if (coverPickerDialog != null) {
@@ -8581,7 +8772,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "导入封面失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_could_not_import_cover, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -8591,7 +8782,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         storageExecutor.execute(() -> {
             try (InputStream input = getContentResolver().openInputStream(uri)) {
                 if (input == null) {
-                    throw new IllegalStateException("无法打开所选文件");
+                    throw new IllegalStateException("Could not open selected file");
                 }
                 String name = uri.getLastPathSegment();
                 try (android.database.Cursor cursor = getContentResolver().query(uri,
@@ -8601,13 +8792,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 String fallback = importedFileTitle(name).replaceFirst("(?i)\\.pdf$", "");
                 NoteStore.Entry imported = PdfNoteIO.importFile(this, input, fallback);
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "已导入：" + imported.title,
+                    Toast.makeText(this, getString(R.string.tail_imported_title, imported.title),
                             Toast.LENGTH_SHORT).show();
                     refreshBookshelf();
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "导入失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_import_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -8625,26 +8816,26 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     json = NoteJsonCodec.stringify(NoteStore.load(this, capturedNoteId));
                 }
                 if (json == null) {
-                    throw new IllegalStateException("没有可导出的笔记");
+                    throw new IllegalStateException("No note is available to export");
                 }
                 try (OutputStream output = getContentResolver().openOutputStream(uri, "w")) {
                     if (output == null) {
-                        throw new IllegalStateException("无法写入目标文件");
+                        throw new IllegalStateException("Could not write destination");
                     }
                     PdfNoteIO.exportFile(this, new JSONObject(json), output);
                 }
                 runOnUiThread(() -> Toast.makeText(this,
-                        "笔记已导出", Toast.LENGTH_SHORT).show());
+                        getString(R.string.tail_note_exported), Toast.LENGTH_SHORT).show());
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                        "导出失败：" + safeError(error), Toast.LENGTH_LONG).show());
+                        getString(R.string.tail_export_failed, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
     }
 
     private String importedFileTitle(String name) {
         if (name == null || name.trim().isEmpty()) {
-            return "导入的笔记";
+            return getString(R.string.tail_imported_note);
         }
         String value = name;
         int slash = value.lastIndexOf('/');
@@ -8652,7 +8843,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             value = value.substring(slash + 1);
         }
         value = value.replace(".padnote.json", "").replace(".json", "");
-        return value.trim().isEmpty() ? "导入的笔记" : value;
+        return value.trim().isEmpty() ? getString(R.string.tail_imported_note) : value;
     }
 
     private String safeFileName(String title) {
@@ -8663,7 +8854,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private String safeError(Exception error) {
         String message = error.getMessage();
-        return message == null || message.trim().isEmpty() ? "未知错误" : message;
+        return message == null || message.trim().isEmpty() ? getString(R.string.tail_unknown_error) : message;
     }
 
     @Override
@@ -8700,12 +8891,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     restoredLineage=managed.lineage;restoredRevision=managed.revision;restoredDigest=managed.digest;
                 }
             } catch (Exception error) {
-                restoreError = "本地笔记读取失败：" + safeError(error);
+                restoreError = getString(R.string.tail_local_note_read_failed, safeError(error));
             }
             if (restoredDocument != null && restoredDocument.optInt("pdfPageCount", 0) > 0) {
                 try {
                     File pdf = NoteStore.pdfFile(this, noteId);
-                    if (!pdf.isFile()) throw new java.io.IOException("PDF 原文缺失");
+                    if (!pdf.isFile()) throw new java.io.IOException("Original PDF is missing");
                     pdfDigest = DigitizationStore.sha256File(pdf, PdfNoteIO.MAX_PDF_BYTES);
                 } catch (Exception error) {
                     pdfDigest = "!unavailable:" + safeError(error);
@@ -8725,7 +8916,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             runOnUiThread(() -> {
                 if (!editorVisible || !noteId.equals(currentNoteId)) return;
                 if (document == null) {
-                    showRestoreFailure(errorMessage == null ? "本地笔记读取失败" : errorMessage);
+                    showRestoreFailure(errorMessage == null ? getString(R.string.tail_local_note_could_not_read) : errorMessage);
                     return;
                 }
                 try {
@@ -8738,12 +8929,24 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     aiPdfDigest = restoredPdfDigest;
                     aiPdfDigestAvailable = !restoredPdfDigest.startsWith("!unavailable:");
                     applyRestoredAiConversation(conversation, conversationLoadError);
-                    saveStatusView.setText("已恢复本地笔记");
+                    saveStatusView.setText(getString(R.string.tail_local_note_restored));
                     // Applied only after a successful load. A failed load never turns
                     // into an editable blank document that could overwrite the source.
                     if (pendingPageStyle != null) {
                         canvasView.applyPageStyleForNewNote(pendingPageStyle);
-                        saveStatusView.setText(pendingPageStyle.describe());
+                        String paperDescription;
+                        switch (pendingPageStyle.paper) {
+                            case BLANK: paperDescription = getString(R.string.core_blank); break;
+                            case GRID: paperDescription = getString(R.string.core_grid); break;
+                            case DOTTED: paperDescription = getString(R.string.core_dotted); break;
+                            default: paperDescription = getString(R.string.core_lined); break;
+                        }
+                        String ratioDescription = pendingPageStyle.ratio == PageStyle.Ratio.A4
+                                ? "A4" : getString(R.string.core_fit_screen);
+                        String orientationDescription = getString(pendingPageStyle.landscape
+                                ? R.string.core_landscape : R.string.core_portrait);
+                        saveStatusView.setText(paperDescription + " · " + ratioDescription
+                                + " · " + orientationDescription);
                         pendingPageStyle = null;
                     }
                     if (pendingPaperHandoffAfterRestore) {
@@ -8751,7 +8954,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         handler.post(this::showPaperHandoffForCurrentNote);
                     }
                 } catch (Exception error) {
-                    showRestoreFailure("笔记内容校验失败：" + safeError(error));
+                    showRestoreFailure(getString(R.string.tail_note_content_verification_failed, safeError(error)));
                 }
             });
         });
@@ -8772,14 +8975,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (restored == null) {
             clearAiConversationViews();
             if (loadError != null && aiStatusView != null) {
-                aiStatusView.setText("AI 对话损坏，原文件已保留：" + loadError);
-                new AlertDialog.Builder(this).setTitle("AI 对话无法安全恢复")
-                        .setMessage("笔记仍可正常编辑。损坏或超限的会话文件没有被覆盖，"
-                                + "可先导出原文件再明确清空。")
-                        .setNegativeButton("保留", null)
-                        .setNeutralButton("清空损坏对话", (dialog, which) ->
+                aiStatusView.setText(getString(R.string.tail_ai_damaged_status, loadError));
+                new AlertDialog.Builder(this).setTitle(getString(R.string.tail_ai_conversation_could_not_safely_restored))
+                        .setMessage(getString(R.string.tail_ai_corrupt_recovery_body))
+                        .setNegativeButton(getString(R.string.tail_keep), null)
+                        .setNeutralButton(getString(R.string.tail_clear_damaged_conversation), (dialog, which) ->
                                 clearAiConversationExplicitly())
-                        .setPositiveButton("导出原文件", (dialog, which) ->
+                        .setPositiveButton(getString(R.string.tail_export_original_file), (dialog, which) ->
                                 launchAiConversationRecoveryExport(currentNoteId))
                         .show();
             }
@@ -8816,19 +9018,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             aiMessages.addAll(restored.wireHistory);
             aiSessionTranscript = restored.transcript;
             aiUploadConfirmed = restored.uploadConfirmed;
-            aiStatusView.setText("已恢复本笔记的 AI 对话 · 可继续追问");
+            aiStatusView.setText(getString(R.string.tail_ai_conversation_restored_note_continue));
         } else {
             aiMessages.clear();
             aiSessionTranscript = null;
             aiUploadConfirmed = false;
             String reason = !sourceMatches
-                    ? "笔记或 PDF 原文已变化，请重新圈选；旧聊天未发送。"
-                    : !recipientMatches ? "接收模型配置已变化；旧聊天未发送。"
-                    : !permissionMatches ? "写入权限已变化；旧聊天未发送。"
-                    : !materialMatches ? "冻结材料校验失败；旧聊天未发送。"
-                    : "冻结圈选无法恢复，请重新圈选。";
+                    ? getString(R.string.tail_note_original_pdf_changed_select_again_old)
+                    : !recipientMatches ? getString(R.string.tail_model_recipient_changed_old_chat_not_sent)
+                    : !permissionMatches ? getString(R.string.tail_write_permission_changed_old_chat_not_sent)
+                    : !materialMatches ? getString(R.string.tail_frozen_material_verification_failed_old_chat_not)
+                    : getString(R.string.tail_could_not_restore_selection_snapshot_select_again);
             aiVisibleTimeline.add(new AiConversationStore.VisibleEntry(
-                    "notice", "assistant", "上下文边界 · " + reason, "", false));
+                    "notice", "assistant", getString(R.string.tail_context_boundary, reason), "", false));
             AiVaultSnapshot retained = restored.vault;
             AiConversationStore.Binding newBinding = currentAiBinding(profile, retained);
             aiConversationSnapshot = restored.next(aiVisibleTimeline, aiMessages,
@@ -8847,7 +9049,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         try {
             File recovery = aiConversationStore.recoveryFile(noteId);
             if (recovery == null) {
-                Toast.makeText(this, "没有可导出的 AI 会话原文件", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.tail_no_original_ai_conversation_file_export), Toast.LENGTH_SHORT).show();
                 return;
             }
             pendingRecoveryFile = recovery;
@@ -8859,7 +9061,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             intent.putExtra(Intent.EXTRA_TITLE, pendingRecoveryName);
             startActivityForResult(intent, REQUEST_EXPORT_RECOVERY);
         } catch (Exception error) {
-            Toast.makeText(this, "无法准备 AI 会话导出：" + safeError(error),
+            Toast.makeText(this, getString(R.string.tail_could_not_prepare_ai_conversation_export, safeError(error)),
                     Toast.LENGTH_LONG).show();
         }
     }
@@ -8879,12 +9081,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showRestoreFailure(String message) {
         restoreCompleted = false;
         if (canvasView != null) canvasView.setEnabled(false);
-        if (saveStatusView != null) saveStatusView.setText("读取失败 · 原文件未改动");
+        if (saveStatusView != null) saveStatusView.setText(getString(R.string.tail_read_failed_original_file_unchanged));
         new AlertDialog.Builder(this)
-                .setTitle("无法安全打开这本笔记")
-                .setMessage(message + "\n\nPadNote 已停止编辑和自动保存。原文件及可用备份仍保留，"
-                        + "可返回书架从“需要恢复”导出。").setCancelable(false)
-                .setPositiveButton("返回书架", (dialog, which) -> showBookshelf())
+                .setTitle(getString(R.string.tail_could_not_safely_open_note))
+                .setMessage(getString(R.string.tail_restore_failure_body, message)).setCancelable(false)
+                .setPositiveButton(getString(R.string.core_back_shelf), (dialog, which) -> showBookshelf())
                 .show();
     }
 
@@ -8897,13 +9098,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         final String lineage=currentGroupLineage,baseRevision=currentGroupRevision,baseDigest=currentGroupDigest;
         final boolean managed=lineage!=null||baseRevision!=null||baseDigest!=null;
         if(managed&&(lineage==null||baseRevision==null||baseDigest==null)){
-            saveStatusView.setText("保存基准无效 · 修改仍留在当前笔记");pendingLeaveAfterSave=false;return;
+            saveStatusView.setText(getString(R.string.tail_save_baseline_invalid_changes_remain_note));pendingLeaveAfterSave=false;return;
         }
         try{json=NoteJsonCodec.stringify(canvasView.toJsonDocument(noteId,noteTitle));pendingUnsavedJson=json;}
-        catch(Exception error){saveStatusView.setText("生成未保存副本失败："+safeError(error));pendingLeaveAfterSave=false;return;}
+        catch(Exception error){saveStatusView.setText(getString(R.string.tail_could_not_create_unsaved_copy, safeError(error)));pendingLeaveAfterSave=false;return;}
         final String editorSession=groupEditorSessionId;
         final long capture=managed?++groupDraftCaptureSequence:0;
-        saveInFlight=true;saveQueued=false;saveStatusView.setText("正在保存…");
+        saveInFlight=true;saveQueued=false;saveStatusView.setText(getString(R.string.tail_saving));
         storageExecutor.execute(()->{
             GroupEditorDraftStore.Draft draft=null;
             try{
@@ -8920,7 +9121,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
                     if(saved!=null){currentGroupLineage=saved.lineage;currentGroupRevision=saved.revision;currentGroupDigest=saved.digest;}
                     saveInFlight=false;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
-                    if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText("已保存到本机 · 可重新打开");pendingSaveToast=false;
+                    if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));pendingSaveToast=false;
                         if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;continueDigitizationForCurrentNote();}
                         if(pendingLeaveAfterSave){showBookshelf();return;}}
                     if(saveQueued||savingRevision<documentRevision){saveQueued=false;saveDocument(false);}
@@ -8933,11 +9134,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 final boolean hasDraft=retained;final String failure=safeError(error);
                 runOnUiThread(()->{
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
-                    saveInFlight=false;saveQueued=false;saveStatusView.setText(hasDraft?"保存失败 · 本次恢复草稿已保留，可重试或导出":"保存失败 · 未保存修改仍可重试或导出");
+                    saveInFlight=false;saveQueued=false;saveStatusView.setText(hasDraft?getString(R.string.tail_save_failed_recovery_draft_kept_retry_export):getString(R.string.tail_save_failed_unsaved_changes_retried_exported));
                     pendingLeaveAfterSave=false;
-                    if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;Toast.makeText(this,"笔记保存失败，数字化未启动；修改仍保留在编辑器中",Toast.LENGTH_LONG).show();}
+                    if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;Toast.makeText(this,getString(R.string.tail_note_save_failed_digitization_did_not_start),Toast.LENGTH_LONG).show();}
                     if(pendingVideoHubAfterSave)pendingVideoHubAfterSave=false;
-                    if(pendingPaperHandoffAfterSave){pendingPaperHandoffAfterSave=false;Toast.makeText(this,"笔记未能保存，未分享或发送",Toast.LENGTH_LONG).show();}
+                    if(pendingPaperHandoffAfterSave){pendingPaperHandoffAfterSave=false;Toast.makeText(this,getString(R.string.tail_note_not_saved_nothing_shared_sent),Toast.LENGTH_LONG).show();}
                 });
             }
         });
@@ -8949,9 +9150,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         lastSavedRevision = Math.max(lastSavedRevision, savedRevision);
         if (savedRevision == documentRevision) {
             pendingUnsavedJson = null;
-            saveStatusView.setText("已保存到本机 · 可重新打开");
+            saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));
             if (pendingSaveToast) {
-                Toast.makeText(this, "已保存到本机", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, getString(R.string.tail_saved_device), Toast.LENGTH_SHORT).show();
                 pendingSaveToast = false;
             }
             if (pendingLeaveAfterSave) {
@@ -8967,7 +9168,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(pendingVideoHubAfterSave){
             pendingVideoHubAfterSave=false;
             NoteStore.Entry latest=findNoteEntry(noteId);
-            if(latest==null)Toast.makeText(this,"保存成功后仍找不到笔记，视频入口已取消",Toast.LENGTH_LONG).show();
+            if(latest==null)Toast.makeText(this,getString(R.string.tail_note_saved_but_video_entry_no_longer),Toast.LENGTH_LONG).show();
             else showNoteVideoHub(latest);
             return;
         }
@@ -8982,22 +9183,22 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         saveInFlight = false;
         saveQueued = false;
         pendingPaperHandoffAfterSave = false;
-        saveStatusView.setText("保存失败 · 未保存修改仍可重试或导出");
+        saveStatusView.setText(getString(R.string.tail_save_failed_unsaved_changes_retried_exported));
         boolean needsDialog = pendingLeaveAfterSave || pendingSaveToast;
         pendingLeaveAfterSave = false;
         pendingSaveToast = false;
         if(pendingVideoHubAfterSave){pendingVideoHubAfterSave=false;Toast.makeText(this,
-                "笔记保存失败，视频入口已停止；未保存修改仍保留在编辑器中",Toast.LENGTH_LONG).show();}
+                getString(R.string.tail_note_save_failed_video_entry_stopped_unsaved),Toast.LENGTH_LONG).show();}
         if (needsDialog) showSaveFailure(message);
     }
 
     private void showSaveFailure(String message) {
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("修改尚未保存")
-                .setMessage(message + "\n\n仍停留在当前笔记。请重试，或把内存中的未保存副本导出。")
-                .setNegativeButton("继续编辑", null)
-                .setNeutralButton("导出副本", null)
-                .setPositiveButton("重试保存", null)
+                .setTitle(getString(R.string.tail_unsaved_changes))
+                .setMessage(getString(R.string.tail_unsaved_changes_body, message))
+                .setNegativeButton(getString(R.string.tail_continue_editing), null)
+                .setNeutralButton(getString(R.string.tail_export_copy), null)
+                .setPositiveButton(getString(R.string.tail_retry_save), null)
                 .create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
@@ -9010,14 +9211,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     pendingUnsavedJson = captureRecoveryExportJson(canvasView,
                             currentNoteId, currentNoteTitle);
                 } catch (Exception error) {
-                    Toast.makeText(this, "生成当前未保存副本失败：" + safeError(error),
+                    Toast.makeText(this, getString(R.string.tail_could_not_export_current_unsaved_copy, safeError(error)),
                             Toast.LENGTH_LONG).show();
                     return;
                 }
                 pendingExportJson = pendingUnsavedJson;
                 pendingExportNoteId = null;
                 launchCreateExportDocument((currentNoteTitle == null ? "PadNote" : currentNoteTitle)
-                        + "-未保存副本");
+                        + getString(R.string.tail_unsaved_copy));
             });
         });
         dialog.show();
@@ -9026,7 +9227,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     /** Always snapshots the live canvas; an older failed-save payload may be stale. */
     static String captureRecoveryExportJson(NoteCanvasView canvas, String noteId,
                                             String noteTitle) throws Exception {
-        if (canvas == null || noteId == null) throw new IllegalStateException("当前笔记不可用");
+        if (canvas == null || noteId == null) throw new IllegalStateException("Current note is unavailable");
         return NoteJsonCodec.stringify(canvas.toJsonDocument(noteId, noteTitle));
     }
 

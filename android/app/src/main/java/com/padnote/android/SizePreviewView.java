@@ -15,7 +15,7 @@ final class SizePreviewView extends View {
 
     SizePreviewView(Context context) {
         super(context);
-        setContentDescription("当前粗细预览");
+        setContentDescription(context.getString(R.string.canvas_size_preview_desc));
         setMinimumWidth(dp(38));
         setMinimumHeight(dp(38));
     }

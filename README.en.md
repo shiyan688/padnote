@@ -1,34 +1,36 @@
 # PadNote
 
+<img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote mark">
+
 **Write, draw, and ask on the same page, then share it or hand it to a computer agent.**
 
-PadNote is an open-source tablet notebook for handwriting, drawing, and AI-assisted learning. On Android, work in the same note, export a complete-page PDF, or send the current note material to a paired Hermes computer assistant. You choose the model and service provider.
+PadNote is a tablet notebook for writing, drawing, and AI-assisted learning. Work in one note, then share the page or hand it to a paired computer agent. You choose the model and service provider.
 
-[Android beta.12](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.12) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.12/PadNote-Android-0.18.0-beta.12-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [Test guide](docs/BETA12_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [Test guide](docs/BETA13_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-Screenshots from an Android 35 emulator. The page and question are synthetic examples; the question was not sent.
+Screenshots from an Android emulator; displayed text is local UI content.
 
-![Paper and AI card](docs/images/beta12-01-paper-ai.png)
+![多语言界面](docs/images/beta13-01-languages.png)
 
-![Input and send controls with the keyboard open](docs/images/beta12-02-keyboard.png)
+![纸面工具图标](docs/images/beta13-02-tool-icons.png)
 
-![Guidance when no Agent is connected](docs/images/beta12-03-agent-guide.png)
+![新品牌标志](docs/images/beta13-03-new-brand.png)
 
-## beta.12
+## beta.13 update
 
-This release gives the Android paper toolbar, AI card, and forms a consistent set of action buttons and icons. The AI input area grows to two or three lines with longer text; the input and send controls remain available with the keyboard open, and the AI card stays visible after rotation. When no computer Agent is connected, choose **Connection settings** to open setup. The Windows x64 connection assistant installer is reused unchanged from beta.11.
+The Android interface adds Simplified Chinese, English, Japanese, Korean, Spanish, French, and German, with 21 updated feature icons and the new brand mark. The default language follows the system; you can also change it from the bookshelf. Translations have not yet received a line-by-line native-speaker review. Some raw machine or agent errors may remain in their original language, and model responses are not translated with the interface.
 
-The Android APK supports Android 7.0 / API 24 and later. Package name: `com.padnote.android.beta`. It uses the same signing certificate as beta.11 and can update an existing installation. Back up important notes before installing. See the [test guide](docs/BETA12_TESTING.md) for scope and results.
+The Windows connection assistant continues to use the beta.11 installer, so the Windows app still shows its older icon. This release updates the shared icon source. The iPad update contains icon source assets only; there is no signed, installable IPA. See the [test guide](docs/BETA13_TESTING.md) for the Android target and verified checks.
 
 ## Scope and limitations
 
-Write, edit, and zoom in a note; continue an AI conversation; export a full note as PDF; or send the current note PDF and readable context to a paired Hermes agent that supports note tasks. You or the selected agent choose models, speech, and video tools; PadNote does not require a particular provider. OpenClaw provides discovery/setup guidance only; Codex note tasks are not connected. iPad source is available, but there is no installable signed IPA.
+Write, edit, and zoom in a note; continue an AI conversation; export a full-page PDF; or send note material to a paired Hermes agent that supports note tasks. You or the selected agent choose models and services; PadNote does not require a particular provider. OpenClaw currently provides discovery and setup guidance. Codex note tasks are not connected. iPad source is available, but there is no installable signed IPA.
 
 The desktop assistant does not include Hermes, models, API keys, or video runtimes. WSL Hermes must expose an API reachable from Windows; automatic WSL discovery is not implemented. External services may incur costs. Review the task and included material before sending.
 
 ## Downloads and verification
 
-The Release includes the Android APK, Windows x64 installer, source ZIP, test guide, license files, and `SHA256SUMS.txt`. Beta.11 demo videos are not reposted. The Windows installer was checked on Windows 11 x64 through SSH Session 0 for install, start/stop, service readiness, same-version reinstall, and uninstall. This does not verify ordinary desktop mouse use, Wi-Fi pairing, or a live Hermes task. The installer is unsigned.
+The Release includes the Android APK, the unchanged beta.11 Windows x64 installer, source ZIP, test guide, license files, and `SHA256SUMS.txt`. See the test guide for the beta.11 installer’s verification scope. This release does not claim a new Windows UI or icon. The installer is unsigned.
 
 Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows.
 

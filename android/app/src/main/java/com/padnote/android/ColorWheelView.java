@@ -24,7 +24,7 @@ final class ColorWheelView extends View {
 
     ColorWheelView(Context context) {
         super(context);
-        setContentDescription("HSV 颜色调色盘");
+        setContentDescription(context.getString(R.string.canvas_color_wheel_desc));
         setMinimumWidth(dp(220));
         setMinimumHeight(dp(220));
         markerPaint.setStyle(Paint.Style.STROKE);
