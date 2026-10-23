@@ -2,7 +2,7 @@
 
 <img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote 标志">
 
-**在同一张纸上写、画、提问，再分享或交给电脑 Agent。**
+**和ai在同一张纸上写、画、提问，再分享或交给电脑 Agent。**
 
 PadNote 是面向平板的笔记与 AI 学习工具。你可以在同一份笔记中书写、绘图和提问，再分享纸面或交给已配对的电脑 Agent。模型和服务由你选择。
 
