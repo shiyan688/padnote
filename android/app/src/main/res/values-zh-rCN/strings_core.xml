@@ -26,14 +26,14 @@
     <string name="core_pending_videos">待处理视频</string>
     <string name="core_pending_videos_desc">查看、另存或删除待处理视频结果</string>
     <string name="core_recent_count">最近笔记 · %d</string>
-    <string name="core_guide_title">三步上手 PadNote</string>
+    <string name="core_guide_title">完成第一份 AI 学习笔记</string>
     <string name="core_guide_close">关闭新手引导</string>
-    <string name="core_guide_write_title">写与圈选</string>
-    <string name="core_guide_write_detail">用笔书写，双指缩放画布；套索工具可圈选任意手写内容。</string>
-    <string name="core_guide_ai_title">问 AI</string>
-    <string name="core_guide_ai_detail">圈选后点 AI 图标：讲解、整理 Markdown 或自由提问，也可以问以前的笔记。</string>
-    <string name="core_guide_vault_title">转成格式笔记</string>
-    <string name="core_guide_vault_detail">笔记卡片「更多 → 转为格式笔记」可创建兼容 Obsidian 的 Markdown 知识库；明确选定后 AI 才会读取。</string>
+    <string name="core_guide_write_title">书写或导入</string>
+    <string name="core_guide_write_detail">新建笔记，写几行内容；也可导入 PDF 批注。普通书写无需模型或电脑 Agent。</string>
+    <string name="core_guide_ai_title">圈选并配置模型</string>
+    <string name="core_guide_ai_detail">用套索圈一小块内容，点 AI → 设置。填写 HTTPS 地址、支持看图的模型和自己的 API Key。</string>
+    <string name="core_guide_vault_title">讲解并保留笔记</string>
+    <string name="core_guide_vault_detail">先选“允许写入”再点“讲解”，让回答留在纸面；也可选“仅卡片”先阅读。核对回答后保存笔记。</string>
     <string name="core_vault_title">知识库 · 格式笔记</string>
     <string name="core_vault_caption">手写笔记的 Markdown 版 · 可整体拷入 Obsidian</string>
     <string name="core_vault_what">这是什么？</string>
@@ -72,4 +72,5 @@
     <string name="core_paper_package_error">无法冻结或打包笔记（未发送）：%s</string>
     <string name="core_task_bundle_intro">请按任务包要求完成「%1$s」。实际纸面见 input/paper.pdf，可读笔记和本笔记 AI 交流见 input/content.md。</string>
     <string name="core_video_style_prefix">讲解风格：%1$s</string>
+    <string name="core_first_model_hint">AI 需要你自己的模型服务。首次可选“直连多模态”：填写配置名称、HTTPS 地址、支持看图的模型和 API Key。预设可修改，请核对服务商可用模型与费用。保存配置不会发送请求，发送前仍会确认材料与接收地址。无需电脑 Agent。</string>
 </resources>

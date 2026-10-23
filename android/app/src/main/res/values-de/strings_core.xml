@@ -21,14 +21,14 @@
     <string name="core_pending_videos">Ausstehende Videos</string>
     <string name="core_pending_videos_desc">Ausstehende Videoergebnisse anzeigen, speichern oder löschen</string>
     <string name="core_recent_count">Letzte Notizen · %d</string>
-    <string name="core_guide_title">PadNote in 3 Schritten kennenlernen</string>
+    <string name="core_guide_title">Die erste Notiz erklären lassen</string>
     <string name="core_guide_close">Einführung schließen</string>
-    <string name="core_guide_write_title">Schreiben und auswählen</string>
-    <string name="core_guide_write_detail">Mit dem Stift schreiben und mit zwei Fingern zoomen. Mit der Lasso-Auswahl lässt sich Handschrift markieren.</string>
-    <string name="core_guide_ai_title">KI fragen</string>
-    <string name="core_guide_ai_detail">Inhalt auswählen und auf das KI-Symbol tippen, um ihn erklären oder als Markdown ordnen zu lassen oder eine Frage zu stellen. Auch frühere Notizen sind möglich.</string>
-    <string name="core_guide_vault_title">In formatierte Notizen umwandeln</string>
-    <string name="core_guide_vault_detail">Über Mehr → In formatierte Notizen umwandeln auf einer Notizkarte entsteht eine Obsidian-kompatible Markdown-Bibliothek. Die KI liest sie nur nach deiner Auswahl.</string>
+    <string name="core_guide_write_title">Schreiben oder importieren</string>
+    <string name="core_guide_write_detail">Erstelle eine Notiz und schreibe einige Zeilen oder importiere eine PDF zum Kommentieren. Zum Schreiben sind weder Modell noch Computer-Agent nötig.</string>
+    <string name="core_guide_ai_title">Auswählen und Modell einrichten</string>
+    <string name="core_guide_ai_detail">Markiere einen kleinen Bereich mit dem Lasso und öffne KI → Einstellungen. Gib HTTPS-Adresse, bildfähiges Modell und deinen API-Schlüssel ein.</string>
+    <string name="core_guide_vault_title">Erklären und behalten</string>
+    <string name="core_guide_vault_detail">Erlaube Notizänderungen vor dem Erklären, um die Antwort auf der Seite zu behalten, oder lies sie zunächst nur in der Karte. Prüfe die Antwort und speichere die Notiz.</string>
     <string name="core_vault_title">Wissensdatenbank · formatierte Notizen</string>
     <string name="core_vault_caption">Markdown-Version handschriftlicher Notizen · den ganzen Ordner in Obsidian kopieren</string>
     <string name="core_vault_what">Was ist das?</string>
@@ -67,4 +67,5 @@
     <string name="core_paper_package_error">Notiz konnte nicht eingefroren oder verpackt werden (nicht gesendet): %s</string>
     <string name="core_task_bundle_intro">Führe die Aufgabenanforderung „%1$s“ aus. Das gerenderte Blatt liegt in input/paper.pdf; lesbare Notizen und der KI-Dialog dieser Notiz stehen in input/content.md.</string>
     <string name="core_video_style_prefix">Videostil: %1$s</string>
+    <string name="core_first_model_hint">KI benötigt deinen eigenen Modelldienst. Beginne mit dem direkten multimodalen Modus: Name, HTTPS-Adresse, bildfähiges Modell und API-Schlüssel. Voreinstellungen sind bearbeitbare Vorschläge; prüfe Verfügbarkeit und Preise. Speichern sendet keine Anfrage. Bestätige Material und Empfänger vor dem Senden. Ein Computer-Agent ist nicht erforderlich.</string>
 </resources>

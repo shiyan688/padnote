@@ -21,14 +21,14 @@
     <string name="core_pending_videos">Vidéos en attente</string>
     <string name="core_pending_videos_desc">Afficher, enregistrer ou supprimer les résultats vidéo en attente</string>
     <string name="core_recent_count">Notes récentes · %d</string>
-    <string name="core_guide_title">Bien démarrer avec PadNote en 3 étapes</string>
+    <string name="core_guide_title">Votre première note expliquée</string>
     <string name="core_guide_close">Fermer le guide de démarrage</string>
-    <string name="core_guide_write_title">Écrire et sélectionner</string>
-    <string name="core_guide_write_detail">Écrivez au stylet et zoomez avec deux doigts. Le lasso permet de sélectionner l’écriture.</string>
-    <string name="core_guide_ai_title">Poser une question à l’IA</string>
-    <string name="core_guide_ai_detail">Sélectionnez du contenu et touchez l’icône IA pour l’expliquer, le structurer en Markdown ou poser une question. Vous pouvez aussi interroger vos anciennes notes.</string>
-    <string name="core_guide_vault_title">Convertir en notes mises en forme</string>
-    <string name="core_guide_vault_detail">Utilisez Plus → Convertir en notes mises en forme sur une carte pour créer une bibliothèque Markdown compatible avec Obsidian. L’IA ne la lit que si vous la sélectionnez.</string>
+    <string name="core_guide_write_title">Écrire ou importer</string>
+    <string name="core_guide_write_detail">Créez une note et écrivez quelques lignes, ou importez un PDF à annoter. Écrire ne nécessite ni modèle ni agent sur ordinateur.</string>
+    <string name="core_guide_ai_title">Sélectionner et configurer</string>
+    <string name="core_guide_ai_detail">Sélectionnez une petite zone au lasso, puis ouvrez IA → Paramètres. Saisissez une adresse HTTPS, un modèle acceptant les images et votre clé API.</string>
+    <string name="core_guide_vault_title">Expliquer et conserver</string>
+    <string name="core_guide_vault_detail">Autorisez les modifications avant de demander une explication pour conserver la réponse sur la page, ou lisez-la uniquement dans la carte. Vérifiez la réponse et enregistrez la note.</string>
     <string name="core_vault_title">Base de connaissances · notes mises en forme</string>
     <string name="core_vault_caption">Version Markdown des notes manuscrites · copiez le dossier entier dans Obsidian</string>
     <string name="core_vault_what">Qu’est-ce que c’est ?</string>
@@ -67,4 +67,5 @@
     <string name="core_paper_package_error">Impossible de figer ou préparer la note (non envoyée) : %s</string>
     <string name="core_task_bundle_intro">Exécutez la demande du lot de tâches : « %1$s ». La page rendue se trouve dans input/paper.pdf ; les notes lisibles et la conversation IA de cette note sont dans input/content.md.</string>
     <string name="core_video_style_prefix">Style vidéo : %1$s</string>
+    <string name="core_first_model_hint">L’IA nécessite votre propre service de modèles. Commencez en mode multimodal direct : nom, adresse HTTPS, modèle acceptant les images et clé API. Les préréglages sont modifiables ; vérifiez la disponibilité et les tarifs. Enregistrer ne lance aucune requête : confirmez les documents et le destinataire avant l’envoi. Aucun agent sur ordinateur n’est nécessaire.</string>
 </resources>

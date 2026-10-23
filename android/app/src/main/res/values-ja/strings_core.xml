@@ -24,14 +24,14 @@
     <string name="core_pending_videos">保留中の動画</string>
     <string name="core_pending_videos_desc">保留中の動画結果を表示、保存、削除</string>
     <string name="core_recent_count">最近のノート · %d</string>
-    <string name="core_guide_title">PadNote の使い方 3 ステップ</string>
+    <string name="core_guide_title">最初のノートを AI で理解する</string>
     <string name="core_guide_close">ガイドを閉じる</string>
-    <string name="core_guide_write_title">書いて選択</string>
-    <string name="core_guide_write_detail">ペンで書き、2 本指で拡大縮小します。投げ縄で手書きを選択できます。</string>
-    <string name="core_guide_ai_title">AI に質問</string>
-    <string name="core_guide_ai_detail">内容を選択して AI アイコンをタップすると、説明、Markdown 整理、自由な質問ができます。以前のノートについても質問できます。</string>
-    <string name="core_guide_vault_title">形式ノートに変換</string>
-    <string name="core_guide_vault_detail">ノートカードの「その他 → 形式ノートに変換」で Obsidian 対応 Markdown ライブラリを作成できます。選択した場合のみ AI が読み込みます。</string>
+    <string name="core_guide_write_title">書く・読み込む</string>
+    <string name="core_guide_write_detail">ノートを作って数行書くか、PDF を読み込んで注釈を付けます。書くだけならモデルやパソコンの Agent は不要です。</string>
+    <string name="core_guide_ai_title">選択してモデルを設定</string>
+    <string name="core_guide_ai_detail">投げ縄で小さな範囲を選び、AI → 設定を開きます。HTTPS アドレス、画像対応モデル、自分の API キーを入力します。</string>
+    <string name="core_guide_vault_title">説明をノートに残す</string>
+    <string name="core_guide_vault_detail">「ノート編集を許可」を選んでから説明を実行すると紙面に残せます。カードのみで読むこともできます。回答を確認して保存してください。</string>
     <string name="core_vault_title">ナレッジベース · 形式ノート</string>
     <string name="core_vault_caption">手書きノートの Markdown 版 · Obsidian にフォルダーごとコピーできます</string>
     <string name="core_vault_what">これは何ですか？</string>
@@ -70,4 +70,5 @@
     <string name="core_paper_package_error">ノートを固定またはパッケージ化できません（未送信）：%s</string>
     <string name="core_task_bundle_intro">タスクパッケージの指示「%1$s」を実行してください。ページ画像は input/paper.pdf、読めるノートとこのノートの AI 会話は input/content.md にあります。</string>
     <string name="core_video_style_prefix">解説スタイル：%1$s</string>
+    <string name="core_first_model_hint">AI には自分のモデルサービスが必要です。まず直接マルチモーダル方式で、設定名・HTTPS アドレス・画像対応モデル・API キーを入力します。プリセットは変更可能な例です。利用可否と料金は提供元で確認してください。保存だけでは送信されず、送信前に資料と宛先を確認します。パソコンの Agent は不要です。</string>
 </resources>
