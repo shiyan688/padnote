@@ -1,50 +1,59 @@
 # PadNote
 
-<img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote mark">
+**Write on an Android tablet, select a difficult passage, and keep an AI explanation alongside your notes.**
 
-**Write, draw, and ask on the same page, then share it or hand it to a computer agent.**
+Create a handwritten note or annotate an imported PDF. Writing does not require a model or a computer agent. AI uses your configured provider, which may charge for requests.
 
-PadNote is a tablet notebook for writing, drawing, and AI-assisted learning. Work in one note, then share the page or hand it to a paired computer agent. You choose the model and service provider.
+[Download Android APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Quick start (Chinese)](docs/QUICK_START.md) · [FAQ (Chinese)](docs/FAQ.md) · [中文](README.md) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [Test guide](docs/BETA13_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+## Finish your first learning note
 
-Screenshots from an Android emulator; displayed text is local UI content.
+1. **Write or import:** create a note and write a few lines, or use Import note to open a PDF.
+2. **Select:** lasso a small area, tap AI, and check the selection preview.
+3. **Configure:** open Settings → New profile. Start with the direct multimodal route: supply a profile name, HTTPS API address, image-capable model, and your own API key. Presets are editable suggestions; check availability and pricing with your provider.
+4. **Explain and keep:** choose Allow note edits before Explain to permit an answer on the page, or Only card to read it first. Confirm the material and destination, check the answer, and save. AI writes for PDF notes go on blank annotation pages.
 
-![多语言界面](docs/images/beta13-01-languages.png)
+This path does not require the Windows connection assistant, Hermes, or video tools.
 
-![纸面工具图标](docs/images/beta13-02-tool-icons.png)
+![Android paper tools](docs/images/beta13-02-tool-icons.png)
 
-![新品牌标志](docs/images/beta13-03-new-brand.png)
+Screenshot from the beta.13 Android emulator. Displayed text is local UI content, not evidence of a real model response tested in this revision.
 
-## beta.13 update
+## Availability
 
-The Android interface adds Simplified Chinese, English, Japanese, Korean, Spanish, French, and German, with 21 updated feature icons and the new brand mark. The default language follows the system; you can also change it from the bookshelf. Translations have not yet received a line-by-line native-speaker review. Some raw machine or agent errors may remain in their original language, and model responses are not translated with the interface.
+| Component | Current status |
+| --- | --- |
+| Android | Downloadable beta.13 debug-signed APK; Android 7.0 / API 24 or newer; a test release |
+| iPad | Source available; build and sign with Xcode yourself; no signed, installable IPA |
+| AI | Bring an image-capable OpenAI-compatible service; no offline AI or included model credits |
+| Computer agent | Optional advanced workflow with a configured and paired supported Hermes target |
+| Data | Notes stay on the device by default; model calls send the confirmed material; no automatic cloud sync |
 
-The Windows connection assistant continues to use the beta.11 installer, so the Windows app still shows its older icon. This release updates the shared icon source. The iPad update contains icon source assets only; there is no signed, installable IPA. See the [test guide](docs/BETA13_TESTING.md) for the Android target and verified checks.
+The published download remains [v0.18.0-beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13). First-use shortcuts, direct first-profile setup, and the scrollable profile editor in this source revision have not been packaged or released.
 
-## Scope and limitations
+The beta.13 report records Android API 35 emulator UI checks and 329 JVM tests. It does not report a physical tablet or real model/agent requests in that round. See the [release test report](docs/BETA13_TESTING.md); those checks do not establish stylus quality or compatibility with every provider. The interface supports seven languages; translations still need native-speaker review.
 
-Write, edit, and zoom in a note; continue an AI conversation; export a full-page PDF; or send note material to a paired Hermes agent that supports note tasks. You or the selected agent choose models and services; PadNote does not require a particular provider. OpenClaw currently provides discovery and setup guidance. Codex note tasks are not connected. iPad source is available, but there is no installable signed IPA.
+## Explore later
 
-The desktop assistant does not include Hermes, models, API keys, or video runtimes. WSL Hermes must expose an API reachable from Windows; automatic WSL discovery is not implemented. External services may incur costs. Review the task and included material before sending.
+- Share the paper as a standard PDF, or manually transfer editable note packages.
+- Convert notes into Markdown and explicitly select additional material for AI.
+- Use Share / Agent with a paired Hermes target supporting paper context. OpenClaw currently provides discovery/setup guidance; Codex paper tasks are not connected. See the [core workflow](docs/CORE_PRODUCT_WORKFLOW.md).
 
-## Downloads and verification
+The optional [Windows beta.11 connection assistant](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) includes no Hermes installation, models, API keys, or video runtime. Its installer is unsigned. WSL Hermes must expose an API reachable from Windows; automatic WSL discovery is not implemented.
 
-The Release includes the Android APK, the unchanged beta.11 Windows x64 installer, source ZIP, test guide, license files, and `SHA256SUMS.txt`. See the test guide for the beta.11 installer’s verification scope. This release does not claim a new Windows UI or icon. The installer is unsigned.
+## Verify downloads and build
 
-Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows.
+Back up important notes before updating. Compare downloads with the Release `SHA256SUMS.txt` using `Get-FileHash <file> -Algorithm SHA256` on Windows or `shasum -a 256 <file>` on macOS/Linux.
 
-## Build from source
-
-Install JDK 17, Android SDK Platform 35, and Build Tools 35.0.0, then run:
+Android requires JDK 17, Android SDK Platform 35, Build Tools 35.0.0, and the configured NDK 29.0.14206865:
 
 ```sh
 cd android
 ./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
-See [`desktop/connection-assistant/windows-setup/README-WINDOWS.md`](desktop/connection-assistant/windows-setup/README-WINDOWS.md) for Windows installer source and build requirements.
+See [verification for this source revision](docs/FIRST_USE_VALIDATION.md) and [Windows build requirements](desktop/connection-assistant/windows-setup/README-WINDOWS.md).
 
 ## License and feedback
 
-Original Android/iPad code is MIT licensed; the video Agent subproject is Apache-2.0. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSING.md`](LICENSING.md). For feedback, include version, device, steps, and observed behavior. Do not upload API keys, pairing tokens, passwords, or private notes.
+Original Android/iPad client code is MIT licensed; the video Agent subproject is Apache-2.0. See [licensing scope](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Include version, device, steps, and observed behavior in reports. Do not upload API keys, pairing tokens, or private notes.

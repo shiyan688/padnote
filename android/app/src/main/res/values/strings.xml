@@ -61,14 +61,14 @@
     <string name="core_pending_videos">Pending videos</string>
     <string name="core_pending_videos_desc">View, save, or delete pending video results</string>
     <string name="core_recent_count">Recent notes · %d</string>
-    <string name="core_guide_title">Three steps to get started</string>
+    <string name="core_guide_title">Your first note, explained</string>
     <string name="core_guide_close">Close the getting started guide</string>
-    <string name="core_guide_write_title">Write and select</string>
-    <string name="core_guide_write_detail">Write with a pen and zoom with two fingers. Use the lasso to select handwriting.</string>
-    <string name="core_guide_ai_title">Ask AI</string>
-    <string name="core_guide_ai_detail">Select content and tap the AI icon to explain it, organize it as Markdown, or ask a question. You can also ask about earlier notes.</string>
-    <string name="core_guide_vault_title">Make formatted notes</string>
-    <string name="core_guide_vault_detail">Use More → Convert to formatted notes on a note card to create an Obsidian-compatible Markdown library. AI reads it only after you select it.</string>
+    <string name="core_guide_write_title">Write or import</string>
+    <string name="core_guide_write_detail">Create a note and write a few lines, or import a PDF to annotate. No model or computer agent is needed for writing.</string>
+    <string name="core_guide_ai_title">Select and connect a model</string>
+    <string name="core_guide_ai_detail">Lasso a small area, tap AI, then Settings. Add an HTTPS endpoint, an image-capable model and your API key.</string>
+    <string name="core_guide_vault_title">Explain and keep learning</string>
+    <string name="core_guide_vault_detail">Choose Allow note edits before Explain to keep the answer on the page, or Only card to read it first. Check the answer and save the note.</string>
     <string name="core_vault_title">Digitized notes · formatted notes</string>
     <string name="core_vault_caption">Handwritten Markdown version · copy the whole folder into Obsidian</string>
     <string name="core_vault_what">What is this?</string>
@@ -107,4 +107,5 @@
     <string name="core_paper_package_error">Could not freeze or package the note (nothing sent): %s</string>
     <string name="core_task_bundle_intro">Complete the task package request: “%1$s”. The rendered paper is in input/paper.pdf; readable notes and this note’s AI conversation are in input/content.md.</string>
     <string name="core_video_style_prefix">Video style: %1$s</string>
+    <string name="core_first_model_hint">AI needs your own model service. Start with the direct multimodal route: enter a profile name, HTTPS address, image-capable model and API key. Presets are editable suggestions; check provider availability and pricing. Saving does not send a request; confirm the material and destination before sending. No computer agent is required.</string>
 </resources>

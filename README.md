@@ -1,52 +1,59 @@
 # PadNote
 
-<img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote 标志">
+**在 Android 平板上写笔记、圈选难点，让 AI 讲解并把有用内容留在纸面。**
 
-**和ai在同一张纸上写、画、提问，再分享或交给电脑 Agent。**
+适合一边看讲义、一边手写推导和提问。可以新建笔记，也可以导入 PDF 批注；普通书写不需要模型或电脑 Agent。AI 使用你配置的服务，费用由所选服务商收取。
 
-PadNote 是面向平板的笔记与 AI 学习工具。你可以在同一份笔记中书写、绘图和提问，再分享纸面或交给已配对的电脑 Agent。模型和服务由你选择。
+[下载 Android APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [第一次使用](docs/QUICK_START.md) · [常见问题](docs/FAQ.md) · [English](README.en.md) · [反馈](https://github.com/shiyan688/padnote/issues)
 
-[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [测试指南](docs/BETA13_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+## 先完成一份学习笔记
 
-Android 模拟器实录，图中文字为本地界面示例。
+1. **写或导入**：新建笔记写几行内容，或用“导入笔记”打开 PDF。
+2. **圈选**：用套索选中一小块内容，点 AI，核对卡片中的选区图片。
+3. **配置模型**：AI 卡片 → 设置 → 新建配置。首次建议直连多模态，填写配置名称、HTTPS API 地址、支持图像输入的模型及自己的 API Key。预设可修改，模型可用性与价格以服务商为准。
+4. **讲解与保留**：需要落在纸面时先选“允许写入”，再点“讲解”；只想阅读时选“仅卡片”。确认发送材料和地址，检查回答，保存笔记。AI 写入 PDF 笔记时使用空白附注页。
 
-![多语言界面](docs/images/beta13-01-languages.png)
+这条流程不需要安装 Windows 连接助手、Hermes 或视频工具。更详细的操作、配置失败排查和材料范围见[快速指南](docs/QUICK_START.md)。
 
-![纸面工具图标](docs/images/beta13-02-tool-icons.png)
+![Android 平板中的纸面工具栏](docs/images/beta13-02-tool-icons.png)
 
-![新品牌标志](docs/images/beta13-03-new-brand.png)
+截图来自 beta.13 Android 模拟器，画面中的文字是本地界面示例，不是这轮真实模型回答的验收。
 
-## beta.13 更新
+## 下载前了解
 
-Android 界面新增简体中文、英语、日语、韩语、西班牙语、法语和德语，并统一 21 个功能图标与新品牌标志。默认语言跟随系统，也可在书架中切换。翻译尚未经过母语者逐条审核；少数机器或 Agent 返回的原始错误仍可能保留原文，模型回答不会随界面语言翻译。
+| 项目 | 当前状态 |
+| --- | --- |
+| Android | 可下载 beta.13 调试签名 APK，Android 7.0 / API 24 起；属于测试版 |
+| iPad | 提供源码，需要 Xcode 构建并自行签名；没有可安装的签名 IPA |
+| AI | 自备支持图像输入的 OpenAI-compatible 服务；AI 非离线能力，不附送模型额度 |
+| 电脑 Agent | 可选进阶流程；配置并配对受支持的 Hermes 目标后使用 |
+| 数据 | 笔记默认保存在设备；调用模型会发送确认范围内的材料；没有自动云同步 |
 
-同时修复大字号下发送按钮裁字、底部状态重叠和长标题书架按钮遮挡。未发送草稿按笔记保留，关闭卡片后可继续编辑。
+公开下载仍为 [v0.18.0-beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13)。本轮源码新增的首用快捷入口、首次配置直接打开表单和配置表单滚动尚未打包发布，下载 APK 不会自动包含这些变化。
 
-Windows 连接助手继续使用 beta.11 安装程序，因此 Windows 应用仍显示旧图标；本版源码更新了共享图标资源。iPad 本轮只有图标源码资源，没有可安装的签名 IPA。Android 安装范围、构建结果和已完成的实测项目以[测试指南](docs/BETA13_TESTING.md)为准。
+beta.13 有七种界面语言。已有验收记录包含 Android API 35 模拟器界面检查和 329 项 JVM 测试；该轮没有实体平板、真实模型或真实 Agent 请求。完整范围见[测试记录](docs/BETA13_TESTING.md)，不能据此推断触笔手感或每家模型均已验证。
 
-## 功能范围与边界
+## 后续再试
 
-在当前笔记中书写、编辑、缩放并进行 AI 交流；分享完整纸面 PDF；将当前笔记材料发送给已配对且支持纸面任务的 Hermes Agent。模型与服务由你或所选 Agent 配置，PadNote 不要求特定供应商。OpenClaw 目前提供发现与设置引导，Codex 纸面任务尚未接入。iPad 有源码，暂无可安装的签名 IPA。
+- 将纸面导出为标准 PDF 分享；用可编辑笔记包在设备间手动转移。
+- 将笔记转为 Markdown 格式笔记，按需选择为 AI 额外材料。
+- 通过“分享/Agent”交给已配对、支持纸面上下文的 Hermes 目标。OpenClaw 当前提供发现与设置引导，Codex 纸面任务尚未接入。见[核心流程](docs/CORE_PRODUCT_WORKFLOW.md)。
 
-电脑助手不附带 Hermes、模型、API 密钥或视频运行时。WSL Hermes 需要启用可从 Windows 访问的 API；助手不会自动扫描 WSL。外部模型或工具可能产生费用。发送前检查材料范围、目标和任务。
+[Windows beta.11 连接助手](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe)是可选组件，不附带 Hermes、模型、API Key 或视频运行时，安装程序未签名。WSL Hermes 需暴露 Windows 可访问的 API；不自动扫描 WSL。
 
-## 下载与验证
+## 验证下载与源码构建
 
-Release 提供 Android APK、beta.11 Windows x64 安装程序、源码 ZIP、测试指南、许可文件和 `SHA256SUMS.txt`。Windows beta.11 安装程序的验证范围见测试指南；本轮不声称 Windows 助手获得新版 UI 或新图标。安装程序未签名。
+覆盖安装前备份重要笔记。使用 Release 中的 `SHA256SUMS.txt` 核验下载：Windows 用 `Get-FileHash <文件> -Algorithm SHA256`，macOS/Linux 用 `shasum -a 256 <文件>`。
 
-下载后在 macOS/Linux 使用 `shasum -a 256 <文件>`，Windows 使用 `Get-FileHash <文件> -Algorithm SHA256` 核对校验和。
-
-## 从源码构建
-
-Android 需要 JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0：
+Android 构建需要 JDK 17、Android SDK Platform 35、Build Tools 35.0.0，以及项目指定的 NDK 29.0.14206865：
 
 ```sh
 cd android
 ./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
-Windows 安装程序源码和构建前提见 [`desktop/connection-assistant/windows-setup/README-WINDOWS.md`](desktop/connection-assistant/windows-setup/README-WINDOWS.md)。
+本轮改动与本机检查范围见[首用改善验证](docs/FIRST_USE_VALIDATION.md)。Windows 构建见[安装程序说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md)。
 
 ## 许可与反馈
 
-Android 与 iPad 客户端自研代码采用 MIT；视频 Agent 子项目采用 Apache-2.0；第三方依赖许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 [`LICENSING.md`](LICENSING.md)。反馈时请说明版本、设备、步骤和实际提示。请勿上传 API Key、配对令牌、密码或私人笔记。
+Android 与 iPad 客户端自研代码采用 MIT；视频 Agent 子项目采用 Apache-2.0；第三方组件见 [许可范围](LICENSING.md)和[第三方声明](THIRD_PARTY_NOTICES.md)。反馈请说明版本、设备、步骤及实际提示，勿上传 API Key、配对令牌或私人笔记。

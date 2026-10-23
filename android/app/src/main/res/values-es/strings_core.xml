@@ -21,14 +21,14 @@
     <string name="core_pending_videos">Vídeos pendientes</string>
     <string name="core_pending_videos_desc">Ver, guardar o eliminar resultados de vídeo pendientes</string>
     <string name="core_recent_count">Notas recientes · %d</string>
-    <string name="core_guide_title">Empieza con PadNote en 3 pasos</string>
+    <string name="core_guide_title">Tu primera nota explicada</string>
     <string name="core_guide_close">Cerrar la guía inicial</string>
-    <string name="core_guide_write_title">Escribe y selecciona</string>
-    <string name="core_guide_write_detail">Escribe con el lápiz y usa dos dedos para ampliar. El lazo permite seleccionar escritura.</string>
-    <string name="core_guide_ai_title">Pregunta a la IA</string>
-    <string name="core_guide_ai_detail">Selecciona contenido y toca el icono de IA para explicarlo, organizarlo como Markdown o hacer preguntas. También puedes preguntar por notas anteriores.</string>
-    <string name="core_guide_vault_title">Convertir en notas con formato</string>
-    <string name="core_guide_vault_detail">Usa Más → Convertir en notas con formato en una tarjeta para crear una biblioteca Markdown compatible con Obsidian. La IA solo la lee si la seleccionas.</string>
+    <string name="core_guide_write_title">Escribe o importa</string>
+    <string name="core_guide_write_detail">Crea una nota y escribe unas líneas, o importa un PDF para anotarlo. Para escribir no necesitas un modelo ni un agente del ordenador.</string>
+    <string name="core_guide_ai_title">Selecciona y configura el modelo</string>
+    <string name="core_guide_ai_detail">Marca una zona pequeña con el lazo y abre IA → Ajustes. Introduce una dirección HTTPS, un modelo con visión y tu clave API.</string>
+    <string name="core_guide_vault_title">Explica y conserva la nota</string>
+    <string name="core_guide_vault_detail">Elige Permitir editar notas antes de Explicar para guardar la respuesta en la página, o Solo tarjeta para leerla primero. Revisa la respuesta y guarda la nota.</string>
     <string name="core_vault_title">Base de conocimiento · notas con formato</string>
     <string name="core_vault_caption">Versión Markdown de notas manuscritas · copia la carpeta en Obsidian</string>
     <string name="core_vault_what">¿Qué es esto?</string>
@@ -67,4 +67,5 @@
     <string name="core_paper_package_error">No se pudo congelar o empaquetar la nota (no enviada): %s</string>
     <string name="core_task_bundle_intro">Completa la solicitud del paquete de tareas: «%1$s». El papel renderizado está en input/paper.pdf; las notas legibles y la conversación de IA de esta nota están en input/content.md.</string>
     <string name="core_video_style_prefix">Estilo del vídeo: %1$s</string>
+    <string name="core_first_model_hint">La IA requiere tu propio servicio de modelos. Empieza con el modo multimodal directo: nombre, dirección HTTPS, modelo con visión y clave API. Los ajustes predefinidos son sugerencias editables; comprueba disponibilidad y precios. Guardar no envía solicitudes: confirma el material y el destino antes de enviar. No necesitas un agente del ordenador.</string>
 </resources>

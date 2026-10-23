@@ -1149,9 +1149,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     /**
-     * Dismissible onboarding card pinned to the top of the shelf. The knowledge
-     * base lives inside a per-note overflow menu, so without this the feature is
-     * effectively invisible to a new user; shown once until dismissed.
+     * Dismissible first-note guide. Keep the first success path on the shelf;
+     * advanced knowledge-base actions have their own guidance below.
      */
     private void addFirstRunGuideCard() {
         if (preferences.getBoolean("guideDismissedV1", false)) {
@@ -1186,6 +1185,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 getString(R.string.core_guide_ai_detail), ACCENT_COLOR));
         card.addView(guideStep("03", getString(R.string.core_guide_vault_title),
                 getString(R.string.core_guide_vault_detail), ACCENT_COLOR));
+
+        Button create = pillButton(getString(R.string.core_create_note), BUTTON_PRIMARY);
+        create.setOnClickListener(view -> showCreateNoteDialog());
+        LinearLayout.LayoutParams createParams = matchWrap();
+        createParams.topMargin = dp(12);
+        card.addView(create, createParams);
+        Button importNote = pillButton(getString(R.string.core_import_note), BUTTON_QUIET);
+        importNote.setOnClickListener(view -> launchImportNote());
+        card.addView(importNote, matchWrap());
     }
 
     /** One icon + bold lead + caption line, used by every guide surface. */
@@ -6794,6 +6802,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Toast.makeText(this, getString(R.string.core_ai_wait), Toast.LENGTH_SHORT).show();
             return;
         }
+        // First use has nothing to manage. Save the first profile, then resume
+        // the original action through its normal upload-confirmation path.
+        if (aiConfigStore.listProfiles().isEmpty()) {
+            showProfileEditorDialog(null, afterSave);
+            return;
+        }
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(8), dp(22), 0);
@@ -6940,6 +6954,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(8), dp(22), 0);
 
+        if (creating && aiConfigStore.listProfiles().isEmpty()) {
+            TextView firstModelHint = text(getString(R.string.core_first_model_hint),
+                    12, SECONDARY_TEXT);
+            firstModelHint.setPadding(0, 0, 0, dp(10));
+            content.addView(firstModelHint, matchWrap());
+        }
+
         Spinner presetSpinner = new Spinner(this);
         ChoiceRows.styleSpinner(presetSpinner);
         AiConfigStore.VendorPreset[] presets = AiConfigStore.vendorPresets();
@@ -7039,9 +7060,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
         });
 
+        ScrollView editorScroll = new ScrollView(this);
+        editorScroll.addView(content, matchWrap());
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(creating ? getString(R.string.core_new_ai_profile) : getString(R.string.core_edit_ai_profile))
-                .setView(content)
+                .setView(editorScroll)
                 .setNegativeButton(getString(R.string.core_cancel), null)
                 .setPositiveButton(getString(R.string.core_secure_save), null)
                 .create();

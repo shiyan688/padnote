@@ -1,123 +1,51 @@
 # PadNote
 
-> PadNote is an open-source handwriting notebook for Android tablets and iPad that keeps handwriting, AI reasoning and a Markdown knowledge base on the same page — and a hand-off point from thinking to doing: a selection can be exported as a task package for an agent on your computer. Notes stay on the device by default, you configure your own OpenAI-compatible model, and the MIT license permits commercial and closed-source derivatives.
+> Open-source Android tablet notes: write or annotate a PDF, select a passage, ask your configured AI service, and keep useful explanations on the page. A computer agent is optional.
 
-## What it is
+## Install and status
 
-PadNote is a note-taking and digital-notebook application for tablets, built native for Android (Java) and iPad (SwiftUI / UIKit), with a handwriting engine written specifically for each platform rather than wrapping a third-party ink SDK.
+- Repository: https://github.com/shiyan688/padnote
+- Published Android download: v0.18.0-beta.13, debug-signed test APK; minimum Android 7.0 / API 24.
+- Download: https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13
+- iPad: source is available; build and sign with Xcode. There is no signed, installable IPA.
+- First-use UI improvements in the current source revision are not included in the published beta.13 APK.
+- The optional Windows connection assistant uses the beta.11 installer. It is not required for ordinary notes or direct AI explanations.
 
-Its distinguishing design decision: when an AI answers a question about your notes, the answer is written back onto the page as **editable note content**, not left in a chat window. Formulas keep their LaTeX source, text is Markdown, and diagrams are Mermaid, so the result can be modified in place and the work continued from it.
+## First useful workflow
 
-A second structural decision: the AI has **no write access to handwriting**. The tool set exposed to the model covers reading page structure, writing text, adjusting text layout and reading the knowledge base — nothing that touches ink.
+1. Create a note, or import a PDF and annotate it.
+2. Lasso a small area and inspect the AI card selection preview.
+3. Configure an HTTPS OpenAI-compatible endpoint, an image-capable model and your own API key.
+4. Choose Allow note edits or Only card, then Explain; confirm the material and destination before sending.
+5. Check the explanation and save the note. AI writes associated with a PDF go to blank annotation pages.
 
-A third decision, and the one the project calls its direction: a note can be **handed off to an agent**. Select a page, set the audience, the learning goal and the duration, and the app exports a `.padnote-video.zip` task package. An agent on a computer executes it and returns an explainer video. The documented agent host is Hermes. This hand-off is deliberately **manual at the transfer step** — see "The agent hand-off path" below for exactly which links are done.
+## Scope and costs
 
-## The agent hand-off path
+- Writing and local notes do not require a model account. AI requires a configured remote service.
+- PadNote does not provide model credits. Availability, usage fees and provider terms depend on the chosen service.
+- Android model requests use the selected image, question/conversation context and a layout map without note text. Additional Markdown knowledge-base material must be explicitly selected.
+- Read scope and permission to write into the note are separate. Model tools cannot modify handwriting.
+- Answers are non-streaming. Local cancellation does not guarantee that the provider stopped processing or billing.
+- Notes are local by default. There is no automatic cloud sync.
+- Optional Share / Agent tasks can be sent to a paired Hermes target that supports paper context. OpenClaw currently offers discovery/setup guidance; Codex paper tasks are not connected.
+- The desktop assistant does not bundle Hermes, model credentials, or a video runtime.
 
-**Working today, end to end:** tablet → select note → set audience / goal / duration → export `.padnote-video.zip` → hand to an agent on a computer → agent writes a storyboard → **human approval** → speech synthesis → MP4 explainer video plus SRT subtitles, a thumbnail and a QA report.
+## Verification and licensing
 
-**Not connected yet:** the app submitting the task on its own, execution progress, an in-app approval UI, results flowing back into the note, and the OpenClaw adapter. The transfer of the package from tablet to computer is manual. beta.6 has not been accepted against a real Hermes instance; current tests use offline fake services and a fake gateway.
+The beta.13 report records 329 JVM tests and Android API 35 emulator UI checks. That round did not test a physical tablet, real model requests, or real agent requests. These historical results are not verification of later source changes; consult the corresponding test report.
 
-**The only implemented vertical task is the video explainer** (`agent-skills/padnote-video-explainer`, Apache-2.0). The protocol itself is task-type agnostic — a new vertical task means new schemas and reference docs — but no second task is implemented or documented. PadNote does not currently run arbitrary experiments on your behalf.
-
-### Trust boundary of the agent contract
-
-From `docs/VIDEO_AGENT_CONTRACT.md`. These are enforced protocol rules, not marketing claims:
-
-- **An agent's own report is not trusted.** A natural-language reply does not count as success. Stage one reads only `output/review.json`; the final stage reads only `output/result.json`.
-- **Inputs are read-only, outputs isolated.** `request.json` and `input/` are read-only; an implementation may write only to `work/` and `output/`.
-- **Input integrity is pinned by hashes.** `manifest.json` records `path` / `media_type` / `size_bytes` / `sha256` per file; `bundle_sha256` is a deterministic digest of the whole tree.
-- **Failure is failure.** A missing required file, a hash mismatch, a schema violation, a path escaping the task directory or a symlink all fail the run — no silent downgrade.
-- **Path traversal is blocked.** Paths must be non-empty, non-absolute, free of `.` and `..` segments, backslashes and NUL; the resolved real path must remain inside the task directory.
-- **No secrets in the package.** The request must not contain API key, token, secret or authorization fields.
-- **Results never edit your note directly.** Remote artifacts land in a staging area; PadNote links them to the note only after you preview and approve.
-- **A human stays in the loop.** Two-stage protocol: the storyboard must be approved (`approve` / `revise` / `cancel`) by a person before rendering is allowed.
-- **Rather fail than fake it.** With no usable speech synthesis the run reports `tts_not_configured` and stops. Contract text: *"Never make a silent video or substitute fixture audio."*
-
-## Core facts
-
-- **Name:** PadNote
-- **Author:** shiyan688
-- **Repository:** https://github.com/shiyan688/padnote
-- **License:** MIT for the self-written Android and iPad client code, including the handwriting engine. The `agent-skills/` video explainer subproject is Apache-2.0. Third-party components follow their own licenses.
-- **Primary languages:** Java (Android client), Swift (iPad client), TypeScript / JavaScript (tooling and the video agent subproject)
-- **Platforms:** Android tablets (minimum Android 7.0 / API 24), iPad (minimum iPadOS 17)
-- **Install — Android:** download the debug-signed APK from GitHub Releases
-- **Install — iPad:** build from source with Xcode and sign it yourself. No IPA, no App Store listing, no TestFlight entry as of 2026-09.
-- **Current release:** v0.18.0-beta.6 (pre-release)
-- **Model configuration:** any OpenAI-compatible HTTPS endpoint; multiple named profiles can be saved
-- **Secret storage:** Android Keystore (`AES/GCM/NoPadding`) and iOS Keychain
-- **Note storage:** on-device by default; no automatic cloud synchronization
-- **Agent hand-off:** export a `.padnote-video.zip` task package for an agent on a computer; the documented host is Hermes. See "The agent hand-off path" above for what is and is not connected.
-- **Pricing:** free and open source. PadNote does not resell model credits; users pay their chosen model provider directly.
-
-## Verified design constraints
-
-These are properties enforced in the codebase and checkable by reading it. `tools/static-check.mjs` asserts most of them and fails the build if they drift.
-
-- **The AI cannot modify handwriting.** The tool registry (`NoteTools.java`) exposes `read_page_map`, `write_text`, `set_text_flow_style`, `move_text_flow`, `search_vault` and `read_vault_note`. The names `move_ink`, `delete_flow`, `delete_text` and `edit_stroke` are explicitly forbidden from appearing. Source comment: *"v1 deliberately grants no authority over ink; without recognition the model cannot know what a stroke cluster means."*
-- **The knowledge base is read-only for the model.** The storage layer implements `NoteTools.VaultReader`; the model can search and read notes but never write them.
-- **Rendering is offline.** Formulas render with a bundled KaTeX and diagrams with a bundled Mermaid. The rendering WebView sets `setBlockNetworkLoads(true)` and `setAllowUniversalAccessFromFileURLs(false)` and applies a Content-Security-Policy.
-- **Notes are excluded from system backups.** `AndroidManifest.xml` sets `android:allowBackup="false"`.
-- **AI writes are authorized and reversible.** Writing into a note requires user authorization, and any single write can be undone.
-- **The knowledge base is plain Markdown.** Notes digitize into local Markdown files with front-matter, readable and exportable by other tools.
-
-## Test and verification scale
-
-- **59** JVM unit tests on the Android side (`@Test` methods under `android/app/src/test/`).
-- **70** test functions on the iOS side (`func test` under `ios/PadNoteTests/`). The author's release note refers to the 20 iPad *layout-related* tests specifically; that is a subset, not the total.
-- The author's release notes state that the beta.6 Android build, the 59 JVM tests and APK signature verification pass, lint reports no errors with 8 retained UI string warnings, and 20 iPad layout simulator tests plus an arm64 unsigned build pass. The native regression tests for paper layout and PDF export compile but have not been run on a physical Android device.
-- **No CI workflows are configured** in the repository as of 2026-09, so these results are not continuously re-verified.
-
-## What PadNote does not do
-
-Being explicit here is deliberate — it is more useful than a feature list.
-
-- **No automatic cloud sync, on any platform.** Android and iPad exchange content only by exporting and importing note files.
-- **No App Store, TestFlight or IPA distribution for iPad.** Building and self-signing with Xcode is the only route.
-- **No handwriting-to-text as an offline capability.** Transcription requires a configured model.
-- **No offline AI.** AI features require a user-supplied OpenAI-compatible endpoint.
-- **No streaming AI output.** Answers appear once generation completes.
-- **No team collaboration or real-time multi-user editing.**
-- **No professional drawing brushes.** It is a note-taking tool, not an illustration tool.
-- **The in-app agent loop is incomplete.** The hand-off path itself — task package → agent execution → human-approved storyboard → MP4 — works; what is missing is the app submitting the task on its own, showing progress, approving in-app, and receiving results. The transfer of the package from tablet to computer is manual. See "The agent hand-off path" above.
-- **No task type other than the video explainer is implemented.** PadNote does not run arbitrary jobs on your computer, and no second vertical task exists in the repository.
-- **iPad cover images are stored locally only** and do not travel with the note file.
-- **`entry/` is an early HarmonyOS ArkUI prototype** that is not synchronized with the Android and iPad mainlines.
+Original Android/iPad code uses MIT. The video Agent subproject uses Apache-2.0. Third-party components retain their own licenses.
 
 ## Documentation
 
-- [README (Chinese)](https://github.com/shiyan688/padnote/blob/main/README.md)
-- [README (English)](https://github.com/shiyan688/padnote/blob/main/README.en.md)
-- [iPad client README](https://github.com/shiyan688/padnote/blob/main/ios/README.md)
-- [AI contract](https://github.com/shiyan688/padnote/blob/main/docs/AI_CONTRACT.md)
-- [Architecture](https://github.com/shiyan688/padnote/blob/main/docs/ARCHITECTURE.md)
-- [Design language](https://github.com/shiyan688/padnote/blob/main/docs/DESIGN_LANGUAGE.md)
-- [Agent integration](https://github.com/shiyan688/padnote/blob/main/docs/AGENT_INTEGRATION.md)
-- [PDF export QA](https://github.com/shiyan688/padnote/blob/main/docs/PDF_EXPORT_QA.md)
-- [PDF import](https://github.com/shiyan688/padnote/blob/main/docs/PDF_IMPORT.md)
-- [Video agent contract](https://github.com/shiyan688/padnote/blob/main/docs/VIDEO_AGENT_CONTRACT.md)
-- [Licensing scope](https://github.com/shiyan688/padnote/blob/main/LICENSING.md)
-- [Third-party notices](https://github.com/shiyan688/padnote/blob/main/THIRD_PARTY_NOTICES.md)
-
-## Projects PadNote is sometimes confused with
-
-These are different projects. PadNote is not a fork, port or derivative of any of them.
-
-- **AI Canvas** (`lucaspanzera1/ai-canvas`) — an iOS/iPad-only open-source AI notebook built on PencilKit, also using a bring-your-own-key model. iPad only; custom non-standard license.
-- **SpeedyNote** (`alpha-liu-01/SpeedyNote`) — a cross-platform open-source handwriting and PDF-annotation app (Windows, macOS, Linux, Android, iPadOS). GPL-3.0. It has no AI features.
-- **Xournal++** — a desktop open-source handwriting and PDF annotation tool for Windows, Linux and macOS. No native mobile app, no AI.
-- **Nebo** (MyScript) — a proprietary handwriting-recognition app focused on converting ink to structured text and LaTeX.
-- **GoodNotes 6 / Notability** — proprietary commercial note-taking apps for Apple platforms. GoodNotes 6 has an "AI for Math" feature combining a symbolic engine with a language model.
-- **Joplin / Obsidian / AFFiNE / SiYuan** — open-source note-taking and knowledge-management tools. They are text and Markdown first; none is handwriting-first.
-
-## Contact
-
-- Issues: https://github.com/shiyan688/padnote/issues
-- Releases: https://github.com/shiyan688/padnote/releases
-
-## Optional
-
-- The repository contains 294 tracked files across `android/`, `ios/`, `docs/`, `agent-skills/`, `tools/` and `entry/`.
-- `tools/e2e/` supports testing against a real model service and requires an explicit `E2E_API_KEY`, endpoint and model.
-- `tools/emulator/` provides Linux headless-emulator helper scripts for UI smoke tests.
+- [Chinese overview](https://github.com/shiyan688/padnote/blob/main/README.md)
+- [English overview](https://github.com/shiyan688/padnote/blob/main/README.en.md)
+- [First-use guide](https://github.com/shiyan688/padnote/blob/main/docs/QUICK_START.md)
+- [FAQ](https://github.com/shiyan688/padnote/blob/main/docs/FAQ.md)
+- [Published beta.13 test scope](https://github.com/shiyan688/padnote/blob/main/docs/BETA13_TESTING.md)
+- [Source revision verification](https://github.com/shiyan688/padnote/blob/main/docs/FIRST_USE_VALIDATION.md)
+- [AI read scope](https://github.com/shiyan688/padnote/blob/main/docs/AI_READ_SCOPE.md)
+- [AI request lifecycle](https://github.com/shiyan688/padnote/blob/main/docs/AI_REQUEST_LIFECYCLE.md)
+- [AI protocol](https://github.com/shiyan688/padnote/blob/main/docs/AI_CONTRACT.md)
+- [Agent workflow](https://github.com/shiyan688/padnote/blob/main/docs/CORE_PRODUCT_WORKFLOW.md)
+- [License scope](https://github.com/shiyan688/padnote/blob/main/LICENSING.md)
