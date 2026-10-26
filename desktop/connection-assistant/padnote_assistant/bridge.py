@@ -72,6 +72,7 @@ class BridgeService:
             self.clock = clock
             self.discovery_results = discovery.discover()
             self.last_pair_payload: dict[str, Any] | None = None
+            self.last_pair_context: dict[str, Any] | None = None
             # Set by the launcher when same-network connection is enabled.
             self.lan_identity = None
             self.lan_port: int | None = None
@@ -378,7 +379,7 @@ class BridgeService:
     def create_pair_payload(self, instance_id: str, public_url: str) -> dict[str, Any]:
         url = validate_public_url(public_url, allow_loopback_http=self.allow_test_http)
         _, payload = self.store.create_pair_code(instance_id, url)
-        return self._remember_pair(payload)
+        return self._remember_pair(instance_id, payload)
 
     def create_lan_pair_payload(self, instance_id: str, address: str) -> dict[str, Any]:
         """Pair a tablet on the same network, pinned to this computer's certificate."""
@@ -386,11 +387,18 @@ class BridgeService:
             raise ValidationError("same-network connection is not enabled")
         url = validate_lan_url(f"https://{address}:{self.lan_port}")
         _, payload = self.store.create_pair_code(instance_id, url, self.lan_identity.sha256)
-        return self._remember_pair(payload)
+        return self._remember_pair(instance_id, payload)
 
-    def _remember_pair(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.last_pair_payload = payload
-        self.last_pair_expires_at = int(self.clock()) + self.store.PAIR_TTL_SECONDS
+    def _remember_pair(self, instance_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        expires_at = int(self.clock()) + self.store.PAIR_TTL_SECONDS
+        copied_payload = dict(payload)
+        self.last_pair_context = {
+            "payload": copied_payload,
+            "instance_id": instance_id,
+            "expires_at": expires_at,
+        }
+        self.last_pair_payload = copied_payload
+        self.last_pair_expires_at = expires_at
         return dict(payload)
 
     def request_pair(self, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:

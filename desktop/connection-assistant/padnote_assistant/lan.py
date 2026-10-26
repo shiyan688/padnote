@@ -188,21 +188,21 @@ def _restrict_windows_key_acl(key_path: Path, *, directory: bool = False) -> Non
         if match is None:
             raise ValueError("missing user SID")
         sid = match.group(0)
-        # /reset removes stale explicit ACEs; protected inheritance then removes
-        # every inherited ACE before the two intentional principals are added.
+        # /reset removes stale explicit ACEs. Grant first so the caller retains
+        # access while inheritance is removed and ownership is set.
         subprocess.run([str(icacls), str(key_path), "/reset"], check=True,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=10)
-        subprocess.run([str(icacls), str(key_path), "/inheritance:r"], check=True,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=10)
-        subprocess.run([str(icacls), str(key_path), "/setowner", f"*{sid}"], check=True,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10)
         inheritance_flags = "(OI)(CI)(F)" if directory else "(F)"
         subprocess.run([str(icacls), str(key_path), "/grant:r",
                         f"*{sid}:{inheritance_flags}",
                         f"*S-1-5-18:{inheritance_flags}"], check=True,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10)
+        subprocess.run([str(icacls), str(key_path), "/inheritance:r"], check=True,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10)
+        subprocess.run([str(icacls), str(key_path), "/setowner", f"*{sid}"], check=True,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10)
         verify_script = None
@@ -227,14 +227,14 @@ def _restrict_windows_key_acl(key_path: Path, *, directory: bool = False) -> Non
                     "      $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or\n"
                     "      $rule.IdentityReference.Value -notin $expected) { throw 'unexpected explicit ACE' }\n"
                     "}\nWrite-Output 'PADNOTE_ACL_OK'\n")
+            subprocess.run([str(icacls), str(verify_script), "/grant:r",
+                            f"*{sid}:(F)", "*S-1-5-18:(F)"], check=True,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10)
             subprocess.run([str(icacls), str(verify_script), "/inheritance:r"], check=True,
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=10)
             subprocess.run([str(icacls), str(verify_script), "/setowner", f"*{sid}"], check=True,
-                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=10)
-            subprocess.run([str(icacls), str(verify_script), "/grant:r",
-                            f"*{sid}:(F)", "*S-1-5-18:(F)"], check=True,
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=10)
             verified = subprocess.run(

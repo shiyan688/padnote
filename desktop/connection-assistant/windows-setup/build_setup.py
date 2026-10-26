@@ -127,6 +127,9 @@ def prepare(assistant_root: Path, project_root: Path) -> None:
     for artifact in ARTIFACTS[1:]:
         install_wheel(fetch(*artifact), site_packages)
     sources = [(ROOT / "launcher.py", STAGE / "launcher.py"),
+               (ROOT / "launcher_support.py", STAGE / "launcher_support.py"),
+               (ROOT / "verify_windows_startup.py", STAGE / "verify_windows_startup.py"),
+               (ROOT / "PadNote.ico", STAGE / "PadNote.ico"),
                (assistant_root / "start.py", STAGE / "start.py"),
                (assistant_root / "padnote_assistant", STAGE / "padnote_assistant"),
                (assistant_root / "vendor", STAGE / "vendor")]
@@ -178,7 +181,7 @@ def main() -> int:
                         help="connection-assistant source directory (for integration, pass its parent)")
     parser.add_argument("--project-root", type=Path, default=ROOT,
                         help="project root containing LICENSE, LICENSING.md, and THIRD_PARTY_NOTICES.md")
-    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe")
+    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.14-Setup-x64.exe")
     args = parser.parse_args()
     if args.download_cache:
         DOWNLOAD_CACHE = args.download_cache.resolve()

@@ -110,14 +110,14 @@ class LanIdentityTests(unittest.TestCase):
         self.assertEqual(9, patched.call_count)
         commands = [call.args[0] for call in patched.call_args_list]
         self.assertIn("/reset", commands[1])
-        self.assertIn("/inheritance:r", commands[2])
-        self.assertIn("/setowner", commands[3])
-        self.assertIn("*S-1-5-21-123-456-789-1001:(F)", commands[4])
-        self.assertIn("*S-1-5-18:(F)", commands[4])
-        self.assertIn("/inheritance:r", commands[5])
-        self.assertIn("/setowner", commands[6])
-        self.assertIn("*S-1-5-21-123-456-789-1001:(F)", commands[7])
-        self.assertIn("*S-1-5-18:(F)", commands[7])
+        self.assertIn("*S-1-5-21-123-456-789-1001:(F)", commands[2])
+        self.assertIn("*S-1-5-18:(F)", commands[2])
+        self.assertIn("/inheritance:r", commands[3])
+        self.assertIn("/setowner", commands[4])
+        self.assertIn("*S-1-5-21-123-456-789-1001:(F)", commands[5])
+        self.assertIn("*S-1-5-18:(F)", commands[5])
+        self.assertIn("/inheritance:r", commands[6])
+        self.assertIn("/setowner", commands[7])
         self.assertEqual("-File", commands[8][4])
         self.assertEqual(str(script_paths[0]), commands[8][5])
         self.assertFalse(script_paths[0].exists())
@@ -128,9 +128,45 @@ class LanIdentityTests(unittest.TestCase):
         with mock.patch.object(lan.subprocess, "run", side_effect=[completed] +
                                 [mock.Mock() for _ in range(7)] + [acl_verified]) as run:
             lan._restrict_windows_key_acl(self.state, directory=True)
-        grant_args = run.call_args_list[4].args[0]
+        grant_args = run.call_args_list[2].args[0]
         self.assertIn("*S-1-5-21-123-456-789-1001:(OI)(CI)(F)", grant_args)
         self.assertIn("*S-1-5-18:(OI)(CI)(F)", grant_args)
+
+    def test_windows_acl_order_keeps_setowner_possible_after_inheritance_removal(self) -> None:
+        sid = "S-1-5-21-123-456-789-1001"
+        states: dict[str, dict[str, object]] = {}
+
+        def run(command, **kwargs):
+            executable = Path(command[0]).name.lower()
+            if executable == "whoami.exe":
+                return mock.Mock(stdout=f'"DOMAIN\\user","{sid}"\n')
+            if executable == "powershell.exe":
+                return mock.Mock(stdout="PADNOTE_ACL_OK\n")
+            path = command[1]
+            state = states.setdefault(path, {"inherited": True, "explicit": set(), "owner": None})
+            if "/reset" in command:
+                state["explicit"] = set()
+                state["inherited"] = True
+            elif "/grant:r" in command:
+                state["explicit"].update(argument.split(":", 1)[0][1:]
+                                          for argument in command[3:])
+            elif "/inheritance:r" in command:
+                state["inherited"] = False
+            elif "/setowner" in command:
+                if sid not in state["explicit"]:
+                    raise lan.subprocess.CalledProcessError(5, command)
+                state["owner"] = sid
+            return mock.Mock()
+
+        with mock.patch.object(lan.subprocess, "run", side_effect=run):
+            lan._restrict_windows_key_acl(self.state / lan.KEY_NAME)
+            lan._restrict_windows_key_acl(self.state, directory=True)
+
+        self.assertEqual(4, len(states))  # key and verifier script for file and directory
+        for state in states.values():
+            self.assertFalse(state["inherited"])
+            self.assertEqual({sid, "S-1-5-18"}, state["explicit"])
+            self.assertEqual(sid, state["owner"])
 
     def test_windows_reparse_certificate_file_is_rejected(self) -> None:
         info = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1,

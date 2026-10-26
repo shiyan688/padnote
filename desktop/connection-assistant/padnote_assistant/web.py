@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import json
 import math
 import re
@@ -355,10 +354,10 @@ class AdminHandler(_DeadlineRequestHandler):
         return self.headers.get("Host", "") in self.server.allowed_hosts  # type: ignore[attr-defined]
 
     def _security_headers(self) -> None:
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
 
@@ -378,6 +377,46 @@ class AdminHandler(_DeadlineRequestHandler):
             self._deny()
             return
         parsed = urllib.parse.urlsplit(self.path)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
+            self._deny()
+            return
+        if parsed.path in {"/assets/admin.css", "/assets/admin.js", "/assets/brand.png"}:
+            if self.path != parsed.path:
+                self._deny(404)
+                return
+            asset_path = Path(__file__).with_name("static") / parsed.path.rsplit("/", 1)[1]
+            try:
+                body = asset_path.read_bytes()
+            except OSError:
+                self._deny(404)
+                return
+            mime = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".png": "image/png"}[asset_path.suffix]
+            self._prepare_response()
+            self.send_response(200)
+            self._security_headers()
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/admin/live":
+            expected = self.server.csrf_token  # type: ignore[attr-defined]
+            supplied = self.headers.get("X-PadNote-CSRF", "")
+            if not secrets.compare_digest(supplied, expected):
+                self._deny()
+                return
+            from . import admin_ui
+            body = json.dumps(admin_ui.render_live_state(self.service, expected), ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")
+            self._prepare_response()
+            self.send_response(200)
+            self._security_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path != "/":
             self._deny(404)
             return
@@ -454,8 +493,10 @@ class AdminHandler(_DeadlineRequestHandler):
         if match:
             instance = self.service.configure_key(match.group(1), form.get("api_key", ""))
             if instance["instance_id"] != match.group(1):
-                return "Provider key 身份已变化，已建立新实例；请检测后重新配对。旧设备授权不会继承。"
-            return "Provider key 已保存到本机安全存储；管理页不会回显。"
+                return "凭据身份已变化，已建立新实例；请检测后重新配对。旧设备授权不会继承。"
+            if instance["kind"] == "builtin_video":
+                return "Provider key 已保存到本机安全存储；管理页不会回显。"
+            return "Hermes 凭据已加载到本次助手进程，请检测连接。重启后可重新填写或从已发现的本机配置加载。"
         match = re.fullmatch(r"/admin/instances/([A-Za-z0-9_.:-]+)/credential/revoke", path)
         if match:
             self.service.revoke_builtin_credential(match.group(1))
@@ -480,102 +521,11 @@ class AdminHandler(_DeadlineRequestHandler):
             return "设备连接已撤销，原 token 立即失效。"
         raise ValidationError("unknown management action")
 
-    def _lan_block(self, csrf: str, options: str) -> str:
-        service = self.service
-        if service.lan_identity is None or service.lan_port is None:
-            return ('<p><strong>同一个 Wi‑Fi（推荐）</strong>：未开启。用 <code>--lan</code> 启动助手即可，'
-                    '平板无需安装任何其他软件。</p>')
-        addresses = lan.lan_addresses()
-        if not addresses:
-            return ('<p><strong>同一个 Wi‑Fi（推荐）</strong>：已开启，但没有找到本机的局域网地址。'
-                    '请确认电脑已连上 Wi‑Fi 或网线。</p>')
-        address_options = "".join(
-            f'<option value="{html.escape(item, quote=True)}">{html.escape(item)}</option>' for item in addresses)
-        fingerprint = service.lan_identity.sha256
-        return (f'<p><strong>同一个 Wi‑Fi（推荐）</strong>：平板和电脑连同一个网络即可，无需安装其他软件。'
-                f'连接经 TLS 加密，平板只信任本机证书（指纹 <code>{html.escape(fingerprint[:16])}…</code>）。</p>'
-                f'<form method="post" action="/admin/lan-pair-codes"><input type="hidden" name="csrf" value="{csrf}">'
-                f'<label>Agent 实例<select name="instance_id" required>{options}</select></label>'
-                f'<label>本机局域网地址<select name="address" required>{address_options}</select></label>'
-                f'<button>生成同网配对</button></form>')
-
     def _render(self, message: str) -> str:
-        csrf = html.escape(self.server.csrf_token, quote=True)  # type: ignore[attr-defined]
-        admin_port = self.server.server_address[1]
-        api_port = self.server.api_port  # type: ignore[attr-defined]
-        instances = sorted(self.service.store.list_instances(), key=lambda item: item["created_at"])
-        instance_by_id = {item["instance_id"]: item for item in instances}
-        candidates = self.service.discovery_results
-        pending = self.service.store.list_pending_pairs()
-        connections = self.service.store.list_connections()
-        forms = []
-        for instance in instances:
-            iid = html.escape(instance["instance_id"], quote=True)
-            provider_label = "你的模型与配音 API Key" if instance["kind"] == "builtin_video" else "Hermes key"
-            revoke_form = (f'<form class="inline" method="post" action="/admin/instances/{iid}/credential/revoke">'
-                           f'<input type="hidden" name="csrf" value="{csrf}"><button class="danger">撤销凭据与设备</button></form>'
-                           if instance["kind"] == "builtin_video" and not instance.get("retired_at") else "")
-            forms.append(f"""
-            <article><h3>{html.escape(instance['name'])} <small>{html.escape(instance['kind'])}</small></h3>
-            <p><code>{html.escape(instance['base_url'])}</code></p>
-            {('<p>模型：' + html.escape(instance.get('provider_model', '')) + ' · 区域：' + html.escape(instance.get('provider_region', '')) + ' · TTS：' + html.escape(instance.get('tts_model', '')) + ' / ' + html.escape(instance.get('tts_voice', '')) + '</p>') if instance['kind'] == 'builtin_video' else ''}
-            <p class="status">{html.escape(instance['health'])}：{html.escape(instance['detail'])}</p>
-            <form method="post" action="/admin/instances/{iid}/key">
-              <input type="hidden" name="csrf" value="{csrf}">
-              <label>{provider_label}（管理页不会回显）<input type="password" name="api_key" autocomplete="off" required></label>
-              <button>加载 key</button>
-            </form>{revoke_form}
-            <form method="post" action="/admin/instances/{iid}/check">
-              <input type="hidden" name="csrf" value="{csrf}"><button>检测运行与接口</button>
-            </form></article>""")
-        def candidate_row(item):
-            action = ""
-            if item.get("kind") == "hermes" and Path(item.get("path", "")).name == ".env":
-                action = (
-                    '<form class="inline" method="post" action="/admin/discovery/import">'
-                    f'<input type="hidden" name="csrf" value="{csrf}">'
-                    f'<input type="hidden" name="profile_path" value="{html.escape(item["path"], quote=True)}">'
-                    '<button>使用这套配置</button></form>'
-                )
-            return f"<li><strong>{html.escape(item['kind'])}</strong> — <code>{html.escape(item['path'])}</code><br>{html.escape(item['guidance'])} {action}</li>"
-        candidate_html = "".join(candidate_row(item) for item in candidates) \
-            or "<li>未在已知位置发现候选安装。这不代表未安装，可以手动添加本机 URL。</li>"
-        pending_html = "".join(
-            f"<li>{html.escape(item['device_name'])} <code>{html.escape(item['device_id'])}</code> → "
-            f"{html.escape(instance_by_id.get(item['instance_id'], {}).get('name', '未知实例'))} "
-            f'<form class="inline" method="post" action="/admin/pair-requests/{html.escape(item["request_id"], quote=True)}/approve"><input type="hidden" name="csrf" value="{csrf}"><button>批准</button></form> '
-            f'<form class="inline" method="post" action="/admin/pair-requests/{html.escape(item["request_id"], quote=True)}/deny"><input type="hidden" name="csrf" value="{csrf}"><button class="danger">拒绝</button></form></li>'
-            for item in pending) or "<li>暂无待批准设备。</li>"
-        connection_html = "".join(
-            f"<li>{html.escape(item['device_name'])} → {html.escape(instance_by_id.get(item['instance_id'], {}).get('name', '未知实例'))} "
-            + ('<span class="muted">已撤销</span>' if item.get("revoked_at") else
-               f'<form class="inline" method="post" action="/admin/connections/{html.escape(item["connection_id"], quote=True)}/revoke"><input type="hidden" name="csrf" value="{csrf}"><button class="danger">撤销</button></form>')
-            + "</li>" for item in connections) or "<li>尚无已授权设备。</li>"
-        options = "".join(
-            f'<option value="{html.escape(item["instance_id"], quote=True)}" {"disabled" if not item.get("executable") else ""}>{html.escape(item["name"])} — {html.escape(item["health"])}</option>'
-            for item in instances)
-        pair_block = ""
-        payload = self.service.last_pair_payload
-        if payload and self.service.last_pair_expires_at > int(self.service.clock()):
-            payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            pair_block = f'<section><h2>配对内容</h2>{_qr_svg(payload_text)}<textarea readonly rows="5">{html.escape(payload_text)}</textarea><p>二维码与文本是同一份单次内容，5 分钟后过期。</p></section>'
-        message_html = f'<p class="notice">{html.escape(message)}</p>' if message else ""
-        lan_block = self._lan_block(csrf, options)
-        return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PadNote 电脑连接助手</title>
-        <style>body{{font:15px system-ui;margin:0;background:#f4f6f8;color:#18202a}}main{{max-width:900px;margin:auto;padding:28px}}section,article{{background:white;border:1px solid #dbe1e8;border-radius:12px;padding:18px;margin:14px 0}}h1,h2,h3{{margin-top:0}}label{{display:block;margin:9px 0}}input,select,textarea{{box-sizing:border-box;width:100%;padding:9px;border:1px solid #aeb8c4;border-radius:7px;margin-top:4px}}button{{padding:8px 12px;border:0;border-radius:7px;background:#155eef;color:white;cursor:pointer}}button.danger{{background:#b42318}}form.inline{{display:inline}}small,.muted{{color:#667085}}.notice{{padding:10px;background:#e7f0ff;border-radius:8px}}.status{{color:#475467}}.qr{{width:min(280px,100%);display:block;margin:10px 0}}code{{overflow-wrap:anywhere}}li{{margin:9px 0}}</style></head><body><main>
-        <h1>PadNote 电脑连接助手</h1><p>管理页只在本机 {admin_port} 端口打开，局域网内其他设备访问不到。</p>{message_html}
-        <section><h2>1. 发现本机 Agent</h2><ul>{candidate_html}</ul><form method="post" action="/admin/discovery/refresh"><input type="hidden" name="csrf" value="{csrf}"><button>刷新发现</button></form></section>
-        <section><h2>2. 添加实例</h2><p>通用视频可由所选 Agent 及其模型/TTS 配置执行；此处的“可选 Qwen 视频适配”只是一个专用适配器，不代表已提供任意供应商的内置选择界面。分镜和配音请求会把本次任务材料或旁白发送给所选云服务，本机负责渲染。使用自己的 API 账户并承担相应费用。Qwen 配音完整链路目前只验证了中国站；其他区域的该适配器会在调用前拒绝生成。Hermes API 常用本机地址为 <code>http://127.0.0.1:8642</code>。</p>
-        <form id="instance-form" method="post" action="/admin/instances"><input type="hidden" name="csrf" value="{csrf}"><label>类型<select id="instance-kind" name="kind"><option value="hermes">Hermes</option><option value="builtin_video">可选 Qwen 视频适配</option><option value="openclaw">OpenClaw（仅发现/引导）</option></select></label><label>显示名称<input name="name" maxlength="120" required></label>
-        <div data-kind="hermes"><label>Hermes 本机 URL<input name="base_url" value="http://127.0.0.1:8642"></label><label>Hermes key（留空可稍后填写，不回显）<input type="password" name="api_key" autocomplete="off"></label></div>
-        <div data-kind="builtin_video" hidden><label>服务区域<select name="provider_region"><option value="china" selected>中国站（配音已验证）</option><option value="international">国际站（暂不支持完整配音与生成）</option></select></label><label>你的模型与配音 API Key（管理页不会回显；留空可稍后填写）<input type="password" name="api_key" autocomplete="off"></label><details><summary>高级设置</summary><label>分镜模型<input name="provider_model" value="qwen-plus" maxlength="120"></label><label>JSON 响应模式<select name="response_mode"><option value="json_object">JSON Object（默认）</option><option value="json_schema">JSON Schema（模型须支持）</option></select></label><label>配音模型<input name="tts_model" value="qwen3-tts-instruct-flash" maxlength="120"></label><label>配音音色<input name="tts_voice" value="Maia" maxlength="120"></label></details></div>
-        <button>添加</button></form><script>const kind=document.getElementById('instance-kind');function toggleKind(){{document.querySelectorAll('[data-kind]').forEach(group=>{{const active=group.dataset.kind===kind.value;group.hidden=!active;group.querySelectorAll('input,select').forEach(control=>control.disabled=!active)}})}}kind.addEventListener('change',toggleKind);toggleKind();</script></section>
-        <section><h2>3. 检测实例</h2>{''.join(forms) or '<p>请先添加实例。</p>'}</section>
-        <section><h2>4. 生成平板配对</h2>{lan_block}
-        <details><summary>平板不在同一个网络时（可选：Tailscale）</summary><p>先用 <code>tailscale serve status</code> 检查现有配置，再把本机 {api_port} 设备 API 端口发布为 HTTPS。助手不会自动修改、reset 或启用 Funnel。</p><pre>tailscale serve --bg --https=443 http://127.0.0.1:{api_port}</pre>
-        <form method="post" action="/admin/pair-codes"><input type="hidden" name="csrf" value="{csrf}"><label>Agent 实例<select name="instance_id" required>{options}</select></label><label>Tailscale HTTPS 根地址<input name="public_url" placeholder="https://computer.example.ts.net" required></label><button>生成单次配对</button></form></details></section>
-        {pair_block}<section><h2>待批准设备</h2><p>平板提交申请后，点击刷新查看；批准前请核对设备名称。</p><form method="get" action="/"><button>刷新待批准设备</button></form><ul>{pending_html}</ul></section><section><h2>已授权设备</h2><ul>{connection_html}</ul></section>
-        </main></body></html>"""
+        from . import admin_ui
+        return admin_ui.render_admin_page(
+            self.service, self.server.csrf_token, self.server.server_address[1],
+            self.server.api_port, message, _qr_svg)  # type: ignore[attr-defined]
 
 
 class ApiHandler(_DeadlineRequestHandler):

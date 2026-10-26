@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import signal
@@ -214,7 +215,13 @@ class ProcessOwnershipTests(unittest.TestCase):
                     timeout=8,
                 )
             self.assertEqual(1, failed.returncode, failed.stdout + failed.stderr)
-            self.assertIn("could not open its data directory or local ports", failed.stderr)
+            marker = next(line for line in failed.stderr.splitlines()
+                          if line.startswith("PADNOTE_STARTUP_ERROR "))
+            diagnostic = json.loads(marker.removeprefix("PADNOTE_STARTUP_ERROR "))
+            self.assertEqual("local-services", diagnostic["phase"])
+            self.assertEqual("port-in-use", diagnostic["category"])
+            self.assertIn("local port is already in use", failed.stderr)
+            self.assertNotIn(str(state_dir), failed.stderr)
             with StateStore(state_dir):
                 pass
             with socket.socket() as rebound:

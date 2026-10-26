@@ -6,7 +6,7 @@
 
 PadNote 是面向平板的笔记与 AI 学习工具。你可以在同一份笔记中书写、绘图和提问，再分享纸面或交给已配对的电脑 Agent。模型和服务由你选择。
 
-[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.11/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe) · [测试指南](docs/BETA13_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.14/PadNote-Connection-Assistant-0.18.0-beta.14-Setup-x64.exe) · [便携版 ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.14/PadNote-Connection-Assistant-0.18.0-beta.14-Portable.zip) · [Windows 测试指南](docs/BETA14_TESTING.md) · [Android beta.13 测试指南](docs/BETA13_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 Android 模拟器实录，图中文字为本地界面示例。
 
@@ -22,7 +22,7 @@ Android 界面新增简体中文、英语、日语、韩语、西班牙语、法
 
 同时修复大字号下发送按钮裁字、底部状态重叠和长标题书架按钮遮挡。未发送草稿按笔记保留，关闭卡片后可继续编辑。
 
-Windows 连接助手继续使用 beta.11 安装程序，因此 Windows 应用仍显示旧图标；本版源码更新了共享图标资源。iPad 本轮只有图标源码资源，没有可安装的签名 IPA。Android 安装范围、构建结果和已完成的实测项目以[测试指南](docs/BETA13_TESTING.md)为准。
+Windows 连接助手在 beta.14 更新。iPad 本轮仍只有图标源码资源，没有可安装的签名 IPA。Android 安装范围、构建结果和实测项目见 [Android beta.13 测试指南](docs/BETA13_TESTING.md)；Windows 实测范围见 [beta.14 测试指南](docs/BETA14_TESTING.md)。安装程序未签名。
 
 ## 功能范围与边界
 
@@ -32,7 +32,7 @@ Windows 连接助手继续使用 beta.11 安装程序，因此 Windows 应用仍
 
 ## 下载与验证
 
-Release 提供 Android APK、beta.11 Windows x64 安装程序、源码 ZIP、测试指南、许可文件和 `SHA256SUMS.txt`。Windows beta.11 安装程序的验证范围见测试指南；本轮不声称 Windows 助手获得新版 UI 或新图标。安装程序未签名。
+本 beta.14 版本提供 Windows 安装程序、便携版 ZIP、源码 ZIP、测试指南、许可文件和 SHA-256 校验和。Android beta.13 仍可从原版本下载。
 
 下载后在 macOS/Linux 使用 `shasum -a 256 <文件>`，Windows 使用 `Get-FileHash <文件> -Algorithm SHA256` 核对校验和。
 

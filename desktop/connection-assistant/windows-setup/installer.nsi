@@ -3,17 +3,28 @@
 !include "LogicLib.nsh"
 !include "x64.nsh"
 
+!define MUI_ICON "${__FILEDIR__}PadNote.ico"
+!define MUI_UNICON "${__FILEDIR__}PadNote.ico"
+
 !ifndef STAGE
   !define STAGE "${__FILEDIR__}build/stage"
 !endif
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "0.18.0-beta.14"
+!endif
+!ifndef FILE_VERSION
+  !define FILE_VERSION "0.18.0.14"
+!endif
 !ifndef OUTFILE
-  !define OUTFILE "${__FILEDIR__}build/PadNote-Connection-Assistant-0.18.0-beta.11-Setup-x64.exe"
+  !define OUTFILE "${__FILEDIR__}build/PadNote-Connection-Assistant-${PRODUCT_VERSION}-Setup-x64.exe"
 !endif
 
-Name "PadNote Connection Assistant"
+Name "PadNote Connection Assistant ${PRODUCT_VERSION}"
 Caption "PadNote 连接助手安装程序"
+Icon "${__FILEDIR__}PadNote.ico"
+UninstallIcon "${__FILEDIR__}PadNote.ico"
 OutFile "${OUTFILE}"
-VIProductVersion "0.18.0.11"
+VIProductVersion "${FILE_VERSION}"
 InstallDir "$LOCALAPPDATA\Programs\PadNote\Connection Assistant"
 RequestExecutionLevel user
 ShowInstDetails show
@@ -40,8 +51,8 @@ SetCompressorDictSize 32
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductName" "PadNote Connection Assistant"
-VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductVersion" "0.18.0-beta.11"
-VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileVersion" "0.18.0.11"
+VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductVersion" "${PRODUCT_VERSION}"
+VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileVersion" "${FILE_VERSION}"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileDescription" "PadNote Connection Assistant Setup"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" "PadNote"
 
@@ -59,13 +70,28 @@ FunctionEnd
       MessageBox MB_ICONSTOP|MB_OK "检测到同名窗口，但无法确认它属于本安装程序。请先手动关闭窗口后重试。"
       Abort
     ${EndIf}
-    System::Call 'user32::SendMessageW(p $0, i 0x0010, p 0, p 0)'
-    Sleep 500
-    System::Call 'user32::FindWindowW(w "${WINDOW_CLASS}", w "${WINDOW_TITLE}") p.r0'
-    ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "连接助手仍在运行，无法安全替换或卸载文件。请先在连接助手中停止服务并关闭窗口。"
-      Abort
-    ${EndIf}
+    ; WM_CLOSE runs graceful shutdown, which can take up to 13 seconds. Post
+    ; asynchronously, then verify the owned window disappears before touching files.
+    System::Call 'user32::PostMessageW(p $0, i 0x0010, p 0, p 0)'
+    StrCpy $2 0
+    close_wait:
+      Sleep 250
+      System::Call 'user32::FindWindowW(w "${WINDOW_CLASS}", w "${WINDOW_TITLE}") p.r0'
+      ${If} $0 == 0
+        Goto close_done
+      ${EndIf}
+      System::Call 'user32::GetPropW(p $0, w "${WINDOW_PROP}") p.r1'
+      ${If} $1 != 1
+        MessageBox MB_ICONSTOP|MB_OK "检测到同名窗口，但无法确认它属于本安装程序。为保护其他程序，安装或卸载已取消。"
+        Abort
+      ${EndIf}
+      IntOp $2 $2 + 1
+      ${If} $2 >= 60
+        MessageBox MB_ICONSTOP|MB_OK "连接助手在 15 秒内没有关闭，无法安全替换或卸载文件。请稍后重试，或先在连接助手中停止服务并关闭窗口。"
+        Abort
+      ${EndIf}
+      Goto close_wait
+    close_done:
   ${EndIf}
 !macroend
 
@@ -127,12 +153,13 @@ Section "PadNote 连接助手（必需）" SEC_MAIN
   SetOutPath "$INSTDIR"
   WriteINIStr "$INSTDIR\.padnote-owner.ini" "PadNote" "Id" "${OWNER_ID}"
   File /r "${STAGE}\*"
+  File "${__FILEDIR__}PadNote.ico"
   CreateDirectory "$SMPROGRAMS\PadNote"
-  CreateShortCut "$SMPROGRAMS\PadNote\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"'
+  CreateShortCut "$SMPROGRAMS\PadNote\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
   CreateShortCut "$SMPROGRAMS\PadNote\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${REGKEY}" "DisplayName" "${PRODUCT}"
-  WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "0.18.0-beta.11"
+  WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKCU "${REGKEY}" "Publisher" "PadNote"
   WriteRegStr HKCU "${REGKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${REGKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -142,7 +169,7 @@ SectionEnd
 
 Section /o "桌面快捷方式（可选）" SEC_DESKTOP
   SetShellVarContext current
-  CreateShortCut "$DESKTOP\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"'
+  CreateShortCut "$DESKTOP\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
 SectionEnd
 
 Section "Uninstall"
@@ -156,6 +183,7 @@ Section "Uninstall"
   !insertmacro UNINSTALL_PAYLOAD
   Delete /REBOOTOK "$INSTDIR\Uninstall.exe"
   Delete /REBOOTOK "$INSTDIR\.padnote-owner.ini"
+  Delete /REBOOTOK "$INSTDIR\PadNote.ico"
   RMDir /REBOOTOK "$INSTDIR"
   ; User data in %USERPROFILE%\.local\share\padnote-connection-assistant is preserved.
 SectionEnd

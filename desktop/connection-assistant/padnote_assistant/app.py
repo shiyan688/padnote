@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import errno
+import json
 import os
 import re
 import sys
@@ -13,6 +15,45 @@ from .bridge import BridgeService
 from .state import StateError, StateOwnershipError
 from .video_worker import VideoWorkerError
 from .web import ServerGroup
+
+
+def _startup_category(phase: str, error: BaseException) -> str:
+    if isinstance(error, StateOwnershipError):
+        return "state-in-use"
+    if isinstance(error, OSError):
+        winerror = getattr(error, "winerror", None)
+        if error.errno == errno.EADDRINUSE or winerror == 10048:
+            return "port-in-use"
+        if error.errno in (errno.EACCES, errno.EPERM) or winerror in (5, 32):
+            return "access-denied"
+    if phase == "state" and isinstance(error, StateError):
+        return "state-invalid"
+    return "runtime-error"
+
+
+def _report_startup_error(phase: str, error: BaseException) -> None:
+    category = _startup_category(phase, error)
+    record = {
+        "phase": phase,
+        "category": category,
+        "exception": type(error).__name__,
+        "errno": getattr(error, "errno", None),
+        "winerror": getattr(error, "winerror", None),
+    }
+    print("PADNOTE_STARTUP_ERROR " + json.dumps(record, separators=(",", ":"),
+                                                   ensure_ascii=True), file=sys.stderr)
+    messages = {
+        "state-in-use": "PadNote Connection Assistant is already using this data directory.",
+        "state-invalid": "PadNote Connection Assistant could not open its state.",
+        "port-in-use": "PadNote Connection Assistant could not start because a local port is already in use.",
+        "access-denied": "PadNote Connection Assistant was denied access to a required local resource.",
+        "runtime-error": "PadNote Connection Assistant could not start because of an internal runtime error.",
+    }
+    if isinstance(error, VideoWorkerError):
+        print("PadNote Connection Assistant could not configure the optional video worker.",
+              file=sys.stderr)
+    else:
+        print(messages[category], file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     service: BridgeService | None = None
     servers: ServerGroup | None = None
     shutdown_handle = None
+    phase = "shutdown-event"
+    startup_failed = False
     try:
         if args.shutdown_event is not None:
             if os.name != "nt" or not re.fullmatch(
@@ -62,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise OSError("could not open the launcher shutdown event")
         else:
             kernel32 = None
+        phase = "state"
         service = BridgeService(
             Path(args.state_dir),
             video_node=Path(args.video_node).expanduser() if args.video_node is not None else None,
@@ -70,9 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         lan_context = None
         if args.lan:
+            phase = "lan-identity"
             service.lan_identity = lan.load_or_create_identity(service.store.state_dir)
             service.lan_port = args.lan_port
             lan_context = service.lan_identity.server_context()
+        phase = "local-services"
         servers = ServerGroup(service, admin_port=args.admin_port, api_port=args.api_port,
                               lan_port=args.lan_port if args.lan else None,
                               lan_ssl_context=lan_context)
@@ -92,26 +138,27 @@ def main(argv: list[str] | None = None) -> int:
                 thread.join(timeout=0.25)
     except KeyboardInterrupt:
         pass
-    except StateOwnershipError:
-        print("PadNote Connection Assistant is already using this data directory.", file=sys.stderr)
-        return 1
-    except StateError as error:
-        print(f"PadNote Connection Assistant could not open its state: {error}", file=sys.stderr)
-        return 1
-    except VideoWorkerError:
-        print("PadNote Connection Assistant could not configure the optional video worker.",
-              file=sys.stderr)
-        return 1
-    except OSError:
-        print("PadNote Connection Assistant could not open its data directory or local ports.", file=sys.stderr)
+    except Exception as error:
+        startup_failed = True
+        _report_startup_error(phase, error)
         return 1
     finally:
-        if servers is not None:
-            servers.close()
-        elif service is not None:
-            service.close()
-        if shutdown_handle:
-            kernel32.CloseHandle(shutdown_handle)
+        try:
+            if servers is not None:
+                servers.close()
+            elif service is not None:
+                service.close()
+        except Exception as cleanup_error:
+            if not startup_failed:
+                raise
+            _report_startup_error("local-services", cleanup_error)
+        try:
+            if shutdown_handle:
+                kernel32.CloseHandle(shutdown_handle)
+        except Exception as cleanup_error:
+            if not startup_failed:
+                raise
+            _report_startup_error("shutdown-event", cleanup_error)
     return 0
 
 

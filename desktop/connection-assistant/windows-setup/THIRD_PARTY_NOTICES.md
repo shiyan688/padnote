@@ -10,4 +10,4 @@ The installer packages the following pinned components. Their upstream license f
 | pycparser | 3.0 | BSD-3-Clause |
 | qrcodegen Python implementation | vendored source | See `vendor/LICENSE-qrcodegen.txt` |
 
-The project license and notices are in the repository root: `LICENSE`, `LICENSING.md`, and `THIRD_PARTY_NOTICES.md`. The installer does not contain Node.js, Chrome/Chromium, FFmpeg, or any model/TTS runtime.
+The repository's project license and notices are in `PROJECT_LICENSE.md`, `PROJECT_LICENSING.md`, and `PROJECT_THIRD_PARTY_NOTICES.md`. The installer does not contain Node.js, Chrome/Chromium, FFmpeg, or any model/TTS runtime.
