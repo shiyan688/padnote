@@ -201,7 +201,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True, help="write a JSON acceptance report")
     args = parser.parse_args(argv)
-    report = {"tool": "PadNote Windows startup verifier", "build": "2026-10-27-r1",
+    report = {"tool": "PadNote Windows startup verifier", "build": "2026-10-27-r2",
               "checks": [], "cleanup": "not started"}
     checks = report["checks"]
 

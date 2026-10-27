@@ -267,7 +267,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.15", "构建：2026-10-27-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.16", "构建：2026-10-27-r2",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -309,7 +309,7 @@ def update_buttons():
         control_roles[open_button] = "primary" if lifecycle.can_open else "secondary"
     user32.EnableWindow(open_button, lifecycle.can_open)
     user32.EnableWindow(find_control(BUTTON_STOP), lifecycle.can_stop)
-    hermes_actions_enabled = lifecycle.ready and not hermes_busy and installer_process is None and not closing
+    hermes_actions_enabled = (lifecycle.ready or lifecycle.can_start) and not lifecycle.stopping and not hermes_busy and installer_process is None and not closing
     user32.EnableWindow(find_control(BUTTON_HERMES_CONNECT), hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_INSTALL), hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_CANCEL), hermes_busy)

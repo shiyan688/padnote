@@ -1,12 +1,12 @@
 # PadNote Windows 连接助手（x64）
 
-候选构建：`2026-10-26-r2`。本候选修正普通用户启动时的 TLS 密钥权限设置顺序：先保留当前用户与 SYSTEM 的明确授权，再移除继承并校验最终权限。助手按普通用户运行。
+候选构建：`2026-10-27-r2`（PadNote 0.18.0-beta.16）。助手按普通用户运行。
 
 Windows 本机验收可在解压的候选目录或安装目录运行 `runtime\python.exe verify_windows_startup.py --report NATIVE_VERIFIER_REPORT.json`。请使用普通、未提权的终端。工具使用全新临时数据和空闲端口，检查证书创建/复用、HTTP/TLS、正常退出，并记录临时数据清理结果；不操作现有配对、SSH或防火墙。它会拒绝将管理员身份运行当作普通用户验收。
 
 这是按当前用户安装的 Windows x64 连接助手。安装包自带私有 CPython 运行时，不要求另装 Python、WSL、Node.js、Chrome 或 FFmpeg。安装后可从开始菜单启动图形状态窗口，再点击“启动”运行助手；管理页面保持在 `http://127.0.0.1:8766/`。平板与电脑连接同一 Wi-Fi 后，可使用 TLS 配对二维码。
 
-图形窗口提供启动、打开连接设置、停止和明确的“允许同 Wi-Fi 连接”防火墙操作。安装和启动均不会改防火墙。点击防火墙按钮后，Windows 会显示 UAC 提示；确认后只为专用网络、本地子网、TCP 8767 添加入站规则，不会开放管理端口或设备 API 端口。若以后要删除规则，可在“Windows Defender 防火墙（高级安全）”的入站规则中删除 **PadNote Connection Assistant (8767)**。
+图形窗口提供启动、打开连接设置、停止、Hermes 一键连接和 Hermes 安装 / 配置入口，并提供明确的“允许同 Wi-Fi 连接”防火墙操作。Hermes 一键连接会在助手就绪或可启动时启用；需要安装时先确认官方来源、安装位置和模型登录要求，已安装时只打开 `hermes setup`。安装和启动均不会改防火墙。点击防火墙按钮后，Windows 会显示 UAC 提示；确认后只为专用网络、本地子网、TCP 8767 添加入站规则，不会开放管理端口或设备 API 端口。若以后要删除规则，可在“Windows Defender 防火墙（高级安全）”的入站规则中删除 **PadNote Connection Assistant (8767)**。
 
 Windows 原生版沿用现有 Agent 发现逻辑：只检查 Windows 的 `HOME` 和 `PATH`，尚未实现自动发现 WSL 中的 Agent。WSL Agent 若已通过本机可访问的 API 对外提供服务，可在管理页面手动配置。此安装包不会自动连接所有 Agent。运行中的连接助手只会接受同网 TLS 配对，不会把 API 或管理页开放到局域网。
 
@@ -25,7 +25,7 @@ python3 build_setup.py --makensis /path/to/makensis --assistant-root .. \
   --project-root ../../.. --download-cache /path/to/pinned-archives
 ```
 
-第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.14-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。本轮 beta.14 候选尚未在 Windows 实机完成原生安装、启动、停止、更新和卸载验收，目前没有签名。构建结果与验证边界以随交付提供的记录为准。
+第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。本轮 beta.16 候选尚未在 Windows 实机完成完整的原生安装、更新和卸载验收，目前没有签名。构建结果与验证边界以随交付提供的记录为准。
 
 固定运行时输入：CPython 3.13.15 embeddable x64（python.org，SHA-256 `d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf`）；cryptography 50.0.1（`55d16b1ef3ee0958d893a977b19777887e546c9954ea81b200c3301a864013f2`）；cffi 2.1.1（`1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d`）；pycparser 3.0（`b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992`）。精确下载地址见 `build_setup.py`，依赖锁见 `requirements-win.lock`。
 
