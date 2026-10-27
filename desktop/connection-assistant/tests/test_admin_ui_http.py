@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 import urllib.parse
+from unittest.mock import patch
 from pathlib import Path
 
 from padnote_assistant.bridge import BridgeService
@@ -89,6 +90,65 @@ class AdminUIHTTPTests(unittest.TestCase):
         self.assertEqual(value["pending_count"], 0)
         self.assertEqual(value["connection_count"], 0)
         self.assertEqual(set(value), {"pending_html", "connections_html", "pending_count", "connection_count", "updated_at"})
+
+    def test_onboarding_status_requires_host_origin_and_csrf_and_filters_fields(self) -> None:
+        csrf = self.group.admin.csrf_token
+        with patch("padnote_assistant.hermes_onboarding.get_hermes_status", return_value={
+            "status": "needs_setup", "instance_id": "hermes-1", "api_key": "never-return",
+            "base_url": "http://127.0.0.1:8642", "message": "API Server needs setup",
+            "phase": "config", "launched": False, "candidates": ["/private/.env"],
+        }):
+            status, _headers, _body = self.request("GET", "/admin/onboarding/status")
+            self.assertEqual(status, 403)
+            status, _headers, _body = self.request("GET", "/admin/onboarding/status", headers={
+                "X-PadNote-CSRF": csrf, "Origin": "https://attacker.example"})
+            self.assertEqual(status, 403)
+            status, headers, body = self.request("GET", "/admin/onboarding/status", headers={
+                "X-PadNote-CSRF": csrf, "Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertEqual(json.loads(body), {
+            "status": "needs_setup", "instance_id": "hermes-1",
+            "message": "API Server needs setup", "phase": "config",
+            "launched": False, "base_url": "http://127.0.0.1:8642",
+        })
+        for secret_or_private in (b"never-return", b"/private/.env"):
+            self.assertNotIn(secret_or_private, body)
+
+    def test_hermes_connect_post_uses_origin_csrf_and_redirects_with_safe_message(self) -> None:
+        csrf = self.group.admin.csrf_token
+        with patch("padnote_assistant.hermes_onboarding.connect_hermes", return_value={
+            "status": "ready", "instance_id": "hermes-1", "api_key": "never-return",
+            "message": "raw private text",
+        }) as connect:
+            status, _headers, _body = self.post_form(
+                "/admin/hermes/connect", origin=f"http://{self.host}", csrf=csrf)
+            self.assertEqual(status, 303)
+            connect.assert_called_once_with(self.service)
+        location = _headers.get("Location", "")
+        self.assertIn("Hermes", urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("message", [""])[0])
+        self.assertNotIn("never-return", location)
+        for origin, token in (("https://attacker.example", csrf), (f"http://{self.host}", "wrong-token")):
+            with patch("padnote_assistant.hermes_onboarding.connect_hermes") as connect:
+                status, _headers, _body = self.post_form(
+                    "/admin/hermes/connect", origin=origin, csrf=token)
+                self.assertEqual(status, 403)
+                connect.assert_not_called()
+
+    def test_hermes_setup_post_uses_origin_csrf(self) -> None:
+        csrf = self.group.admin.csrf_token
+        with patch("padnote_assistant.hermes_onboarding.open_hermes_setup", return_value={"status": "opened"}) as setup:
+            status, headers, _body = self.post_form(
+                "/admin/hermes/setup", origin=f"http://{self.host}", csrf=csrf)
+            self.assertEqual(status, 303)
+            self.assertIn("配置向导", urllib.parse.parse_qs(urllib.parse.urlsplit(headers["Location"]).query)["message"][0])
+            setup.assert_called_once_with(self.service)
+        for origin, token in (("null", csrf), (f"http://{self.host}", "wrong-token")):
+            with patch("padnote_assistant.hermes_onboarding.open_hermes_setup") as setup:
+                status, _headers, _body = self.post_form(
+                    "/admin/hermes/setup", origin=origin, csrf=token)
+                self.assertEqual(status, 403)
+                setup.assert_not_called()
 
     def test_form_post_requires_exact_origin_and_csrf(self) -> None:
         csrf = self.group.admin.csrf_token

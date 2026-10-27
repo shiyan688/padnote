@@ -80,6 +80,24 @@ class AdminUiTests(unittest.TestCase):
         self.assertIn("平板", page)
         self.assertNotIn("iPad", page)
 
+    def test_onboarding_tutorial_and_missing_hermes_install_link_are_rendered(self):
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status",
+                   return_value={"status": "not_installed"}):
+            page = self.render(service([]))
+        self.assertIn("三步连接平板", page)
+        self.assertIn("办公室公共网络可能会阻止设备互连", page)
+        self.assertIn("平板扫描二维码后", page)
+        self.assertIn("https://hermes-agent.nousresearch.com/docs/getting-started/installation", page)
+        self.assertNotIn("<script>", page)
+
+    def test_hermes_status_message_is_html_escaped(self):
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status", return_value={
+            "status": "error", "message": '<img src=x onerror="alert(1)">',
+        }):
+            page = self.render(service([]))
+        self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", page)
+        self.assertNotIn('<img src=x', page)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -82,6 +82,20 @@
   }
 
   const csrf = document.querySelector('[data-csrf]')?.value || '';
+  document.querySelectorAll('[data-hermes-connect]').forEach((connectForm) => {
+    connectForm.addEventListener('submit', () => {
+      const button = connectForm.querySelector('[data-connect-button]');
+      const progress = connectForm.querySelector('[data-connect-progress]');
+      if (button) { button.disabled = true; button.textContent = '正在检查并连接…'; }
+      if (progress) progress.hidden = false;
+    });
+  });
+  document.querySelectorAll('[data-hermes-setup]').forEach((setupForm) => {
+    setupForm.addEventListener('submit', () => {
+      const button = setupForm.querySelector('[data-setup-button]');
+      if (button) { button.disabled = true; button.textContent = '正在打开…'; }
+    });
+  });
   const pending = document.getElementById('pending-list');
   const connections = document.getElementById('connection-list');
   const status = document.querySelector('[data-live-status]');

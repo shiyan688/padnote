@@ -9,6 +9,30 @@ from typing import Any
 MAX_DIAGNOSTIC_CHARS = 48_000
 MAX_LOG_BYTES = 1_000_000
 
+
+def onboarding_layout(width: int, height: int) -> dict[str, tuple[int, int, int, int]]:
+    """Return logical 96-DPI onboarding regions for wide and narrow clients."""
+    footer_top = height - 48
+    if width >= 800:
+        detail_top = 386
+        return {
+            "tutorial_heading": (470, 188, 300, 28),
+            "tutorial_body": (470, 220, 310, 118),
+            "hermes_info": (28, 296, 420, 30),
+            "log_path": (28, 326, 420, 24),
+            "diagnostics_heading": (26, 354, 170, 28),
+            "details": (26, detail_top, max(400, width - 52), max(80, footer_top - detail_top - 14)),
+        }
+    detail_top = 480
+    return {
+        "tutorial_heading": (26, 294, max(140, width - 52), 24),
+        "tutorial_body": (26, 318, max(140, width - 52), 72),
+        "hermes_info": (28, 392, max(140, width - 56), 28),
+        "log_path": (28, 422, max(140, width - 56), 24),
+        "diagnostics_heading": (26, 450, 170, 28),
+        "details": (26, detail_top, max(400, width - 52), max(60, footer_top - detail_top - 14)),
+    }
+
 def _redact_url_query(match: re.Match[str]) -> str:
     url = match.group(1)
     base, query = url.split("?", 1)

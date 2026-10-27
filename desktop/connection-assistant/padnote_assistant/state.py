@@ -623,6 +623,7 @@ class StateStore:
                 "first_submit_at": int(self._clock()),
                 "updated_at": int(self._clock()),
                 "upstream_run_id": None,
+                "submission_uncertain": False,
                 "upstream_payload": None,
                 "upstream_idempotency_key": None,
                 "output": None,
@@ -660,12 +661,14 @@ class StateStore:
             if not run:
                 raise KeyError(task_id)
             allowed = {"status", "upstream_run_id", "upstream_payload", "upstream_idempotency_key",
-                       "output", "error", "approval", "artifacts", "stopped_at", "session_id",
+                       "submission_uncertain", "output", "error", "approval", "artifacts", "stopped_at", "session_id",
                        "source_snapshot_digest", "video_binding", "video_review_snapshot",
                        "video_workflow_state", "video_workflow_error"}
             for key, value in fields.items():
                 if key not in allowed:
                     raise ValueError(f"unsupported run field: {key}")
+                if key == "submission_uncertain" and not isinstance(value, bool):
+                    raise ValidationError("invalid submission uncertainty marker")
                 if key == "video_workflow_state" and value is not None and value not in {
                         "initialized", "awaiting_storyboard_review", "approved", "completed",
                         "outcome_unknown", "failed", "cancelled"}:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -29,6 +30,47 @@ def _health(value: str) -> tuple[str, str]:
 
 def _instances(service: Any) -> list[dict[str, Any]]:
     return sorted(service.store.list_instances(), key=lambda row: row.get("created_at", 0))
+
+
+_HERMES_STATUS_TEXT = {
+    "ready": ("Hermes 已就绪", "可继续配对平板。"),
+    "needs_setup": ("Hermes 需要完成配置", "请分别完成模型供应商登录和 Hermes 本机 API Server 设置。助手不会自动改写 Hermes 配置。"),
+    "not_installed": ("尚未安装 Hermes", "先按官方指南安装并配置 Hermes。"),
+    "ambiguous": ("发现多个 Hermes 配置", "请在 Hermes 配置向导中选择要使用的实例。"),
+    "starting": ("Hermes 正在启动", "请稍候片刻，再检查连接状态。"),
+    "error": ("暂时无法检查 Hermes", "请确认 Hermes 已安装并完成配置，然后重试。"),
+}
+
+
+def hermes_onboarding_status(service: Any) -> dict[str, str]:
+    """Expose only the small, non-sensitive status contract used by the UI."""
+    try:
+        from . import hermes_onboarding
+        value = hermes_onboarding.get_hermes_status(service)
+    except Exception:
+        value = {"status": "error"}
+    if not isinstance(value, dict):
+        value = {"status": "error"}
+    status = value.get("status")
+    if not isinstance(status, str) or status not in _HERMES_STATUS_TEXT:
+        status = "error"
+    result = {"status": status}
+    instance_id = value.get("instance_id")
+    if isinstance(instance_id, str) and len(instance_id) <= 120:
+        result["instance_id"] = instance_id
+    message = value.get("message")
+    if isinstance(message, str):
+        result["message"] = message[:1200]
+    phase = value.get("phase")
+    if isinstance(phase, str):
+        result["phase"] = phase[:80]
+    launched = value.get("launched")
+    if isinstance(launched, bool):
+        result["launched"] = launched
+    base_url = value.get("base_url")
+    if isinstance(base_url, str):
+        result["base_url"] = base_url[:512]
+    return result
 
 
 def _lists(service: Any, csrf: str) -> tuple[str, str, int, int]:
@@ -139,7 +181,18 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
 
     pending, connected, pc, cc = _lists(service, csrf_token)
     message_html = '<div class="notice" role="status">' + _e(message) + '</div>' if message else ''
+    onboarding = hermes_onboarding_status(service)
+    onboarding_title, fallback_onboarding_text = _HERMES_STATUS_TEXT[onboarding["status"]]
+    onboarding_text = onboarding.get("message") or fallback_onboarding_text
+    onboarding_extra = ''
+    if onboarding["status"] == "not_installed":
+        onboarding_extra = '<a class="text-link" href="https://hermes-agent.nousresearch.com/docs/getting-started/installation" target="_blank" rel="noopener noreferrer">查看 Hermes 官方安装指南 ↗</a>'
+    elif onboarding["status"] == "needs_setup" and sys.platform == "win32":
+        onboarding_extra = '<form method="post" action="/admin/hermes/setup" data-hermes-setup><input type="hidden" name="csrf" value="' + csrf + '"><button type="submit" class="button-quiet" data-setup-button>打开 Hermes 配置向导</button></form>'
+    elif onboarding["status"] == "needs_setup":
+        onboarding_extra = '<a class="text-link" href="https://hermes-agent.nousresearch.com/docs/getting-started/installation" target="_blank" rel="noopener noreferrer">查看 Hermes 官方配置指南 ↗</a>'
+    hermes_status_html = '<div class="hermes-status-card"><div><span class="eyebrow">HERMES</span><h3>' + _e(onboarding_title) + '</h3><p class="muted">' + _e(onboarding_text) + '</p>' + onboarding_extra + '</div><form method="post" action="/admin/hermes/connect" data-hermes-connect><input type="hidden" name="csrf" value="' + csrf + '"><button class="hermes-connect-button" type="submit" data-connect-button>一键检查并连接 Hermes</button><span class="connect-progress" data-connect-progress role="status" aria-live="polite" hidden>正在检查并连接，请稍候…</span></form></div>'
     lan_advanced = '<details class="advanced"><summary>远程连接（可选：Tailscale）</summary><p>仅在不使用同一网络时考虑。检查现有配置后，可将本机 API 端口发布为 HTTPS；助手不会修改 Tailscale 配置或启用 Funnel。</p><pre>tailscale serve --bg --https=443 http://127.0.0.1:' + str(int(api_port)) + '</pre><form method="post" action="/admin/pair-codes"><input type="hidden" name="csrf" value="' + csrf + '"><label>Agent 实例<select name="instance_id" required>' + opts + '</select></label><label>Tailscale HTTPS 根地址<input name="public_url" placeholder="https://computer.example.ts.net" required></label><button class="button-quiet">生成远程配对码</button></form></details>' if executable else ''
     add_form = '<form id="add-agent-form" method="post" action="/admin/instances"><input type="hidden" name="csrf" value="' + csrf + '"><label>Agent 类型<select id="instance-kind" name="kind"><option value="hermes">Hermes</option><option value="builtin_video">可选 Qwen 视频适配</option></select></label><label>显示名称<input name="name" maxlength="120" required placeholder="例如：我的 Hermes"></label><div data-kind="hermes"><label>Hermes 本机地址<input name="base_url" value="http://127.0.0.1:8642"></label><label>Hermes API Key <span class="muted">可稍后在高级设置中填写</span><input type="password" name="api_key" autocomplete="new-password"></label><p class="muted">手动填写仅本次运行有效；发现已有配置可导入。</p></div><div data-kind="builtin_video" hidden><label>服务区域<select name="provider_region"><option value="china">中国站（配音链路已验证）</option><option value="international">国际站（完整配音与生成暂不可用）</option></select></label><label>模型与配音 API Key<input type="password" name="api_key" autocomplete="new-password"></label><details><summary>可选视频适配设置</summary><label>分镜模型<input name="provider_model" value="qwen-plus" maxlength="120"></label><label>JSON 响应模式<select name="response_mode"><option value="json_object">JSON Object</option><option value="json_schema">JSON Schema（需模型支持）</option></select></label><label>配音模型<input name="tts_model" value="qwen3-tts-instruct-flash" maxlength="120"></label><label>配音音色<input name="tts_voice" value="Maia" maxlength="120"></label></details></div><button>添加 Agent</button></form>'
     add_open = " open" if not instances else ""
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>PadNote 电脑连接助手</title><link rel="stylesheet" href="/assets/admin.css"><script src="/assets/admin.js" defer></script></head><body><div class="app-shell"><aside class="sidebar"><a class="brand" href="/"><img src="/assets/brand.png" alt=""><span>PadNote<small>电脑连接助手</small></span></a><nav aria-label="页面导航"><a href="#agents">Agent 管理</a><a href="#pairing">连接平板</a><a href="#requests">连接申请</a><a href="#devices">已连接设备</a></nav><div class="sidebar-foot">仅本机管理 · 端口 {int(admin_port)}</div></aside><main class="main"><header class="topbar"><div><span class="eyebrow">设备管理</span><h1>让平板连接到你的 Agent</h1><p>添加并检测 Agent，然后用同一网络完成配对。</p></div><span class="local-pill"><i></i>本机管理</span></header>{message_html}<section id="agents" class="section"><div class="section-title"><div><span class="eyebrow">01 · AGENT</span><h2>Agent 管理</h2></div><a href="#add-agent" class="text-link">添加 Agent ↓</a></div><div class="agent-grid">{agent_content}</div><details class="advanced discovery"><summary>发现已有配置</summary><p>仅检查已知位置的配置，不会自动启动或安装 Agent。</p>{discovery}<form method="post" action="/admin/discovery/refresh"><input type="hidden" name="csrf" value="{csrf}"><button class="button-quiet">重新扫描</button></form></details><details id="add-agent" class="add-panel"{add_open}><summary><span><span class="eyebrow">添加服务</span><b>添加 Agent</b></span><span class="muted">展开添加表单＋</span></summary><p class="add-intro">Hermes 是推荐的可执行 Agent。添加后请检测连接。</p>{add_form}</details></section><section id="pairing" class="section"><div class="section-title"><div><span class="eyebrow">02 · PAIR</span><h2>连接平板</h2><p>最简单的方法：电脑与平板使用同一 Wi-Fi。</p></div></div><div class="pairing-card">{lan_info}{pair_form}{lan_advanced}</div>{pair_block}</section><section id="requests" class="section" data-live-region><div class="section-title"><div><span class="eyebrow">03 · APPROVAL</span><h2>连接申请 <span class="count" data-pending-count>{pc}</span></h2><p>确认设备名称和目标 Agent 后再批准。</p></div><span class="live-status" data-live-status aria-live="polite">正在连接更新…</span></div><div id="pending-list" class="stack">{pending}</div></section><section id="devices" class="section" data-live-region><div class="section-title"><div><span class="eyebrow">04 · DEVICES</span><h2>已连接设备 <span class="count" data-connection-count>{cc}</span></h2><p>可随时撤销设备授权。</p></div></div><div id="connection-list" class="stack">{connected}</div><p class="update-time" data-updated-at>等待首次更新</p></section><footer>管理页只在本机打开。当前 API 服务端口：{int(api_port)}。</footer></main></div><input type="hidden" data-csrf value="{csrf}"></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>PadNote 电脑连接助手</title><link rel="stylesheet" href="/assets/admin.css"><script src="/assets/admin.js" defer></script></head><body><div class="app-shell"><aside class="sidebar"><a class="brand" href="/"><img src="/assets/brand.png" alt=""><span>PadNote<small>电脑连接助手</small></span></a><nav aria-label="页面导航"><a href="#agents">Agent 管理</a><a href="#pairing">连接平板</a><a href="#requests">连接申请</a><a href="#devices">已连接设备</a></nav><div class="sidebar-foot">仅本机管理 · 端口 {int(admin_port)}</div></aside><main class="main"><header class="topbar"><div><span class="eyebrow">设备管理</span><h1>让平板连接到你的 Agent</h1><p>添加并检测 Agent，然后用同一网络完成配对。</p></div><span class="local-pill"><i></i>本机管理</span></header>{message_html}<section id="getting-started" class="section onboarding-section"><div class="section-title"><div><span class="eyebrow">快速开始</span><h2>三步连接平板</h2></div></div><div class="onboarding-grid"><ol class="onboarding-steps"><li><b>准备 Hermes</b><span>先安装 Hermes，再手动完成模型供应商登录与配置。</span></li><li><b>选择网络</b><span>电脑和平板使用同一 Wi-Fi，或使用 Tailscale。办公室公共网络可能会阻止设备互连；助手不会自动更改网络。</span></li><li><b>扫码并批准</b><span>平板扫描二维码后，在电脑上确认并批准连接申请。</span></li></ol>{hermes_status_html}</div></section><section id="agents" class="section"><div class="section-title"><div><span class="eyebrow">01 · AGENT</span><h2>Agent 管理</h2></div><a href="#add-agent" class="text-link">添加 Agent ↓</a></div><div class="agent-grid">{agent_content}</div><details class="advanced discovery"><summary>发现已有配置</summary><p>仅检查已知位置的配置，不会自动启动或安装 Agent。</p>{discovery}<form method="post" action="/admin/discovery/refresh"><input type="hidden" name="csrf" value="{csrf}"><button class="button-quiet">重新扫描</button></form></details><details id="add-agent" class="add-panel"{add_open}><summary><span><span class="eyebrow">添加服务</span><b>添加 Agent</b></span><span class="muted">展开添加表单＋</span></summary><p class="add-intro">Hermes 是推荐的可执行 Agent。添加后请检测连接。</p>{add_form}</details></section><section id="pairing" class="section"><div class="section-title"><div><span class="eyebrow">02 · PAIR</span><h2>连接平板</h2><p>最简单的方法：电脑与平板使用同一 Wi-Fi。</p></div></div><div class="pairing-card">{lan_info}{pair_form}{lan_advanced}</div>{pair_block}</section><section id="requests" class="section" data-live-region><div class="section-title"><div><span class="eyebrow">03 · APPROVAL</span><h2>连接申请 <span class="count" data-pending-count>{pc}</span></h2><p>确认设备名称和目标 Agent 后再批准。</p></div><span class="live-status" data-live-status aria-live="polite">正在连接更新…</span></div><div id="pending-list" class="stack">{pending}</div></section><section id="devices" class="section" data-live-region><div class="section-title"><div><span class="eyebrow">04 · DEVICES</span><h2>已连接设备 <span class="count" data-connection-count>{cc}</span></h2><p>可随时撤销设备授权。</p></div></div><div id="connection-list" class="stack">{connected}</div><p class="update-time" data-updated-at>等待首次更新</p></section><footer>管理页只在本机打开。当前 API 服务端口：{int(api_port)}。</footer></main></div><input type="hidden" data-csrf value="{csrf}"></body></html>'''

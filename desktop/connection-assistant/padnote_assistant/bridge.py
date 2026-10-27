@@ -49,7 +49,6 @@ def _valid_cancel_result(result: Any, operation: dict[str, Any]) -> bool:
              or (result.get("status") == "unconfirmed"
                  and result.get("reason") == "cancel_pending" and result.get("ok") is True)
              or (result.get("status") == "unconfirmed" and result.get("ok") is False))
-RESUBMIT_WINDOW_SECONDS = 24 * 60 * 60
 
 
 class BridgeService:
@@ -1351,7 +1350,8 @@ class BridgeService:
                 with self._operation_lock(lock_key):
                     existing = self.store.find_idempotent_run(
                         connection, clean["client_task_id"], clean)
-                    if existing and (existing["status"] != "submitting" or existing.get("upstream_run_id")):
+                    if existing and (existing["status"] != "submitting" or existing.get("upstream_run_id")
+                                      or existing.get("submission_uncertain") or existing.get("error")):
                         return 202, self._public_run(existing)
                     if clean.get("parent_task_id"):
                         parent = self.store.owned_run(connection, clean["parent_task_id"])
@@ -1380,9 +1380,8 @@ class BridgeService:
                                 clean: dict[str, Any], run: dict[str, Any],
                                 created: bool) -> tuple[int, dict[str, Any]]:
         if not created:
-            if run["status"] != "submitting" or run.get("upstream_run_id"):
-                return 202, self._public_run(run)
-            if int(self.clock()) - int(run.get("first_submit_at", 0)) > RESUBMIT_WINDOW_SECONDS:
+            if (run["status"] != "submitting" or run.get("upstream_run_id")
+                    or run.get("submission_uncertain") or run.get("error")):
                 return 202, self._public_run(run)
 
         try:
@@ -1446,9 +1445,20 @@ class BridgeService:
             if not isinstance(upstream_run_id, str) or not upstream_run_id.strip():
                 raise HermesError("upstream_invalid", "Hermes did not return a run ID", uncertain=True)
             try:
+                upstream_run_id = validate_identifier(upstream_run_id, "Hermes run ID", maximum=512)
+            except ValidationError as validation_error:
+                raise HermesError(
+                    "upstream_invalid", "Hermes returned an invalid run ID", uncertain=True,
+                ) from validation_error
+            # Commit the provider identity before interpreting its status. Some
+            # real Hermes versions return a valid run_id with a status this
+            # client does not yet recognize; that must remain pollable by ID.
+            run = self.store.update_run(
+                run["task_id"], upstream_run_id=upstream_run_id, status="running", error=None)
+            try:
                 normalized = normalize_run(response)
             except HermesError as error:
-                error.uncertain = True
+                error.uncertain = False
                 raise
             status = normalized["status"]
             if status == "submitting":
@@ -1459,7 +1469,7 @@ class BridgeService:
                     self.store.tasks_dir / run["task_id"], run["task_id"]))
             run = self.store.update_run(
                 run["task_id"],
-                upstream_run_id=upstream_run_id.strip(),
+                upstream_run_id=upstream_run_id,
                 status=status,
                 output=normalized["output"],
                 error=normalized["error"],
@@ -1467,8 +1477,19 @@ class BridgeService:
                 artifacts=artifacts,
             )
         except HermesError as error:
-            if error.uncertain:
-                run = self.store.update_run(run["task_id"], error="Submission outcome is unknown; retry with the same task ID")
+            if run.get("upstream_run_id"):
+                if error.code == "upstream_status_unknown":
+                    message = ("已收到 Hermes 运行编号，但该状态暂不受支持；运行编号已保存。"
+                               "后续刷新会继续查询同一任务，请检查 Hermes 端状态或更新助手。")
+                else:
+                    message = "已收到 Hermes 运行编号；后续刷新会继续查询同一任务。"
+                run = self.store.update_run(run["task_id"], status="running", error=message)
+            elif error.uncertain:
+                message = ("已向 Hermes 发送任务，但连接中断，无法确认是否已接收。"
+                           "为避免重复执行，助手不会自动重发。请检查 Hermes 电脑端的任务记录，"
+                           "并保留当前 PadNote 任务作为人工对账记录；确认情况前不要重新发送或新建相同任务。")
+                run = self.store.update_run(
+                    run["task_id"], submission_uncertain=True, error=message)
             else:
                 run = self.store.update_run(run["task_id"], status="failed", error=str(error))
         return 202, self._public_run(run)
@@ -1505,8 +1526,13 @@ class BridgeService:
                     fields["session_id"] = normalized["session_id"]
                 if fields:
                     run = self.store.update_run(task_id, **fields)
-            except (HermesError, ValidationError):
-                if run["status"] not in TERMINAL_STATUSES:
+            except (HermesError, ValidationError) as error:
+                if isinstance(error, HermesError) and error.code == "upstream_status_unknown":
+                    if run["status"] not in TERMINAL_STATUSES:
+                        run = self.store.update_run(
+                            task_id, error=("Hermes 返回了暂不支持的状态；助手保留原运行编号，"
+                                            "后续刷新将继续查询同一任务。"))
+                elif run["status"] not in TERMINAL_STATUSES:
                     raise
         return self._public_run(run)
 
@@ -1578,11 +1604,13 @@ class BridgeService:
             return 200, self._public_run(run)
         if not run.get("upstream_run_id"):
             # A stop request must never be the first operation that submits an
-            # uncertain task. The user can retry the original submit with its
-            # persisted idempotency identity, then stop once Hermes returns an ID.
+            # uncertain task. Without a provider run ID, neither submit nor stop
+            # can safely resolve whether Hermes accepted the original request.
             run = self.store.update_run(
                 task_id,
-                error="Cannot confirm whether Hermes accepted this task. Check Hermes on the computer before retrying stop.",
+                error=("无法确认 Hermes 是否已接收任务，因此助手没有发送停止请求。"
+                       "为避免重复执行，请先在 Hermes 电脑端核对；若已找到任务，请保留此 PadNote 任务并刷新；"
+                       "若无法确认，请先人工对账。"),
             )
             return 202, self._public_run(run)
         try:

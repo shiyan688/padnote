@@ -10,6 +10,17 @@ spec.loader.exec_module(helper)
 
 
 class LauncherSupportTests(unittest.TestCase):
+    def test_onboarding_layout_reflows_for_narrow_windows_and_dpi_logical_sizes(self):
+        wide = helper.onboarding_layout(820, 730)
+        narrow = helper.onboarding_layout(680, 730)
+        self.assertGreater(wide["tutorial_body"][0], wide["hermes_info"][0])
+        self.assertEqual(narrow["tutorial_body"][0], 26)
+        self.assertGreater(narrow["diagnostics_heading"][1], narrow["tutorial_body"][1])
+        self.assertGreaterEqual(narrow["details"][3], 60)
+        # Layout coordinates are logical 96-DPI units; the launcher scales them for 125/150%.
+        for dpi in (120, 144):
+            self.assertEqual((narrow["tutorial_body"][0] * dpi + 48) // 96, (26 * dpi + 48) // 96)
+
     def test_redacts_bearer_jwt_pairing_uri_query_and_json_secrets(self):
         source = ('Bearer abcdef123456 eyJabcdefgh.abcdefgh.abcdef '
                   'padnote://pair?code=onetime-secret '

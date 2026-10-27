@@ -563,6 +563,7 @@ class HermesClient:
 
 RUN_STATUSES = {
     "queued": "running",
+    "started": "running",
     "submitting": "submitting",
     "running": "running",
     "waiting_for_approval": "waiting_for_approval",
