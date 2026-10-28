@@ -3077,8 +3077,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 12, SECONDARY_TEXT));
         header.addView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button video = pillButton(getString(R.string.core_video), BUTTON_TONAL);
-        video.setContentDescription(getString(R.string.core_video_tasks));
+        Button video = pillButton(getString(R.string.core_tasks), BUTTON_TONAL);
+        video.setContentDescription(getString(R.string.core_tasks_desc));
+        video.setMaxWidth(dp(124));
+        video.setMinWidth(dp(52));
+        video.setMaxLines(2);
+        video.setGravity(Gravity.CENTER);
         video.setOnClickListener(view -> showVideoHubForCurrentNote());
         LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));

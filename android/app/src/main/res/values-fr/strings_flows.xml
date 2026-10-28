@@ -197,7 +197,7 @@
     <string name="flow_open_source_note">Ouvrir la note manuscrite source</string>
     <string name="flow_save_artifact">Enregistrer le résultat : %1$s (%2$s)</string>
     <string name="flow_record_missing">Enregistrement de tâche introuvable</string>
-    <string name="flow_status_submitting">Envoi / résultat en attente</string>
+    <string name="flow_status_submitting">Envoi / résultat en attente</string><string name="flow_status_computer_received">Transmis à l’ordinateur · En attente de confirmation de l’Agent</string>
     <string name="flow_status_running">En cours</string>
     <string name="flow_status_waiting">En attente d’approbation</string>
     <string name="flow_status_stopping">Arrêt en cours</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">Hôte non identifié</string>
     <string name="flow_destination_unidentified">Non identifié</string>
     <string name="flow_destination_incomplete">Les informations de destination de l’historique sont incomplètes : %1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · n° %4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · n° %4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">Hôte %1$s · instance %2$s</string>
     <string name="flow_copy_diagnostic">Copier le diagnostic de tâche</string>
     <string name="flow_diagnostic_copied">Diagnostic copié</string>
     <string name="flow_client_task_id">ID local de tâche</string>

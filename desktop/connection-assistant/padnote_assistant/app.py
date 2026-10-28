@@ -111,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             video_node=Path(args.video_node).expanduser() if args.video_node is not None else None,
             video_skill_root=Path(args.video_skill_root).expanduser()
             if args.video_skill_root is not None else None,
+            async_submission=True,
         )
         lan_context = None
         if args.lan:

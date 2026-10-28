@@ -18,11 +18,22 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.lang.ref.WeakReference;
 
 /** Persistent Agent task list/detail with bounded foreground polling. */
 final class AgentTaskDialogs {
+    /** Status reads must not wait behind interactive AI work. */
+    private static final ExecutorService STATUS_REFRESH_EXECUTOR = new ThreadPoolExecutor(2, 2,
+            0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8), r -> {
+                Thread thread = new Thread(r, "padnote-task-status");
+                thread.setDaemon(true);
+                return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
     interface SourceNoteOpener { boolean open(String noteId); }
     interface TaskConnectionSource {
         List<AgentConnectionStore.Config> list();
@@ -344,12 +355,34 @@ final class AgentTaskDialogs {
             if(!task.status.terminal()&&task.remoteTaskId.isEmpty()) {
                 main.postDelayed(update[0],1500L);return;
             }
-            if(!task.status.terminal()&&!task.remoteTaskId.isEmpty()&&polling.compareAndSet(false,true))
-                worker.execute(()->{boolean success=refresh(task);AgentTaskStore.Task fresh=tasks.get(clientId);polling.set(false);
-                    retryDelay[0]=success?2500L:Math.min(30000L,retryDelay[0]*2L);
-                    main.post(()->{if(fresh!=null){latestTask[0]=fresh;content.setText(detail(fresh,displayInput[0]));}observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);main.postDelayed(update[0],retryDelay[0]);});});
+        if(!task.status.terminal()&&!task.remoteTaskId.isEmpty()&&polling.compareAndSet(false,true)){
+            try {
+                STATUS_REFRESH_EXECUTOR.execute(()->{
+                    boolean success=false;AgentTaskStore.Task fresh=null;
+                    try{success=refresh(task);fresh=tasks.get(clientId);}catch(RuntimeException ignored){}
+                    finally{polling.set(false);}
+                    final boolean refreshSucceeded=success;final AgentTaskStore.Task refreshed=fresh;
+                    retryDelay[0]=refreshSucceeded?2500L:Math.min(30000L,retryDelay[0]*2L);
+                    main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));}observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);main.postDelayed(update[0],retryDelay[0]);});
+                });
+            } catch(RejectedExecutionException rejected) {
+                polling.set(false);
+                if(dialog.isShowing())main.postDelayed(update[0],1500L);
+            }
+        }
         };
-        refresh.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t!=null)worker.execute(()->{if(refresh(t))retryDelay[0]=2500L;AgentTaskStore.Task fresh=tasks.get(clientId);main.post(()->{if(fresh!=null){latestTask[0]=fresh;content.setText(detail(fresh,displayInput[0]));}observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);update[0].run();});});});
+        refresh.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t==null)return;
+            if(!polling.compareAndSet(false,true)){toast(activity.getString(R.string.flow_task_queue_busy));return;}
+            try{STATUS_REFRESH_EXECUTOR.execute(()->{
+                AgentTaskStore.Task fresh=null;
+                try{refresh(t);fresh=tasks.get(clientId);}catch(RuntimeException ignored){}
+                finally{polling.set(false);}
+                final AgentTaskStore.Task refreshed=fresh;
+                main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));}
+                    observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);
+                    update[0].run();});
+            });}catch(RejectedExecutionException rejected){polling.set(false);toast(activity.getString(R.string.flow_task_queue_busy));}
+        });
         openSource.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t!=null&&sourceNoteOpener.open(t.noteId))dialog.dismiss();else toast(activity.getString(R.string.flow_no_source_note));});
         openTaskList.setOnClickListener(v->{dialog.dismiss();showList();});
         retry.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t==null)return;ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_retry_submit)).setMessage(activity.getString(R.string.flow_retry_same_id_warning)).setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_retry_submit),(d,w)->{dialog.dismiss();submit(t);}).show();});
@@ -417,10 +450,11 @@ final class AgentTaskDialogs {
         if(!t.artifacts.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_artifacts_count,t.artifacts.size()));
         return s.toString().trim();
     }
-    private String taskStatus(AgentTaskStore.Task t){if(t.status==AgentTaskStore.Status.SUBMITTING&&t.remoteTaskId.isEmpty()){AgentTaskSubmissionExecutor.ProgressInfo p=AgentTaskSubmissionExecutor.progressInfo(t.clientTaskId);if(p!=null)switch(p.phase){case QUEUED:return activity.getString(R.string.flow_submission_queued);case CONNECTING:return activity.getString(R.string.flow_connecting_computer);case UPLOADING:return activity.getString(R.string.flow_upload_bytes,p.bytes());case WAITING_FOR_CONFIRMATION:return activity.getString(R.string.flow_waiting_computer_confirmation);case COMPUTER_ACCEPTED:break;case COMPUTER_REJECTED:case RESULT_UNCONFIRMED:return activity.getString(R.string.flow_submission_unconfirmed);}return tasks.submissionAttemptState(t.clientTaskId)==0?activity.getString(R.string.flow_saved_not_sent):activity.getString(R.string.flow_submission_unconfirmed);}return status(t.status);}
+    static boolean computerHasReceipt(AgentTaskStore.Status status,String remoteTaskId){return status==AgentTaskStore.Status.SUBMITTING&&remoteTaskId!=null&&!remoteTaskId.isEmpty();}
+    private String taskStatus(AgentTaskStore.Task t){if(computerHasReceipt(t.status,t.remoteTaskId))return activity.getString(R.string.flow_status_computer_received);if(t.status==AgentTaskStore.Status.SUBMITTING){AgentTaskSubmissionExecutor.ProgressInfo p=AgentTaskSubmissionExecutor.progressInfo(t.clientTaskId);if(p!=null)switch(p.phase){case QUEUED:return activity.getString(R.string.flow_submission_queued);case CONNECTING:return activity.getString(R.string.flow_connecting_computer);case UPLOADING:return activity.getString(R.string.flow_upload_bytes,p.bytes());case WAITING_FOR_CONFIRMATION:return activity.getString(R.string.flow_waiting_computer_confirmation);case COMPUTER_ACCEPTED:break;case COMPUTER_REJECTED:case RESULT_UNCONFIRMED:return activity.getString(R.string.flow_submission_unconfirmed);}return tasks.submissionAttemptState(t.clientTaskId)==0?activity.getString(R.string.flow_saved_not_sent):activity.getString(R.string.flow_submission_unconfirmed);}return status(t.status);}
     private String diagnostic(AgentTaskStore.Task t){
         long bytes=base64PayloadBytes(t);
-        String stage=t.remoteTaskId.isEmpty()?taskStatus(t):status(t.status);
+        String stage=taskStatus(t);
         String error=t.error.replaceAll("(?i)(bearer\\s+)[^\\s,;]+","$1[redacted]")
                 .replaceAll("(?i)(token|authorization|credential)([=: ]+)[^\\s,;]+","$1$2[redacted]")
                 .replaceAll("https?://[^\\s]+","[url]")
@@ -438,8 +472,10 @@ final class AgentTaskDialogs {
                 "\npackageBytes="+bytes+"\nsubmissionAttempt="+attempt+
                 "\nuploadBytes="+sent+
                 "\nconnectionRevision="+t.connectionRevision+"\nnoteRevision="+t.noteRevision+
+                "\nconnectionId="+t.connectionId+"\nbridgeId="+t.bridgeId+"\ninstanceId="+t.instanceId+
+                "\nhost="+AgentTaskDestinationLabel.diagnosticHost(t)+
                 "\nbundleSha256="+bundleSha(t)+
-                "\ntarget="+t.connectionName+"\ninstance="+instance+"\nerror="+error;
+                "\ntarget="+t.connectionName+"\ninstanceShort="+instance+"\nerror="+error;
     }
     private long base64PayloadBytes(AgentTaskStore.Task task){int start=jsonStringStart(task.submissionJson,"bundle_base64");if(start<0)return 0;int end=task.submissionJson.indexOf('"',start);if(end<start)return 0;long encoded=end-start;int padding=0;if(end>start&&task.submissionJson.charAt(end-1)=='=')padding++;if(end-start>1&&task.submissionJson.charAt(end-2)=='=')padding++;return encoded*3/4-padding;}
     private String bundleSha(AgentTaskStore.Task task){int start=jsonStringStart(task.submissionJson,"bundle_sha256");if(start<0)return "";int end=task.submissionJson.indexOf('"',start);return end<start?"":task.submissionJson.substring(start,end);}

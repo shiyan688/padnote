@@ -276,7 +276,8 @@ class HermesClient:
     MAX_JSON_NUMBER_CHARS = 128
     MAX_JSON_NESTING = 128
 
-    def __init__(self, base_url: str, api_key: str | None, *, timeout: float = 10.0):
+    def __init__(self, base_url: str, api_key: str | None, *, timeout: float = 10.0,
+                 submission_timeout: float | None = None):
         self.base_url = validate_upstream_url(base_url)
         self.api_key = api_key
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
@@ -288,6 +289,17 @@ class HermesClient:
         if not valid_timeout:
             raise ValueError("Hermes timeout must be finite and positive")
         self.timeout = float(timeout)
+        if submission_timeout is None:
+            submission_timeout = timeout
+        if isinstance(submission_timeout, bool) or not isinstance(submission_timeout, (int, float)):
+            raise ValueError("Hermes submission timeout must be finite and positive")
+        try:
+            valid_submission_timeout = math.isfinite(submission_timeout) and submission_timeout > 0
+        except (OverflowError, TypeError, ValueError):
+            valid_submission_timeout = False
+        if not valid_submission_timeout:
+            raise ValueError("Hermes submission timeout must be finite and positive")
+        self.submission_timeout = float(submission_timeout)
         parsed = urllib.parse.urlsplit(self.base_url)
         try:
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -309,7 +321,9 @@ class HermesClient:
         if headers:
             request_headers.update(headers)
         request = urllib.request.Request(self.base_url + path, data=data, headers=request_headers, method=method)
-        deadline = _RequestDeadline(self.timeout)
+        request_timeout = (self.submission_timeout if method.upper() == "POST" and path == "/v1/runs"
+                           else self.timeout)
+        deadline = _RequestDeadline(request_timeout)
         deadline.start()
         try:
             addresses = _RESOLVER.resolve(self._host, self._port, deadline)

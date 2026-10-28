@@ -14,6 +14,8 @@ spec.loader.exec_module(helper)
 
 
 class HermesOnboardingLauncherTests(unittest.TestCase):
+    FIXTURE_DIR = Path(__file__).parent / "fixtures" / "hermes-upstream"
+
     def test_sha256_verifier_accepts_exact_bytes_and_rejects_mismatch(self):
         digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         self.assertTrue(helper.verify_download_bytes(b"abc", digest))
@@ -58,8 +60,8 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         self.assertIn("API 已响应", helper.message_label("ready", "check", "Hermes API is already running and responding."))
 
     def test_fixed_upstream_source_pin_matches_supplied_script(self):
-        pin = json.loads((Path(__file__).parents[4] / "upstream-pin" / "PIN.json").read_text(encoding="utf-8"))
-        pinned = Path(__file__).parents[4] / "upstream-pin" / "hermes-install.ps1"
+        pin = json.loads((self.FIXTURE_DIR / "PIN.json").read_text(encoding="utf-8"))
+        pinned = self.FIXTURE_DIR / "hermes-install.ps1"
         content = pinned.read_bytes()
         self.assertEqual(pin["commit"], helper.INSTALLER_COMMIT)
         self.assertEqual(pin["url"], helper.INSTALLER_URL)
@@ -72,7 +74,7 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         self.assertEqual(git_blob, helper.INSTALLER_GIT_BLOB)
 
     def test_mock_download_writes_only_verified_pinned_bytes(self):
-        pinned = Path(__file__).parents[4] / "upstream-pin" / "hermes-install.ps1"
+        pinned = self.FIXTURE_DIR / "hermes-install.ps1"
         content = pinned.read_bytes()
 
         class FakeResponse:
@@ -102,7 +104,7 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
             self.assertIn(helper.INSTALLER_COMMIT[:8], result.name)
 
     def test_bad_hash_and_redirect_reject_download_without_cache_file(self):
-        pinned = Path(__file__).parents[4] / "upstream-pin" / "hermes-install.ps1"
+        pinned = self.FIXTURE_DIR / "hermes-install.ps1"
         content = pinned.read_bytes()
 
         class FakeResponse:
@@ -141,7 +143,7 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
             self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_cancellation_during_mock_download_creates_no_partial_script(self):
-        pinned = Path(__file__).parents[4] / "upstream-pin" / "hermes-install.ps1"
+        pinned = self.FIXTURE_DIR / "hermes-install.ps1"
         content = pinned.read_bytes()
         event = threading.Event()
 

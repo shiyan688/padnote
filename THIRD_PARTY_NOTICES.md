@@ -43,3 +43,11 @@ The local PadNote connection assistant includes the unmodified Python QR encoder
 - Vendored `qrcodegen.py` SHA-256: `b089855caf16185c61421ea4927c1b213cf9468940d71fa8ab11ef83662dcc84`
 
 The source and complete license are preserved under `desktop/connection-assistant/vendor/`.
+
+## Hermes upstream installer test fixture (source tests only)
+
+The desktop public tests include a pinned Hermes installer fixture for testing the installer-source guard. The fixture is not executed by the test suite and is not bundled into the Windows installer. It is included in source under `desktop/connection-assistant/tests/fixtures/hermes-upstream/` at upstream commit `bf0203a794a07aac3ff764972ab9087baa4e4f4e`.
+
+- Upstream project: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/tree/bf0203a794a07aac3ff764972ab9087baa4e4f4e)
+- License: MIT, Copyright (c) 2025 Nous Research.
+- Full license text: [`desktop/connection-assistant/tests/fixtures/hermes-upstream/LICENSE`](desktop/connection-assistant/tests/fixtures/hermes-upstream/LICENSE)

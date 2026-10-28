@@ -1,0 +1,9 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "git_blob": "7fb6316fb5a8421cb1dc5836692860b871a3984c",
+  "sha256": "8d491a8b9b19934bb8d027b11962c394551798e969d244b68d4ab95295b970e2",
+  "bytes": 88786,
+  "url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/bf0203a794a07aac3ff764972ab9087baa4e4f4e/scripts/install.ps1",
+  "retrieved_via": "GitHub connector"
+}

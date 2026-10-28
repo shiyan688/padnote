@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import io
 import subprocess
 import sys
@@ -55,6 +56,11 @@ def write_env(path: Path, *, enabled="true", key="test-secret") -> Path:
 
 class HermesOnboardingTests(unittest.TestCase):
     def setUp(self):
+        local_app_data = tempfile.TemporaryDirectory()
+        self.addCleanup(local_app_data.cleanup)
+        local_app_data_patch = patch.dict(os.environ, {"LOCALAPPDATA": local_app_data.name})
+        local_app_data_patch.start()
+        self.addCleanup(local_app_data_patch.stop)
         onboarding._status_cache.clear()
         onboarding._started_processes.clear()
 
@@ -141,8 +147,42 @@ class HermesOnboardingTests(unittest.TestCase):
             self.assertIsNotNone(process)
             self.assertEqual(popen.call_args.args[0], [str(executable), "gateway"])
             self.assertFalse(popen.call_args.kwargs["shell"])
+            self.assertIs(popen.call_args.kwargs["stdout"], subprocess.DEVNULL)
+            self.assertIs(popen.call_args.kwargs["stderr"], subprocess.STDOUT)
             self.assertEqual(popen.call_args.kwargs["env"]["HERMES_HOME"], str(Path(profile.path).parent))
-            thread.return_value.start.assert_called_once()
+            thread.assert_not_called()
+
+    def test_noisy_child_completes_after_parent_exits_with_devnull_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "completed"
+            code = (
+                "import pathlib,sys,time; "
+                "time.sleep(0.25); "
+                "sys.stdout.buffer.write(b'x' * (1024 * 1024)); sys.stdout.flush(); "
+                "sys.stderr.buffer.write(b'y' * (1024 * 1024)); sys.stderr.flush(); "
+                "pathlib.Path(sys.argv[1]).write_text('done', encoding='utf-8')"
+            )
+            parent_code = (
+                "import subprocess,sys; "
+                "p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]], "
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT, "
+                "close_fds=True); print(p.pid, flush=True)"
+            )
+            parent = subprocess.run([sys.executable, "-c", parent_code, code, str(marker)],
+                                    check=True, timeout=5, capture_output=True, text=True)
+            child_pid = int(parent.stdout.strip())
+            try:
+                deadline = __import__("time").monotonic() + 4
+                while not marker.exists() and __import__("time").monotonic() < deadline:
+                    __import__("time").sleep(0.05)
+                self.assertTrue(marker.exists(), "noisy child did not finish after parent exit")
+                self.assertEqual(marker.read_text(encoding="utf-8"), "done")
+            finally:
+                if not marker.exists():
+                    try:
+                        os.kill(child_pid, signal.SIGTERM)
+                    except OSError:
+                        pass
 
     def test_reachable_wrong_service_does_not_start_duplicate_gateway(self):
         with tempfile.TemporaryDirectory() as directory:

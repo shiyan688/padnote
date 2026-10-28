@@ -396,7 +396,9 @@ class HermesDeadlineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with BridgeService(Path(directory)) as service:
                 instance, token, _ = _pair(service, self.server.server_port)
-                def factory(url, key):
+                def factory(url, key, **_kwargs):
+                    # Keep this fixture's deliberate short deadline to simulate an unknown
+                    # submission; production's wider submission window is covered separately.
                     timeout = 3.0 if self.server.mode == "normal" else TEST_HTTP_DEADLINE_SECONDS
                     return HermesClient(url, key, timeout=timeout)
                 connection_id = service.store.authenticate(

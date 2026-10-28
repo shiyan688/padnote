@@ -10,72 +10,94 @@ final class AgentTaskDestinationLabel {
     /** Localized display label for live chooser rows; keeps the legacy pure-Java API stable. */
     static String forProfile(android.content.Context context, AgentConnectionStore.Config profile) {
         if (profile == null) return context.getString(R.string.flow_destination_missing_history);
-        String safeName = localizedName(context, profile.name, true);
-        String kind;
-        switch (profile.kind) {
-            case HERMES: kind = "Hermes"; break;
-            case OPENCLAW: kind = "OpenClaw"; break;
-            case BUILTIN_VIDEO: kind = context.getString(R.string.flow_destination_embedded_video); break;
-            default: kind = context.getString(R.string.flow_destination_unknown_agent); break;
-        }
+        String kind = localizedKind(context, profile.kind == null ? "" : profile.kind.name());
         String hostValue = profileHostIdentity(profile.endpoint);
         String host = hasHostIdentity(profile.endpoint, false) ? hostValue
                 : context.getString(R.string.flow_destination_unidentified_host);
-        String identity;
-        if (profile.transport == AgentConnectionStore.Transport.BRIDGE) {
-            String bridge = hasSafeIdentifier(profile.bridgeId) ? safeIdentifier(profile.bridgeId)
-                    : context.getString(R.string.flow_destination_unidentified);
-            String instance = hasSafeIdentifier(profile.instanceId) ? safeIdentifier(profile.instanceId)
-                    : context.getString(R.string.flow_destination_unidentified);
-            identity = context.getString(R.string.flow_destination_bridge_identity, host, bridge, instance);
-        } else {
-            identity = context.getString(R.string.flow_destination_host, host);
-        }
-        String id = hasSafeIdentifier(profile.id) ? safeIdentifier(profile.id)
-                : context.getString(R.string.flow_destination_unidentified);
-        return context.getString(R.string.flow_destination_label, safeName, kind, identity, id);
+        String name = compactHumanName(context, profile.name, true, kind, host);
+        String instance = profile.transport == AgentConnectionStore.Transport.BRIDGE
+                ? shortIdentifier(profile.instanceId) : "";
+        return compactLabel(context, name, kind, host, instance);
     }
 
     /** Localized display label for task-history snapshots, without changing identity checks. */
     static String forTask(android.content.Context context, AgentTaskStore.Task task) {
         if (task == null) return context.getString(R.string.flow_destination_missing_history);
-        String safeName = localizedName(context, task.connectionName, false);
-        String kind;
-        switch (task.kind == null ? "" : task.kind.name()) {
-            case "HERMES": kind = "Hermes"; break;
-            case "OPENCLAW": kind = "OpenClaw"; break;
-            case "BUILTIN_VIDEO": kind = context.getString(R.string.flow_destination_embedded_video); break;
-            default: kind = context.getString(R.string.flow_destination_unknown_agent); break;
-        }
+        String kind = localizedKind(context, task.kind == null ? "" : task.kind.name());
         boolean bridge = "BRIDGE".equals(task.transport == null ? "" : task.transport.name());
         boolean direct = "DIRECT".equals(task.transport == null ? "" : task.transport.name());
         boolean hostPresent = hasHostIdentity(task.origin, true);
         String host = hostPresent ? safeHistoryHostIdentity(task.origin)
                 : context.getString(R.string.flow_destination_unidentified_host);
-        boolean bridgePresent = hasSafeIdentifier(task.bridgeId);
         boolean instancePresent = hasSafeIdentifier(task.instanceId);
         boolean connectionPresent = hasSafeIdentifier(task.connectionId);
-        String identity;
-        if (bridge) {
-            String bridgeId = bridgePresent ? safeIdentifier(task.bridgeId)
-                    : context.getString(R.string.flow_destination_unidentified);
-            String instanceId = instancePresent ? safeIdentifier(task.instanceId)
-                    : context.getString(R.string.flow_destination_unidentified);
-            identity = context.getString(R.string.flow_destination_bridge_identity,
-                    host, bridgeId, instanceId);
-        } else {
-            identity = context.getString(R.string.flow_destination_host, host);
-        }
-        String id = connectionPresent ? safeIdentifier(task.connectionId)
-                : context.getString(R.string.flow_destination_unidentified);
-        String result = context.getString(R.string.flow_destination_label, safeName, kind, identity, id);
+        String safeName = compactHumanName(context, task.connectionName, false, kind, host);
+        String result = compactLabel(context, safeName, kind, host,
+                bridge ? shortIdentifier(task.instanceId) : "");
         boolean incomplete = task.connectionName == null || task.connectionName.trim().isEmpty()
                 || !("HERMES".equals(task.kind == null ? "" : task.kind.name())
                 || "OPENCLAW".equals(task.kind == null ? "" : task.kind.name())
                 || "BUILTIN_VIDEO".equals(task.kind == null ? "" : task.kind.name()))
                 || (!bridge && !direct) || !hostPresent || !connectionPresent
-                || (bridge && (!bridgePresent || !instancePresent));
+                || (bridge && (!hasSafeIdentifier(task.bridgeId) || !instancePresent));
         return incomplete ? context.getString(R.string.flow_destination_incomplete, result) : result;
+    }
+
+    static String diagnosticHost(AgentTaskStore.Task task) {
+        return task == null ? "" : safeHistoryHostIdentity(task.origin);
+    }
+
+    private static String localizedKind(android.content.Context context, String kind) {
+        switch (kind) {
+            case "HERMES": return "Hermes";
+            case "OPENCLAW": return "OpenClaw";
+            case "BUILTIN_VIDEO": return context.getString(R.string.flow_destination_embedded_video);
+            default: return context.getString(R.string.flow_destination_unknown_agent);
+        }
+    }
+
+    private static String compactHumanName(android.content.Context context, String raw,
+                                           boolean profile, String kind, String host) {
+        String value = localizedName(context, raw, profile);
+        // Old automatically generated names often repeated the agent kind and host.
+        // Remove only exact separator-delimited duplicates; preserve custom wording.
+        return compactNameParts(value, kind, host);
+    }
+
+    static String compactNameParts(String value, String kind, String host) {
+        if (value == null) return kind;
+        String[] parts = value.split("\\s*[·•|]+\\s*");
+        java.util.List<String> kept = new java.util.ArrayList<>();
+        boolean kindSeen = false;
+        for (String rawPart : parts) {
+            String part = rawPart.trim();
+            if (part.isEmpty() || part.equalsIgnoreCase(host)) continue;
+            if (part.equalsIgnoreCase(kind)) {
+                if (kindSeen) continue;
+                kindSeen = true;
+            }
+            kept.add(part);
+        }
+        StringBuilder result = new StringBuilder();
+        for (String part : kept) {
+            if (result.length() > 0) result.append(" · ");
+            result.append(part);
+        }
+        return result.length() == 0 ? kind : result.toString();
+    }
+
+    private static String compactLabel(android.content.Context context, String name,
+                                       String kind, String host, String instance) {
+        String title = name.equalsIgnoreCase(kind) ? kind : name + " · " + kind;
+        String identity = instance.isEmpty() ? context.getString(R.string.flow_destination_host, host)
+                : context.getString(R.string.flow_destination_compact_bridge, host, instance);
+        return context.getString(R.string.flow_destination_compact_label, title, identity);
+    }
+
+    private static String shortIdentifier(String value) {
+        if (!hasSafeIdentifier(value)) return "";
+        String safe = safeIdentifier(value);
+        return safe.length() <= 8 ? safe : safe.substring(0, 8);
     }
 
     private static String localizedName(android.content.Context context, String value, boolean profile) {

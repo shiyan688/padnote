@@ -197,7 +197,7 @@
     <string name="flow_open_source_note">Open source handwritten note</string>
     <string name="flow_save_artifact">Save output: %1$s (%2$s)</string>
     <string name="flow_record_missing">Task record not found</string>
-    <string name="flow_status_submitting">Submitting / awaiting result</string>
+    <string name="flow_status_submitting">Submitting / awaiting result</string><string name="flow_status_computer_received">Delivered to computer · Awaiting Agent confirmation</string>
     <string name="flow_status_running">Running</string>
     <string name="flow_status_waiting">Waiting for approval</string>
     <string name="flow_status_stopping">Stopping</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">Unidentified host</string>
     <string name="flow_destination_unidentified">Unidentified</string>
     <string name="flow_destination_incomplete">Historical destination information is incomplete: %1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">Host %1$s · instance %2$s</string>
     <string name="flow_copy_diagnostic">Copy task diagnostics</string>
     <string name="flow_diagnostic_copied">Diagnostics copied</string>
     <string name="flow_client_task_id">Local task ID</string>

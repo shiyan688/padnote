@@ -197,7 +197,7 @@
     <string name="flow_open_source_note">元の手書きノートを開く</string>
     <string name="flow_save_artifact">成果物を保存：%1$s（%2$s）</string>
     <string name="flow_record_missing">タスク記録が見つかりません</string>
-    <string name="flow_status_submitting">送信中／結果待ち</string>
+    <string name="flow_status_submitting">送信中／結果待ち</string><string name="flow_status_computer_received">パソコンに送信済み · Agentの確認待ち</string>
     <string name="flow_status_running">実行中</string>
     <string name="flow_status_waiting">承認待ち</string>
     <string name="flow_status_stopping">停止中</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">不明なホスト</string>
     <string name="flow_destination_unidentified">不明</string>
     <string name="flow_destination_incomplete">履歴の送信先情報が不完全です：%1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">ホスト %1$s · インスタンス %2$s</string>
     <string name="flow_copy_diagnostic">タスク診断をコピー</string>
     <string name="flow_diagnostic_copied">診断情報をコピーしました</string>
     <string name="flow_client_task_id">ローカルタスク ID</string>

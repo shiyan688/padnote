@@ -197,7 +197,7 @@
     <string name="flow_open_source_note">打开来源手写笔记</string>
     <string name="flow_save_artifact">保存产物：%1$s（%2$s）</string>
     <string name="flow_record_missing">任务记录不存在</string>
-    <string name="flow_status_submitting">提交中/结果待确认</string>
+    <string name="flow_status_submitting">提交中/结果待确认</string><string name="flow_status_computer_received">已送达电脑 · 等待 Agent 确认</string>
     <string name="flow_status_running">运行中</string>
     <string name="flow_status_waiting">等待批准</string>
     <string name="flow_status_stopping">正在停止</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">未标识主机</string>
     <string name="flow_destination_unidentified">未标识</string>
     <string name="flow_destination_incomplete">历史目标信息不完整：%1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">主机 %1$s · 实例 %2$s</string>
     <string name="flow_copy_diagnostic">复制任务诊断</string>
     <string name="flow_diagnostic_copied">诊断信息已复制</string>
     <string name="flow_client_task_id">本地任务 ID</string>

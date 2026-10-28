@@ -197,7 +197,7 @@
     <string name="flow_open_source_note">Abrir nota manuscrita de origen</string>
     <string name="flow_save_artifact">Guardar resultado: %1$s (%2$s)</string>
     <string name="flow_record_missing">No se encontró el registro de la tarea</string>
-    <string name="flow_status_submitting">Enviando / esperando resultado</string>
+    <string name="flow_status_submitting">Enviando / esperando resultado</string><string name="flow_status_computer_received">Entregado al ordenador · A la espera de confirmación del Agent</string>
     <string name="flow_status_running">En ejecución</string>
     <string name="flow_status_waiting">Esperando aprobación</string>
     <string name="flow_status_stopping">Deteniéndose</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">Equipo sin identificar</string>
     <string name="flow_destination_unidentified">Sin identificar</string>
     <string name="flow_destination_incomplete">La información del destino en el historial está incompleta: %1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · n.º %4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · n.º %4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">Equipo %1$s · instancia %2$s</string>
     <string name="flow_copy_diagnostic">Copiar diagnóstico de tarea</string>
     <string name="flow_diagnostic_copied">Diagnóstico copiado</string>
     <string name="flow_client_task_id">ID local de tarea</string>

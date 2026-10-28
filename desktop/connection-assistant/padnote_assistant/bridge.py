@@ -53,7 +53,8 @@ def _valid_cancel_result(result: Any, operation: dict[str, Any]) -> bool:
 
 class BridgeService:
     def __init__(self, state_dir: Path, *, allow_test_http: bool = False, clock=time.time,
-                 video_node: Path | None = None, video_skill_root: Path | None = None):
+                 video_node: Path | None = None, video_skill_root: Path | None = None,
+                 async_submission: bool = False):
         if (video_node is None) != (video_skill_root is None):
             raise VideoWorkerError(
                 "invalid_configuration", "Video worker configuration is invalid")
@@ -76,6 +77,11 @@ class BridgeService:
             self.lan_identity = None
             self.lan_port: int | None = None
             self.last_pair_expires_at: int = 0
+            self.async_submission = bool(async_submission)
+            self._submission_condition = threading.Condition()
+            self._submission_workers: set[threading.Thread] = set()
+            self._submission_slots = threading.BoundedSemaphore(2)
+            self._accepting_submissions = True
             self._operation_locks: dict[str, threading.Lock] = {}
             self._operation_locks_guard = threading.Lock()
             self._video_lifecycle_lock = threading.Lock()
@@ -118,6 +124,15 @@ class BridgeService:
             while self._active_video_reconciliations or self._active_video_cancellations:
                 self._video_lifecycle_condition.wait()
         try:
+            with self._submission_condition:
+                self._accepting_submissions = False
+                deadline = time.monotonic() + 60.0
+                while self._submission_workers:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        # Keep the store open and owned so active workers cannot write after close.
+                        raise RuntimeError("Submission workers have not stopped; state owner retained")
+                    self._submission_condition.wait(timeout=remaining)
             scheduler = self._video_scheduler
             if scheduler is not None:
                 if not scheduler.close():
@@ -1436,6 +1451,60 @@ class BridgeService:
             upstream_payload = run["upstream_payload"]
             upstream_key = run["upstream_idempotency_key"]
 
+        if self.async_submission:
+            return self._schedule_upstream_submission(
+                instance_id, connection, run, upstream_payload, upstream_key)
+        return self._perform_upstream_submission(
+            instance_id, run, upstream_payload, upstream_key)
+
+    def _schedule_upstream_submission(self, instance_id: str, connection: dict[str, Any],
+                                      run: dict[str, Any], upstream_payload: dict[str, Any],
+                                      upstream_key: str) -> tuple[int, dict[str, Any]]:
+        if not self._submission_slots.acquire(blocking=False):
+            failed = self.store.update_run(
+                run["task_id"], status="failed", submission_uncertain=False,
+                error="Submission queue is full; Hermes was not contacted. Please retry later.")
+            return 202, self._public_run(failed)
+        with self._submission_condition:
+            if not self._accepting_submissions or self._closed:
+                self._submission_slots.release()
+                failed = self.store.update_run(
+                    run["task_id"], status="failed", submission_uncertain=False,
+                    error="The assistant is shutting down; Hermes was not contacted.")
+                return 202, self._public_run(failed)
+            try:
+                claimed = self.store.update_run(
+                    run["task_id"], submission_uncertain=True, error=None)
+            except BaseException:
+                self._submission_slots.release()
+                raise
+            try:
+                worker = threading.Thread(
+                    target=self._run_submission_worker,
+                    args=(instance_id, connection, run["task_id"], upstream_payload, upstream_key),
+                    name="padnote-submit-" + run["task_id"], daemon=True)
+            except Exception:
+                self._submission_slots.release()
+                failed = self.store.update_run(
+                    run["task_id"], status="failed", submission_uncertain=False,
+                    error="Submission worker could not start; Hermes was not contacted.")
+                return 202, self._public_run(failed)
+            self._submission_workers.add(worker)
+            try:
+                worker.start()
+            except Exception:
+                self._submission_workers.discard(worker)
+                self._submission_slots.release()
+                failed = self.store.update_run(
+                    run["task_id"], status="failed", submission_uncertain=False,
+                    error="Submission worker could not start; Hermes was not contacted.")
+                self._submission_condition.notify_all()
+                return 202, self._public_run(failed)
+            return 202, self._public_run(claimed)
+
+    def _perform_upstream_submission(self, instance_id: str, run: dict[str, Any],
+                                     upstream_payload: dict[str, Any],
+                                     upstream_key: str) -> tuple[int, dict[str, Any]]:
         try:
             response = self._hermes(instance_id).create_run(
                 upstream_payload["input"], upstream_key,
@@ -1454,7 +1523,8 @@ class BridgeService:
             # real Hermes versions return a valid run_id with a status this
             # client does not yet recognize; that must remain pollable by ID.
             run = self.store.update_run(
-                run["task_id"], upstream_run_id=upstream_run_id, status="running", error=None)
+                run["task_id"], upstream_run_id=upstream_run_id, status="running",
+                submission_uncertain=False, error=None)
             try:
                 normalized = normalize_run(response)
             except HermesError as error:
@@ -1491,8 +1561,54 @@ class BridgeService:
                 run = self.store.update_run(
                     run["task_id"], submission_uncertain=True, error=message)
             else:
-                run = self.store.update_run(run["task_id"], status="failed", error=str(error))
+                run = self.store.update_run(
+                    run["task_id"], status="failed", submission_uncertain=False, error=str(error))
         return 202, self._public_run(run)
+
+
+    def _run_submission_worker(self, instance_id: str, connection: dict[str, Any],
+                              task_id: str, upstream_payload: dict[str, Any],
+                              upstream_key: str) -> None:
+        """Perform one admitted async submission after rechecking its durable owner."""
+        try:
+            connection_id = connection["connection_id"]
+            with self._operation_lock("connection:" + connection_id):
+                with self._operation_lock("instance:" + instance_id):
+                    with self._operation_lock("task:" + task_id):
+                        state = self.store.snapshot()
+                        live = state.get("connections", {}).get(connection_id)
+                        if (not isinstance(live, dict) or live.get("revoked_at") is not None
+                                or live.get("instance_id") != instance_id
+                                or live.get("device_id") != connection.get("device_id")):
+                            return
+                        instance = self.store.get_instance(instance_id)
+                        if instance.get("retired_at") is not None:
+                            return
+                        current = self.store.owned_run(connection, task_id)
+                        if (current.get("status") != "submitting" or current.get("error")
+                                or current.get("upstream_run_id")):
+                            return
+                        if self._closed:
+                            self.store.update_run(
+                                task_id, status="failed", submission_uncertain=False,
+                                error="Submission was cancelled before contacting Hermes during shutdown.")
+                            return
+                        self._perform_upstream_submission(
+                            instance_id, current, upstream_payload, upstream_key)
+        except Exception:
+            try:
+                current = self.store.owned_run(connection, task_id)
+                if current.get("status") == "submitting" and not current.get("upstream_run_id"):
+                    self.store.update_run(
+                        task_id, submission_uncertain=True,
+                        error="Submission outcome is unknown; automatic resend is disabled.")
+            except Exception:
+                pass
+        finally:
+            with self._submission_condition:
+                self._submission_workers.discard(threading.current_thread())
+                self._submission_condition.notify_all()
+            self._submission_slots.release()
 
     def get_run(self, instance_id: str, bearer: str, task_id: str) -> dict[str, Any]:
         task_id = validate_identifier(task_id, "task_id")
@@ -1502,6 +1618,12 @@ class BridgeService:
             # No model polling or worker lock: the local operation ledger/run
             # projection remains readable while production is in progress.
             return self._public_run(self.store.owned_run(connection, task_id))
+        if self.async_submission:
+            run = self.store.owned_run(connection, task_id)
+            if run.get("status") == "submitting" and not run.get("upstream_run_id"):
+                # The durable receipt is immediately readable while a worker
+                # holds request locks during the bounded Hermes POST.
+                return self._public_run(run)
         with self._authorized_connection(instance_id, bearer) as connection:
             with self._operation_lock("instance:" + instance_id):
                 with self._operation_lock("task:" + task_id):
@@ -1692,7 +1814,7 @@ class BridgeService:
             raise ValidationError("Hermes task execution is not currently available")
         if not self.vault.has(instance_id):
             raise ValidationError("Hermes key is not loaded on this computer")
-        return HermesClient(instance["base_url"], self.vault.get(instance_id))
+        return HermesClient(instance["base_url"], self.vault.get(instance_id), submission_timeout=45.0)
 
     @staticmethod
     def _key_fingerprint(api_key: str) -> str:

@@ -1,6 +1,6 @@
 # PadNote Windows 连接助手（x64）
 
-候选构建：`2026-10-27-r2`（PadNote 0.18.0-beta.16）。助手按普通用户运行。
+候选构建：`2026-10-28-r1`（PadNote 0.18.0-beta.18）。助手按普通用户运行。
 
 Windows 本机验收可在解压的候选目录或安装目录运行 `runtime\python.exe verify_windows_startup.py --report NATIVE_VERIFIER_REPORT.json`。请使用普通、未提权的终端。工具使用全新临时数据和空闲端口，检查证书创建/复用、HTTP/TLS、正常退出，并记录临时数据清理结果；不操作现有配对、SSH或防火墙。它会拒绝将管理员身份运行当作普通用户验收。
 
@@ -25,7 +25,7 @@ python3 build_setup.py --makensis /path/to/makensis --assistant-root .. \
   --project-root ../../.. --download-cache /path/to/pinned-archives
 ```
 
-第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。本轮 beta.16 候选尚未在 Windows 实机完成完整的原生安装、更新和卸载验收，目前没有签名。构建结果与验证边界以随交付提供的记录为准。
+第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.18-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。本轮 beta.18 候选尚未在 Windows 实机完成完整的原生安装、更新和卸载验收，目前没有签名。构建结果与验证边界以随交付提供的记录为准。
 
 固定运行时输入：CPython 3.13.15 embeddable x64（python.org，SHA-256 `d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf`）；cryptography 50.0.1（`55d16b1ef3ee0958d893a977b19777887e546c9954ea81b200c3301a864013f2`）；cffi 2.1.1（`1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d`）；pycparser 3.0（`b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992`）。精确下载地址见 `build_setup.py`，依赖锁见 `requirements-win.lock`。
 

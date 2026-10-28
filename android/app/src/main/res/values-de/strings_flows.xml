@@ -192,7 +192,7 @@
     <string name="flow_open_source_note">Handschriftliche Quellnotiz öffnen</string>
     <string name="flow_save_artifact">Ergebnis speichern: %1$s (%2$s)</string>
     <string name="flow_record_missing">Aufgabenprotokoll nicht gefunden</string>
-    <string name="flow_status_submitting">Wird gesendet / Ergebnis ausstehend</string>
+    <string name="flow_status_submitting">Wird gesendet / Ergebnis ausstehend</string><string name="flow_status_computer_received">An Computer übermittelt · Agent-Bestätigung ausstehend</string>
     <string name="flow_status_running">Wird ausgeführt</string>
     <string name="flow_status_waiting">Wartet auf Genehmigung</string>
     <string name="flow_status_stopping">Wird gestoppt</string>
@@ -383,7 +383,7 @@
     <string name="flow_destination_unidentified_host">Unbekannter Host</string>
     <string name="flow_destination_unidentified">Unbekannt</string>
     <string name="flow_destination_incomplete">Zielinformationen im Verlauf sind unvollständig: %1$s</string>
-    <string name="flow_destination_label">%1$s · %2$s · %3$s · Nr. %4$s</string>
+    <string name="flow_destination_label">%1$s · %2$s · %3$s · Nr. %4$s</string><string name="flow_destination_compact_label">%1$s · %2$s</string><string name="flow_destination_compact_bridge">Host %1$s · Instanz %2$s</string>
     <string name="flow_copy_diagnostic">Aufgabendetails kopieren</string>
     <string name="flow_diagnostic_copied">Diagnose kopiert</string>
     <string name="flow_client_task_id">Lokale Aufgaben-ID</string>

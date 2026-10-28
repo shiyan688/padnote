@@ -11,8 +11,8 @@ android {
         applicationId 'com.padnote.android'
         minSdk 24
         targetSdk 35
-        versionCode 53
-        versionName '0.18.0-beta.17'
+        versionCode 54
+        versionName '0.18.0-beta.18'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         externalNativeBuild {
             ndkBuild {

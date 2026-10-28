@@ -1,6 +1,7 @@
 package com.padnote.android;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -8,6 +9,19 @@ import java.util.Collections;
 import org.junit.Test;
 
 public final class AgentTaskDestinationLabelTest {
+    @Test public void compactUiNameOnlyDeduplicatesKindAndExactHostComponents() {
+        assertEquals("Hermes", AgentTaskDestinationLabel.compactNameParts(
+                "Hermes · hermes · Hermes · 192.168.1.20", "Hermes", "192.168.1.20"));
+        assertEquals("Research Hermes", AgentTaskDestinationLabel.compactNameParts(
+                "Research Hermes", "Hermes", "192.168.1.20"));
+        assertEquals("Office 192.168.1.20 lab · deadbeef",
+                AgentTaskDestinationLabel.compactNameParts(
+                        "Office 192.168.1.20 lab · deadbeef · 192.168.1.20",
+                        "Hermes", "192.168.1.20"));
+        assertEquals("Lab · Lab", AgentTaskDestinationLabel.compactNameParts(
+                "Lab · Lab", "Hermes", "192.168.1.20"));
+    }
+
     @Test public void sameDisplayNameHasDistinctSafeBridgeDestinations() {
         AgentConnectionStore.Config first = bridge("11111111-aaaa", "bridge-alpha", "instance-01", "sensitive-token-one");
         AgentConnectionStore.Config second = bridge("22222222-bbbb", "bridge-beta", "instance-02", "sensitive-token-two");

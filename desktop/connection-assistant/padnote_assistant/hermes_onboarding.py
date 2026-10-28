@@ -296,7 +296,7 @@ def _write_redacted_log(pipe, log_path: Path, secrets: tuple[str, ...]) -> None:
 
 def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None, str | None]:
     log_path = Path(service.store.state_dir) / "logs" / "hermes-gateway.log"
-    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                               "stderr": subprocess.STDOUT, "shell": False, "cwd": str(executable.parent),
                               "env": {**os.environ, "HERMES_HOME": str(Path(profile.path).parent)}}
     if os.name == "nt":
@@ -308,7 +308,15 @@ def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None
     key = profile.path
     with _process_lock:
         _started_processes[key] = proc
-    threading.Thread(target=_write_redacted_log, args=(proc.stdout, log_path, (profile.api_key,)), daemon=True).start()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("Hermes Gateway launch requested; process output is not captured. Check Hermes native diagnostics if needed.\n", encoding="utf-8")
+        try:
+            os.chmod(log_path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
     return proc, None
 
 

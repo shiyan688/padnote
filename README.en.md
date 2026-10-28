@@ -2,37 +2,47 @@
 
 <img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote mark">
 
-**Write, draw, and ask on the same page, then share it or hand it to a computer agent.**
+**Write, draw, and ask on a tablet page. Share the context as a PDF or hand it to your own computer agent.**
 
-PadNote is a tablet notebook for writing, drawing, and AI-assisted learning. Work in one note, then share the page or hand it to a paired computer agent. You choose the model and service provider.
+PadNote brings notes, handwriting, and AI-assisted learning together on one page. Use material such as a video lesson, develop the ideas in your note, then share the page with someone or send it to a paired computer agent. You choose the model and service provider.
 
-[Android beta.17](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.17) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.17/PadNote-Android-0.18.0-beta.17-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe) · [Portable ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Portable.zip) · [Windows test guide](docs/BETA16_TESTING.md) · [Android beta.17 test guide](docs/BETA17_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.18](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.18) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-0.18.0-beta.18-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Connection-Assistant-0.18.0-beta.18-Setup-x64.exe) · [Windows portable build](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Connection-Assistant-0.18.0-beta.18-Portable.zip) · [Android beta.18 guide](docs/BETA18_TESTING.md) · [Windows setup notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-Screenshots from an Android emulator; displayed text is local UI content.
+## Android beta.18
 
-![多语言界面](docs/images/beta13-01-languages.png)
+Updates PDF task status messages, read-only background refresh, task entry points, and recipient labels. Return to the note and check the task later. An uncertain result is not automatically submitted again; copy diagnostics to continue troubleshooting. See the [beta.18 guide](docs/BETA18_TESTING.md) for installation and test steps.
 
-![纸面工具图标](docs/images/beta13-02-tool-icons.png)
+## Historical interface screenshots
 
-![新品牌标志](docs/images/beta13-03-new-brand.png)
+These images are from an earlier Android emulator build and show the beta.13 interface, not the current beta.18 UI.
 
-## beta.13 update
+![beta.13 multilingual interface](docs/images/beta13-01-languages.png)
 
-The Android interface adds Simplified Chinese, English, Japanese, Korean, Spanish, French, and German, with 21 updated feature icons and the new brand mark. The default language follows the system; you can also change it from the bookshelf. Translations have not yet received a line-by-line native-speaker review. Some raw machine or agent errors may remain in their original language, and model responses are not translated with the interface.
+![beta.13 paper tools](docs/images/beta13-02-tool-icons.png)
 
-The Windows connection assistant is updated in beta.16. The iPad update still contains icon source assets only; there is no signed, installable IPA. See the [Android beta.13 test guide](docs/BETA13_TESTING.md) for Android checks and the [Windows beta.16 test guide](docs/BETA16_TESTING.md) for this release. The installer is unsigned.
+![PadNote brand mark](docs/images/beta13-03-new-brand.png)
 
-## Scope and limitations
+## Demo frames
 
-Write, edit, and zoom in a note; continue an AI conversation; export a full-page PDF; or send note material to a paired Hermes agent that supports note tasks. You or the selected agent choose models and services; PadNote does not require a particular provider. OpenClaw currently provides discovery and setup guidance. Codex note tasks are not connected. iPad source is available, but there is no installable signed IPA.
+These selected frames show the sample paper, task description, and task-preset selector. They were captured from the beta.17 UI as a low-frame-rate sequence of real device screenshots. Note text was typed manually as synthetic sample content; no Agent result is shown. See the [media provenance note](docs/media/2026-10-28/README.md).
 
-The desktop assistant does not include Hermes, models, API keys, or video runtimes. WSL Hermes must expose an API reachable from Windows; automatic WSL discovery is not implemented. External services may incur costs. Review the task and included material before sending.
+![Sample paper](docs/media/2026-10-28/beta18-paper-promo-poster.png)
+
+![Task preset selection](docs/media/2026-10-28/beta18-task-presets-poster.png)
+
+![Paper PDF sharing entry](docs/media/2026-10-28/beta18-share-transition.gif)
+
+[Watch the tutorial (36 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Tutorial-zh.mp4) · [Watch the overview (35 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Promo-zh.mp4)
+
+## How it works
+
+Write, draw, edit, and discuss a note with the model you choose. Share a full-page PDF or send note material to a paired Hermes agent that supports note tasks. PadNote is not tied to a specific model provider. The desktop connection assistant helps with pairing and agent connections; it does not include Hermes, a model, or API credentials. Hermes in WSL must expose an API reachable from Windows; automatic WSL discovery is not available. OpenClaw has discovery and setup guidance. Codex note tasks are not connected.
+
+Android and the Windows connection assistant are both at beta.18. Windows Hermes run creation uses a bounded background wait; other requests retain a 10-second limit, and uncertain outcomes are not automatically replayed. iPad source resources are available, but there is no installable signed IPA.
 
 ## Downloads and verification
 
-This beta.16 release contains the Windows installer and portable ZIP, source ZIP, test guide, license files, and SHA-256 sums. Android remains available from beta.13.
-
-Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows.
+The Release includes the Android APK, Windows installer and portable build, full source, and license files. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 
@@ -47,12 +57,4 @@ See [`desktop/connection-assistant/windows-setup/README-WINDOWS.md`](desktop/con
 
 ## License and feedback
 
-Original Android/iPad code is MIT licensed; the video Agent subproject is Apache-2.0. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSING.md`](LICENSING.md). For feedback, include version, device, steps, and observed behavior. Do not upload API keys, pairing tokens, passwords, or private notes.
-
-### Windows beta.16 (2026-10-27)
-
-This release adds one-click startup and connection to Hermes when the assistant is stopped. It retains beta.15 task-state recovery, duplicate-submit protection for uncertain requests, and the connection tutorial. Android remains on beta.13.
-
-### Android beta.17 (2026-10-27)
-
-Updates target-card selection, send-stage status, and background handling for PDF tasks sent from notes to a computer agent. You can return to the note or leave the page after sending; processing may take time on the computer. Unknown results are not resent automatically. Copy diagnostics to continue troubleshooting. The Windows assistant remains on beta.16.
+Original Android/iPad client code is MIT licensed; the video Agent subproject is Apache-2.0. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSING.md`](LICENSING.md) for third-party licenses. For feedback, include the version, device, steps, and visible message. Do not include API keys, pairing tokens, passwords, or private notes.
