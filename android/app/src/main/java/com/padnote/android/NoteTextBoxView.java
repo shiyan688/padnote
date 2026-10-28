@@ -608,6 +608,14 @@ final class NoteTextBoxView extends FrameLayout {
         return super.dispatchTouchEvent(event);
     }
 
+    boolean isPaperNavigationTarget() {
+        return model != null && selected && !inlineEditing;
+    }
+
+    void resetTapSequenceForNavigation() {
+        lastTapTime = 0L;
+    }
+
     @Override
     public boolean onInterceptTouchEvent(MotionEvent event) {
         if (inlineEditing) {
@@ -728,6 +736,7 @@ final class NoteTextBoxView extends FrameLayout {
                 resizing = false;
                 scalingByArea = false;
                 moved = false;
+                lastTapTime = 0L;
                 return true;
             default:
                 return true;

@@ -5414,11 +5414,37 @@ public final class NoteCanvasView extends View {
 
     private float maximumViewportPanY() {
         float margin = dp(18);
-        float scaledHeight = totalDocumentHeight() * viewportScale;
-        if (scaledHeight + margin * 2f <= getHeight()) {
-            return (getHeight() - scaledHeight) / 2f;
+        return maximumViewportPanYForGeometry(getHeight(), pageHeight,
+                totalDocumentHeight(), viewportScale, margin);
+    }
+
+    /**
+     * Keeps a fitting document centered. When a longer document is zoomed out,
+     * allow the first sheet to center in the viewport so a pinch at that sheet
+     * can keep its world anchor instead of being forced against the top margin.
+     */
+    static float maximumViewportPanYForGeometry(float viewportHeight,
+                                                 float firstPageHeight,
+                                                 float documentHeight,
+                                                 float scale,
+                                                 float minimumMargin) {
+        if (!Float.isFinite(viewportHeight) || !Float.isFinite(firstPageHeight) ||
+                !Float.isFinite(documentHeight) || !Float.isFinite(scale) ||
+                !Float.isFinite(minimumMargin) || viewportHeight <= 0f ||
+                firstPageHeight <= 0f || documentHeight <= 0f || scale <= 0f ||
+                minimumMargin < 0f) {
+            throw new IllegalArgumentException("viewport geometry must be finite and positive");
         }
-        return margin;
+        float scaledDocumentHeight = documentHeight * scale;
+        float scaledFirstPageHeight = firstPageHeight * scale;
+        if (!Float.isFinite(scaledDocumentHeight) || !Float.isFinite(scaledFirstPageHeight)) {
+            throw new IllegalArgumentException("scaled viewport geometry is not finite");
+        }
+        if (scaledDocumentHeight + minimumMargin * 2f <= viewportHeight) {
+            return (viewportHeight - scaledDocumentHeight) / 2f;
+        }
+        return Math.max(minimumMargin,
+                (viewportHeight - scaledFirstPageHeight) / 2f);
     }
 
     private void applyNavigationPanY() {

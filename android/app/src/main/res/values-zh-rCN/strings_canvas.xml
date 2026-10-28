@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">已选中图片 · 拖动移动，右下角调大小，工具栏删除或复制</string>
     <string name="canvas_pdf_selected">已圈选 PDF 原文 · 点击 AI 提问</string>
     <string name="canvas_selection_empty">没有选中笔画或文字对象</string>
-    <string name="canvas_text_selected">已选中文字对象 · 可移动、缩放或删除</string>
+    <string name="canvas_text_selected">已选整组文字 · 整组移动/调整/删除 · 双指平移/缩放纸面</string>
     <string name="canvas_strokes_and_text">已选中 %1$d 笔和文字对象</string>
     <string name="canvas_strokes_selected">已选中 %1$d 笔，可拖动</string>
     <string name="canvas_moved_page">已移动页面</string>

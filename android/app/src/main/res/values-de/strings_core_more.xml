@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">In Datei speichern</string>
     <string name="core_agent_save_share">Speichern und teilen</string>
     <string name="core_agent_attach_source">Mit Quellnotiz verknüpfen</string>
-    <string name="core_textbox_selected_hint">Textobjekt ausgewählt · zum Verschieben ziehen · unten rechts skalieren · zum Bearbeiten doppeltippen</string>
+    <string name="core_textbox_selected_hint">Textgruppe · Ein Finger: alles bewegen · Zwei Finger: Papier bewegen/zoomen · Griffe: Größe ändern · Doppeltippen: bearbeiten</string>
     <string name="core_textbox_autoflow_hint">Text wurde automatisch umbrochen · zum Weiterbearbeiten mit der Lasso-Auswahl markieren</string>
     <string name="core_ink_color_title">Tintenfarbe auswählen</string>
     <string name="core_ink_color_use">Verwenden</string>

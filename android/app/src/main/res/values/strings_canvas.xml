@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">Image selected · Drag to move, resize from corner, or delete or copy in toolbar</string>
     <string name="canvas_pdf_selected">PDF text selected · Ask AI</string>
     <string name="canvas_selection_empty">No strokes or text objects selected</string>
-    <string name="canvas_text_selected">Text selected · Move, resize, or delete</string>
+    <string name="canvas_text_selected">Text group selected · Move/resize/delete all · Two fingers: pan/zoom</string>
     <string name="canvas_strokes_and_text">%1$d strokes and text objects selected</string>
     <string name="canvas_strokes_selected">%1$d strokes selected · Drag to move</string>
     <string name="canvas_moved_page">Page moved</string>

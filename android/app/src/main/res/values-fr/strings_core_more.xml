@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">Enregistrer dans un fichier</string>
     <string name="core_agent_save_share">Enregistrer et partager</string>
     <string name="core_agent_attach_source">Associer à la note source</string>
-    <string name="core_textbox_selected_hint">Objet texte sélectionné · faites-le glisser pour le déplacer · redimensionnez en bas à droite · touchez deux fois pour modifier</string>
+    <string name="core_textbox_selected_hint">Groupe de texte · Un doigt : tout déplacer · Deux doigts : déplacer/zoomer la page · Poignées : redimensionner · Double toucher : modifier</string>
     <string name="core_textbox_autoflow_hint">Le texte a été mis en page automatiquement · sélectionnez-le avec le lasso pour continuer à le modifier</string>
     <string name="core_ink_color_title">Choisir la couleur de l’encre</string>
     <string name="core_ink_color_use">Utiliser</string>

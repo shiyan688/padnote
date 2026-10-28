@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">Imagen seleccionada · Arrastra para mover, cambia tamaño desde la esquina o elimina/copia en la barra</string>
     <string name="canvas_pdf_selected">Texto PDF seleccionado · Preguntar a IA</string>
     <string name="canvas_selection_empty">No hay trazos ni objetos de texto seleccionados</string>
-    <string name="canvas_text_selected">Texto seleccionado · Mover, cambiar tamaño o eliminar</string>
+    <string name="canvas_text_selected">Grupo de texto seleccionado · mover/cambiar tamaño/eliminar todo · dos dedos: desplazar/ampliar papel</string>
     <string name="canvas_strokes_and_text">%1$d trazos y objetos de texto seleccionados</string>
     <string name="canvas_strokes_selected">%1$d trazos seleccionados · Arrastra para mover</string>
     <string name="canvas_moved_page">Página movida</string>

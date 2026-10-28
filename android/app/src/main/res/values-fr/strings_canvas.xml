@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">Image sélectionnée · Faites glisser pour déplacer, redimensionnez depuis le coin ou supprimez/copiez dans la barre</string>
     <string name="canvas_pdf_selected">Texte PDF sélectionné · Demander à l’IA</string>
     <string name="canvas_selection_empty">Aucun trait ou objet texte sélectionné</string>
-    <string name="canvas_text_selected">Texte sélectionné · Déplacer, redimensionner ou supprimer</string>
+    <string name="canvas_text_selected">Groupe sélectionné · tout déplacer/redimensionner/supprimer · deux doigts : déplacer/zoomer la page</string>
     <string name="canvas_strokes_and_text">%1$d traits et objets texte sélectionnés</string>
     <string name="canvas_strokes_selected">%1$d traits sélectionnés · Faites glisser pour déplacer</string>
     <string name="canvas_moved_page">Page déplacée</string>

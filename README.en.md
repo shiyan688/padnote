@@ -6,11 +6,11 @@
 
 PadNote brings notes, handwriting, and AI-assisted learning together on one page. Use material such as a video lesson, develop the ideas in your note, then share the page with someone or send it to a paired computer agent. You choose the model and service provider.
 
-[Android beta.21](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.21) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.21/PadNote-Android-0.18.0-beta.21-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Setup-x64.exe) · [Windows portable build](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Portable.zip) · [User guide](docs/BETA21_TESTING.md) · [Windows setup notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.22](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.22) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.22/PadNote-Android-0.18.0-beta.22-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Setup-x64.exe) · [Windows portable build](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Portable.zip) · [User guide](docs/BETA22_TESTING.md) · [Windows setup notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-## beta.21: give AI the paper you selected
+## beta.22: keep the paper under your fingers
 
-Typed text, handwritten annotations, images, and the PDF underneath all belong to the page context. This release fixes missing typed text in Android AI selections. Select a text fragment on the current page or use the lasso, then review the paper image before asking. Preview preparation can be canceled, and an obsolete result cannot enter a different note session. See [how selections work](docs/AI_PAPER_SELECTION.md) and the [installation guide](docs/BETA21_TESTING.md).
+Pan and zoom with two fingers even after selecting text, including when the fingers land on text and blank paper or on different fragments. Adding the second finger cancels an uncommitted text move. Long notes now allow the first page to stay centered when zooming out, avoiding a sudden jump at the top boundary. AI selections continue to include typed text, ink, images, and PDF content. See [selections and gestures](docs/AI_PAPER_SELECTION.md) and the [installation guide](docs/BETA22_TESTING.md).
 
 <details>
 <summary>Earlier Android interface screenshots</summary>
@@ -57,7 +57,7 @@ Long notes can be shared in the same page format. These are the first, middle, a
 
 Write, draw, edit, and discuss a note with the model you choose. Share a full-page PDF or send note material to a paired Hermes agent that supports note tasks. PadNote is not tied to a specific model provider. The desktop connection assistant helps with pairing and agent connections; it does not include Hermes, a model, or API credentials. Hermes in WSL must expose an API reachable from Windows; automatic WSL discovery is not available. OpenClaw has discovery and setup guidance. Codex note tasks are not connected.
 
-Android is at beta.21; the companion Windows connection assistant remains at beta.20. Tasks are saved on the computer before waiting for a Hermes run ID; uncertain outcomes are not automatically replayed. iPad source is available, but there is no installable signed IPA. See the [development status and next steps](docs/DEVELOPMENT_STATUS.md).
+Android is at beta.22; the companion Windows connection assistant remains at beta.20. Tasks are saved on the computer before waiting for a Hermes run ID; uncertain outcomes are not automatically replayed. iPad source is available, but there is no installable signed IPA. See the [development status and next steps](docs/DEVELOPMENT_STATUS.md).
 
 ## Downloads and verification
 

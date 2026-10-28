@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">Save to file</string>
     <string name="core_agent_save_share">Save and share</string>
     <string name="core_agent_attach_source">Attach to source note</string>
-    <string name="core_textbox_selected_hint">Text object selected · drag to move · resize from bottom-right · double-tap to edit</string>
+    <string name="core_textbox_selected_hint">Text group · Drag: move all · Two fingers: pan/zoom · Handles: resize · Double-tap: edit</string>
     <string name="core_textbox_autoflow_hint">Text was laid out automatically · select it with the lasso to continue editing</string>
     <string name="core_ink_color_title">Choose ink color</string>
     <string name="core_ink_color_use">Use</string>

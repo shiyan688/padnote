@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">画像を選択しました · ドラッグで移動、隅でサイズ変更、ツールバーで削除またはコピー</string>
     <string name="canvas_pdf_selected">PDF のテキストを選択しました · AI に質問</string>
     <string name="canvas_selection_empty">筆跡またはテキストオブジェクトが選択されていません</string>
-    <string name="canvas_text_selected">テキストを選択しました · 移動、サイズ変更、削除ができます</string>
+    <string name="canvas_text_selected">文字グループ選択中 · 全体を移動/サイズ変更/削除 · 両指で紙面を移動/拡大縮小</string>
     <string name="canvas_strokes_and_text">筆跡 %1$d 個とテキストオブジェクトを選択しました</string>
     <string name="canvas_strokes_selected">筆跡 %1$d 個を選択しました · ドラッグで移動</string>
     <string name="canvas_moved_page">ページを移動しました</string>

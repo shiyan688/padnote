@@ -31,7 +31,7 @@
     <string name="canvas_image_selected">Bild ausgewählt · Ziehen zum Verschieben, an der Ecke skalieren oder in der Werkzeugleiste löschen/kopieren</string>
     <string name="canvas_pdf_selected">PDF-Text ausgewählt · KI fragen</string>
     <string name="canvas_selection_empty">Keine Striche oder Textobjekte ausgewählt</string>
-    <string name="canvas_text_selected">Text ausgewählt · Verschieben, skalieren oder löschen</string>
+    <string name="canvas_text_selected">Textgruppe ausgewählt · alles bewegen/ändern/löschen · zwei Finger: Papier bewegen/zoomen</string>
     <string name="canvas_strokes_and_text">%1$d Striche und Textobjekte ausgewählt</string>
     <string name="canvas_strokes_selected">%1$d Striche ausgewählt · Zum Verschieben ziehen</string>
     <string name="canvas_moved_page">Seite verschoben</string>

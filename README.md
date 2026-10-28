@@ -6,11 +6,11 @@
 
 PadNote 将笔记、手写与 AI 学习放在同一张纸面上。可用视频讲解等内容作为学习素材，再把整理后的笔记分享给他人或发送给已配对的电脑 Agent。模型和服务由你选择。
 
-[Android beta.21](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.21) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.21/PadNote-Android-0.18.0-beta.21-debug.apk) · [Windows 安装版](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Setup-x64.exe) · [Windows 便携版](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Portable.zip) · [使用指南](docs/BETA21_TESTING.md) · [Windows 安装说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[Android beta.22](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.22) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.22/PadNote-Android-0.18.0-beta.22-debug.apk) · [Windows 安装版](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Setup-x64.exe) · [Windows 便携版](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Portable.zip) · [使用指南](docs/BETA22_TESTING.md) · [Windows 安装说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
-## beta.21：让 AI 看见选中的纸面
+## beta.22：缩放时，纸面跟着手指
 
-输入的文字、手写批注、图片与 PDF 底页一起构成上下文。这个版本修复 Android 文字选区遗漏：选择当前页文字片段，或用套索圈选，再从同一份纸面预览开始提问。准备预览时可以取消，切换笔记后的旧结果也不会进入新会话。[选区如何工作](docs/AI_PAPER_SELECTION.md) · [安装与测试](docs/BETA21_TESTING.md)。
+选中文字后，双指仍可平移、缩放纸面；两指落在文字和空白处、或不同文字片段上，也按纸面导航处理。第二指加入时，尚未提交的文字移动会取消。长文首页缩小时允许保持居中，避免第一次缩放突然跳到下一页。文字、批注、图片与 PDF 组成的 AI 选区继续保留。[选区与手势](docs/AI_PAPER_SELECTION.md) · [安装与测试](docs/BETA22_TESTING.md)。
 
 <details>
 <summary>早期 Android 界面截图</summary>
@@ -57,7 +57,7 @@ PadNote 将笔记、手写与 AI 学习放在同一张纸面上。可用视频�
 
 在纸面上书写、绘图、编辑并与所选模型交流；分享完整纸面 PDF；或把笔记材料发送给已配对、支持纸面任务的 Hermes Agent。PadNote 不绑定特定模型供应商。电脑连接助手用于配对与 Agent 连接，不附带 Hermes、模型或 API 密钥。WSL 中的 Hermes 需自行提供 Windows 可访问的 API；目前不自动发现 WSL Agent。OpenClaw 提供发现与设置引导；Codex 纸面任务尚未接入。
 
-Android 当前为 beta.21，配套 Windows 连接助手沿用 beta.20。任务先保存到电脑，再等待 Hermes 的运行编号；未知结果不会自动重放。iPad 提供源码，暂无可安装的签名 IPA。[开发状态与后续工作](docs/DEVELOPMENT_STATUS.md)。
+Android 当前为 beta.22，配套 Windows 连接助手沿用 beta.20。任务先保存到电脑，再等待 Hermes 的运行编号；未知结果不会自动重放。iPad 提供源码，暂无可安装的签名 IPA。[开发状态与后续工作](docs/DEVELOPMENT_STATUS.md)。
 
 ## 下载与校验
 

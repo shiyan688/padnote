@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">ファイルに保存</string>
     <string name="core_agent_save_share">保存して共有</string>
     <string name="core_agent_attach_source">元のノートに関連付け</string>
-    <string name="core_textbox_selected_hint">テキストオブジェクトを選択中 · ドラッグで移動 · 右下でサイズ変更 · ダブルタップで編集</string>
+    <string name="core_textbox_selected_hint">文字グループ · 片指で全体を移動 · 両指で紙面を移動/拡大縮小 · ハンドルでサイズ変更 · ダブルタップで編集</string>
     <string name="core_textbox_autoflow_hint">テキストを自動レイアウトしました · 続けて編集するには投げ縄で選択</string>
     <string name="core_ink_color_title">インクの色を選択</string>
     <string name="core_ink_color_use">使用</string>

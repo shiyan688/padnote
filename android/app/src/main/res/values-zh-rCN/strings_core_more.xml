@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">保存到文件</string>
     <string name="core_agent_save_share">保存后分享</string>
     <string name="core_agent_attach_source">关联到来源笔记</string>
-    <string name="core_textbox_selected_hint">文字对象已选中 · 拖动移动 · 右下角缩放 · 双击直接输入</string>
+    <string name="core_textbox_selected_hint">已选整组文字 · 单指移动 · 双指平移/缩放 · 拖控制点调整 · 双击编辑</string>
     <string name="core_textbox_autoflow_hint">文字已自动排版 · 用套索选中后可继续编辑</string>
     <string name="core_ink_color_title">选择墨水颜色</string>
     <string name="core_ink_color_use">使用</string>

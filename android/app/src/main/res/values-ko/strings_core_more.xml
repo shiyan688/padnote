@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">파일에 저장</string>
     <string name="core_agent_save_share">저장 후 공유</string>
     <string name="core_agent_attach_source">원본 노트에 연결</string>
-    <string name="core_textbox_selected_hint">텍스트 개체 선택됨 · 드래그하여 이동 · 오른쪽 아래에서 크기 조절 · 두 번 탭하여 편집</string>
+    <string name="core_textbox_selected_hint">텍스트 그룹 · 한 손가락: 전체 이동 · 두 손가락: 종이 이동/확대·축소 · 핸들: 크기 조절 · 두 번 탭: 편집</string>
     <string name="core_textbox_autoflow_hint">텍스트가 자동으로 배치됨 · 계속 편집하려면 올가미로 선택하세요</string>
     <string name="core_ink_color_title">잉크 색상 선택</string>
     <string name="core_ink_color_use">사용</string>

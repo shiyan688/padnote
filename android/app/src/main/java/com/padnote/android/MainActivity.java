@@ -176,7 +176,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private float aiKeyboardRestoreX;
     private float aiKeyboardRestoreY;
     private boolean aiCardTemporarilyFitForIme;
-    private FrameLayout canvasFrame;
+    private PaperCanvasFrame canvasFrame;
+    private PaperNavigationHandoff paperNavigationHandoff;
+    private boolean disposingTextBoxViews;
     private LinearLayout bookshelfList;
     /** Section heading for the note grid; renderBookshelf keeps its count current. */
     private TextView shelfSectionTitle;
@@ -3010,8 +3012,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
 
         canvasView = new NoteCanvasView(this);
+        paperNavigationHandoff = new PaperNavigationHandoff(canvasView);
         canvasView.setEnabled(false);
-        canvasFrame = new FrameLayout(this);
+        canvasFrame = new PaperCanvasFrame(this);
+        canvasFrame.setNavigationHandoff(paperNavigationHandoff);
         canvasFrame.setClipChildren(true);
         canvasFrame.addView(canvasView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -3593,7 +3597,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void updateTextBoxOverlays(List<NoteTextBox> textBoxes) {
-        if (canvasFrame == null || canvasView == null) {
+        if (disposingTextBoxViews || canvasFrame == null || canvasView == null) {
             return;
         }
         // Each NoteTextBoxView owns a WebView, so materialising every fragment of
@@ -3604,6 +3608,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         int lastPage = canvasView.getLastVisiblePageIndex() + 1;
         Set<String> desiredIds = new HashSet<>();
         for (NoteTextBox textBox : textBoxes) {
+            NoteTextBoxView view = textBoxViews.get(textBox.id);
             boolean nearViewport = textBox.pageIndex >= firstPage &&
                     textBox.pageIndex <= lastPage;
             // A flow can span hundreds of pages. Selection is model state; it
@@ -3616,7 +3621,6 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 continue;
             }
             desiredIds.add(textBox.id);
-            NoteTextBoxView view = textBoxViews.get(textBox.id);
             if (view == null) {
                 view = new NoteTextBoxView(this, new NoteTextBoxView.Listener() {
                     @Override
@@ -3814,17 +3818,30 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void disposeTextBoxViews() {
-        for (NoteTextBoxView view : textBoxViews.values()) {
-            if (canvasFrame != null) {
-                canvasFrame.removeView(view);
+        if (disposingTextBoxViews) return;
+        disposingTextBoxViews = true;
+        try {
+            if (paperNavigationHandoff != null) {
+                paperNavigationHandoff.cancelActive();
             }
-            view.dispose();
+            // Cancelling an active frame-owned navigation stream reports a
+            // viewport update through the canvas listener. Suppress overlay
+            // reconciliation for this batch to prevent reentrant recreation.
+            for (NoteTextBoxView view : new ArrayList<>(textBoxViews.values())) {
+                if (canvasFrame != null) {
+                    canvasFrame.removeView(view);
+                }
+                view.dispose();
+            }
+            textBoxViews.clear();
+            newlyInsertedTextBoxIds.clear();
+            selectedTextBoxId = null;
+            selectedTextFlowId = null;
+            canvasFrame = null;
+            paperNavigationHandoff = null;
+        } finally {
+            disposingTextBoxViews = false;
         }
-        textBoxViews.clear();
-        newlyInsertedTextBoxIds.clear();
-        selectedTextBoxId = null;
-        selectedTextFlowId = null;
-        canvasFrame = null;
     }
 
     private View createStatusBar() {

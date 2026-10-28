@@ -452,7 +452,7 @@
     <string name="core_agent_save_file">Guardar en archivo</string>
     <string name="core_agent_save_share">Guardar y compartir</string>
     <string name="core_agent_attach_source">Vincular a la nota de origen</string>
-    <string name="core_textbox_selected_hint">Objeto de texto seleccionado · arrastra para moverlo · cambia el tamaño desde abajo a la derecha · toca dos veces para editar</string>
+    <string name="core_textbox_selected_hint">Grupo de texto · Un dedo: mover todo · Dos dedos: desplazar/ampliar papel · Controles: tamaño · Doble toque: editar</string>
     <string name="core_textbox_autoflow_hint">El texto se distribuyó automáticamente · selecciónalo con el lazo para seguir editando</string>
     <string name="core_ink_color_title">Elegir color de tinta</string>
     <string name="core_ink_color_use">Usar</string>
