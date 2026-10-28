@@ -668,6 +668,43 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(store.profile(id: profile.id)?.revision, changed.revision, "probe result does not change identity revision")
     }
 
+    func testPartialReadinessProbeKeepsConnectionAndPersistsWithoutChangingCredentials() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokens = MemoryTokenStore()
+        let store = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let profile = try store.create(name: "Home", kind: .hermes, endpoint: "https://old.test", token: "secret",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let reference = profile.credentialReference
+        XCTAssertTrue(store.applyProbeSuccess(id: profile.id, revision: profile.revision,
+            capabilities: ["run_status": true, "run_submission": false], readiness: .unavailable))
+        let reopened = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let saved = try XCTUnwrap(reopened.profile(id: profile.id))
+        XCTAssertEqual(saved.id, profile.id)
+        XCTAssertEqual(saved.credentialReference, reference)
+        XCTAssertEqual(try tokens.read(reference: reference), "secret")
+        XCTAssertTrue(saved.connected)
+        XCTAssertEqual(saved.lastReadiness, .unavailable)
+    }
+
+    func testIdentityChangeClearsReadinessAndRejectsOldProbeResult() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let profile = try store.create(name: "Home", kind: .hermes, endpoint: "https://old.test", token: "old",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        XCTAssertTrue(store.applyProbeSuccess(id: profile.id, revision: profile.revision,
+            capabilities: ["run_status": true], readiness: .unavailable))
+        let snapshot = try store.snapshotForProbe(id: profile.id)
+        let updated = try store.update(id: profile.id, expectedRevision: profile.revision, name: "Home",
+            kind: .hermes, endpoint: "https://new.test", token: "new", transport: .bridge,
+            bridgeID: "bridge-1", instanceID: "instance-1")
+        XCTAssertNil(updated.lastReadiness)
+        XCTAssertFalse(store.applyProbeSuccess(id: snapshot.id, revision: snapshot.revision,
+            capabilities: ["run_status": true], readiness: .ready))
+        XCTAssertNil(store.profile(id: profile.id)?.lastReadiness)
+    }
+
     func testDirectAndBridgeCapabilitiesUseExpectedIdentityAndPollingFeatures() async throws {
         let session = fixtureSession { request in
             if request.url?.path.contains("padnote/v1") == true {
@@ -692,6 +729,75 @@ final class AgentTests: XCTestCase {
             _ = try await client.probeCapabilities(AgentConnectionConfig(kind: .hermes, endpoint: "https://fixture.test", token: "device", transport: .bridge, bridgeID: "bridge-1", instanceID: "other"))
             XCTFail("identity mismatch must fail")
         } catch let error as AgentConnectionError { XCTAssertEqual(error, .identityMismatch) }
+    }
+
+    func testBridgeHermesReadinessReadyRequiresExplicitProbeAndLiveFreshCheck() async throws {
+        var sawProbeHeader = false
+        let session = fixtureSession { request in
+            sawProbeHeader = request.value(forHTTPHeaderField: "X-PadNote-Agent-Probe") == "1"
+            return FixtureResponse(json: [
+                "object": "padnote.agent.capabilities", "protocol_version": 1,
+                "bridge_id": "bridge-1", "instance_id": "instance-1", "kind": "hermes",
+                "features": ["run_submission": true, "run_status": true, "run_stop": true, "artifacts": true],
+                "readiness_probe_supported": true,
+                "readiness": ["bridge_reachable": true, "agent_status": "ready", "source": "live", "fresh": true, "checked_at": 123]
+            ])
+        }
+        let config = AgentConnectionConfig(kind: .hermes, endpoint: "https://fixture.test", token: "device",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let result = try await AgentConnectionClient(session: session).probeCapabilities(config)
+        XCTAssertTrue(sawProbeHeader)
+        XCTAssertEqual(result.partialStatus, .ready)
+        XCTAssertTrue(result.capabilities["run_submission"] == true)
+    }
+
+    func testBridgeHermesUnavailableDisablesSubmissionButPreservesReadOnlyFeatures() async throws {
+        let session = fixtureSession { _ in FixtureResponse(json: [
+            "object": "padnote.agent.capabilities", "protocol_version": 1,
+            "bridge_id": "bridge-1", "instance_id": "instance-1", "kind": "hermes",
+            "features": ["run_submission": true, "run_status": true, "run_stop": true, "task_bundle": true, "artifacts": true],
+            "readiness_probe_supported": true,
+            "readiness": ["bridge_reachable": true, "agent_status": "unavailable", "source": "live", "fresh": true, "checked_at": 123]
+        ]) }
+        let config = AgentConnectionConfig(kind: .hermes, endpoint: "https://fixture.test", token: "device",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let result = try await AgentConnectionClient(session: session).probeCapabilities(config)
+        XCTAssertEqual(result.partialStatus, .unavailable)
+        XCTAssertEqual(result.capabilities["run_submission"], false)
+        XCTAssertEqual(result.capabilities["task_bundle"], false)
+        XCTAssertEqual(result.capabilities["run_status"], true)
+        XCTAssertEqual(result.capabilities["artifacts"], true)
+    }
+
+    func testBridgeHermesLegacyReadinessRemainsUnknownAndPreservesFeatures() async throws {
+        let session = fixtureSession { _ in FixtureResponse(json: [
+            "object": "padnote.agent.capabilities", "protocol_version": 1,
+            "bridge_id": "bridge-1", "instance_id": "instance-1", "kind": "hermes",
+            "features": ["run_submission": true, "run_status": true, "run_stop": true]
+        ]) }
+        let config = AgentConnectionConfig(kind: .hermes, endpoint: "https://fixture.test", token: "device",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let result = try await AgentConnectionClient(session: session).probeCapabilities(config)
+        XCTAssertEqual(result.partialStatus, .unknown)
+        XCTAssertEqual(result.capabilities["run_submission"], true)
+        XCTAssertTrue(result.message.contains("未检测"))
+    }
+
+    func testBridgeHermesReadinessSupportedMustBeBoolean() async throws {
+        let session = fixtureSession { _ in FixtureResponse(json: [
+            "object": "padnote.agent.capabilities", "protocol_version": 1,
+            "bridge_id": "bridge-1", "instance_id": "instance-1", "kind": "hermes",
+            "features": ["run_submission": true, "run_status": true, "run_stop": true],
+            "readiness_probe_supported": 1
+        ]) }
+        let config = AgentConnectionConfig(kind: .hermes, endpoint: "https://fixture.test", token: "device",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        do {
+            _ = try await AgentConnectionClient(session: session).probeCapabilities(config)
+            XCTFail("numeric support marker must be rejected")
+        } catch let error as AgentConnectionError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
     }
 
     func testBridgeCapabilityProbePreservesReadOnlyHermesAndBuiltinConnections() async throws {

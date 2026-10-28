@@ -55,7 +55,7 @@ final class AgentConnectionDialogs {
         String defaultId = store.defaultId();
         for (AgentConnectionStore.Config profile : profiles) {
             labels.add((profile.id.equals(defaultId) ? "★ " : "") +
-                    AgentTaskDestinationLabel.forProfile(activity,profile) + " · " + profile.statusLabel());
+                    AgentTaskDestinationLabel.forProfile(activity,profile) + " · " + profile.statusLabel(activity));
         }
         int manualIndex = labels.size();
         labels.add(activity.getString(R.string.flow_manual_add));
@@ -96,7 +96,7 @@ final class AgentConnectionDialogs {
         actions.add(activity.getString(R.string.flow_delete));
         LinearLayout body = panel();
         TextView identity = text(activity.getString(R.string.flow_target) + "\n" + AgentTaskDestinationLabel.forProfile(activity,profile) +
-                "\n" + activity.getString(R.string.flow_connection_status_value, profile.statusLabel()), 14);
+                "\n" + activity.getString(R.string.flow_connection_status_value, profile.statusLabel(activity)), 14);
         identity.setTag("agent-target-identity");
         body.addView(identity);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_connection_actions))
@@ -139,14 +139,13 @@ final class AgentConnectionDialogs {
                     .format(new Date(profile.verifiedAt));
             body.append(activity.getString(R.string.flow_last_verified_value, checked))
                     .append("\n").append(activity.getString(R.string.flow_verified_note)).append("\n\n");
-        } else {
-            if (profile.probeFailure != null) {
-                body.append(activity.getString(R.string.flow_last_test_value, profile.probeFailure.label))
-                        .append("\n").append(activity.getString(R.string.flow_next_step_value, profile.probeFailure.nextStep))
-                        .append("\n\n");
-            } else {
-                body.append(activity.getString(R.string.flow_not_verified_hint) + "\n\n");
-            }
+        }
+        if (profile.probeFailure != null) {
+            body.append(activity.getString(R.string.flow_last_test_value, profile.probeFailure.label(activity)))
+                    .append("\n").append(activity.getString(R.string.flow_next_step_value, profile.probeFailure.nextStep(activity)))
+                    .append("\n\n");
+        } else if (!profile.verified()) {
+            body.append(activity.getString(R.string.flow_not_verified_hint)).append("\n\n");
         }
         body.append(AgentCapabilitySummary.describe(activity, profile.kind, profile.transport,
                 profile.verified(), profile.capabilities, profile.featureMapAvailable,
@@ -225,7 +224,12 @@ final class AgentConnectionDialogs {
                 boolean applied = store.applyProbeSuccess(profile.id, profile.revision, attemptId, result);
                 activity.runOnUiThread(() -> {
                     progress.dismiss(); changed.run();
-                    Toast.makeText(activity, applied ? result.message :
+                    String successMessage = result.partialFailure != null
+                            ? result.partialFailure.label(activity) + "。" + result.partialFailure.nextStep(activity)
+                            : profile.transport == AgentConnectionStore.Transport.BRIDGE &&
+                                    profile.kind == AgentConnectionStore.Kind.HERMES
+                                    ? activity.getString(R.string.flow_bridge_agent_ready) : result.message;
+                    Toast.makeText(activity, applied ? successMessage :
                                     activity.getString(R.string.flow_test_result_ignored),
                             Toast.LENGTH_LONG).show(); show();
                 });
@@ -235,7 +239,8 @@ final class AgentConnectionDialogs {
                         attemptId, failure);
                 activity.runOnUiThread(() -> {
                     progress.dismiss(); changed.run();
-                    Toast.makeText(activity, applied ? activity.getString(R.string.flow_test_failed, failure.label, failure.nextStep) :
+                    Toast.makeText(activity, applied ? activity.getString(R.string.flow_test_failed,
+                                    failure.label(activity), failure.nextStep(activity)) :
                             activity.getString(R.string.flow_test_result_ignored),
                             Toast.LENGTH_LONG).show(); show();
                 });

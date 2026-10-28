@@ -199,6 +199,11 @@ public struct AgentSettingsView: View {
                     Text(AgentCapabilitySummary.nextStep(kind: profile.kind, transport: profile.transport, capabilities: profile.capabilities,
                         verified: profile.connected, credentialDisabled: disabled))
                         .font(.caption).foregroundStyle(.primary)
+                    if profile.transport == .bridge && profile.kind == .hermes,
+                       profile.lastReadiness == .unavailable || profile.lastReadiness == .checking {
+                        Text("请在电脑上检查 Hermes 是否已启动及凭据是否有效，然后重新测试连接。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if profile.connected && !disabled {
                         Text("这是最近一次检查结果，不代表当前在线。")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -241,6 +246,14 @@ public struct AgentSettingsView: View {
     private func statusLabel(_ profile: AgentConnectionProfile) -> some View {
         if profile.credentialReference.hasPrefix("padnote-disabled://") {
             Label("需重新连接", systemImage: "key.slash").font(.caption).foregroundStyle(.orange)
+        } else if profile.connected && profile.transport == .bridge && profile.kind == .hermes {
+            let status = readinessDisplay(profile.lastReadiness)
+            VStack(alignment: .trailing, spacing: 2) {
+                Label(status.title, systemImage: status.icon)
+                if let date = profile.verifiedAt {
+                    Text(date.formatted(date: .abbreviated, time: .shortened))
+                }
+            }.font(.caption).foregroundStyle(status.color)
         } else if profile.connected {
             VStack(alignment: .trailing, spacing: 2) {
                 Label("最近检查通过", systemImage: "checkmark.circle.fill")
@@ -252,6 +265,19 @@ public struct AgentSettingsView: View {
             Label("检查失败", systemImage: "exclamationmark.circle.fill").font(.caption).foregroundStyle(.orange)
         } else {
             Text("未验证").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func readinessDisplay(_ readiness: AgentReadinessStatus?) -> (title: String, color: Color, icon: String) {
+        switch readiness {
+        case .ready:
+            return ("上次检测 Agent 可用", .green, "checkmark.circle.fill")
+        case .unavailable:
+            return ("已配对 · Agent 不可用", .orange, "exclamationmark.circle.fill")
+        case .checking:
+            return ("已配对 · 正在检测 Agent", .orange, "clock")
+        case .unknown, .none:
+            return ("已配对 · Agent 未确认", .secondary, "questionmark.circle")
         }
     }
 
@@ -281,7 +307,8 @@ public struct AgentSettingsView: View {
             do {
                 let result = try await AgentConnectionClient(pin: snapshot.config.certSHA256).probeCapabilities(snapshot.config)
                 guard store.applyProbeSuccess(id: snapshot.id, revision: snapshot.revision,
-                    lifecycleEpoch: snapshot.lifecycleEpoch, capabilities: result.capabilities) else {
+                    lifecycleEpoch: snapshot.lifecycleEpoch, capabilities: result.capabilities,
+                    readiness: result.partialStatus) else {
                     message = "连接已在检查期间修改，旧结果已忽略。"
                     checking.remove(id); reload(); return
                 }

@@ -48,6 +48,39 @@ public final class AgentProtocolTest {
         assertFalse(result.featureMap.containsKey("not_reported"));
     }
 
+    @Test public void hermesBridgeReadinessReadyUsesExplicitProbeHeader() throws Exception {
+        AgentConnectionStore.Config connection = config(Arrays.asList("run_submission"));
+        AgentConnectionClient client = new AgentConnectionClient(request -> {
+            assertEquals("1", request.headers.get("X-PadNote-Agent-Probe"));
+            return response(request.url, 200, "{\"object\":\"padnote.agent.capabilities\",\"protocol_version\":1," +
+                    "\"bridge_id\":\"bridge-a\",\"instance_id\":\"agent-a\",\"kind\":\"hermes\"," +
+                    "\"features\":{\"run_submission\":true,\"run_status\":true,\"run_stop\":true}," +
+                    "\"readiness_probe_supported\":true,\"readiness\":{\"bridge_reachable\":true," +
+                    "\"agent_status\":\"ready\",\"source\":\"live\",\"fresh\":true,\"checked_at\":123}}");
+        });
+        AgentConnectionClient.ProbeResult result = client.probeDetails(connection);
+        assertNull(result.partialFailure);
+        assertTrue(Boolean.TRUE.equals(result.featureMap.get("run_submission")));
+    }
+
+    @Test public void hermesBridgeUnavailableDisablesFutureSubmissionButKeepsReadOnlyCapabilities() throws Exception {
+        AgentConnectionStore.Config connection = config(Arrays.asList("run_submission", "task_bundle", "note_context_bundle"));
+        AgentConnectionClient.ProbeResult result = new AgentConnectionClient(request ->
+                response(request.url, 200, "{\"object\":\"padnote.agent.capabilities\",\"protocol_version\":1," +
+                        "\"bridge_id\":\"bridge-a\",\"instance_id\":\"agent-a\",\"kind\":\"hermes\"," +
+                        "\"features\":{\"run_submission\":true,\"run_status\":true,\"run_stop\":true," +
+                        "\"task_bundle\":true,\"note_context_bundle\":true,\"artifacts\":true}," +
+                        "\"readiness_probe_supported\":true,\"readiness\":{\"bridge_reachable\":true," +
+                        "\"agent_status\":\"unavailable\",\"source\":\"live\",\"fresh\":true,\"checked_at\":123}}"))
+                .probeDetails(connection);
+        assertEquals(AgentConnectionStore.ProbeFailure.AGENT_UNAVAILABLE, result.partialFailure);
+        assertFalse(Boolean.TRUE.equals(result.featureMap.get("run_submission")));
+        assertFalse(Boolean.TRUE.equals(result.featureMap.get("task_bundle")));
+        assertFalse(Boolean.TRUE.equals(result.featureMap.get("note_context_bundle")));
+        assertTrue(Boolean.TRUE.equals(result.featureMap.get("run_status")));
+        assertTrue(Boolean.TRUE.equals(result.featureMap.get("artifacts")));
+    }
+
     @Test public void builtinBridgeProbeAllowsReadOnlyCapabilitiesWithoutWorkerOrKey() throws Exception {
         AgentConnectionStore.Config connection = builtinConfig();
         AgentConnectionClient.ProbeResult result = new AgentConnectionClient(request ->

@@ -3,8 +3,10 @@
     <string name="widget_render_failed">Impossible d’afficher l’objet texte</string>
     <string name="widget_render_failure_hint">Échec de l’affichage. Touchez pour voir la cause et les options de récupération.</string>
     <string name="widget_format_toolbar">Barre de mise en forme du texte, faites défiler horizontalement</string>
-    <string name="widget_use_latex">Compiler avec LaTeX</string>
-    <string name="widget_use_markdown">Compiler avec Markdown</string>
+    <string name="widget_use_latex">Mode formule (LaTeX)</string>
+    <string name="widget_formula_mode">Formule</string>
+    <string name="widget_text_mode">Texte</string>
+    <string name="widget_use_markdown">Mode texte (Markdown, formules possibles)</string>
     <string name="widget_decrease_text_size">Réduire la taille du texte</string>
     <string name="widget_increase_text_size">Augmenter la taille du texte</string>
     <string name="widget_decrease_line_spacing">Réduire l’interligne</string>
@@ -26,8 +28,8 @@
     <string name="widget_source_copied">Source copiée</string>
     <string name="widget_current_text_size">%1$s, taille actuelle %2$d</string>
     <string name="widget_current_line_spacing">%1$s, interligne actuel %2$s</string>
-    <string name="widget_hint_latex">Saisissez directement du LaTeX, par exemple : \\frac{a}{b}</string>
-    <string name="widget_hint_markdown">Saisissez directement du Markdown ; les formules $...$ sont prises en charge</string>
+    <string name="widget_hint_latex">Mode formule : saisissez une formule LaTeX, par exemple : \\frac{a}{b}</string>
+    <string name="widget_hint_markdown">Saisissez du texte courant avec des titres, des listes et des formules $...$.</string>
     <string name="widget_guide_command_hint">Commande ou configuration (à exécuter dans le terminal indiqué ; appui long pour sélectionner et copier)</string>
     <string name="widget_guide_official_docs">Documentation officielle</string>
     <string name="widget_guide_title">Guide de connexion</string>

@@ -10,10 +10,10 @@
   !define STAGE "${__FILEDIR__}build/stage"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.18.0-beta.18"
+  !define PRODUCT_VERSION "0.18.0-beta.19"
 !endif
 !ifndef FILE_VERSION
-  !define FILE_VERSION "0.18.0.16"
+  !define FILE_VERSION "0.18.0.19"
 !endif
 !ifndef OUTFILE
   !define OUTFILE "${__FILEDIR__}build/PadNote-Connection-Assistant-${PRODUCT_VERSION}-Setup-x64.exe"

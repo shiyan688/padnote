@@ -74,11 +74,34 @@ class AdminUiTests(unittest.TestCase):
         svc = service([instance("agent-a", "First Agent", executable=False,
                                 health="needs_configuration")])
         page = self.render(svc)
-        self.assertIn("需要配置凭据或本机引擎", page)
-        self.assertIn('action="/admin/instances/agent-a/check"><input', page)
-        self.assertIn("检测连接</button>", page)
+        self.assertIn("状态未知 · 需要重新检测", page)
+        self.assertIn('action="/admin/instances/agent-a/check" data-agent-check><input', page)
+        self.assertIn("检测 Agent 接口</button>", page)
+        self.assertIn("未知 · 需要重新检测", page)
         self.assertIn("平板", page)
         self.assertNotIn("iPad", page)
+
+    def test_ready_hermes_card_keeps_single_check_form_and_clear_health_label(self):
+        ready = instance("agent-ready", "Ready Agent", executable=True, health="ready")
+        ready["checked_at"] = 99
+        svc = service([ready])
+        page = self.render(svc)
+        self.assertIn("上次检测通过", page)
+        self.assertIn('action="/admin/instances/agent-ready/check" data-agent-check><input', page)
+        self.assertEqual(1, page.count('data-agent-check'))
+        self.assertEqual(1, page.count('action="/admin/instances/agent-ready/check"'))
+        self.assertEqual(1, page.count('data-check-button'))
+
+    def test_check_age_uses_checked_at_and_marks_stale_or_invalid_unknown(self):
+        stale = instance("agent-stale", "Stale", executable=True, health="ready")
+        stale["checked_at"] = 39
+        future = instance("agent-future", "Future", executable=True, health="ready")
+        future["checked_at"] = 101
+        page = self.render(service([stale, future]))
+        self.assertIn("上次检测：1 分钟前 · 结果已过期", page)
+        self.assertIn("检测结果已过期", page)
+        self.assertIn("未知 · 需要重新检测", page)
+        self.assertNotIn("上次检测：-", page)
 
     def test_onboarding_tutorial_and_missing_hermes_install_link_are_rendered(self):
         with patch("padnote_assistant.admin_ui.hermes_onboarding_status",

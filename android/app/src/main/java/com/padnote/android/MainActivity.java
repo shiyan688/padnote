@@ -704,7 +704,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     public void onTextInsertRequested(float worldX, float worldY) {
         commitInlineTextEditorExcept(null);
         NoteTextBox inserted = canvasView.addTextBoxAt(
-                NoteTextBox.Format.LATEX, "", worldX, worldY);
+                NoteTextBox.Format.MARKDOWN, "", worldX, worldY);
         if (inserted == null) {
             return;
         }

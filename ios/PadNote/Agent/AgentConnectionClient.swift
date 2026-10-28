@@ -34,13 +34,20 @@ public struct AgentProbeResult: Equatable, Sendable {
     public let capabilities: [String: Bool]
     public let bridgeID: String?
     public let instanceID: String?
+    public let partialStatus: AgentReadinessStatus?
 
-    public init(message: String, capabilities: [String: Bool], bridgeID: String? = nil, instanceID: String? = nil) {
+    public init(message: String, capabilities: [String: Bool], bridgeID: String? = nil, instanceID: String? = nil,
+                partialStatus: AgentReadinessStatus? = nil) {
         self.message = message
         self.capabilities = capabilities
         self.bridgeID = bridgeID
         self.instanceID = instanceID
+        self.partialStatus = partialStatus
     }
+}
+
+public enum AgentReadinessStatus: String, Codable, Sendable {
+    case ready, unavailable, unknown, checking
 }
 
 public struct AgentConnectionClient {
@@ -70,7 +77,8 @@ public struct AgentConnectionClient {
             throw AgentConnectionError.invalidResponse
         }
         let url = try Self.capabilitiesURL(for: config)
-        let object = try await requestJSON(url: url, method: "GET", token: config.token)
+        let headers = config.transport == .bridge ? ["X-PadNote-Agent-Probe": "1"] : [:]
+        let object = try await requestJSON(url: url, method: "GET", token: config.token, headers: headers)
         switch config.transport {
         case .direct:
             guard config.kind == .hermes,
@@ -98,8 +106,62 @@ public struct AgentConnectionClient {
             if config.kind == .builtinVideo, features["run_submission"] == true {
                 throw AgentConnectionError.invalidResponse
             }
-            return AgentProbeResult(message: "电脑 Agent 已连接", capabilities: features, bridgeID: bridgeID, instanceID: instanceID)
+            guard config.kind == .hermes else {
+                return AgentProbeResult(message: "电脑 Agent 已连接", capabilities: features, bridgeID: bridgeID, instanceID: instanceID)
+            }
+            return try Self.hermesBridgeReadinessResult(object: object, features: features, bridgeID: bridgeID, instanceID: instanceID)
         }
+    }
+
+    private static func hermesBridgeReadinessResult(object: [String: Any], features original: [String: Bool],
+                                                     bridgeID: String, instanceID: String) throws -> AgentProbeResult {
+        var features = original
+        func result(_ status: AgentReadinessStatus, _ message: String) -> AgentProbeResult {
+            AgentProbeResult(message: message, capabilities: features, bridgeID: bridgeID,
+                             instanceID: instanceID, partialStatus: status)
+        }
+        func unavailableFeatures() {
+            for key in ["run_submission", "note_context_bundle", "task_bundle"] { features[key] = false }
+        }
+        guard let supportedValue = object["readiness_probe_supported"] else {
+            return result(.unknown, "电脑已配对，Agent 状态未检测（连接助手版本较旧）")
+        }
+        guard let supported = supportedValue as? NSNumber, CFGetTypeID(supported) == CFBooleanGetTypeID() else {
+            throw AgentConnectionError.invalidResponse
+        }
+        guard supported.boolValue else {
+            return result(.unknown, "电脑已配对，Agent 状态未检测（连接助手不支持就绪检查）")
+        }
+        guard let readiness = object["readiness"] as? [String: Any],
+              let reachable = readiness["bridge_reachable"] as? NSNumber,
+              CFGetTypeID(reachable) == CFBooleanGetTypeID(), reachable.boolValue,
+              let freshValue = readiness["fresh"] as? NSNumber,
+              CFGetTypeID(freshValue) == CFBooleanGetTypeID(),
+              let source = readiness["source"] as? String,
+              ["live", "cached", "pending"].contains(source),
+              let statusString = readiness["agent_status"] as? String,
+              let status = AgentReadinessStatus(rawValue: statusString) else {
+            throw AgentConnectionError.invalidResponse
+        }
+        let fresh = freshValue.boolValue
+        if source == "pending" || status == .checking {
+            unavailableFeatures()
+            return result(.checking, "电脑已连通，正在检查 Agent")
+        }
+        if source == "live" && fresh && status == .unavailable {
+            unavailableFeatures()
+            return result(.unavailable, "电脑已连通，但 Agent 当前不可用")
+        }
+        if source == "live" && fresh && status == .ready {
+            guard let checked = readiness["checked_at"] as? NSNumber,
+                  CFGetTypeID(checked) != CFBooleanGetTypeID(),
+                  checked.doubleValue.isFinite, checked.doubleValue > 0,
+                  checked.doubleValue.rounded(.towardZero) == checked.doubleValue else {
+                return result(.unknown, "电脑已连通，Agent 就绪时间无效，状态未确认")
+            }
+            return result(.ready, "电脑已连通，Agent 已就绪")
+        }
+        return result(.unknown, "电脑已连通，Agent 状态未确认")
     }
 
     static func validatedBaseURL(_ endpoint: String) throws -> URL {

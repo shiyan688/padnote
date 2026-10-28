@@ -9,11 +9,189 @@ from unittest import mock
 
 from padnote_assistant.bridge import BridgeService
 from padnote_assistant.hermes import HermesError
-from padnote_assistant.state import StateOwnershipError, StateStore
+from padnote_assistant.state import AuthorizationError, StateOwnershipError, StateStore
 from test_core import ready_instance, run_payload
 
 
 class AsyncSubmissionTests(unittest.TestCase):
+    def test_accepted_worker_keeps_original_client_after_revoke_and_config_change(self):
+        entered = threading.Event()
+        release = threading.Event()
+        clients = []
+        calls = []
+
+        class BoundHermes:
+            def __init__(self, base_url, api_key, **kwargs):
+                clients.append((base_url, api_key))
+
+            def create_run(self, *args, **kwargs):
+                calls.append("POST")
+                entered.set()
+                if not release.wait(timeout=3):
+                    raise AssertionError("test did not release accepted request")
+                return {"run_id": "run_original_identity", "status": "started"}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+                "padnote_assistant.bridge.HermesClient", BoundHermes):
+            service = BridgeService(Path(directory), async_submission=True)
+            try:
+                instance, token, connection = ready_instance(service)
+                status, receipt = service.submit_run(
+                    instance["instance_id"], token, "client-task-1", run_payload())
+                self.assertEqual(202, status)
+                self.assertTrue(entered.wait(timeout=2))
+                self.assertEqual(("http://127.0.0.1:8642", "fixture-key"), clients[-1])
+                client_count_at_accept = len(clients)
+
+                service.store.attach_instance_config(
+                    instance["instance_id"], "/tmp/replacement-config.toml", "replacement-fingerprint")
+                service.store.revoke_connection(connection["connection_id"])
+                with self.assertRaises(AuthorizationError):
+                    service.submit_run(instance["instance_id"], token,
+                                       "client-task-2", {**run_payload(),
+                                                          "client_task_id": "client-task-2"})
+
+                release.set()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    saved = service.store.snapshot()["runs"][receipt["task_id"]]
+                    if saved.get("upstream_run_id"):
+                        break
+                    time.sleep(0.01)
+                self.assertEqual("run_original_identity", saved["upstream_run_id"])
+                self.assertEqual(client_count_at_accept, len(clients))
+                self.assertTrue(all(client == ("http://127.0.0.1:8642", "fixture-key")
+                                    for client in clients))
+                self.assertEqual(["POST"], calls)
+            finally:
+                release.set()
+                service.close()
+
+    def test_same_task_retry_reuses_receipt_while_another_task_is_admitted(self):
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release = threading.Event()
+        calls = []
+        calls_lock = threading.Lock()
+
+        class BlockingHermes:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def create_run(self, input_text, *args, **kwargs):
+                with calls_lock:
+                    calls.append(input_text)
+                    count = len(calls)
+                    (first_entered if count == 1 else second_entered).set()
+                if not release.wait(timeout=3):
+                    raise AssertionError("test did not release fake Hermes submissions")
+                return {"run_id": f"run_duplicate_{count}", "status": "started"}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+                "padnote_assistant.bridge.HermesClient", BlockingHermes):
+            service = BridgeService(Path(directory), async_submission=True)
+            try:
+                instance, token, _ = ready_instance(service)
+                status, first = service.submit_run(
+                    instance["instance_id"], token, "client-task-1", run_payload())
+                self.assertEqual(202, status)
+                self.assertTrue(first_entered.wait(timeout=2))
+
+                started = time.monotonic()
+                retry_status, retry = service.submit_run(
+                    instance["instance_id"], token, "client-task-1", run_payload())
+                self.assertLess(time.monotonic() - started, 0.25)
+                self.assertEqual(202, retry_status)
+                self.assertEqual(first["task_id"], retry["task_id"])
+                with calls_lock:
+                    self.assertEqual(1, len(calls))
+
+                other = {**run_payload(), "client_task_id": "client-task-2",
+                         "input": "Different task"}
+                other_status, second = service.submit_run(
+                    instance["instance_id"], token, "client-task-2", other)
+                self.assertEqual(202, other_status)
+                self.assertNotEqual(first["task_id"], second["task_id"])
+                self.assertTrue(second_entered.wait(timeout=2))
+
+                release.set()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    rows = service.store.snapshot()["runs"]
+                    if all(rows[item["task_id"]].get("upstream_run_id") for item in (first, second)):
+                        break
+                    time.sleep(0.01)
+                self.assertEqual("run_duplicate_1", rows[first["task_id"]]["upstream_run_id"])
+                self.assertEqual("run_duplicate_2", rows[second["task_id"]]["upstream_run_id"])
+                with calls_lock:
+                    self.assertEqual(2, len(calls))
+            finally:
+                release.set()
+                service.close()
+
+    def test_second_task_is_admitted_while_first_upstream_post_is_blocked(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+        calls_lock = threading.Lock()
+
+        class TwoCallHermes:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def create_run(self, input_text, *args, **kwargs):
+                with calls_lock:
+                    calls.append(input_text)
+                    call_number = len(calls)
+                    if call_number >= 2:
+                        entered.set()
+                if not release.wait(timeout=3):
+                    raise AssertionError("test did not release fake Hermes submissions")
+                return {"run_id": f"run_parallel_{call_number}", "status": "started"}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+                "padnote_assistant.bridge.HermesClient", TwoCallHermes):
+            service = BridgeService(Path(directory), async_submission=True)
+            try:
+                instance, token, _ = ready_instance(service)
+                first_status, first = service.submit_run(
+                    instance["instance_id"], token, "client-task-1", run_payload())
+                self.assertEqual(202, first_status)
+                first_entered_deadline = time.monotonic() + 2
+                while time.monotonic() < first_entered_deadline:
+                    with calls_lock:
+                        if calls:
+                            break
+                    time.sleep(0.005)
+                with calls_lock:
+                    self.assertEqual(1, len(calls))
+
+                second_payload = {**run_payload(), "client_task_id": "client-task-2",
+                                  "input": "Second fixture task"}
+                started = time.monotonic()
+                second_status, second = service.submit_run(
+                    instance["instance_id"], token, "client-task-2", second_payload)
+                elapsed = time.monotonic() - started
+                self.assertEqual(202, second_status)
+                self.assertLess(elapsed, 0.25)
+                self.assertNotEqual(first["task_id"], second["task_id"])
+                self.assertTrue(entered.wait(timeout=2))
+
+                release.set()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    rows = service.store.snapshot()["runs"]
+                    if all(rows[item["task_id"]].get("upstream_run_id") for item in (first, second)):
+                        break
+                    time.sleep(0.01)
+                self.assertEqual("run_parallel_1", rows[first["task_id"]]["upstream_run_id"])
+                self.assertEqual("run_parallel_2", rows[second["task_id"]]["upstream_run_id"])
+                with calls_lock:
+                    self.assertEqual(2, len(calls))
+            finally:
+                release.set()
+                service.close()
+
     def test_worker_start_failure_returns_known_failure_and_releases_slot(self):
         calls = []
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import copy
 import json
 import re
@@ -84,6 +84,9 @@ class BridgeService:
             self._accepting_submissions = True
             self._operation_locks: dict[str, threading.Lock] = {}
             self._operation_locks_guard = threading.Lock()
+            self._health_probe_lock = threading.Lock()
+            self._health_probe_inflight: set[str] = set()
+            self._health_probe_slots = threading.BoundedSemaphore(2)
             self._video_lifecycle_lock = threading.Lock()
             self._video_lifecycle_condition = threading.Condition(self._video_lifecycle_lock)
             self._active_video_reconciliations = 0
@@ -350,6 +353,9 @@ class BridgeService:
                 raise ValidationError(str(error)) from error
 
     def check_instance(self, instance_id: str) -> dict:
+        initial = self.store.get_instance(instance_id)
+        if initial.get("kind") == "hermes":
+            return self._check_hermes_live(instance_id)
         with self._operation_lock("instance:" + instance_id):
             instance = self.store.get_instance(instance_id)
             if instance.get("retired_at"):
@@ -389,6 +395,48 @@ class BridgeService:
                 features=result.features,
                 executable=result.executable,
             )
+
+    def _check_hermes_live(self, instance_id: str) -> dict[str, Any]:
+        snapshot = self.store.get_instance(instance_id)
+        if snapshot.get("kind") != "hermes":
+            raise ValidationError("OpenClaw task execution is not implemented")
+        if snapshot.get("retired_at"):
+            raise ValidationError("This Agent identity is retired; pair with its replacement")
+        if not self._health_probe_slots.acquire(blocking=False):
+            pending = dict(snapshot)
+            pending.update(health="checking", executable=False, _probe_pending=True)
+            return pending
+        registered = False
+        try:
+            with self._health_probe_lock:
+                if instance_id in self._health_probe_inflight:
+                    pending = dict(snapshot)
+                    pending.update(health="checking", executable=False, _probe_pending=True)
+                    return pending
+                self._health_probe_inflight.add(instance_id)
+                registered = True
+            if self._closed:
+                raise ConflictError("Bridge is closing")
+            if not self.vault.has(instance_id):
+                if self._closed:
+                    raise ConflictError("Bridge is closing")
+                return self.store.update_instance_check(
+                    instance_id, health="credential_missing",
+                    detail="Hermes API key is not configured on this computer.",
+                    features={}, executable=False, expected_identity=snapshot)
+            client = self._hermes(instance_id, allow_unchecked=True, request_timeout=3.0)
+            result = client.check_capabilities()
+            if self._closed:
+                raise ConflictError("Bridge is closing")
+            return self.store.update_instance_check(
+                instance_id, health=result.health, detail=result.detail,
+                features=result.features, executable=result.executable,
+                expected_identity=snapshot)
+        finally:
+            if registered:
+                with self._health_probe_lock:
+                    self._health_probe_inflight.discard(instance_id)
+            self._health_probe_slots.release()
 
     def create_pair_payload(self, instance_id: str, public_url: str) -> dict[str, Any]:
         url = validate_public_url(public_url, allow_loopback_http=self.allow_test_http)
@@ -438,11 +486,18 @@ class BridgeService:
         with self._operation_lock("connection:" + connection_id):
             pass
 
-    def capabilities(self, instance_id: str, bearer: str) -> dict[str, Any]:
+    def capabilities(self, instance_id: str, bearer: str, *, probe_agent: bool = False) -> dict[str, Any]:
         # Built-in production can hold connection/instance locks for a paid render.
         # Capability polling is a read-only snapshot and must stay responsive.
-        authenticated = self.store.authenticate(instance_id, bearer)
+        self.store.authenticate(instance_id, bearer)
         instance = self.store.get_instance(instance_id)
+        probe_source = "cached"
+        if probe_agent and instance.get("kind") == "hermes":
+            instance = self._check_hermes_live(instance_id)
+            probe_source = "pending" if instance.get("_probe_pending") else "live"
+        readiness = self._readiness_snapshot(instance, key_present=(
+            self.vault.has(instance_id) if instance["kind"] == "hermes" else
+            self.builtin_vault.has(instance_id) if instance["kind"] == "builtin_video" else False))
         if instance["kind"] == "builtin_video":
             operations = self._builtin_video_operations_available(instance_id, instance)
             features = dict(instance.get("features") or {})
@@ -457,42 +512,40 @@ class BridgeService:
                 "video_production": operations, "video_task_submission": operations,
                 "note_context_bundle": False,
             })
+            self.store.authenticate(instance_id, bearer)
+            readiness["source"] = "cached"
             return {"object": "padnote.agent.capabilities", "protocol_version": 1,
                     "bridge_id": self.store.bridge_id, "instance_id": instance_id,
-                    "kind": "builtin_video", "name": instance["name"], "features": features}
-        with self._authorized_connection(instance_id, bearer):
-            with self._operation_lock("instance:" + instance_id):
-                instance = self.store.get_instance(instance_id)
-                available = bool(instance.get("executable")) and not instance.get("retired_at") \
-                    and (self.vault.has(instance_id) if instance["kind"] == "hermes"
-                         else self.builtin_vault.has(instance_id))
-                features = dict(instance.get("features") or {})
-                if not available:
-                    for key in ("run_submission", "run_status", "run_stop", "run_approval_response"):
-                        features[key] = False
-                features["task_bundle"] = available
-                features["note_context_bundle"] = bool(
-                    available and instance["kind"] == "hermes"
-                    and features.get("task_bundle") is True
-                    and features.get("run_submission") is True)
-                features["artifacts"] = True
-                # Candidate install is not yet recoverable as a versioned commit.
-                # Keep the feature closed for every provider, including direct API callers.
-                features["video_revision"] = False
-                scheduler = self._video_scheduler
-                features["video_operations"] = bool(
-                    self.video_worker is not None and self._video_scheduler_healthy
-                    and scheduler is not None and not scheduler.halted
-                    and self._accepting_video_operations and not self._closed)
-                if instance["kind"] == "builtin_video":
-                    for key in ("run_submission", "run_status", "run_stop", "run_approval_response"):
-                        features[key] = False
-                    features["video_operations"] = bool(available and features["video_operations"])
-                    features["video_production"] = features["video_operations"]
-                    features["video_task_submission"] = features["video_operations"]
-                    features["task_bundle"] = features["video_operations"]
-                    features["run_status"] = available
-                return {
+                    "kind": "builtin_video", "name": instance["name"], "features": features,
+                    "readiness": readiness, "readiness_probe_supported": False}
+        available = bool(instance.get("executable")) and not instance.get("retired_at") \
+            and (self.vault.has(instance_id) if instance["kind"] == "hermes"
+                 else self.builtin_vault.has(instance_id))
+        features = dict(instance.get("features") or {})
+        if not available:
+            for key in ("run_submission", "run_stop", "run_approval_response"):
+                features[key] = False
+        # Status and artifacts are local projections and remain readable without provider health.
+        if instance["kind"] == "hermes":
+            features["run_status"] = True
+        features["task_bundle"] = available
+        features["note_context_bundle"] = bool(
+            available and instance["kind"] == "hermes"
+            and features.get("task_bundle") is True
+            and features.get("run_submission") is True)
+        features["artifacts"] = True
+        # Video revision protocol remains disabled.
+        features["video_revision"] = False
+        scheduler = self._video_scheduler
+        features["video_operations"] = bool(
+            self.video_worker is not None and self._video_scheduler_healthy
+            and scheduler is not None and not scheduler.halted
+            and self._accepting_video_operations and not self._closed)
+        self.store.authenticate(instance_id, bearer)
+        if probe_source == "pending":
+            readiness.update(agent_status="checking", fresh=False, age_seconds=None)
+        readiness["source"] = probe_source
+        return {
                     "object": "padnote.agent.capabilities",
                     "protocol_version": 1,
                     "bridge_id": self.store.bridge_id,
@@ -500,7 +553,31 @@ class BridgeService:
                     "kind": instance["kind"],
                     "name": instance["name"],
                     "features": features,
+                    "readiness": readiness,
+                    "readiness_probe_supported": instance["kind"] == "hermes",
                 }
+
+    def _readiness_snapshot(self, instance: dict[str, Any], *, key_present: bool) -> dict[str, Any]:
+        checked_at = instance.get("checked_at")
+        now = int(self.clock())
+        valid_timestamp = isinstance(checked_at, int) and not isinstance(checked_at, bool) \
+            and 0 < checked_at <= now
+        age = max(0, now - checked_at) if valid_timestamp else None
+        fresh = age is not None and age <= 60
+        healthy = bool(fresh and instance.get("health") == "ready"
+                       and instance.get("executable") and not instance.get("retired_at")
+                       and key_present)
+        status = "ready" if healthy else (
+            "unavailable" if fresh and (instance.get("health") != "ready"
+                or not instance.get("executable") or instance.get("retired_at") or not key_present)
+            else "unknown")
+        known_health = {"ready", "authentication_failed", "api_not_enabled", "not_running",
+                        "wrong_service", "error", "needs_configuration", "credential_missing",
+                        "unsupported"}
+        reason = instance.get("health") if instance.get("health") in known_health else None
+        return {"bridge_reachable": True, "agent_status": status, "reason": reason,
+                "checked_at": checked_at if valid_timestamp else None,
+                "age_seconds": age, "fresh": fresh}
 
     def _builtin_video_operations_available(self, instance_id: str,
                                             instance: dict[str, Any] | None = None) -> bool:
@@ -1504,9 +1581,11 @@ class BridgeService:
 
     def _perform_upstream_submission(self, instance_id: str, run: dict[str, Any],
                                      upstream_payload: dict[str, Any],
-                                     upstream_key: str) -> tuple[int, dict[str, Any]]:
+                                     upstream_key: str,
+                                     client: HermesClient | None = None) -> tuple[int, dict[str, Any]]:
         try:
-            response = self._hermes(instance_id).create_run(
+            submission_client = client if client is not None else self._hermes(instance_id)
+            response = submission_client.create_run(
                 upstream_payload["input"], upstream_key,
                 session_id=run.get("input_session_id"),
             )
@@ -1569,12 +1648,17 @@ class BridgeService:
     def _run_submission_worker(self, instance_id: str, connection: dict[str, Any],
                               task_id: str, upstream_payload: dict[str, Any],
                               upstream_key: str) -> None:
-        """Perform one admitted async submission after rechecking its durable owner."""
+        """Recheck and snapshot routing under auth locks, then submit under task lock only.
+
+        Authorization is admitted at the snapshot boundary. Later revocation cannot recall
+        an accepted request; the captured client prevents redirecting it to a replacement.
+        """
         try:
             connection_id = connection["connection_id"]
-            with self._operation_lock("connection:" + connection_id):
-                with self._operation_lock("instance:" + instance_id):
-                    with self._operation_lock("task:" + task_id):
+            with ExitStack() as stack:
+                with self._operation_lock("connection:" + connection_id):
+                    with self._operation_lock("instance:" + instance_id):
+                        stack.enter_context(self._operation_lock("task:" + task_id))
                         state = self.store.snapshot()
                         live = state.get("connections", {}).get(connection_id)
                         if (not isinstance(live, dict) or live.get("revoked_at") is not None
@@ -1593,8 +1677,11 @@ class BridgeService:
                                 task_id, status="failed", submission_uncertain=False,
                                 error="Submission was cancelled before contacting Hermes during shutdown.")
                             return
-                        self._perform_upstream_submission(
-                            instance_id, current, upstream_payload, upstream_key)
+                        # Bind this admitted task to the exact address/key snapshot validated
+                        # above. Do not re-read provider settings during network I/O.
+                        client = self._hermes(instance_id)
+                self._perform_upstream_submission(
+                    instance_id, current, upstream_payload, upstream_key, client=client)
         except Exception:
             try:
                 current = self.store.owned_run(connection, task_id)
@@ -1633,7 +1720,8 @@ class BridgeService:
         run = self.store.owned_run(connection, task_id)
         if run.get("upstream_run_id") and (run["status"] not in TERMINAL_STATUSES or not run.get("session_id")):
             try:
-                response = self._hermes(instance_id).get_run(run["upstream_run_id"])
+                response = self._hermes(instance_id, allow_unchecked=True).get_run(
+                    run["upstream_run_id"])
                 response_id = response.get("run_id") or response.get("id")
                 if response_id != run["upstream_run_id"]:
                     raise HermesError("upstream_invalid", "Hermes returned a different run", status=502)
@@ -1804,7 +1892,8 @@ class BridgeService:
         with self._operation_locks_guard:
             return self._operation_locks.setdefault(key, threading.Lock())
 
-    def _hermes(self, instance_id: str, *, allow_unchecked: bool = False) -> HermesClient:
+    def _hermes(self, instance_id: str, *, allow_unchecked: bool = False,
+                request_timeout: float | None = None) -> HermesClient:
         instance = self.store.get_instance(instance_id)
         if instance["kind"] != "hermes":
             raise ValidationError("OpenClaw task execution is not implemented")
@@ -1814,7 +1903,10 @@ class BridgeService:
             raise ValidationError("Hermes task execution is not currently available")
         if not self.vault.has(instance_id):
             raise ValidationError("Hermes key is not loaded on this computer")
-        return HermesClient(instance["base_url"], self.vault.get(instance_id), submission_timeout=45.0)
+        if request_timeout is None:
+            return HermesClient(instance["base_url"], self.vault.get(instance_id), submission_timeout=45.0)
+        return HermesClient(instance["base_url"], self.vault.get(instance_id),
+                            timeout=request_timeout, submission_timeout=45.0)
 
     @staticmethod
     def _key_fingerprint(api_key: str) -> str:

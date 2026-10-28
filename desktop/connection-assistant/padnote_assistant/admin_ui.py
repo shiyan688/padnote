@@ -15,7 +15,7 @@ def _e(value: Any) -> str:
 
 def _health(value: str) -> tuple[str, str]:
     return {
-        "healthy": ("可连接", "good"), "ready": ("可连接", "good"),
+        "healthy": ("上次检测通过", "good"), "ready": ("上次检测通过", "good"),
         "not_checked": ("尚未检测", "neutral"), "unsupported": ("暂不支持执行", "warn"),
         "identity_changed": ("身份已变化", "bad"), "unhealthy": ("连接异常", "bad"),
         "error": ("连接异常", "bad"), "degraded": ("部分可用", "warn"),
@@ -127,6 +127,20 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
     cards = []
     for i in instances:
         iid = _e(i.get("instance_id")); label, tone = _health(i.get("health", ""))
+        checked_at = i.get("checked_at")
+        now = int(service.clock())
+        valid_check = isinstance(checked_at, int) and not isinstance(checked_at, bool) and 0 < checked_at <= now
+        check_age = now - checked_at if valid_check else None
+        if check_age is None:
+            check_label, check_tone = "未知 · 需要重新检测", "neutral"
+            check_age_attr = ""
+            label, tone = "状态未知 · 需要重新检测", "neutral"
+        else:
+            check_label = "上次检测：" + str(check_age) + " 秒前" if check_age <= 60 else "上次检测：" + str(check_age // 60) + " 分钟前 · 结果已过期"
+            check_tone = "good" if check_age <= 60 else "warn"
+            check_age_attr = ' data-check-age="' + str(check_age) + '"'
+            if check_age > 60:
+                label, tone = "检测结果已过期", "warn"
         kind = {"hermes": "Hermes", "openclaw": "OpenClaw · 仅发现与引导", "builtin_video": "可选 Qwen 视频适配"}.get(i.get("kind"), i.get("kind", "Agent"))
         retired = bool(i.get("retired_at"))
         actions = ''
@@ -134,10 +148,12 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
             keylabel = "模型与配音 API Key" if i["kind"] == "builtin_video" else "Hermes API Key"
             if i.get("executable"):
                 main_action = '<a class="button" href="#pairing" data-pair-agent="' + iid + '">连接平板</a>'
+                if i["kind"] == "hermes":
+                    main_action += '<form method="post" action="/admin/instances/' + iid + '/check" data-agent-check><input type="hidden" name="csrf" value="' + csrf + '"><button data-check-button>检测 Agent 接口</button></form>'
             elif not i.get("credential_fingerprint"):
                 main_action = '<button type="button" data-open-credentials="' + iid + '">填写凭据</button>'
             else:
-                main_action = '<form method="post" action="/admin/instances/' + iid + '/check"><input type="hidden" name="csrf" value="' + csrf + '"><button>检测连接</button></form>'
+                main_action = '<form method="post" action="/admin/instances/' + iid + '/check" data-agent-check><input type="hidden" name="csrf" value="' + csrf + '"><button data-check-button>检测 Agent 接口</button></form>'
             actions = '<div class="agent-primary">' + main_action + '</div><details class="advanced" data-credentials="' + iid + '"><summary>凭据与维护</summary><form method="post" action="/admin/instances/' + iid + '/key"><input type="hidden" name="csrf" value="' + csrf + '"><label>' + keylabel + ' <span class="muted">不会回显</span><input data-credential-input type="password" name="api_key" autocomplete="new-password" required></label><button class="button-quiet">保存凭据</button></form>'
             if i["kind"] == "builtin_video":
                 actions += '<form method="post" action="/admin/instances/' + iid + '/credential/revoke"><input type="hidden" name="csrf" value="' + csrf + '"><button class="button-quiet danger">撤销凭据与设备</button></form>'
@@ -145,7 +161,7 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
         detail = '<p class="muted">' + _e(i.get("detail", "")) + '</p>'
         if i.get("kind") == "builtin_video":
             detail += '<p class="meta">模型 ' + _e(i.get("provider_model", "qwen-plus")) + ' · ' + _e(i.get("provider_region", "")) + ' · TTS ' + _e(i.get("tts_model", "")) + ' / ' + _e(i.get("tts_voice", "")) + '</p>'
-        cards.append('<article class="agent-card"><div class="agent-heading"><div><h3>' + _e(i.get("name")) + '</h3><span class="muted">' + _e(kind) + '</span></div><span class="badge ' + tone + '">' + _e(label) + '</span></div>' + detail + actions + '</article>')
+        cards.append('<article class="agent-card"><div class="agent-heading"><div><h3>' + _e(i.get("name")) + '</h3><span class="muted">' + _e(kind) + '</span></div><span class="badge ' + tone + '">' + _e(label) + '</span></div><p class="check-age badge ' + check_tone + '" data-check-age-label' + check_age_attr + '>' + _e(check_label) + '</p>' + detail + actions + '</article>')
     agent_content = ''.join(cards) or '<div class="empty-state"><div class="empty-icon">＋</div><h3>先添加一个 Agent</h3><p>添加 Hermes 地址与凭据后，检测连接，再为平板生成配对码。</p><a class="button" href="#add-agent">添加 Agent</a></div>'
 
     selected_pair_id = pair_instance_id if pair_instance_id in {i["instance_id"] for i in executable} else (executable[0]["instance_id"] if executable else None)

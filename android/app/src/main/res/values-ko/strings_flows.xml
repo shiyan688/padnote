@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">설정이 완료되지 않았습니다</string>
+    <string name="flow_connection_not_checked">확인되지 않음</string>
+    <string name="flow_bridge_pairing_checked">페어링됨 · 지난번 기능 %1$d개 확인</string>
+    <string name="flow_direct_checked">Agent 기능 확인 완료 · %1$d개</string>
+    <string name="flow_bridge_agent_ready">컴퓨터에 연결됨, Hermes Agent 인터페이스를 사용할 수 있습니다.</string>
+    <string name="flow_probe_credentials_label">인증 정보를 확인할 수 없습니다</string>
+    <string name="flow_probe_credentials_next">연결 토큰을 다시 저장한 후 테스트하세요.</string>
+    <string name="flow_probe_timeout_label">연결 시간이 초과되었습니다</string>
+    <string name="flow_probe_timeout_next">컴퓨터가 켜져 있고 네트워크에 연결되어 있는지 확인한 후 다시 테스트하세요.</string>
+    <string name="flow_probe_network_label">컴퓨터에 연결할 수 없습니다</string>
+    <string name="flow_probe_network_next">네트워크, 주소, 컴퓨터 연결 도우미를 확인하세요.</string>
+    <string name="flow_probe_tls_identity_label">보안 연결 또는 신원 확인에 실패했습니다</string>
+    <string name="flow_probe_tls_identity_next">HTTPS 인증서, 페어링된 신원, 컴퓨터 주소를 확인하세요.</string>
+    <string name="flow_probe_protocol_label">컴퓨터 기능 확인에 실패했습니다</string>
+    <string name="flow_probe_protocol_next">Agent 또는 연결 도우미가 실행 중이며 이 페어링을 지원하는지 확인하세요.</string>
+    <string name="flow_probe_agent_unavailable_label">컴퓨터에 연결됐지만 Agent가 준비되지 않았습니다</string>
+    <string name="flow_probe_agent_unavailable_next">컴퓨터에서 Agent를 시작하거나 상태를 확인한 후 다시 시도하세요.</string>
+    <string name="flow_probe_agent_not_checked_label">컴퓨터에 연결됐지만 Agent 상태를 확인하지 못했습니다</string>
+    <string name="flow_probe_agent_not_checked_next">컴퓨터에서 Agent 상태를 확인한 후 다시 시도하세요.</string>
+    <string name="flow_probe_agent_checking_label">컴퓨터에 연결됨, Agent 확인 중</string>
+    <string name="flow_probe_agent_checking_next">확인이 끝날 때까지 기다린 후 다시 시도하세요.</string>
+    <string name="flow_probe_unknown_label">이전 확인이 완료되지 않았습니다</string>
+    <string name="flow_probe_unknown_next">연결을 다시 테스트해 최신 결과를 확인하세요.</string>
     <string name="flow_agent_title">컴퓨터 Agent</string>
     <string name="flow_close">닫기</string>
     <string name="flow_view_tasks">컴퓨터 작업 보기</string>

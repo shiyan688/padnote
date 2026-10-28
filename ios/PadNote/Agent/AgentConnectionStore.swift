@@ -27,6 +27,7 @@ public struct AgentConnectionProfile: Codable, Equatable, Identifiable, Sendable
     public var verifiedAt: Date?
     public var capabilities: [String: Bool]
     public var lastProbeError: String?
+    public var lastReadiness: AgentReadinessStatus?
 
     public init(
         id: UUID = UUID(),
@@ -41,7 +42,8 @@ public struct AgentConnectionProfile: Codable, Equatable, Identifiable, Sendable
         revision: Int = 1,
         verifiedAt: Date? = nil,
         capabilities: [String: Bool] = [:],
-        lastProbeError: String? = nil
+        lastProbeError: String? = nil,
+        lastReadiness: AgentReadinessStatus? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +58,7 @@ public struct AgentConnectionProfile: Codable, Equatable, Identifiable, Sendable
         self.verifiedAt = verifiedAt
         self.capabilities = capabilities
         self.lastProbeError = lastProbeError
+        self.lastReadiness = lastReadiness
     }
 
     public var connected: Bool { verifiedAt != nil }
@@ -366,6 +369,7 @@ public final class AgentConnectionStore: @unchecked Sendable {
                 updated.credentialReference = stagedReference
                 updated.revision += 1
                 updated.verifiedAt = nil
+                updated.lastReadiness = nil
                 updated.capabilities = [:]
                 updated.lastProbeError = nil
             }
@@ -405,7 +409,8 @@ public final class AgentConnectionStore: @unchecked Sendable {
 
     @discardableResult
     public func applyProbeSuccess(id: UUID, revision: Int, lifecycleEpoch: UInt64? = nil,
-                                  capabilities: [String: Bool], verifiedAt: Date = Date()) -> Bool {
+                                  capabilities: [String: Bool], readiness: AgentReadinessStatus? = nil,
+                                  verifiedAt: Date = Date()) -> Bool {
         withStoreLock {
             guard lifecycleRuntime.allowsMutation,
                   lifecycleEpoch == nil || lifecycleEpoch == lifecycleRuntime.epochSnapshot else { return false }
@@ -413,6 +418,7 @@ public final class AgentConnectionStore: @unchecked Sendable {
             guard let index = payload.profiles.firstIndex(where: { $0.id == id && $0.revision == revision }) else { return false }
             payload.profiles[index].verifiedAt = verifiedAt
             payload.profiles[index].capabilities = capabilities
+            payload.profiles[index].lastReadiness = readiness
             payload.profiles[index].lastProbeError = nil
             return (try? writePayload(payload)) != nil
         }
@@ -426,6 +432,7 @@ public final class AgentConnectionStore: @unchecked Sendable {
             guard var payload = try? readPayload() else { return false }
             guard let index = payload.profiles.firstIndex(where: { $0.id == id && $0.revision == revision }) else { return false }
             payload.profiles[index].verifiedAt = nil
+            payload.profiles[index].lastReadiness = nil
             payload.profiles[index].capabilities = [:]
             payload.profiles[index].lastProbeError = String(message.prefix(500))
             return (try? writePayload(payload)) != nil
@@ -662,6 +669,7 @@ public final class AgentConnectionStore: @unchecked Sendable {
                 operationID: operationID, side: .agent, account: oldReference)
             updated.profiles[index].revision += 1
             updated.profiles[index].verifiedAt = nil
+            updated.profiles[index].lastReadiness = nil
             updated.profiles[index].capabilities = [:]
             updated.profiles[index].lastProbeError = nil
         }

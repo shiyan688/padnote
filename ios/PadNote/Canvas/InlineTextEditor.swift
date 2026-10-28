@@ -29,7 +29,7 @@ final class CanvasTextEditor {
         let y = point.y - Double(page) * stride
         guard page >= 0, page < note.pageCount, y >= 0, y < note.pageHeight else { return }
         let x = min(max(24, point.x), max(24, note.pageWidth - 184))
-        let flow = NoteTextFlow(format: "latex", width: min(440, note.pageWidth - x - 24),
+        let flow = NoteTextFlow(format: "markdown", width: min(440, note.pageWidth - x - 24),
             anchorPageIndex: page, anchorXInPage: x, anchorYInPage: min(y, note.pageHeight - 64))
         show(flow)
     }
@@ -96,7 +96,7 @@ private final class InlineTextInput: UIView, UITextViewDelegate {
     let sourceView = UITextView()
     var onChange: ((String, String, Double, Double) -> Void)?
     var onDone: (() -> Void)?
-    private let format = UISegmentedControl(items: ["LaTeX", "Markdown"])
+    private let format = UISegmentedControl(items: ["公式", "正文"])
     private var size: Double
     private var spacing: Double
     private var preview: UIHostingController<MathTextView>
@@ -112,6 +112,8 @@ private final class InlineTextInput: UIView, UITextViewDelegate {
         layer.borderWidth = 1
         accessibilityIdentifier = "inlineTextEditor"
         format.selectedSegmentIndex = flow.format == "markdown" ? 1 : 0
+        format.accessibilityLabel = "文本格式"
+        format.accessibilityHint = "正文格式也支持输入公式；可切换公式或正文排版。"
         format.addTarget(self, action: #selector(changed), for: .valueChanged)
         top.axis = .horizontal; top.spacing = 8
         let done = UIButton(type: .system)

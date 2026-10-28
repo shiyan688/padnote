@@ -46,6 +46,7 @@ final class AgentConnectionClient {
         final List<String> capabilities;
         /** null means this result came from a legacy caller without a full feature map. */
         final Map<String, Boolean> featureMap;
+        final AgentConnectionStore.ProbeFailure partialFailure;
 
         ProbeResult(String message, String instanceId, List<String> capabilities) {
             this(message, "", instanceId, capabilities);
@@ -63,10 +64,17 @@ final class AgentConnectionClient {
 
         ProbeResult(String message, String bridgeId, String instanceId,
                     List<String> capabilities, Map<String, Boolean> featureMap) {
+            this(message, bridgeId, instanceId, capabilities, featureMap, null);
+        }
+
+        ProbeResult(String message, String bridgeId, String instanceId,
+                    List<String> capabilities, Map<String, Boolean> featureMap,
+                    AgentConnectionStore.ProbeFailure partialFailure) {
             this.message = message == null ? "已验证" : message;
             this.bridgeId = bridgeId == null ? "" : bridgeId;
             this.instanceId = instanceId == null ? "" : instanceId;
             this.featureMap = featureMap == null ? null : strictFeatureMap(featureMap);
+            this.partialFailure = partialFailure;
             this.capabilities = Collections.unmodifiableList(new ArrayList<>(this.featureMap == null
                     ? (capabilities == null ? Collections.emptyList() : capabilities)
                     : trueCapabilities(this.featureMap)));
@@ -127,8 +135,10 @@ final class AgentConnectionClient {
             url = new URL(root.endsWith("/v1/capabilities")
                     ? root : root + "/v1/capabilities");
         }
+        Map<String, String> requestHeaders = config.transport == AgentConnectionStore.Transport.BRIDGE
+                ? Collections.singletonMap("X-PadNote-Agent-Probe", "1") : Collections.emptyMap();
         AgentHttpTransport.Response response = transport.execute(new AgentHttpTransport.Request(
-                "GET", url, config.token, Collections.emptyMap(), null, MAX_RESPONSE,
+                "GET", url, config.token, requestHeaders, null, MAX_RESPONSE,
                 config.certSha256));
         rejectRedirect(response);
         if (response.status < 200 || response.status >= 300) {
@@ -167,7 +177,59 @@ final class AgentConnectionClient {
                     Boolean.TRUE.equals(features.opt("run_submission"))) {
                 throw new IllegalStateException("内置视频工作流能力与协议不匹配");
             }
-            return new ProbeResult("连接助手已验证", bridgeId, instanceId, featureMap);
+            if (config.kind != AgentConnectionStore.Kind.HERMES) {
+                return new ProbeResult("连接助手已验证", bridgeId, instanceId, featureMap);
+            }
+            AgentConnectionStore.ProbeFailure partialFailure = null;
+            String message = "电脑已连通，Hermes 已就绪";
+            Object supported = object.opt("readiness_probe_supported");
+            if (supported != null && !(supported instanceof Boolean)) {
+                throw new ProbeFailureException(AgentConnectionStore.ProbeFailure.PROTOCOL,
+                        "Agent 就绪检查标记格式无效");
+            }
+            if (Boolean.TRUE.equals(supported)) {
+                JSONObject readiness = object.optJSONObject("readiness");
+                if (readiness == null || !(readiness.opt("fresh") instanceof Boolean) ||
+                        !(readiness.opt("bridge_reachable") instanceof Boolean) ||
+                        !readiness.optBoolean("bridge_reachable")) {
+                    throw new ProbeFailureException(AgentConnectionStore.ProbeFailure.PROTOCOL,
+                            "Agent 实时就绪信息格式无效");
+                }
+                String source = readiness.optString("source", "");
+                String status = readiness.optString("agent_status", "");
+                boolean fresh = readiness.optBoolean("fresh");
+                if (!java.util.Arrays.asList("live", "cached", "pending").contains(source) ||
+                        !java.util.Arrays.asList("ready", "unavailable", "unknown", "checking")
+                                .contains(status)) {
+                    throw new ProbeFailureException(AgentConnectionStore.ProbeFailure.PROTOCOL,
+                            "Agent 就绪信息包含未知状态");
+                }
+                if ("pending".equals(source) || "checking".equals(status)) {
+                    partialFailure = AgentConnectionStore.ProbeFailure.AGENT_CHECKING;
+                    message = "电脑已连通，正在检查 Agent";
+                    disableUnavailableAgentFeatures(featureMap);
+                } else if (fresh && "live".equals(source) && "ready".equals(status)) {
+                    Object checkedAt = readiness.opt("checked_at");
+                    if (!(checkedAt instanceof Number) || ((Number) checkedAt).longValue() <= 0 ||
+                            ((Number) checkedAt).doubleValue() != ((Number) checkedAt).longValue()) {
+                        throw new ProbeFailureException(AgentConnectionStore.ProbeFailure.PROTOCOL,
+                                "Agent 就绪检查时间无效");
+                    }
+                    partialFailure = null;
+                } else if (fresh && "live".equals(source) && "unavailable".equals(status)) {
+                    partialFailure = AgentConnectionStore.ProbeFailure.AGENT_UNAVAILABLE;
+                    message = "电脑已连接，但 Agent 尚未就绪";
+                    disableUnavailableAgentFeatures(featureMap);
+                } else {
+                    partialFailure = AgentConnectionStore.ProbeFailure.AGENT_NOT_CHECKED;
+                    message = "电脑已连通，Agent 状态未确认";
+                }
+            } else {
+                partialFailure = AgentConnectionStore.ProbeFailure.AGENT_NOT_CHECKED;
+                message = "电脑已连通，Agent 状态未确认（更新助手可实时检查）";
+            }
+            return new ProbeResult(message, bridgeId, instanceId, Collections.emptyList(), featureMap,
+                    partialFailure);
         }
         if (!"hermes.api_server.capabilities".equals(object.optString("object")) ||
                 !"hermes-agent".equals(object.optString("platform"))) {
@@ -179,6 +241,13 @@ final class AgentConnectionClient {
             }
         }
         return new ProbeResult("Hermes 已验证", "", object.optString("instance_id", ""), featureMap);
+    }
+
+    private static void disableUnavailableAgentFeatures(Map<String, Boolean> features) {
+        if (features == null) return;
+        for (String key : new String[]{"run_submission", "note_context_bundle", "task_bundle"}) {
+            if (features.containsKey(key)) features.put(key, false);
+        }
     }
 
     static String normalizeEndpoint(String endpoint) {

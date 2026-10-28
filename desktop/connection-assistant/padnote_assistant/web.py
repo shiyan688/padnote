@@ -659,7 +659,12 @@ class ApiHandler(_DeadlineRequestHandler):
                 self._json(status, value); return
             match = re.fullmatch(re.escape(API_PREFIX) + r"/agents/([A-Za-z0-9_.:-]+)/capabilities", path)
             if method == "GET" and match:
-                self._json(200, self.service.capabilities(match.group(1), self._bearer())); return
+                probe_agent = self.headers.get("X-PadNote-Agent-Probe") == "1"
+                if probe_agent:
+                    value = self.service.capabilities(match.group(1), self._bearer(), probe_agent=True)
+                else:
+                    value = self.service.capabilities(match.group(1), self._bearer())
+                self._json(200, value); return
             match = re.fullmatch(re.escape(API_PREFIX) + r"/agents/([A-Za-z0-9_.:-]+)/runs", path)
             if method == "POST" and match:
                 status, value = self.service.submit_run(match.group(1), self._bearer(),

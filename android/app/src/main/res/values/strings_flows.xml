@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">Configuration incomplete</string>
+    <string name="flow_connection_not_checked">Not checked</string>
+    <string name="flow_bridge_pairing_checked">Paired · %1$d capabilities checked last time</string>
+    <string name="flow_direct_checked">Agent capabilities checked · %1$d</string>
+    <string name="flow_bridge_agent_ready">Computer connected; Hermes Agent interface is available.</string>
+    <string name="flow_probe_credentials_label">Credentials not accepted</string>
+    <string name="flow_probe_credentials_next">Save the connection token again, then test.</string>
+    <string name="flow_probe_timeout_label">Connection timed out</string>
+    <string name="flow_probe_timeout_next">Check that the computer is on and reachable, then test again.</string>
+    <string name="flow_probe_network_label">Could not reach the computer</string>
+    <string name="flow_probe_network_next">Check the network, address, and computer connection assistant.</string>
+    <string name="flow_probe_tls_identity_label">Secure connection or identity check failed</string>
+    <string name="flow_probe_tls_identity_next">Check the HTTPS certificate, paired identity, and computer address.</string>
+    <string name="flow_probe_protocol_label">Computer capability check failed</string>
+    <string name="flow_probe_protocol_next">Make sure the Agent or connection assistant is running and supports this pairing.</string>
+    <string name="flow_probe_agent_unavailable_label">Computer connected; Agent is not ready</string>
+    <string name="flow_probe_agent_unavailable_next">Start or check the Agent on the computer, then try again.</string>
+    <string name="flow_probe_agent_not_checked_label">Computer connected; Agent status not confirmed</string>
+    <string name="flow_probe_agent_not_checked_next">Check the Agent on the computer, then try again.</string>
+    <string name="flow_probe_agent_checking_label">Computer connected; checking Agent</string>
+    <string name="flow_probe_agent_checking_next">Wait for the check to finish, then try again.</string>
+    <string name="flow_probe_unknown_label">Last check did not complete</string>
+    <string name="flow_probe_unknown_next">Test the connection again to get a current result.</string>
     <string name="flow_agent_title">Computer agents</string>
     <string name="flow_close">Close</string>
     <string name="flow_view_tasks">View computer tasks</string>

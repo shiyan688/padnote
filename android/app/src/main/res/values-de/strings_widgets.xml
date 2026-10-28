@@ -3,8 +3,10 @@
     <string name="widget_render_failed">Textobjekt konnte nicht angezeigt werden</string>
     <string name="widget_render_failure_hint">Anzeige fehlgeschlagen. Tippen, um Ursache und Wiederherstellungsoptionen zu sehen.</string>
     <string name="widget_format_toolbar">Textformatierungsleiste; horizontal scrollen</string>
-    <string name="widget_use_latex">Mit LaTeX kompilieren</string>
-    <string name="widget_use_markdown">Mit Markdown kompilieren</string>
+    <string name="widget_use_latex">Formelmodus (LaTeX)</string>
+    <string name="widget_formula_mode">Formel</string>
+    <string name="widget_text_mode">Text</string>
+    <string name="widget_use_markdown">Textmodus (Markdown, Formeln möglich)</string>
     <string name="widget_decrease_text_size">Textgröße verkleinern</string>
     <string name="widget_increase_text_size">Textgröße vergrößern</string>
     <string name="widget_decrease_line_spacing">Zeilenabstand verkleinern</string>
@@ -26,8 +28,8 @@
     <string name="widget_source_copied">Quelltext kopiert</string>
     <string name="widget_current_text_size">%1$s, aktuell %2$d</string>
     <string name="widget_current_line_spacing">%1$s, aktueller Abstand %2$s</string>
-    <string name="widget_hint_latex">LaTeX direkt eingeben, zum Beispiel: \\frac{a}{b}</string>
-    <string name="widget_hint_markdown">Markdown direkt eingeben; Formeln mit $...$ sind möglich</string>
+    <string name="widget_hint_latex">Formelmodus: LaTeX-Formel eingeben, zum Beispiel: \\frac{a}{b}</string>
+    <string name="widget_hint_markdown">Schreiben Sie normalen Text mit Überschriften, Listen und $...$-Formeln.</string>
     <string name="widget_guide_command_hint">Befehl oder Konfiguration (im angegebenen Terminal ausführen; lange drücken zum Auswählen und Kopieren)</string>
     <string name="widget_guide_official_docs">Offizielle Dokumentation</string>
     <string name="widget_guide_title">Verbindungsanleitung</string>

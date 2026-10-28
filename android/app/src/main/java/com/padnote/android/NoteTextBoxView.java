@@ -214,10 +214,17 @@ final class NoteTextBoxView extends FrameLayout {
         editorToolbar.addView(formatScroll,
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        latexButton = actionButton("LaTeX", getContext().getString(R.string.widget_use_latex));
-        markdownButton = actionButton("MD", getContext().getString(R.string.widget_use_markdown));
-        formatControls.addView(latexButton, new LinearLayout.LayoutParams(dp(64), dp(35)));
-        LinearLayout.LayoutParams mdParams = new LinearLayout.LayoutParams(dp(48), dp(35));
+        latexButton = actionButton(getContext().getString(R.string.widget_formula_mode),
+                getContext().getString(R.string.widget_use_latex));
+        markdownButton = actionButton(getContext().getString(R.string.widget_text_mode),
+                getContext().getString(R.string.widget_use_markdown));
+        LinearLayout.LayoutParams latexParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(35));
+        latexButton.setMinWidth(dp(64));
+        formatControls.addView(latexButton, latexParams);
+        LinearLayout.LayoutParams mdParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(35));
+        markdownButton.setMinWidth(dp(64));
         mdParams.setMargins(dp(5), 0, 0, 0);
         formatControls.addView(markdownButton, mdParams);
         fontDecreaseButton = actionButton("A−", getContext().getString(R.string.widget_decrease_text_size));

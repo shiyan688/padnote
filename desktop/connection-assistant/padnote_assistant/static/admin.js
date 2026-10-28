@@ -96,10 +96,35 @@
       if (button) { button.disabled = true; button.textContent = '正在打开…'; }
     });
   });
+  document.querySelectorAll('[data-agent-check]').forEach((checkForm) => {
+    checkForm.addEventListener('submit', () => {
+      const button = checkForm.querySelector('[data-check-button]');
+      if (button) { button.disabled = true; button.textContent = '正在检测 Agent 接口…'; }
+    });
+  });
   const pending = document.getElementById('pending-list');
   const connections = document.getElementById('connection-list');
   const status = document.querySelector('[data-live-status]');
   let active = false;
+  const ageLabels = Array.from(document.querySelectorAll('[data-check-age-label]')).map((element) => ({
+    element,
+    initialAge: Number(element.dataset.checkAge),
+    startedAt: performance.now()
+  })).filter((item) => Number.isFinite(item.initialAge));
+  const refreshCheckAges = () => {
+    for (const item of ageLabels) {
+      const age = item.initialAge + Math.floor((performance.now() - item.startedAt) / 1000);
+      item.element.textContent = age <= 60 ? `上次检测：${age} 秒前` : `上次检测：${Math.floor(age / 60)} 分钟前 · 结果已过期`;
+      if (age > 60) {
+        item.element.classList.remove('good');
+        item.element.classList.add('warn');
+        const card = item.element.closest('.agent-card');
+        const status = card?.querySelector('.agent-heading .badge');
+        if (status) { status.textContent = '检测结果已过期'; status.classList.remove('good'); status.classList.add('warn'); }
+      }
+    }
+  };
+  refreshCheckAges();
   const fetchLive = async () => {
     if (active || document.visibilityState !== 'visible') return;
     active = true;
@@ -129,5 +154,6 @@
     }
   };
   window.setInterval(fetchLive, 3000);
+  window.setInterval(refreshCheckAges, 3000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchLive(); });
 })();

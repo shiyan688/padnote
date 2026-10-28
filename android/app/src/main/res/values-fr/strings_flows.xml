@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">Configuration incomplète</string>
+    <string name="flow_connection_not_checked">Non vérifié</string>
+    <string name="flow_bridge_pairing_checked">Associé · %1$d capacités vérifiées lors du dernier contrôle</string>
+    <string name="flow_direct_checked">Capacités d’Agent vérifiées · %1$d</string>
+    <string name="flow_bridge_agent_ready">Ordinateur connecté ; l’interface Hermes Agent est disponible.</string>
+    <string name="flow_probe_credentials_label">Identifiants refusés</string>
+    <string name="flow_probe_credentials_next">Enregistrez de nouveau le jeton de connexion, puis relancez le test.</string>
+    <string name="flow_probe_timeout_label">Délai de connexion dépassé</string>
+    <string name="flow_probe_timeout_next">Vérifiez que l’ordinateur est allumé et accessible, puis réessayez.</string>
+    <string name="flow_probe_network_label">Ordinateur inaccessible</string>
+    <string name="flow_probe_network_next">Vérifiez le réseau, l’adresse et l’assistant de connexion de l’ordinateur.</string>
+    <string name="flow_probe_tls_identity_label">Échec de la connexion sécurisée ou de la vérification d’identité</string>
+    <string name="flow_probe_tls_identity_next">Vérifiez le certificat HTTPS, l’identité associée et l’adresse de l’ordinateur.</string>
+    <string name="flow_probe_protocol_label">Échec de la vérification des capacités de l’ordinateur</string>
+    <string name="flow_probe_protocol_next">Vérifiez qu’Agent ou l’assistant de connexion est actif et compatible avec cet appairage.</string>
+    <string name="flow_probe_agent_unavailable_label">Ordinateur connecté ; Agent n’est pas prêt</string>
+    <string name="flow_probe_agent_unavailable_next">Démarrez ou vérifiez Agent sur l’ordinateur, puis réessayez.</string>
+    <string name="flow_probe_agent_not_checked_label">Ordinateur connecté ; état d’Agent non confirmé</string>
+    <string name="flow_probe_agent_not_checked_next">Vérifiez Agent sur l’ordinateur, puis réessayez.</string>
+    <string name="flow_probe_agent_checking_label">Ordinateur connecté ; vérification d’Agent en cours</string>
+    <string name="flow_probe_agent_checking_next">Attendez la fin de la vérification, puis réessayez.</string>
+    <string name="flow_probe_unknown_label">La dernière vérification n’a pas abouti</string>
+    <string name="flow_probe_unknown_next">Testez de nouveau la connexion pour obtenir le résultat actuel.</string>
     <string name="flow_agent_title">Agents sur ordinateur</string>
     <string name="flow_close">Fermer</string>
     <string name="flow_view_tasks">Voir les tâches de l’ordinateur</string>

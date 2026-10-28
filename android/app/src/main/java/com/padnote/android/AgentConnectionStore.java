@@ -36,10 +36,39 @@ final class AgentConnectionStore {
         NETWORK("无法连接电脑", "检查网络、地址和电脑连接助手状态，然后重新测试。"),
         TLS_IDENTITY("安全连接或身份检查失败", "检查 HTTPS 证书、配对身份和电脑地址，然后重新测试。"),
         PROTOCOL("电脑未通过能力协议检查", "确认 Agent/连接助手正在运行且配对协议受支持，然后重新测试。"),
+        AGENT_UNAVAILABLE("电脑已连接，但 Agent 尚未就绪", "启动或检查电脑上的 Agent，然后重新测试。"),
+        AGENT_NOT_CHECKED("电脑已连接，Agent 状态未确认", "检查电脑上的 Agent 状态后重试。"),
+        AGENT_CHECKING("电脑已连接，正在检查 Agent", "请稍候，检查完成后再试。"),
         UNKNOWN("上次验证未完成", "重新测试连接以获取当前结果。");
         final String label;
         final String nextStep;
         ProbeFailure(String label, String nextStep) { this.label = label; this.nextStep = nextStep; }
+        String label(Context context) {
+            switch (this) {
+                case CREDENTIALS: return context.getString(R.string.flow_probe_credentials_label);
+                case TIMEOUT: return context.getString(R.string.flow_probe_timeout_label);
+                case NETWORK: return context.getString(R.string.flow_probe_network_label);
+                case TLS_IDENTITY: return context.getString(R.string.flow_probe_tls_identity_label);
+                case PROTOCOL: return context.getString(R.string.flow_probe_protocol_label);
+                case AGENT_UNAVAILABLE: return context.getString(R.string.flow_probe_agent_unavailable_label);
+                case AGENT_NOT_CHECKED: return context.getString(R.string.flow_probe_agent_not_checked_label);
+                case AGENT_CHECKING: return context.getString(R.string.flow_probe_agent_checking_label);
+                case UNKNOWN: default: return context.getString(R.string.flow_probe_unknown_label);
+            }
+        }
+        String nextStep(Context context) {
+            switch (this) {
+                case CREDENTIALS: return context.getString(R.string.flow_probe_credentials_next);
+                case TIMEOUT: return context.getString(R.string.flow_probe_timeout_next);
+                case NETWORK: return context.getString(R.string.flow_probe_network_next);
+                case TLS_IDENTITY: return context.getString(R.string.flow_probe_tls_identity_next);
+                case PROTOCOL: return context.getString(R.string.flow_probe_protocol_next);
+                case AGENT_UNAVAILABLE: return context.getString(R.string.flow_probe_agent_unavailable_next);
+                case AGENT_NOT_CHECKED: return context.getString(R.string.flow_probe_agent_not_checked_next);
+                case AGENT_CHECKING: return context.getString(R.string.flow_probe_agent_checking_next);
+                case UNKNOWN: default: return context.getString(R.string.flow_probe_unknown_next);
+            }
+        }
         static ProbeFailure fromStored(String value) {
             if (value == null || value.isEmpty()) return null;
             try { return valueOf(value); } catch (IllegalArgumentException ignored) { return UNKNOWN; }
@@ -145,6 +174,16 @@ final class AgentConnectionStore {
             if (probeFailure != null) return probeFailure.label;
             if (!verified()) return "尚未验证";
             return capabilities.isEmpty() ? "已验证" : "已验证 · " + capabilities.size() + " 项能力";
+        }
+
+        String statusLabel(Context context) {
+            if (!complete()) return context.getString(R.string.flow_connection_incomplete);
+            if (probeFailure != null) return probeFailure.label(context);
+            if (!verified()) return context.getString(R.string.flow_connection_not_checked);
+            if (transport == Transport.BRIDGE) {
+                return context.getString(R.string.flow_bridge_pairing_checked, capabilities.size());
+            }
+            return context.getString(R.string.flow_direct_checked, capabilities.size());
         }
 
         Config withoutToken() {
@@ -401,7 +440,8 @@ final class AgentConnectionStore {
                 result == null ? current.bridgeId : result.bridgeId,
                 result == null ? "" : result.instanceId, current.certSha256, current.revision,
                 clock.now(), result == null ? Collections.emptyList() : result.capabilities,
-                result == null ? null : result.featureMap, null, "");
+                result == null ? null : result.featureMap,
+                result == null ? null : result.partialFailure, "");
         registry.replace(verified);
         return commit(registry, Collections.emptyMap(), Collections.emptySet());
         }

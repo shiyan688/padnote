@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">Konfiguration unvollständig</string>
+    <string name="flow_connection_not_checked">Nicht geprüft</string>
+    <string name="flow_bridge_pairing_checked">Gekoppelt · zuletzt %1$d Funktionen geprüft</string>
+    <string name="flow_direct_checked">Agent-Funktionen geprüft · %1$d</string>
+    <string name="flow_bridge_agent_ready">Computer verbunden; die Hermes-Agent-Schnittstelle ist verfügbar.</string>
+    <string name="flow_probe_credentials_label">Anmeldedaten nicht akzeptiert</string>
+    <string name="flow_probe_credentials_next">Speichere das Verbindungstoken erneut und teste die Verbindung noch einmal.</string>
+    <string name="flow_probe_timeout_label">Zeitüberschreitung bei der Verbindung</string>
+    <string name="flow_probe_timeout_next">Prüfe, ob der Computer eingeschaltet und erreichbar ist, und teste erneut.</string>
+    <string name="flow_probe_network_label">Computer nicht erreichbar</string>
+    <string name="flow_probe_network_next">Prüfe Netzwerk, Adresse und den Verbindungsassistenten des Computers.</string>
+    <string name="flow_probe_tls_identity_label">Sichere Verbindung oder Identitätsprüfung fehlgeschlagen</string>
+    <string name="flow_probe_tls_identity_next">Prüfe HTTPS-Zertifikat, gekoppelte Identität und Computeradresse.</string>
+    <string name="flow_probe_protocol_label">Funktionsprüfung des Computers fehlgeschlagen</string>
+    <string name="flow_probe_protocol_next">Prüfe, ob Agent oder Verbindungsassistent läuft und diese Kopplung unterstützt.</string>
+    <string name="flow_probe_agent_unavailable_label">Computer verbunden; Agent ist nicht bereit</string>
+    <string name="flow_probe_agent_unavailable_next">Starte oder prüfe Agent auf dem Computer und versuche es erneut.</string>
+    <string name="flow_probe_agent_not_checked_label">Computer verbunden; Agent-Status nicht bestätigt</string>
+    <string name="flow_probe_agent_not_checked_next">Prüfe Agent auf dem Computer und versuche es erneut.</string>
+    <string name="flow_probe_agent_checking_label">Computer verbunden; Agent wird geprüft</string>
+    <string name="flow_probe_agent_checking_next">Warte, bis die Prüfung abgeschlossen ist, und versuche es erneut.</string>
+    <string name="flow_probe_unknown_label">Letzte Prüfung nicht abgeschlossen</string>
+    <string name="flow_probe_unknown_next">Teste die Verbindung erneut, um den aktuellen Status zu erhalten.</string>
     <string name="flow_agent_title">Computer-Agenten</string>
     <string name="flow_close">Schließen</string>
     <string name="flow_view_tasks">Computeraufgaben ansehen</string>

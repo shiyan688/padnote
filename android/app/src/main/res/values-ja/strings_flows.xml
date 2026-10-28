@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">設定が不完全です</string>
+    <string name="flow_connection_not_checked">未確認</string>
+    <string name="flow_bridge_pairing_checked">ペアリング済み・前回 %1$d 個の機能を確認</string>
+    <string name="flow_direct_checked">Agent の機能を確認済み・%1$d 個</string>
+    <string name="flow_bridge_agent_ready">パソコンに接続済みです。Hermes Agent インターフェースを利用できます。</string>
+    <string name="flow_probe_credentials_label">認証情報を確認できません</string>
+    <string name="flow_probe_credentials_next">接続トークンを保存し直して、再度テストしてください。</string>
+    <string name="flow_probe_timeout_label">接続がタイムアウトしました</string>
+    <string name="flow_probe_timeout_next">パソコンの電源とネットワーク接続を確認して、再度お試しください。</string>
+    <string name="flow_probe_network_label">パソコンに接続できません</string>
+    <string name="flow_probe_network_next">ネットワーク、アドレス、パソコン接続アシスタントを確認してください。</string>
+    <string name="flow_probe_tls_identity_label">安全な接続または本人確認に失敗しました</string>
+    <string name="flow_probe_tls_identity_next">HTTPS 証明書、ペアリング ID、パソコンのアドレスを確認してください。</string>
+    <string name="flow_probe_protocol_label">パソコンの機能確認に失敗しました</string>
+    <string name="flow_probe_protocol_next">Agent または接続アシスタントが起動し、このペアリング方式に対応しているか確認してください。</string>
+    <string name="flow_probe_agent_unavailable_label">パソコンに接続済みですが、Agent の準備ができていません</string>
+    <string name="flow_probe_agent_unavailable_next">パソコンで Agent を起動または確認して、再度お試しください。</string>
+    <string name="flow_probe_agent_not_checked_label">パソコンに接続済みですが、Agent の状態は未確認です</string>
+    <string name="flow_probe_agent_not_checked_next">パソコンで Agent の状態を確認して、再度お試しください。</string>
+    <string name="flow_probe_agent_checking_label">パソコンに接続済みです。Agent を確認中</string>
+    <string name="flow_probe_agent_checking_next">確認が終わるまで待ってから、もう一度お試しください。</string>
+    <string name="flow_probe_unknown_label">前回の確認は完了しませんでした</string>
+    <string name="flow_probe_unknown_next">接続を再テストして、最新の状態を確認してください。</string>
     <string name="flow_agent_title">パソコン Agent</string>
     <string name="flow_close">閉じる</string>
     <string name="flow_view_tasks">パソコンのタスクを見る</string>

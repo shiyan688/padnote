@@ -1,5 +1,28 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="flow_connection_incomplete">Configuración incompleta</string>
+    <string name="flow_connection_not_checked">Sin comprobar</string>
+    <string name="flow_bridge_pairing_checked">Emparejado · %1$d capacidades comprobadas la última vez</string>
+    <string name="flow_direct_checked">Capacidades de Agent comprobadas · %1$d</string>
+    <string name="flow_bridge_agent_ready">Ordenador conectado; la interfaz de Hermes Agent está disponible.</string>
+    <string name="flow_probe_credentials_label">Credenciales no aceptadas</string>
+    <string name="flow_probe_credentials_next">Guarda de nuevo el token de conexión y vuelve a probar.</string>
+    <string name="flow_probe_timeout_label">Se agotó el tiempo de conexión</string>
+    <string name="flow_probe_timeout_next">Comprueba que el ordenador esté encendido y accesible, y vuelve a probar.</string>
+    <string name="flow_probe_network_label">No se pudo conectar con el ordenador</string>
+    <string name="flow_probe_network_next">Comprueba la red, la dirección y el asistente de conexión del ordenador.</string>
+    <string name="flow_probe_tls_identity_label">Falló la conexión segura o la verificación de identidad</string>
+    <string name="flow_probe_tls_identity_next">Comprueba el certificado HTTPS, la identidad emparejada y la dirección del ordenador.</string>
+    <string name="flow_probe_protocol_label">Falló la comprobación de capacidades del ordenador</string>
+    <string name="flow_probe_protocol_next">Comprueba que Agent o el asistente de conexión esté en ejecución y admita este emparejamiento.</string>
+    <string name="flow_probe_agent_unavailable_label">Ordenador conectado; Agent no está listo</string>
+    <string name="flow_probe_agent_unavailable_next">Inicia o comprueba Agent en el ordenador y vuelve a intentarlo.</string>
+    <string name="flow_probe_agent_not_checked_label">Ordenador conectado; estado de Agent sin confirmar</string>
+    <string name="flow_probe_agent_not_checked_next">Comprueba Agent en el ordenador y vuelve a intentarlo.</string>
+    <string name="flow_probe_agent_checking_label">Ordenador conectado; comprobando Agent</string>
+    <string name="flow_probe_agent_checking_next">Espera a que termine la comprobación y vuelve a intentarlo.</string>
+    <string name="flow_probe_unknown_label">La última comprobación no terminó</string>
+    <string name="flow_probe_unknown_next">Vuelve a probar la conexión para obtener el resultado actual.</string>
     <string name="flow_agent_title">Agentes de ordenador</string>
     <string name="flow_close">Cerrar</string>
     <string name="flow_view_tasks">Ver tareas del ordenador</string>

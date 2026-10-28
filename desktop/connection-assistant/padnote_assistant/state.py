@@ -327,18 +327,27 @@ class StateStore:
         return dict(instance)
 
     def update_instance_check(self, instance_id: str, *, health: str, detail: str,
-                              features: dict[str, Any], executable: bool) -> dict[str, Any]:
+                              features: dict[str, Any], executable: bool,
+                              expected_identity: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
             self._assert_open()
             instance = self._data["instances"].get(instance_id)
             if not instance:
                 raise KeyError(instance_id)
+            if expected_identity is not None:
+                identity_fields = ("kind", "base_url", "config_ref", "config_fingerprint",
+                                   "credential_fingerprint")
+                if (instance.get("retired_at") is not None or
+                        any(instance.get(key) != expected_identity.get(key)
+                            for key in identity_fields)):
+                    raise ConflictError("Agent identity changed during health check")
             update = {
                 "health": health,
                 "detail": validate_text(detail, "detail", 500, allow_empty=True),
                 "features": dict(features),
                 "executable": bool(executable) and instance["kind"] in {"hermes", "builtin_video"},
                 "updated_at": int(self._clock()),
+                "checked_at": int(self._clock()),
             }
             def mutation(data):
                 data["instances"][instance_id].update(update)
