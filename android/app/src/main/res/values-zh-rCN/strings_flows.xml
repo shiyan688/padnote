@@ -384,4 +384,21 @@
     <string name="flow_destination_unidentified">未标识</string>
     <string name="flow_destination_incomplete">历史目标信息不完整：%1$s</string>
     <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_copy_diagnostic">复制任务诊断</string>
+    <string name="flow_diagnostic_copied">诊断信息已复制</string>
+    <string name="flow_client_task_id">本地任务 ID</string>
+    <string name="flow_submission_unconfirmed">电脑尚未确认接收，提交结果待确认</string>
+    <string name="flow_connecting_computer">正在连接电脑…</string>
+    <string name="flow_upload_bytes">已上传字节：%1$s</string>
+    <string name="flow_waiting_computer_confirmation">正在等待电脑确认接收</string>
+    <string name="flow_submission_queued">排队等待发送</string>
+    <string name="flow_saved_not_sent">已保存，尚未发送</string>
+    <string name="flow_return_to_note">返回笔记</string>
+    <string name="flow_open_task_list">打开任务列表</string>
+    <string name="flow_preview_paper">预览纸面文字</string>
+    <string name="flow_hide_paper_preview">收起文字预览</string>
+    <string name="flow_handoff_paper_meta">%1$d 页 · %2$s</string>
+    <string name="flow_retry_same_id_warning">将沿用同一任务 ID 重试。请先确认电脑状态，避免重复执行。</string>
+    <string name="flow_task_queue_busy">另一项纸面任务正在准备中，请稍后重试。</string>
+    <string name="flow_stage_updated_ago">%1$d 秒前更新</string>
 </resources>

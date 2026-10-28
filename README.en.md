@@ -6,7 +6,7 @@
 
 PadNote is a tablet notebook for writing, drawing, and AI-assisted learning. Work in one note, then share the page or hand it to a paired computer agent. You choose the model and service provider.
 
-[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe) · [Portable ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Portable.zip) · [Windows test guide](docs/BETA16_TESTING.md) · [Android beta.13 test guide](docs/BETA13_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.17](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.17) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.17/PadNote-Android-0.18.0-beta.17-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe) · [Portable ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Portable.zip) · [Windows test guide](docs/BETA16_TESTING.md) · [Android beta.17 test guide](docs/BETA17_TESTING.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 Screenshots from an Android emulator; displayed text is local UI content.
 
@@ -52,3 +52,7 @@ Original Android/iPad code is MIT licensed; the video Agent subproject is Apache
 ### Windows beta.16 (2026-10-27)
 
 This release adds one-click startup and connection to Hermes when the assistant is stopped. It retains beta.15 task-state recovery, duplicate-submit protection for uncertain requests, and the connection tutorial. Android remains on beta.13.
+
+### Android beta.17 (2026-10-27)
+
+Updates target-card selection, send-stage status, and background handling for PDF tasks sent from notes to a computer agent. You can return to the note or leave the page after sending; processing may take time on the computer. Unknown results are not resent automatically. Copy diagnostics to continue troubleshooting. The Windows assistant remains on beta.16.

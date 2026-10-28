@@ -384,4 +384,21 @@
     <string name="flow_destination_unidentified">Unidentified</string>
     <string name="flow_destination_incomplete">Historical destination information is incomplete: %1$s</string>
     <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_copy_diagnostic">Copy task diagnostics</string>
+    <string name="flow_diagnostic_copied">Diagnostics copied</string>
+    <string name="flow_client_task_id">Local task ID</string>
+    <string name="flow_submission_unconfirmed">Computer has not confirmed receipt; result needs confirmation</string>
+    <string name="flow_connecting_computer">Connecting to computer…</string>
+    <string name="flow_upload_bytes">Uploaded bytes: %1$s</string>
+    <string name="flow_waiting_computer_confirmation">Waiting for computer confirmation</string>
+    <string name="flow_submission_queued">Queued for submission</string>
+    <string name="flow_saved_not_sent">Saved, not yet sent</string>
+    <string name="flow_return_to_note">Return to note</string>
+    <string name="flow_open_task_list">Open task list</string>
+    <string name="flow_preview_paper">Preview paper text</string>
+    <string name="flow_hide_paper_preview">Hide paper preview</string>
+    <string name="flow_handoff_paper_meta">%1$d pages · %2$s</string>
+    <string name="flow_retry_same_id_warning">Retry with the same task ID? Check the computer first to avoid repeating an action.</string>
+    <string name="flow_task_queue_busy">Another paper task is still being prepared. Try again shortly.</string>
+    <string name="flow_stage_updated_ago">Updated %1$d sec ago</string>
 </resources>

@@ -384,4 +384,21 @@
     <string name="flow_destination_unidentified">알 수 없음</string>
     <string name="flow_destination_incomplete">기록의 대상 정보가 불완전함: %1$s</string>
     <string name="flow_destination_label">%1$s · %2$s · %3$s · #%4$s</string>
+    <string name="flow_copy_diagnostic">작업 진단 복사</string>
+    <string name="flow_diagnostic_copied">진단 정보를 복사했습니다</string>
+    <string name="flow_client_task_id">로컬 작업 ID</string>
+    <string name="flow_submission_unconfirmed">컴퓨터 확인 전입니다. 제출 결과를 확인해야 합니다</string>
+    <string name="flow_connecting_computer">컴퓨터에 연결 중…</string>
+    <string name="flow_upload_bytes">전송한 바이트: %1$s</string>
+    <string name="flow_waiting_computer_confirmation">컴퓨터의 수신 확인을 기다리는 중</string>
+    <string name="flow_submission_queued">전송 대기 중</string>
+    <string name="flow_saved_not_sent">저장됨, 아직 전송하지 않음</string>
+    <string name="flow_return_to_note">노트로 돌아가기</string>
+    <string name="flow_open_task_list">작업 목록 열기</string>
+    <string name="flow_preview_paper">종이 텍스트 미리 보기</string>
+    <string name="flow_hide_paper_preview">미리 보기 접기</string>
+    <string name="flow_handoff_paper_meta">%1$d페이지 · %2$s</string>
+    <string name="flow_retry_same_id_warning">같은 작업 ID로 다시 시도합니다. 중복 실행을 피하려면 먼저 컴퓨터 상태를 확인하세요.</string>
+    <string name="flow_task_queue_busy">다른 작업을 준비 중입니다. 잠시 후 다시 시도하세요.</string>
+    <string name="flow_stage_updated_ago">%1$d초 전에 업데이트</string>
 </resources>

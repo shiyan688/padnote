@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /** Durable Agent tasks. Each file includes its immutable connection identity and payload. */
@@ -156,6 +158,12 @@ final class AgentTaskStore {
     }
 
     private static final Object LOCK = new Object();
+    private static final LinkedHashMap<String,CachedTask> TASK_CACHE=new LinkedHashMap<>(4,0.75f,true);
+    private static final int MAX_CACHED_TASKS=2;
+    private static final class CachedTask {
+        final long modified,length;final Task task;
+        CachedTask(File file,Task task){this.modified=file.lastModified();this.length=file.length();this.task=task;}
+    }
     private static final int MAX_INPUT = 128 * 1024;
     private static final int MAX_BUNDLE = 8 * 1024 * 1024;
     private final File directory;
@@ -222,7 +230,7 @@ final class AgentTaskStore {
                 connection.bridgeId, connection.instanceId, title, connection.name, sourceNoteId,
                 Math.max(1L,noteRevision), json, sha256(json.getBytes(StandardCharsets.UTF_8)),
                 "", Status.SUBMITTING, "", "", "", "", "", Collections.emptyList(), now, now);
-        write(task); return task;
+        write(task); setSubmissionAttemptState(clientId,false); return task;
     }
 
     Task createFollowup(Task parent, AgentConnectionStore.Config connection, String input)
@@ -254,6 +262,7 @@ final class AgentTaskStore {
                     Collections.emptyList(),now,now,current.conversationId,current.remoteTaskId,
                     current.clientTaskId,"",false,"等待电脑确认追问任务");
             write(child);
+            setSubmissionAttemptState(child.clientTaskId,false);
             write(withChild(current,clientId));
             return child;
         }
@@ -277,7 +286,7 @@ final class AgentTaskStore {
             File[] files = directory.listFiles((dir,name)->name.endsWith(".json"));
             List<Task> tasks = new ArrayList<>(); if(files==null) return tasks;
             int corrupt=0;
-            for(File file:files) { try { tasks.add(readFile(file)); } catch(Exception ignored) { corrupt++; } }
+            for(File file:files) { try { tasks.add(readCached(file)); } catch(Exception ignored) { corrupt++; } }
             lastCorruptCount=corrupt;
             tasks.sort(Comparator.comparingLong((Task t)->t.updatedAt).reversed()); return tasks;
         }
@@ -286,7 +295,7 @@ final class AgentTaskStore {
     int corruptCount() { synchronized (LOCK) { return lastCorruptCount; } }
 
     Task get(String id) {
-        synchronized (LOCK) { try { File f=file(id); return f.isFile()?readFile(f):null; }
+        synchronized (LOCK) { try { File f=file(id); return f.isFile()?readCached(f):null; }
             catch(Exception error){ throw new IllegalStateException("Agent 任务数据损坏",error); } }
     }
 
@@ -321,9 +330,23 @@ final class AgentTaskStore {
             String output=t.status.terminal()&&!t.output.isEmpty()?t.output:status.output;
             List<Artifact> artifacts=t.status.terminal()&&!t.artifacts.isEmpty()?t.artifacts:status.artifacts;
             String conversation=status.conversationId.isEmpty()?t.conversationId:status.conversationId;
+            if(t.status==status.status&&t.output.equals(output)&&t.error.equals(status.error)&&
+                    t.approvalId.equals(status.approvalId)&&t.approvalTitle.equals(status.approvalTitle)&&
+                    t.approvalDescription.equals(status.approvalDescription)&&sameArtifacts(t.artifacts,artifacts)&&
+                    t.conversationId.equals(conversation)&&t.parentTaskId.equals(status.parentTaskId)&&
+                    t.followupAvailable==status.followupAvailable&&t.followupReason.equals(status.followupReason))return true;
             write(copy(t,remoteId,status.status,output,status.error,status.approvalId,
                     status.approvalTitle,status.approvalDescription,artifacts,
                     conversation,status.followupAvailable,status.followupReason)); return true; }
+    }
+
+    private static boolean sameArtifacts(List<Artifact> left,List<Artifact> right){
+        if(left.size()!=right.size())return false;
+        for(int i=0;i<left.size();i++){Artifact a=left.get(i),b=right.get(i);
+            if(!a.id.equals(b.id)||!a.name.equals(b.name)||!a.mediaType.equals(b.mediaType)||
+                    a.sizeBytes!=b.sizeBytes||!a.sha256.equals(b.sha256))return false;
+        }
+        return true;
     }
 
     boolean markLocal(String clientId, Status status, String error) throws Exception {
@@ -339,6 +362,34 @@ final class AgentTaskStore {
             if(t==null || t.updatedAt!=expectedUpdatedAt || t.status.terminal()) return false;
             write(copy(t,t.remoteTaskId,t.status,t.output,error,t.approvalId,t.approvalTitle,
                     t.approvalDescription,t.artifacts,t.conversationId,t.followupAvailable,t.followupReason)); return true; }
+    }
+
+    void markSubmissionAttempted(String clientId) throws Exception {
+        synchronized(LOCK){setSubmissionAttemptState(clientId,true);}
+    }
+
+    /** -1 means there is no marker (legacy or interrupted record), 0 not attempted, 1 attempted. */
+    int submissionAttemptState(String clientId) {
+        synchronized(LOCK){
+            try {
+                File marker=attemptFile(clientId);if(!marker.isFile())return -1;
+                try(FileInputStream input=new FileInputStream(marker)){return input.read()=='1'?1:0;}
+            } catch(Exception ignored){return -1;}
+        }
+    }
+
+    long submissionAttemptTime(String clientId){
+        synchronized(LOCK){
+            try{File marker=attemptFile(clientId);if(!marker.isFile())return 0L;
+                byte[] bytes=new byte[(int)Math.min(128,marker.length())];try(FileInputStream input=new FileInputStream(marker)){int n=input.read(bytes);if(n<=0)return marker.lastModified();String value=new String(bytes,0,n,StandardCharsets.UTF_8);int newline=value.indexOf('\n');return newline<0?marker.lastModified():Long.parseLong(value.substring(newline+1).trim());}
+            }catch(Exception ignored){return 0L;}
+        }
+    }
+
+    private void setSubmissionAttemptState(String clientId,boolean attempted)throws Exception {
+        AtomicFile atomic=new AtomicFile(attemptFile(clientId));FileOutputStream out=null;
+        try{out=atomic.startWrite();String value=(attempted?'1':'0')+"\n"+(attempted?System.currentTimeMillis():0L);out.write(value.getBytes(StandardCharsets.UTF_8));out.flush();out.getFD().sync();atomic.finishWrite(out);}
+        catch(Exception error){if(out!=null)atomic.failWrite(out);throw error;}
     }
 
     boolean markFailed(String clientId, long expectedUpdatedAt, String error) throws Exception {
@@ -392,11 +443,21 @@ final class AgentTaskStore {
             try {
                 out=atomic.startWrite();out.write(bytes);out.flush();out.getFD().sync();
                 atomic.finishWrite(out);
+                cache(file(task.clientTaskId),task);
             } catch (Exception error) {
                 if(out!=null) atomic.failWrite(out);
                 throw error;
             }
         }
+    }
+    private Task readCached(File file)throws Exception {
+        String key=file.getAbsolutePath();CachedTask cached=TASK_CACHE.get(key);
+        if(cached!=null&&cached.modified==file.lastModified()&&cached.length==file.length())return cached.task;
+        Task task=readFile(file);cache(file,task);return task;
+    }
+    private static void cache(File file,Task task){
+        TASK_CACHE.put(file.getAbsolutePath(),new CachedTask(file,task));
+        while(TASK_CACHE.size()>MAX_CACHED_TASKS){String oldest=TASK_CACHE.keySet().iterator().next();TASK_CACHE.remove(oldest);}
     }
     private Task readFile(File file) throws Exception {
         if(file.length()>16L*1024*1024) throw new IllegalStateException("Agent 任务记录过大");
@@ -406,6 +467,7 @@ final class AgentTaskStore {
         return Task.fromJson(new JSONObject(new String(data,StandardCharsets.UTF_8)));
     }
     private File file(String id) { if(id==null||!id.matches("padnote-[a-fA-F0-9]{32}")) throw new IllegalArgumentException("任务ID无效"); return new File(directory,id+".json"); }
+    private File attemptFile(String id) { if(id==null||!id.matches("padnote-[a-fA-F0-9]{32}")) throw new IllegalArgumentException("任务ID无效"); return new File(directory,id+".attempted"); }
     private static String required(JSONObject j,String k){String v=j.optString(k,"");if(v.isEmpty())throw new IllegalArgumentException("任务缺少 "+k);return v;}
     private static String value(String v){return v==null?"":v;}
     static String sha256(byte[] bytes)throws Exception{byte[] d=MessageDigest.getInstance("SHA-256").digest(bytes);StringBuilder s=new StringBuilder();for(byte b:d)s.append(String.format("%02x",b&255));return s.toString();}

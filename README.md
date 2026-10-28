@@ -6,7 +6,7 @@
 
 PadNote 是面向平板的笔记与 AI 学习工具。你可以在同一份笔记中书写、绘图和提问，再分享纸面或交给已配对的电脑 Agent。模型和服务由你选择。
 
-[Android beta.13](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.13) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.13/PadNote-Android-0.18.0-beta.13-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe) · [便携版 ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Portable.zip) · [Windows 测试指南](docs/BETA16_TESTING.md) · [Android beta.13 测试指南](docs/BETA13_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[Android beta.17](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.17) · [下载 APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.17/PadNote-Android-0.18.0-beta.17-debug.apk) · [Windows 安装程序](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Setup-x64.exe) · [便携版 ZIP](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.16/PadNote-Connection-Assistant-0.18.0-beta.16-Portable.zip) · [Windows 测试指南](docs/BETA16_TESTING.md) · [Android beta.17 测试指南](docs/BETA17_TESTING.md) · [源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 Android 模拟器实录，图中文字为本地界面示例。
 
@@ -58,3 +58,7 @@ Android 与 iPad 客户端自研代码采用 MIT；视频 Agent 子项目采用 
 ### Windows beta.16（2026-10-27）
 
 本版补上助手尚未启动时的一键启动与 Hermes 连接；保留 beta.15 的任务状态修复、防止不确定提交重复执行和连接教程。Android 继续使用 beta.13。
+
+### Android beta.17（2026-10-27）
+
+更新笔记向电脑 Agent 发送 PDF 任务时的目标卡片选择、发送阶段与后台状态。发送后可返回笔记或离开页面；任务处理可能需要电脑端时间。结果未知时不会自动重发，可复制诊断继续排查。Windows 电脑助手继续 beta.16。

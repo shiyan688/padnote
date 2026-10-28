@@ -60,6 +60,11 @@ final class AgentTaskClient {
 
     Submission submit(AgentTaskStore.Task task, AgentConnectionStore.Config connection)
             throws Exception {
+        return submit(task,connection,null);
+    }
+
+    Submission submit(AgentTaskStore.Task task, AgentConnectionStore.Config connection,
+                      AgentHttpTransport.Progress progress) throws Exception {
         requireIdentity(task,connection);
         String requiredCapability=new JSONObject(task.submissionJson).optString("required_capability","");
         if(!requiredCapability.isEmpty()) {
@@ -81,7 +86,7 @@ final class AgentTaskClient {
         Map<String,String> headers=new LinkedHashMap<>();
         headers.put("Idempotency-Key",task.clientTaskId);
         AgentHttpTransport.Response response=request("POST",runsRoot(task),connection,
-                headers,task.submissionJson.getBytes(StandardCharsets.UTF_8),MAX_JSON);
+                headers,task.submissionJson.getBytes(StandardCharsets.UTF_8),MAX_JSON,progress);
         if(response.status!=202)throw httpError("提交任务失败",response);
         JSONObject json=new JSONObject(response.utf8());
         String key=task.transport==AgentConnectionStore.Transport.BRIDGE?"task_id":"run_id";
@@ -176,8 +181,13 @@ final class AgentTaskClient {
 
     private AgentHttpTransport.Response request(String method,String url,AgentConnectionStore.Config connection,
                                                  Map<String,String> headers,byte[] body,int max)throws Exception{
+        return request(method,url,connection,headers,body,max,null);
+    }
+    private AgentHttpTransport.Response request(String method,String url,AgentConnectionStore.Config connection,
+                                                 Map<String,String> headers,byte[] body,int max,
+                                                 AgentHttpTransport.Progress progress)throws Exception{
         AgentHttpTransport.Response response=http.execute(new AgentHttpTransport.Request(method,
-                new URL(url),connection.token,headers,body,max,connection.certSha256));AgentConnectionClient.rejectRedirect(response);return response;
+                new URL(url),connection.token,headers,body,max,connection.certSha256,progress,90000));AgentConnectionClient.rejectRedirect(response);return response;
     }
     private static String runsRoot(AgentTaskStore.Task task)throws Exception{
         String root=task.origin; if(task.transport==AgentConnectionStore.Transport.BRIDGE)

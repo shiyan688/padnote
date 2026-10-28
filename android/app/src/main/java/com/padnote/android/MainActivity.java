@@ -1526,23 +1526,25 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         LinearLayout body=verticalPanel();
         String[] connectionLabels=new String[supported.size()];for(int i=0;i<supported.size();i++)connectionLabels[i]=AgentTaskDestinationLabel.forProfile(this,supported.get(i));
-        Spinner connection=new Spinner(this);ChoiceRows.styleSpinner(connection);connection.setAdapter(ChoiceRows.spinnerAdapter(connection,connectionLabels));
-        body.addView(labeledField(getString(R.string.core_agent_recipient),connection));
-        Spinner preset=new Spinner(this);ChoiceRows.styleSpinner(preset);
+        LinearLayout choices=cardSurface(14,12);
+        HandoffChoiceSpinner connection=new HandoffChoiceSpinner(this);connection.setChoiceTitle(getString(R.string.core_agent_recipient));connection.setAdapter(ChoiceRows.spinnerAdapter(connection,connectionLabels));
+        choices.addView(labeledField(getString(R.string.core_agent_recipient),connection));
+        HandoffChoiceSpinner preset=new HandoffChoiceSpinner(this);preset.setChoiceTitle(getString(R.string.core_task_preset));
         preset.setAdapter(ChoiceRows.spinnerAdapter(preset,presets));
-        body.addView(labeledField(getString(R.string.core_task_preset),preset));
+        choices.addView(labeledField(getString(R.string.core_task_preset),preset));
         EditText instruction=new EditText(this);instruction.setMinLines(3);
         instruction.setGravity(Gravity.TOP);instruction.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         instruction.setText(R.string.core_default_task_prompt);
-        body.addView(labeledField(getString(R.string.core_specific_request),instruction));
-        Spinner style=new Spinner(this);ChoiceRows.styleSpinner(style);
+        HandoffChoiceSpinner style=new HandoffChoiceSpinner(this);style.setChoiceTitle(getString(R.string.core_video_style_optional));
         style.setAdapter(ChoiceRows.spinnerAdapter(style,styles));
-        View styleField=labeledField(getString(R.string.core_video_style_optional),style);body.addView(styleField);
+        View styleField=labeledField(getString(R.string.core_video_style_optional),style);choices.addView(styleField);
         EditText stylePrompt=new EditText(this);stylePrompt.setMinLines(3);
         stylePrompt.setGravity(Gravity.TOP);stylePrompt.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField(getString(R.string.core_style_prompt_editable),stylePrompt);body.addView(stylePromptField);
+        stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField(getString(R.string.core_style_prompt_editable),stylePrompt);choices.addView(stylePromptField);
         styleField.setVisibility(View.GONE);stylePromptField.setVisibility(View.GONE);
         style.setVisibility(View.GONE);stylePrompt.setVisibility(View.GONE);
+        body.addView(choices);
+        body.addView(labeledField(getString(R.string.core_specific_request),instruction));
         style.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){stylePrompt.setText(stylePrompts[position]);}
             @Override public void onNothingSelected(AdapterView<?> parent){}
@@ -1562,14 +1564,24 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         final String content;
         try{content=currentReadablePaperContext(capture.pageCount);}
         catch(Exception error){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_read_error,safeError(error)),Toast.LENGTH_LONG).show();return;}
-        TextView scope=text(getString(R.string.core_paper_scope,capture.pageCount,formatBytes(pdf.length())),12,SECONDARY_TEXT);
-        body.addView(scope,matchWrap());
+        LinearLayout summary=cardSurface(14,14);
+        TextView summaryTitle=text(capture.title,16,INK_COLOR);summaryTitle.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        summary.addView(summaryTitle,matchWrap());
+        TextView summaryMeta=text(getString(R.string.flow_handoff_paper_meta,capture.pageCount,formatBytes(pdf.length())),12,SECONDARY_TEXT);
+        summary.addView(summaryMeta,matchWrap());
+        Button previewToggle=pillButton(getString(R.string.flow_preview_paper),BUTTON_QUIET);
+        summary.addView(previewToggle,matchWrap());
         TextView readable=text(content,12,INK_COLOR);readable.setTextIsSelectable(true);
         ScrollView contentScroll=new ScrollView(this);contentScroll.addView(readable);
-        body.addView(contentScroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(190)));
+        contentScroll.setVisibility(View.GONE);
+        summary.addView(contentScroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(180)));
+        previewToggle.setOnClickListener(v->{boolean open=contentScroll.getVisibility()!=View.VISIBLE;
+            contentScroll.setVisibility(open?View.VISIBLE:View.GONE);
+            previewToggle.setText(getString(open?R.string.flow_hide_paper_preview:R.string.flow_preview_paper));});
+        body.addView(summary,0);
         ScrollView formScroll=new ScrollView(this);formScroll.addView(body);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(R.string.core_paper_composer_title)
-                .setView(formScroll).setNegativeButton(getString(R.string.core_cancel),(d,w)->pdf.delete())
+        AlertDialog dialog=ChoiceRows.builder(this).setTitle(R.string.core_paper_composer_title)
+                .setView(formScroll).setNegativeButton(getString(R.string.flow_return_to_note),(d,w)->pdf.delete())
                 .setPositiveButton(R.string.core_confirm_send,(d,w)->{
                     int selected=preset.getSelectedItemPosition();String instructionText=instruction.getText().toString().trim();
                     if(instructionText.isEmpty()){pdf.delete();Toast.makeText(this,getString(R.string.core_task_empty),Toast.LENGTH_LONG).show();return;}
@@ -1580,18 +1592,37 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     String taskInput=getString(R.string.core_task_bundle_intro,presets[selected])+"\n\n"+
                             instructionText+(styleValue.isEmpty()?"":"\n"+getString(R.string.core_video_style_prefix,styleValue));
                     AgentConnectionStore.Config target=supported.get(connection.getSelectedItemPosition());
-                    aiExecutor.execute(()->{
+                    final String taskTitle=getString(R.string.core_paper_task_title,capture.title);
+                    final String noteContext=content;
+                    final String presetId=ids[selected];
+                    final android.content.Context appContext=getApplicationContext();
+                    final Handler feedbackHandler=new Handler(Looper.getMainLooper());
+                    if(!AgentTaskSubmissionExecutor.prepare(()->{
                         try {
                             byte[] paper=readBounded(pdf,NoteWorkBundleIO.MAX_EXPANDED_BYTES);
                             NoteWorkBundleIO.Frozen frozen=NoteWorkBundleIO.freeze(source.id,capturedSourceRevision,
-                                    capture.title,instructionText,ids[selected],styleValue,content,paper);
-                            runOnUiThread(()->new AgentTaskDialogs(this,agentConnectionStore,aiExecutor,
-                                    this::launchCreateAgentArtifactDocument).sendNoteWork(target,frozen,
-                                    getString(R.string.core_paper_task_title,capture.title),taskInput,capture.noteId));
-                        }catch(Exception error){runOnUiThread(()->Toast.makeText(this,
-                                getString(R.string.core_paper_package_error,safeError(error)),Toast.LENGTH_LONG).show());}
+                                    capture.title,instructionText,presetId,styleValue,noteContext,paper);
+                            AgentTaskStore taskStore=new AgentTaskStore(appContext);
+                            AgentTaskStore.Task task=taskStore.create(target,taskTitle,taskInput,capture.noteId,
+                                    frozen.noteRevision,frozen.zip.clone(),"note_context_bundle");
+                            AgentConnectionStore connectionStore=new AgentConnectionStore(appContext);
+                            AgentTaskDialogs.TaskConnectionSource taskConnections=new AgentTaskDialogs.TaskConnectionSource(){
+                                @Override public List<AgentConnectionStore.Config> list(){return connectionStore.list();}
+                                @Override public AgentConnectionStore.Config get(String id){return connectionStore.get(id);}
+                            };
+                            AgentTaskSubmissionExecutor.submit(task,taskStore,taskConnections,
+                                    AgentTaskClient::new,appContext);
+                            feedbackHandler.post(()->Toast.makeText(appContext,
+                                    appContext.getString(R.string.flow_task_submitting),Toast.LENGTH_LONG).show());
+                        }catch(Exception error){
+                            String reason=error.getMessage()==null?"Unknown error":error.getMessage().replaceAll("[\\r\\n]"," ");
+                            feedbackHandler.post(()->Toast.makeText(appContext,
+                                    appContext.getString(R.string.core_paper_package_error,reason),Toast.LENGTH_LONG).show());
+                        }
                         finally{pdf.delete();}
-                    });
+                    })){
+                        pdf.delete();Toast.makeText(this,getString(R.string.flow_task_queue_busy),Toast.LENGTH_LONG).show();
+                    }
                 }).create();
         dialog.setOnCancelListener(d->pdf.delete());
         dialog.show();

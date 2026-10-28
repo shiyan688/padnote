@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
 import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -107,6 +108,40 @@ public final class AgentCertificatePinTest {
         }
     }
 
+    @Test public void postStreamsFixedLengthChunksAndReportsWrittenBytes() throws Exception {
+        Identity identity=serverIdentity();
+        try(TinyTlsServer server=new TinyTlsServer(identity)) {
+            byte[] payload=new byte[70*1024];java.util.Arrays.fill(payload,(byte)'x');
+            java.util.List<Long> progress=new java.util.ArrayList<>();
+            URL url=new URL("https://127.0.0.1:"+server.port()+"/runs");
+            AgentHttpTransport.production().execute(new AgentHttpTransport.Request("POST",url,"",
+                    Collections.emptyMap(),payload,1024,AgentCertificatePin.fingerprint(identity.certificate),
+                    (sent,total)->progress.add(sent),90000));
+            assertTrue(server.requestHeaders.contains("Content-Length: "+payload.length));
+            assertFalse(server.requestHeaders.toLowerCase(java.util.Locale.ROOT).contains("transfer-encoding: chunked"));
+            assertEquals(payload.length,server.requestBytes);
+            assertTrue(progress.size()>=3);
+            assertEquals(Long.valueOf(payload.length),progress.get(progress.size()-1));
+        }
+    }
+
+    @Test public void postDeadlineUnblocksAndDoesNotRepeatRequest() throws Exception {
+        Identity identity=serverIdentity();
+        try(TinyTlsServer server=new TinyTlsServer(identity,3000)) {
+            URL url=new URL("https://127.0.0.1:"+server.port()+"/slow");byte[] body=new byte[64*1024];
+            long started=System.nanoTime();
+            try {
+                AgentHttpTransport.production().execute(new AgentHttpTransport.Request("POST",url,"",
+                        Collections.emptyMap(),body,1024,AgentCertificatePin.fingerprint(identity.certificate),null,1000));
+                fail("deadline must abort a response that never arrives in time");
+            } catch(java.io.IOException expected) { }
+            long elapsed=TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);
+            assertTrue("request should be bounded by the deadline",elapsed<2500);
+            assertEquals(1,server.requests);
+            assertEquals(body.length,server.requestBytes);
+        }
+    }
+
     // --- fixtures -------------------------------------------------------
 
     private static final class Identity {
@@ -144,8 +179,14 @@ public final class AgentCertificatePinTest {
     private static final class TinyTlsServer implements AutoCloseable {
         private final SSLServerSocket socket;
         private final Thread thread;
+        private final long responseDelayMillis;
+        volatile String requestHeaders="";
+        volatile int requestBytes;
+        volatile int requests;
 
-        TinyTlsServer(Identity identity) throws Exception {
+        TinyTlsServer(Identity identity) throws Exception {this(identity,0);}
+        TinyTlsServer(Identity identity,long responseDelayMillis) throws Exception {
+            this.responseDelayMillis=responseDelayMillis;
             KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             keys.init(identity.keyStore, "changeit".toCharArray());
             SSLContext context = SSLContext.getInstance("TLS");
@@ -157,11 +198,13 @@ public final class AgentCertificatePinTest {
                     try (SSLSocket client = (SSLSocket) socket.accept()) {
                         client.setSoTimeout(5000);
                         InputStream in = client.getInputStream();
-                        int previous = 0, current, matched = 0;
-                        while (matched < 4 && (current = in.read()) >= 0) {
-                            matched = (current == '\r' || current == '\n') ? matched + 1 : 0;
-                            previous = current;
-                        }
+                        ByteArrayOutputStream headers=new ByteArrayOutputStream();
+                        int current,matched=0;while(matched<4&&(current=in.read())>=0){headers.write(current);matched=(current=='\r'||current=='\n')?matched+1:0;}
+                        requestHeaders=new String(headers.toByteArray(),StandardCharsets.US_ASCII);
+                        requests++;
+                        int length=0;for(String line:requestHeaders.split("\\r?\\n"))if(line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:"))length=Integer.parseInt(line.substring(line.indexOf(':')+1).trim());
+                        byte[] buffer=new byte[8192];int count;while(requestBytes<length&&(count=in.read(buffer,0,Math.min(buffer.length,length-requestBytes)))>0)requestBytes+=count;
+                        if(responseDelayMillis>0)Thread.sleep(responseDelayMillis);
                         byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
                         OutputStream out = client.getOutputStream();
                         out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +

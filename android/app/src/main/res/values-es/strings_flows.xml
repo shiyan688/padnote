@@ -384,4 +384,21 @@
     <string name="flow_destination_unidentified">Sin identificar</string>
     <string name="flow_destination_incomplete">La información del destino en el historial está incompleta: %1$s</string>
     <string name="flow_destination_label">%1$s · %2$s · %3$s · n.º %4$s</string>
+    <string name="flow_copy_diagnostic">Copiar diagnóstico de tarea</string>
+    <string name="flow_diagnostic_copied">Diagnóstico copiado</string>
+    <string name="flow_client_task_id">ID local de tarea</string>
+    <string name="flow_submission_unconfirmed">El ordenador no ha confirmado la recepción; resultado pendiente</string>
+    <string name="flow_connecting_computer">Conectando con el ordenador…</string>
+    <string name="flow_upload_bytes">Bytes enviados: %1$s</string>
+    <string name="flow_waiting_computer_confirmation">Esperando la confirmación del ordenador</string>
+    <string name="flow_submission_queued">En cola para enviar</string>
+    <string name="flow_saved_not_sent">Guardada, aún no enviada</string>
+    <string name="flow_return_to_note">Volver a la nota</string>
+    <string name="flow_open_task_list">Abrir lista de tareas</string>
+    <string name="flow_preview_paper">Previsualizar texto del documento</string>
+    <string name="flow_hide_paper_preview">Ocultar vista previa</string>
+    <string name="flow_handoff_paper_meta">%1$d páginas · %2$s</string>
+    <string name="flow_retry_same_id_warning">Se reintentará con el mismo ID. Comprueba primero el ordenador para evitar repetir la acción.</string>
+    <string name="flow_task_queue_busy">Se está preparando otra tarea. Inténtalo de nuevo en un momento.</string>
+    <string name="flow_stage_updated_ago">Actualizado hace %1$d s</string>
 </resources>
