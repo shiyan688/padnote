@@ -737,13 +737,19 @@ class ApiHandler(_DeadlineRequestHandler):
                 self._file(stream, item); return
             match = re.fullmatch(re.escape(API_PREFIX) + r"/agents/([A-Za-z0-9_.:-]+)/runs/([A-Za-z0-9_.:-]+)/stop", path)
             if method == "POST" and match:
+                bearer = self._bearer()
+                self.service.require_control_receipt(
+                    match.group(1), bearer, self.headers.get("X-PadNote-Control-Receipt"))
                 if self._body():
                     raise ValidationError("stop request body must be empty JSON")
-                status, value = self.service.stop_run(match.group(1), self._bearer(), match.group(2))
+                status, value = self.service.stop_run(match.group(1), bearer, match.group(2))
                 self._json(status, value); return
             match = re.fullmatch(re.escape(API_PREFIX) + r"/agents/([A-Za-z0-9_.:-]+)/runs/([A-Za-z0-9_.:-]+)/approval", path)
             if method == "POST" and match:
-                status, value = self.service.approve_run(match.group(1), self._bearer(), match.group(2), self._body())
+                bearer = self._bearer()
+                self.service.require_control_receipt(
+                    match.group(1), bearer, self.headers.get("X-PadNote-Control-Receipt"))
+                status, value = self.service.approve_run(match.group(1), bearer, match.group(2), self._body())
                 self._json(status, value); return
             match = re.fullmatch(re.escape(API_PREFIX) + r"/agents/([A-Za-z0-9_.:-]+)/runs/([A-Za-z0-9_.:-]+)/artifacts/([A-Za-z0-9_.:-]+)", path)
             if method == "GET" and match:

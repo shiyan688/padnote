@@ -1284,11 +1284,14 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(state.status, .running)
     }
 
-    func testDirectApprovalUsesExactRequestAndShowsActualReason() async throws {
+    func testDirectApprovalUsesGenerationBoundTokenAndShowsActualReason() async throws {
         let session = fixtureSession { request in
             XCTAssertEqual(request.url?.path, "/v1/runs/run-1/approval")
-            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
-            XCTAssertEqual(body, ["request_id": "approval-1", "choice": "once"])
+            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            XCTAssertEqual(body?["request_id"] as? String, "approval-1")
+            XCTAssertEqual(body?["execution_generation"] as? Int, 7)
+            XCTAssertEqual(body?["choice"] as? String, "once")
+            XCTAssertEqual(Set(body.map { Array($0.keys) } ?? []), Set(["request_id", "execution_generation", "choice"]))
             return FixtureResponse(json: [
                 "object": "hermes.run.approval_response", "run_id": "run-1",
                 "request_id": "approval-1", "choice": "once", "resolved": 1
@@ -1299,18 +1302,20 @@ final class AgentTests: XCTestCase {
         var task = AgentTaskRecord(profile: profile, payload: payload)
         task.remoteTaskID = "run-1"
         task.status = .waitingForApproval
-        task.approval = AgentTaskApproval(id: "approval-1", title: "运行命令", description: "需要读取所选目录")
+        task.approval = AgentTaskApproval(id: try AgentTaskClient.encodeApprovalToken(promptID: "approval-1", generation: 7), title: "运行命令", description: "需要读取所选目录")
 
-        let state = try await AgentTaskClient(session: session).approve(task: task, approvalID: "approval-1", decision: "once", token: "secret")
-        XCTAssertEqual(state.status, .running)
+        let state = try await AgentTaskClient(session: session).approve(task: task, approvalID: task.approval!.id, decision: "once", token: "secret")
+        XCTAssertEqual(state.status, AgentTaskStatus.running)
         XCTAssertNil(state.approval)
     }
 
     func testDirectApprovalDenialSendsOnlyDenyChoice() async throws {
         let session = fixtureSession { request in
             XCTAssertEqual(request.url?.path, "/v1/runs/run-1/approval")
-            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
-            XCTAssertEqual(body, ["request_id": "approval-1", "choice": "deny"])
+            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            XCTAssertEqual(body?["request_id"] as? String, "approval-1")
+            XCTAssertEqual(body?["execution_generation"] as? Int, 7)
+            XCTAssertEqual(body?["choice"] as? String, "deny")
             return FixtureResponse(json: [
                 "object": "hermes.run.approval_response", "run_id": "run-1",
                 "request_id": "approval-1", "choice": "deny", "resolved": 1
@@ -1320,10 +1325,160 @@ final class AgentTests: XCTestCase {
         let payload = try AgentTaskPayload(title: "Task", input: "Hello", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
         var task = AgentTaskRecord(profile: profile, payload: payload)
         task.remoteTaskID = "run-1"; task.status = .waitingForApproval
-        task.approval = AgentTaskApproval(id: "approval-1", title: "Review", description: "No authorization")
-        let state = try await AgentTaskClient(session: session).approve(task: task, approvalID: "approval-1", decision: "deny", token: "secret")
+        task.approval = AgentTaskApproval(id: try AgentTaskClient.encodeApprovalToken(promptID: "approval-1", generation: 7), title: "Review", description: "No authorization")
+        let state = try await AgentTaskClient(session: session).approve(task: task, approvalID: task.approval!.id, decision: "deny", token: "secret")
         XCTAssertEqual(state.status, .running)
         XCTAssertNil(state.approval)
+    }
+
+    func testDirectLegacyApprovalIDIsRejectedBeforePOST() async throws {
+        let session = fixtureSession { _ in XCTFail("legacy identity must not be posted"); return FixtureResponse(json: [:]) }
+        let profile = AgentConnectionProfile(name: "Direct", endpoint: "https://fixture.test/v1")
+        let payload = try AgentTaskPayload(title: "Task", input: "Hello", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+        var task = AgentTaskRecord(profile: profile, payload: payload)
+        task.remoteTaskID = "run-1"; task.status = .waitingForApproval
+        task.approval = AgentTaskApproval(id: "raw-approval", title: "Review", description: "Check")
+        do {
+            _ = try await AgentTaskClient(session: session).approve(task: task, approvalID: "raw-approval", decision: "once", token: "secret")
+            XCTFail("raw approval ids must be rejected")
+        } catch let error as AgentTaskError { XCTAssertEqual(error, .invalidResponse) }
+    }
+
+    func testDirectApprovalParserRejectsIdentityOnlyAndOversizedUTF8Token() throws {
+        let (legacy, legacyMessage) = AgentTaskClient.parseDirectApproval(
+            object: ["approval": ["request_id": "raw", "command": "run"]], status: .waitingForApproval)
+        XCTAssertNil(legacy); XCTAssertNotNil(legacyMessage)
+        let (identityOnly, identityMessage) = AgentTaskClient.parseDirectApproval(
+            object: ["execution_generation": 1, "pending_controls": [["kind": "approval", "prompt_id": "p",
+                    "payload": ["request_id": "raw", "session_id": "s", "approval_id": "old", "run_id": "run"]]]], status: .waitingForApproval)
+        XCTAssertNil(identityOnly); XCTAssertNotNil(identityMessage)
+        for payload in [["title": "Review"], ["tool_name": "shell"], ["command": " \n ", "args": [:]],
+                        ["request_id": "raw", "args": [NSNull(), ""]], ["command": [:]], ["reason": []],
+                        ["description": ["nested": ""]]] as [[String: Any]] {
+            let (approval, message) = AgentTaskClient.parseDirectApproval(object: [
+                "execution_generation": 1,
+                "pending_controls": [["kind": "approval", "prompt_id": "p", "payload": payload]],
+            ], status: .waitingForApproval)
+            XCTAssertNil(approval); XCTAssertNotNil(message)
+        }
+        let (withArguments, argumentMessage) = AgentTaskClient.parseDirectApproval(object: [
+            "execution_generation": 1,
+            "pending_controls": [["kind": "approval", "prompt_id": "p",
+                                  "payload": ["tool_name": "shell", "tool_args": ["path": "/tmp/file"]]]],
+        ], status: .waitingForApproval)
+        XCTAssertNotNil(withArguments); XCTAssertNil(argumentMessage)
+        XCTAssertTrue(withArguments?.description.contains("/tmp/file") == true)
+        let (emptyNumeric, _) = AgentTaskClient.parseDirectApproval(object: [
+            "execution_generation": 1,
+            "pending_controls": [["kind": "approval", "prompt_id": "p", "payload": ["command": [:]]]],
+        ], status: .waitingForApproval)
+        XCTAssertNil(emptyNumeric)
+        let (zeroArgument, zeroMessage) = AgentTaskClient.parseDirectApproval(object: [
+            "execution_generation": 1,
+            "pending_controls": [["kind": "approval", "prompt_id": "p", "payload": ["command": ["count": 0, "enabled": false]]]],
+        ], status: .waitingForApproval)
+        XCTAssertNotNil(zeroArgument); XCTAssertNil(zeroMessage)
+        let (floatGeneration, _) = AgentTaskClient.parseDirectApproval(object: [
+            "execution_generation": NSNumber(value: 1.0),
+            "pending_controls": [["kind": "approval", "prompt_id": "p", "payload": ["command": "run"]]],
+        ], status: .waitingForApproval)
+        XCTAssertNil(floatGeneration)
+        XCTAssertThrowsError(try AgentTaskClient.encodeApprovalToken(promptID: String(repeating: "🚀", count: 64), generation: 1))
+    }
+
+    func testBridgeStopDeliveryAcceptsOnlySevenEnumeratedValues() async throws {
+        var delivery = "queued"
+        let session = fixtureSession { _ in
+            FixtureResponse(json: ["task_id": "task-1", "instance_id": "instance-1", "status": "running", "stop_delivery": delivery])
+        }
+        let profile = AgentConnectionProfile(name: "Bridge", endpoint: "https://fixture.test",
+                                             transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        let payload = try AgentTaskPayload(title: "Task", input: "Hello", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+        var task = AgentTaskRecord(profile: profile, payload: payload); task.remoteTaskID = "task-1"
+        for value in ["queued", "sending", "unknown", "confirmed", "rejected", "not_sent", "superseded"] {
+            delivery = value
+            let result = try await AgentTaskClient(session: session).status(task: task, token: "secret")
+            XCTAssertEqual(result.stopDelivery?.rawValue, value)
+        }
+        delivery = "future"
+        do {
+            _ = try await AgentTaskClient(session: session).status(task: task, token: "secret")
+            XCTFail("unknown bridge delivery values must be rejected")
+        } catch let error as AgentTaskError { XCTAssertEqual(error, .invalidResponse) }
+    }
+
+    func testControlReceiptHeaderIsBridgeOnlyForStopAndApproval() async throws {
+        var observed = [(String, String?)]()
+        let session = fixtureSession { request in
+            observed.append((request.url?.path ?? "", request.value(forHTTPHeaderField: "X-PadNote-Control-Receipt")))
+            if request.url?.path.contains("/padnote/") == true {
+                return FixtureResponse(json: ["task_id": "task-1", "instance_id": "instance-1", "status": "running"])
+            }
+            return FixtureResponse(json: ["run_id": "run-1", "status": "running"])
+        }
+        let payload = try AgentTaskPayload(title: "Task", input: "Hello", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+        let bridge = AgentConnectionProfile(name: "Bridge", endpoint: "https://fixture.test", transport: .bridge,
+                                            bridgeID: "bridge-1", instanceID: "instance-1")
+        var bt = AgentTaskRecord(profile: bridge, payload: payload); bt.remoteTaskID = "task-1"
+        bt.status = .waitingForApproval; bt.approval = AgentTaskApproval(id: "opaque", title: "Review", description: "Check")
+        let bc = AgentTaskClient(session: session)
+        _ = try await bc.stop(task: bt, token: "secret")
+        _ = try await bc.approve(task: bt, approvalID: "opaque", decision: "deny", token: "secret")
+
+        let direct = AgentConnectionProfile(name: "Direct", endpoint: "https://fixture.test/v1")
+        var dt = AgentTaskRecord(profile: direct, payload: payload); dt.remoteTaskID = "run-1"
+        dt.status = .waitingForApproval
+        let token = try AgentTaskClient.encodeApprovalToken(promptID: "p", generation: 3)
+        dt.approval = AgentTaskApproval(id: token, title: "Review", description: "Check")
+        _ = try await AgentTaskClient(session: session).stop(task: dt, token: "secret")
+        _ = try await AgentTaskClient(session: session).approve(task: dt, approvalID: token, decision: "deny", token: "secret")
+        XCTAssertEqual(observed.map(\.1), ["1", "1", nil, nil])
+    }
+
+    func testStoreRevisionRejectsStaleStopReceiptWithoutOverwritingNewState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-stale-stop-receipt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AgentTaskStore(fileURL: root)
+        let profile = AgentConnectionProfile(name: "Direct", endpoint: "https://fixture.test")
+        let payload = try AgentTaskPayload(title: "Task", input: "Hello", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+        let initial = try store.create(profile: profile, payload: payload)
+        let receiptRevision = initial.recordRevision
+        _ = try store.mutate(id: initial.id, expectedRevision: receiptRevision) { $0.status = .completed; $0.output = "new state" }
+        do {
+            _ = try store.mutate(id: initial.id, expectedRevision: receiptRevision) { $0.status = .running; $0.output = nil }
+            XCTFail("an old control receipt must fail its revision CAS")
+        } catch let error as AgentTaskError { XCTAssertEqual(error, .staleTask) }
+        let saved = try XCTUnwrap(store.task(id: initial.id))
+        XCTAssertEqual(saved.status, .completed); XCTAssertEqual(saved.output, "new state")
+    }
+
+    func testStoppingTaskResumesOnlyAfterExplicitStopNonDelivery() async throws {
+        for (delivery, expected) in [("not_sent", AgentTaskStatus.running), ("rejected", .running),
+                                     ("superseded", .running), ("unknown", .stopping),
+                                     ("confirmed", .stopping)] {
+            let (defaults, suite) = makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+            let initial = try connections.create(name: "Bridge", kind: .hermes, endpoint: "https://fixture.test", token: "token",
+                                                 transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+            XCTAssertTrue(connections.applyProbeSuccess(id: initial.id, revision: initial.revision,
+                                                         capabilities: ["run_status": true]))
+            let profile = try XCTUnwrap(connections.profile(id: initial.id))
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-stopping-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let tasks = AgentTaskStore(fileURL: root)
+            let payload = try AgentTaskPayload(title: "Task", input: "Check", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+            let local = try tasks.create(profile: profile, payload: payload)
+            _ = try tasks.mutate(id: local.id, expectedRevision: local.recordRevision) {
+                $0.remoteTaskID = "task-1"; $0.status = .stopping
+            }
+            let session = fixtureSession { _ in FixtureResponse(json: [
+                "task_id": "task-1", "instance_id": "instance-1", "status": "running", "stop_delivery": delivery
+            ]) }
+            let service = AgentTaskService(connectionStore: connections, taskStore: tasks, client: AgentTaskClient(session: session))
+            let refreshed = try await service.refresh(id: local.id)
+            XCTAssertEqual(refreshed.status, expected, "delivery=\(delivery)")
+        }
     }
 
     func testDirectStatusRequiresKnownStatusAndKeepsApprovalDetails() async throws {
@@ -1338,17 +1493,20 @@ final class AgentTests: XCTestCase {
         task.remoteTaskID = "run-1"
         task.status = .running
 
+        response = ["run_id": "run-1", "status": "waiting_for_approval", "execution_generation": 9,
+                    "pending_controls": [["kind": "approval", "prompt_id": "approval-1",
+                                          "payload": ["command": "python review.py", "reason": "生成分镜审阅稿"]]]]
         let waiting = try await AgentTaskClient(session: session).status(task: task, token: "secret")
-        XCTAssertEqual(waiting.approval?.id, "approval-1")
+        XCTAssertEqual(try AgentTaskClient.decodeApprovalToken(try XCTUnwrap(waiting.approval?.id)).1, 9)
         XCTAssertTrue(waiting.approval?.description.contains("python review.py") == true)
         XCTAssertTrue(waiting.approval?.description.contains("生成分镜审阅稿") == true)
 
-        response = ["run_id": "run-1", "status": "future_state"]
-        do {
-            _ = try await AgentTaskClient(session: session).status(task: task, token: "secret")
-            XCTFail("unknown task states must not be treated as running or successful")
-        } catch let error as AgentTaskError {
-            XCTAssertEqual(error, .invalidResponse)
+        for raw in ["started", "queued", "unknown"] {
+            response = ["run_id": "run-1", "status": raw]
+            let projected = try await AgentTaskClient(session: session).status(task: task, token: "secret")
+            XCTAssertEqual(projected.status, .running)
+            if raw == "unknown" { XCTAssertTrue(projected.error?.contains("不要重新发送") == true) }
+            if raw == "queued" { XCTAssertTrue(projected.error?.contains("排队") == true) }
         }
     }
 

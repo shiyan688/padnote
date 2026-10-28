@@ -464,4 +464,8 @@
     <string name="core_note_cover_content_desc">Portada de la nota</string>
     <string name="core_pressure_ready">Presión 0,000 · lápiz listo</string>
     <string name="core_ai_written_changes">En esta solicitud se escribieron %1$d cambios de texto</string>
+    <string name="core_ai_selection_tutorial_title">Usar IA con contenido seleccionado</string>
+    <string name="core_ai_selection_tutorial_message">Rodea con el lazo el contenido de la página y toca IA. Solo se enviará el contenido seleccionado después de confirmarlo. Puedes configurar un modelo antes.</string>
+    <string name="core_ai_selection_start_lasso">Empezar a seleccionar</string>
+    <string name="core_ai_selection_ai_settings">Ajustes de IA</string>
 </resources>

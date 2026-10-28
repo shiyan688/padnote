@@ -1,26 +1,25 @@
 # 开发状态与接手入口
 
-产品目标：在平板上与 AI 在同一张纸上交流学习，方便分享纸面，也能把上下文交给自己选择的电脑 Agent。模型、语音和工具由用户或 Agent 选择。当前不建设 PadNote 自有服务器。
+目标：在平板与 AI 在同一张纸上交流学习，方便分享给人，也能把上下文交给自己选择的电脑 Agent。模型、语音和工具由用户或 Agent 选择；当前不建设 PadNote 自有服务器。
 
-## beta.19 已实现
+## beta.20 的改动
 
-新建正文默认值与公式入口分开；电脑与 Hermes 检测分开；检测时间独立保存，不从普通状态更新时间推断在线；显式检查最多三秒、被动查询不调用上游；并发检测去重、旧配置结果拒绝；异步任务的上游 POST 不再长期持有连接和实例锁，同一连接可独立接收第二条任务。历史不确定任务禁止自动重发，配对和原任务归属保留。
+保留 beta.19 的正文默认值、分层连接检测和异步任务收据。进一步移除已知任务查询中的连接/实例长锁；停止与审批使用独立两槽持久化后台队列。排队、投递、结果未知、明确未发送分别记录；重启不重放未知审批。两个客户端读取操作响应并保持任务身份与本地版本 CAS；明确未发送才退出停止中。
 
-Android 与 iPad 识别新的检测元数据，旧助手保持兼容。不可用或检查中限制后续提交，已有任务状态和成果查询保留。iPad 尚无签名分发包；桌面 Mock 回归不代替真实 Hermes 完整任务验收。
+审批仅从可验证的 canonical pending_controls 与执行代数产生；旧 raw approval 不允许远程批准。信息不足、只含标题或空容器的审批回到电脑处理。HTTP 控制请求要求 receipt header，避免旧客户端忽略异步收据。协议见 [控制操作契约](RUN_CONTROL_CONTRACT.md)。
 
-## 继续推进
+Android AI 按钮无选区时提供圈选与模型设置引导，支持七语言；打开引导不自动扩大读取范围或发送模型请求。
 
-1. 完成真实设备上的纸面 → PDF → 所选 Hermes → 结果回传流程，分别记录送达与执行，避免用截图替代执行证据。
-2. 继续审查已有任务轮询、停止等网络路径的锁等待、超时和恢复提示；不要只扩大超时来隐藏问题。
-3. 用合成资料持续验收长文分页、缩放、公式、PDF 尾页、整库备份与跨端恢复；不得对用户唯一资料做故障注入。
-4. 改进连接引导、缺少 Hermes 的安装/配置路径、多 Agent 选择和结果回到原笔记的体验；OpenClaw/Codex 新适配需先明确协议与能力，不假称已可执行。
-5. 推进 iPad 签名安装、Windows/iPad 本地化、大字号/键盘/屏幕阅读器与笔输入体验。
+## 验证与边界
 
-## 修改与验证入口
+桌面使用隔离合成状态、Fake Hermes、事件阻塞和本机 HTTP 回归；Android 在 h1003 构建、JVM/lint及测试 APK 编译；iPad进行 build-for-testing。实际安装、运行环境与完整学习/Agent往返验证须单独记录，不能以Mock或一次编译代替。
 
-- 电脑助手：`desktop/connection-assistant/padnote_assistant/bridge.py`、`state.py`、`web.py`、`admin_ui.py`。
-- 针对性回归：`test_agent_readiness.py`、`test_async_submission.py`、`test_admin_ui.py`。
-- Android：`AgentConnectionClient`、`AgentConnectionStore`、`AgentConnectionDialogs` 与 `AgentProtocolTest`。
-- iPad：`AgentConnectionClient.swift`、`AgentConnectionStore.swift`、`AgentSettingsViews.swift` 与 `AgentTests.swift`。
+## 后续重点
 
-检测与任务提交不可调用模型来“测在线”。配置、凭据和实例身份改变后，旧请求结果不得恢复新身份的就绪状态。每个任务持久化后再返回收据，未知提交不得自动重放。提交工作接纳后无法保证被撤回；后续撤销禁止新请求，但已接纳任务继续归属原记录。
+1. 持续验收真实纸面 → PDF → 所选 Agent → 结果回到原笔记，区分送达与执行；历史不确定任务不重发。
+2. 长文分页与缩放、公式与 PDF 尾页、整库备份和跨端恢复；仅用合成资料故障测试。
+3. 缺少 Hermes 时的安装配置引导、多 Agent 选择、连接变化恢复与低延迟体验。
+4. OpenClaw/Codex真实任务适配；明确协议与能力后再提供执行按钮。当前 OpenClaw 是发现/设置引导，Codex纸面任务尚未接入。
+5. iPad签名安装、Windows/iPad本地化、大字号、键盘和屏幕阅读器与笔输入。
+
+实现入口：desktop 的 bridge.py/run_controls.py/hermes.py/state.py/web.py；Android AgentTaskClient/AgentTaskStore/AgentApprovalIdentity；iPad AgentTaskClient/AgentTaskStore。未知写操作禁止自动重试；配置变更不能重定向已接纳请求；撤销后拒绝新操作，既有请求结果仍归原任务。

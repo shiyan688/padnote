@@ -229,6 +229,125 @@ class HermesError(RuntimeError):
         self.uncertain = uncertain
 
 
+def encode_approval_token(prompt_id: str, generation: int) -> str:
+    if not isinstance(generation, int) or isinstance(generation, bool) or not 0 < generation <= 9007199254740991:
+        raise ValueError("approval generation must be a positive integer")
+    if not isinstance(prompt_id, str) or not prompt_id or prompt_id != prompt_id.strip() \
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in prompt_id):
+        raise ValueError("invalid approval prompt id")
+    token = f"pc1:{generation}:{prompt_id}"
+    if len(token.encode("utf-8")) > 256:
+        raise ValueError("approval token exceeds 256 characters")
+    return token
+
+
+def decode_approval_token(token: str) -> tuple[str, int]:
+    if not isinstance(token, str) or any(ord(char) < 32 or ord(char) == 127 for char in token):
+        raise ValueError("invalid approval token")
+    try:
+        if len(token.encode("utf-8")) > 256:
+            raise ValueError("invalid approval token")
+    except UnicodeEncodeError as error:
+        raise ValueError("invalid approval token") from error
+    parts = token.split(":", 2)
+    if len(parts) != 3 or parts[0] != "pc1" or not parts[1].isascii() \
+            or not parts[1].isdecimal() or parts[1].startswith("0") or not parts[2]:
+        raise ValueError("invalid approval token")
+    generation = int(parts[1])
+    if not 0 < generation <= 9007199254740991:
+        raise ValueError("invalid approval token")
+    if encode_approval_token(parts[2], generation) != token:
+        raise ValueError("invalid approval token")
+    return parts[2], generation
+
+
+def normalize_approval(value: dict[str, Any], status: str) -> tuple[dict[str, str] | None, str | None]:
+    """Normalize a pending approval without exposing an unbound legacy id."""
+    if status != "waiting_for_approval":
+        return None, None
+
+    fallback_error = "无法验证这条审批的身份，请在电脑端处理或更新 Hermes。"
+
+    def readable(source: dict[str, Any], approval_id: str) -> tuple[dict[str, str], bool]:
+        def meaningful(item: Any) -> bool:
+            if item is None or item == "":
+                return False
+            if isinstance(item, str):
+                return bool(item.strip())
+            if isinstance(item, dict):
+                return any(meaningful(child) for child in item.values())
+            if isinstance(item, (list, tuple)):
+                return any(meaningful(child) for child in item)
+            return True
+
+        title_raw = source.get("title") or source.get("tool_name") or "Hermes 需要批准"
+        title = str(title_raw)[:256]
+        details = []
+        oversized = False
+        for key in ("description", "command", "reason"):
+            detail = source.get(key)
+            if not meaningful(detail):
+                continue
+            rendered = detail if isinstance(detail, str) else json.dumps(
+                detail, ensure_ascii=False, sort_keys=True)
+            line = f"{key}: {rendered}"
+            if len(line) > 2000:
+                oversized = True
+            details.append(line)
+        if not details:
+            identity_fields = {"kind", "prompt_id", "request_id", "execution_generation",
+                               "session_id", "admission_id", "approval_id", "run_id",
+                               "title", "tool_name", "tool"}
+
+            readable_fields = {key: item for key, item in source.items()
+                                if key not in identity_fields and meaningful(item)}
+            if readable_fields:
+                description = json.dumps(readable_fields, ensure_ascii=False, sort_keys=True)
+            else:
+                description = fallback_error
+                oversized = True
+        else:
+            description = "\n".join(details)
+        if len(description) > 2000:
+            oversized = True
+        return ({"approval_id": approval_id if not oversized else "", "title": title,
+                 "description": description[:2000]}, oversized)
+
+    generation = value.get("execution_generation")
+    valid_generation = isinstance(generation, int) and not isinstance(generation, bool) \
+            and 0 < generation <= 9007199254740991
+    controls = value.get("pending_controls")
+    if isinstance(controls, list) and len(controls) <= 128 and valid_generation:
+        for control in controls:
+            if not isinstance(control, dict) or control.get("kind") != "approval":
+                continue
+            prompt_id = control.get("prompt_id")
+            if not isinstance(prompt_id, str) or prompt_id != prompt_id.strip() or not prompt_id \
+                    or len(prompt_id) > 256 or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in prompt_id):
+                continue
+            if "execution_generation" in control and (type(control.get("execution_generation")) is not int
+                    or control.get("execution_generation") != generation):
+                continue
+            source = control.get("payload")
+            if not isinstance(source, dict):
+                source = control
+            try:
+                token = encode_approval_token(prompt_id, generation)
+            except ValueError:
+                continue
+            result, oversized = readable(source, token)
+            return result, fallback_error if oversized else None
+
+    legacy = value.get("approval")
+    if isinstance(legacy, dict):
+        result, _ = readable(legacy, "")
+        return result, fallback_error
+    if controls is not None or isinstance(legacy, dict):
+        return {"approval_id": "", "title": "Hermes 需要批准",
+                "description": fallback_error}, fallback_error
+    return None, None
+
+
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, file_pointer, code, message, headers, new_url):
         try:
@@ -563,16 +682,25 @@ class HermesClient:
         return self._request("GET", "/v1/runs/" + urllib.parse.quote(upstream_run_id, safe=""))
 
     def stop_run(self, upstream_run_id: str) -> dict[str, Any]:
-        return self._request("POST", "/v1/runs/" + urllib.parse.quote(upstream_run_id, safe="") + "/stop", {})
+        result = self._request("POST", "/v1/runs/" + urllib.parse.quote(upstream_run_id, safe="") + "/stop", {})
+        if not isinstance(result, dict) or result.get("run_id") != upstream_run_id:
+            raise HermesError("upstream_invalid", "Hermes returned a mismatched control receipt",
+                              uncertain=True)
+        return result
 
     def approve_run(self, upstream_run_id: str, approval_id: str, decision: str) -> dict[str, Any]:
         if decision not in {"once", "deny"}:
             raise ValidationError("approval decision must be once or deny")
-        return self._request(
+        request_id, generation = decode_approval_token(approval_id)
+        result = self._request(
             "POST",
             "/v1/runs/" + urllib.parse.quote(upstream_run_id, safe="") + "/approval",
-            {"request_id": approval_id, "choice": decision},
+            {"request_id": request_id, "execution_generation": generation, "choice": decision},
         )
+        if not isinstance(result, dict) or result.get("run_id") != upstream_run_id:
+            raise HermesError("upstream_invalid", "Hermes returned a mismatched control receipt",
+                              uncertain=True)
+        return result
 
 
 RUN_STATUSES = {
@@ -592,30 +720,18 @@ RUN_STATUSES = {
 
 def normalize_run(value: dict[str, Any]) -> dict[str, Any]:
     raw_status = str(value.get("status", "")).lower()
-    if raw_status not in RUN_STATUSES:
+    if raw_status == "unknown":
+        status = "running"
+    elif raw_status not in RUN_STATUSES:
         raise HermesError("upstream_status_unknown", "Hermes returned an unknown run status")
-    status = RUN_STATUSES[raw_status]
-    approval = None
-    raw_approval = value.get("approval")
-    if status == "waiting_for_approval" and isinstance(raw_approval, dict):
-        request_id = raw_approval.get("request_id")
-        if isinstance(request_id, str) and request_id == request_id.strip() \
-                and 1 <= len(request_id) <= 256 and "\r" not in request_id and "\n" not in request_id:
-            title = raw_approval.get("title") or raw_approval.get("tool_name") or "Hermes 需要批准"
-            details = []
-            for key in ("description", "reason", "command", "tool_name", "question"):
-                detail = raw_approval.get(key)
-                if detail not in (None, ""):
-                    rendered = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False, sort_keys=True)
-                    details.append(f"{key}: {rendered}")
-            description = "\n".join(details) or "请在继续前在电脑上检查这项操作。"
-            approval = {
-                "approval_id": request_id,
-                "title": str(title)[:256],
-                "description": str(description)[:2000],
-            }
+    else:
+        status = RUN_STATUSES[raw_status]
+    approval, approval_error = normalize_approval(value, status)
     output = value.get("output") if status == "completed" else None
-    error = value.get("error") if status in {"failed", "cancelled", "interrupted"} else None
+    if raw_status == "unknown":
+        error = "Hermes 尚未确认任务结果。请在电脑端核对当前状态，不要重新发送。"
+    else:
+        error = value.get("error") if status in {"failed", "cancelled", "interrupted"} else approval_error
     if error is not None and not isinstance(error, (str, dict)):
         error = "Hermes task failed"
     session_id = value.get("session_id")

@@ -464,4 +464,8 @@
     <string name="core_note_cover_content_desc">노트 표지</string>
     <string name="core_pressure_ready">압력 0.000 · 펜 준비됨</string>
     <string name="core_ai_written_changes">이번 요청에서 텍스트 %1$d곳을 작성했습니다</string>
+    <string name="core_ai_selection_tutorial_title">선택한 내용으로 AI 사용</string>
+    <string name="core_ai_selection_tutorial_message">페이지에서 올가미로 내용을 둘러싼 다음 AI를 누르세요. 확인한 뒤 선택한 내용만 전송됩니다. 먼저 모델을 설정할 수도 있습니다.</string>
+    <string name="core_ai_selection_start_lasso">선택 시작</string>
+    <string name="core_ai_selection_ai_settings">AI 설정</string>
 </resources>

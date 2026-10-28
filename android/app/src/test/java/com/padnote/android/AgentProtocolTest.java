@@ -261,6 +261,64 @@ public final class AgentProtocolTest {
         catch (IllegalStateException expected) { assertTrue(expected.getMessage().contains("未知")); }
     }
 
+    @Test public void bridgeStopDeliveryAcceptsOnlySevenProtocolValues() throws Exception {
+        AgentConnectionStore.Config connection=config(Arrays.asList("run_status"));
+        AgentTaskStore.Task task=taskWithApproval("approval-a");
+        assertEquals("approval-a",task.approvalId);
+        for(String delivery:new String[]{"queued","sending","unknown","confirmed","rejected","not_sent","superseded"}) {
+            AgentTaskClient.RemoteStatus remote=new AgentTaskClient(request->response(request.url,200,
+                    "{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"running\",\"stop_delivery\":\""+delivery+"\"}"))
+                    .status(task,connection);
+            assertEquals(delivery,remote.stopDelivery);
+        }
+        for(String delivery:new String[]{"", "delivered", "QUEUED", "true"}) {
+            try { new AgentTaskClient(request->response(request.url,200,
+                    "{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"running\",\"stop_delivery\":\""+delivery+"\"}"))
+                    .status(task,connection); fail(delivery); }
+            catch(IllegalStateException expected) { }
+        }
+    }
+
+    @Test public void directStatusIgnoresStopDeliveryField() throws Exception {
+        AgentTaskStore.Task task=directTask("remote-a",AgentTaskStore.Status.RUNNING,"",0L);
+        AgentConnectionStore.Config connection=directConfig(Arrays.asList("run_status"));
+        AgentTaskClient.RemoteStatus remote=new AgentTaskClient(request->response(request.url,200,
+                "{\"run_id\":\"remote-a\",\"status\":\"running\",\"stop_delivery\":\"bogus\"}"))
+                .status(task,connection);
+        assertEquals("",remote.stopDelivery);
+    }
+
+    @Test public void controlPostsUseBridgeReceiptHeaderAndRejectMismatchedProjections() throws Exception {
+        AgentConnectionStore.Config bridge=config(Arrays.asList("run_stop","run_approval_response"));
+        AgentTaskStore.Task task=taskWithApproval("approval-a");
+        for(String action:new String[]{"stop","approval"}) {
+            AgentTaskClient client=new AgentTaskClient(request->{
+                assertEquals("1",request.headers.get("X-PadNote-Control-Receipt"));
+                return response(request.url,200,"{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"running\"}");
+            });
+            if("stop".equals(action))client.stop(task,bridge);
+            else client.approve(task,bridge,"once");
+        }
+        for(String badJson:new String[]{
+                "{\"task_id\":\"wrong\",\"instance_id\":\"agent-a\",\"status\":\"running\"}",
+                "{\"task_id\":\"remote-a\",\"instance_id\":\"wrong\",\"status\":\"running\"}"}) {
+            try { new AgentTaskClient(request->response(request.url,200,badJson)).stop(task,bridge); fail(); }
+            catch(IllegalStateException expected) { }
+        }
+        AgentTaskStore.Task direct=directTask("remote-a",AgentTaskStore.Status.WAITING_FOR_APPROVAL,
+                AgentApprovalIdentity.encode("prompt-a",1L),1L);
+        assertEquals(AgentApprovalIdentity.encode("prompt-a",1L),direct.approvalId);
+        AgentConnectionStore.Config directConnection=directConfig(Arrays.asList("run_stop","run_approval_response"));
+        for(String action:new String[]{"stop","approval"}) {
+            AgentTaskClient client=new AgentTaskClient(request->{
+                assertFalse(request.headers.containsKey("X-PadNote-Control-Receipt"));
+                return response(request.url,200,"{\"run_id\":\"remote-a\",\"status\":\"running\"}");
+            });
+            if("stop".equals(action))client.stop(direct,directConnection);
+            else client.approve(direct,directConnection,"once");
+        }
+    }
+
     @Test public void artifactIsStreamedAndMustMatchLengthAndDigest() throws Exception {
         byte[] bytes = "verified artifact".getBytes(StandardCharsets.UTF_8);
         String sha = hex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -295,6 +353,31 @@ public final class AgentProtocolTest {
                 AgentConnectionStore.Kind.BUILTIN_VIDEO, "https://bridge.test", "token",
                 "credential-a", AgentConnectionStore.Transport.BRIDGE, "bridge-a", "agent-a",
                 "a".repeat(64), 7L, 1L, Collections.emptyList());
+    }
+
+    private static AgentConnectionStore.Config directConfig(java.util.List<String> capabilities) {
+        return new AgentConnectionStore.Config("connection-a","Hermes",AgentConnectionStore.Kind.HERMES,
+                "https://hermes.test","token","credential-a",AgentConnectionStore.Transport.DIRECT,
+                "","",7L,1L,capabilities);
+    }
+
+    private static AgentTaskStore.Task directTask(String remote,AgentTaskStore.Status status,
+                                                   String approvalId,long generation) throws Exception {
+        String payload="{\"client_task_id\":\"padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"input\":\"go\"}";
+        return new AgentTaskStore.Task("padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection-a",7L,
+                "https://hermes.test",AgentConnectionStore.Kind.HERMES,AgentConnectionStore.Transport.DIRECT,
+                "credential-a","","", "Task","Hermes","",0L,payload,
+                AgentTaskStore.sha256(payload.getBytes(StandardCharsets.UTF_8)),remote,status,
+                "","",approvalId,"","",Collections.emptyList(),1L,1L);
+    }
+
+    private static AgentTaskStore.Task taskWithApproval(String approvalId) throws Exception {
+        String payload="{\"client_task_id\":\"padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"input\":\"go\"}";
+        return new AgentTaskStore.Task("padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection-a",7L,
+                "https://bridge.test",AgentConnectionStore.Kind.HERMES,AgentConnectionStore.Transport.BRIDGE,
+                "credential-a","bridge-a","agent-a","Task","Bridge","note-a",1L,payload,
+                AgentTaskStore.sha256(payload.getBytes(StandardCharsets.UTF_8)),"remote-a",
+                AgentTaskStore.Status.RUNNING,"","",approvalId,"title","description",Collections.emptyList(),1L,1L);
     }
 
     private static AgentTaskStore.Task task(java.util.List<AgentTaskStore.Artifact> artifacts,

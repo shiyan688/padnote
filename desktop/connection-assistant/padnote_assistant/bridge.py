@@ -22,6 +22,7 @@ from .bundles import (
     task_bundle_type,
 )
 from .hermes import CredentialVault, HermesClient, HermesError, normalize_run
+from .run_controls import RunControlQueue
 from .secure_store import BuiltinCredentialVault, SecureStoreError
 from .profiles import read_hermes_profile
 from .security import (ValidationError, canonical_json, validate_builtin_video_provider,
@@ -105,6 +106,7 @@ class BridgeService:
             # durable home for them.
             self._video_revise_feedback: dict[str, str] = {}
             self._reload_configured_profiles()
+            self._run_controls = RunControlQueue(self)
             if self.video_worker is not None:
                 self._start_video_scheduler()
         except BaseException:
@@ -127,9 +129,12 @@ class BridgeService:
             while self._active_video_reconciliations or self._active_video_cancellations:
                 self._video_lifecycle_condition.wait()
         try:
+            deadline = time.monotonic() + 60.0
+            controls = getattr(self, "_run_controls", None)
+            if controls is not None and not controls.close(timeout=max(0.0, deadline - time.monotonic())):
+                raise RuntimeError("Run control workers have not stopped; state owner retained")
             with self._submission_condition:
                 self._accepting_submissions = False
-                deadline = time.monotonic() + 60.0
                 while self._submission_workers:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -548,6 +553,7 @@ class BridgeService:
         return {
                     "object": "padnote.agent.capabilities",
                     "protocol_version": 1,
+                    "run_control_receipts_version": 1,
                     "bridge_id": self.store.bridge_id,
                     "instance_id": instance_id,
                     "kind": instance["kind"],
@@ -556,6 +562,13 @@ class BridgeService:
                     "readiness": readiness,
                     "readiness_probe_supported": instance["kind"] == "hermes",
                 }
+
+    def require_control_receipt(self, instance_id: str, bearer: str, version: str | None) -> None:
+        self.store.authenticate(instance_id, bearer)
+        if version != "1":
+            raise ConflictError(
+                "Run controls require a newer PadNote tablet version; update PadNote. "
+                "This operation was not sent.")
 
     def _readiness_snapshot(self, instance: dict[str, Any], *, key_present: bool) -> dict[str, Any]:
         checked_at = instance.get("checked_at")
@@ -1705,23 +1718,55 @@ class BridgeService:
             # No model polling or worker lock: the local operation ledger/run
             # projection remains readable while production is in progress.
             return self._public_run(self.store.owned_run(connection, task_id))
+        run = self.store.owned_run(connection, task_id)
+        controls = run.get("control_actions")
+        if isinstance(controls, dict) and any(
+                isinstance(action, dict) and action.get("state") in {"queued", "sending"}
+                for action in controls.values()):
+            return self._public_run(run)
         if self.async_submission:
-            run = self.store.owned_run(connection, task_id)
             if run.get("status") == "submitting" and not run.get("upstream_run_id"):
                 # The durable receipt is immediately readable while a worker
                 # holds request locks during the bounded Hermes POST.
                 return self._public_run(run)
-        with self._authorized_connection(instance_id, bearer) as connection:
-            with self._operation_lock("instance:" + instance_id):
-                with self._operation_lock("task:" + task_id):
-                    return self._get_run_locked(instance_id, connection, task_id)
+        task_lock = self._operation_lock("task:" + task_id)
+        with ExitStack() as stack:
+            with self._try_authorized_connection(instance_id, bearer) as connection:
+                if connection is None:
+                    fresh = self.store.authenticate(instance_id, bearer)
+                    return self._public_run(self.store.owned_run(fresh, task_id))
+                instance_lock = self._operation_lock("instance:" + instance_id)
+                if not instance_lock.acquire(blocking=False):
+                    fresh = self.store.authenticate(instance_id, bearer)
+                    return self._public_run(self.store.owned_run(fresh, task_id))
+                try:
+                    if not task_lock.acquire(blocking=False):
+                        fresh = self.store.authenticate(instance_id, bearer)
+                        return self._public_run(self.store.owned_run(fresh, task_id))
+                    stack.callback(task_lock.release)
+                    run = self.store.owned_run(connection, task_id)
+                    should_poll = bool(run.get("upstream_run_id") and (
+                        run["status"] not in TERMINAL_STATUSES or not run.get("session_id")))
+                    if not should_poll:
+                        return self._public_run(run)
+                    try:
+                        client = self._hermes(instance_id, allow_unchecked=True, request_timeout=3.0)
+                    except ValidationError:
+                        if run["status"] in TERMINAL_STATUSES:
+                            return self._public_run(run)
+                        raise
+                finally:
+                    instance_lock.release()
+            # connection and instance locks are released before the upstream GET.
+            return self._get_run_locked(instance_id, connection, task_id, client=client, bearer=bearer)
 
-    def _get_run_locked(self, instance_id: str, connection: dict[str, Any], task_id: str) -> dict[str, Any]:
+    def _get_run_locked(self, instance_id: str, connection: dict[str, Any], task_id: str,
+                        client: HermesClient | None = None, bearer: str | None = None) -> dict[str, Any]:
         run = self.store.owned_run(connection, task_id)
         if run.get("upstream_run_id") and (run["status"] not in TERMINAL_STATUSES or not run.get("session_id")):
             try:
-                response = self._hermes(instance_id, allow_unchecked=True).get_run(
-                    run["upstream_run_id"])
+                response = (client or self._hermes(instance_id, allow_unchecked=True,
+                                                   request_timeout=3.0)).get_run(run["upstream_run_id"])
                 response_id = response.get("run_id") or response.get("id")
                 if response_id != run["upstream_run_id"]:
                     raise HermesError("upstream_invalid", "Hermes returned a different run", status=502)
@@ -1744,6 +1789,8 @@ class BridgeService:
                                             "后续刷新将继续查询同一任务。"))
                 elif run["status"] not in TERMINAL_STATUSES:
                     raise
+        if bearer is not None:
+            self.store.authenticate(instance_id, bearer)
         return self._public_run(run)
 
     def get_video_review(self, instance_id: str, bearer: str,
@@ -1801,62 +1848,15 @@ class BridgeService:
         return task_root, binding
 
     def stop_run(self, instance_id: str, bearer: str, task_id: str) -> tuple[int, dict[str, Any]]:
-        task_id = validate_identifier(task_id, "task_id")
-        with self._authorized_connection(instance_id, bearer) as connection:
-            with self._operation_lock("instance:" + instance_id):
-                with self._operation_lock("task:" + task_id):
-                    return self._stop_run_locked(instance_id, connection, task_id)
-
-    def _stop_run_locked(self, instance_id: str, connection: dict[str, Any],
-                         task_id: str) -> tuple[int, dict[str, Any]]:
-        run = self.store.owned_run(connection, task_id)
-        if run["status"] in TERMINAL_STATUSES:
-            return 200, self._public_run(run)
-        if not run.get("upstream_run_id"):
-            # A stop request must never be the first operation that submits an
-            # uncertain task. Without a provider run ID, neither submit nor stop
-            # can safely resolve whether Hermes accepted the original request.
-            run = self.store.update_run(
-                task_id,
-                error=("无法确认 Hermes 是否已接收任务，因此助手没有发送停止请求。"
-                       "为避免重复执行，请先在 Hermes 电脑端核对；若已找到任务，请保留此 PadNote 任务并刷新；"
-                       "若无法确认，请先人工对账。"),
-            )
-            return 202, self._public_run(run)
-        try:
-            self._hermes(instance_id).stop_run(run["upstream_run_id"])
-            run = self.store.update_run(task_id, status="stopping", stopped_at=int(self.clock()))
-        except HermesError as error:
-            if error.uncertain:
-                run = self.store.update_run(task_id, status="stopping")
-            else:
-                raise
-        return 202, self._public_run(run)
+        return self._run_controls.submit(instance_id, bearer, task_id, "stop")
 
     def approve_run(self, instance_id: str, bearer: str, task_id: str,
                     payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        task_id = validate_identifier(task_id, "task_id")
-        with self._authorized_connection(instance_id, bearer) as connection:
-            with self._operation_lock("instance:" + instance_id):
-                with self._operation_lock("task:" + task_id):
-                    return self._approve_run_locked(instance_id, connection, task_id, payload)
-
-    def _approve_run_locked(self, instance_id: str, connection: dict[str, Any], task_id: str,
-                            payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        run = self.store.owned_run(connection, task_id)
-        approval_id = validate_text(payload.get("approval_id"), "approval_id", 256)
-        decision = validate_text(payload.get("decision"), "decision", 20)
-        if decision not in {"once", "deny"}:
-            raise ValidationError("decision must be once or deny")
-        current = run.get("approval")
-        if run.get("status") != "waiting_for_approval" or not isinstance(current, dict) \
-                or current.get("approval_id") != approval_id:
-            raise ConflictError("Approval is no longer current")
-        if not run.get("upstream_run_id"):
-            raise ConflictError("Task has no upstream run")
-        self._hermes(instance_id).approve_run(run["upstream_run_id"], approval_id, decision)
-        run = self.store.update_run(task_id, status="running", approval=None)
-        return 202, self._public_run(run)
+        if not isinstance(payload, dict):
+            raise ValidationError("request body must be a JSON object")
+        return self._run_controls.submit(
+            instance_id, bearer, task_id, "approval",
+            approval_id=payload.get("approval_id", ""), decision=payload.get("decision", ""))
 
     def get_artifact(self, instance_id: str, bearer: str, task_id: str,
                      artifact_id: str):
@@ -1887,6 +1887,21 @@ class BridgeService:
             if current["connection_id"] != initial["connection_id"]:
                 raise AuthorizationError("Device credential identity changed")
             yield current
+
+    @contextmanager
+    def _try_authorized_connection(self, instance_id: str, bearer: str):
+        initial = self.store.authenticate(instance_id, bearer)
+        lock = self._operation_lock("connection:" + initial["connection_id"])
+        if not lock.acquire(blocking=False):
+            yield None
+            return
+        try:
+            current = self.store.authenticate(instance_id, bearer)
+            if current["connection_id"] != initial["connection_id"]:
+                raise AuthorizationError("Device credential identity changed")
+            yield current
+        finally:
+            lock.release()
 
     def _operation_lock(self, key: str) -> threading.Lock:
         with self._operation_locks_guard:
@@ -2040,4 +2055,5 @@ class BridgeService:
         for key in ("output", "error", "approval", "video_workflow_state", "video_workflow_error"):
             if run.get(key) is not None:
                 value[key] = run[key]
-        return value
+        controls = getattr(self, "_run_controls", None)
+        return controls.project(run, value) if controls is not None else value

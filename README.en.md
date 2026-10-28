@@ -6,16 +6,16 @@
 
 PadNote brings notes, handwriting, and AI-assisted learning together on one page. Use material such as a video lesson, develop the ideas in your note, then share the page with someone or send it to a paired computer agent. You choose the model and service provider.
 
-[Android beta.19](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.19) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.19/PadNote-Android-0.18.0-beta.19-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.19/PadNote-Connection-Assistant-0.18.0-beta.19-Setup-x64.exe) · [Windows portable build](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.19/PadNote-Connection-Assistant-0.18.0-beta.19-Portable.zip) · [Android beta.19 guide](docs/BETA19_TESTING.md) · [Windows setup notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Android beta.20](https://github.com/shiyan688/padnote/releases/tag/v0.18.0-beta.20) · [Download APK](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Android-0.18.0-beta.20-debug.apk) · [Windows installer](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Setup-x64.exe) · [Windows portable build](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.20/PadNote-Connection-Assistant-0.18.0-beta.20-Portable.zip) · [Android beta.20 guide](docs/BETA20_TESTING.md) · [Windows setup notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
-## beta.19: clearer text entry and connection status
+## beta.20: keep working while tasks run
 
-New text starts in body mode, with a separate formula mode. Connection checks distinguish computer reachability from Hermes readiness and show when the last check ran. A task waiting for Hermes no longer prevents the next task from receiving its own computer receipt. See the [beta.19 guide](docs/BETA19_TESTING.md) for installation and feedback.
+Task checks no longer hold up another task. Stop and approval requests receive durable receipts before being sent in the background, with separate messages for queued, unsent and unconfirmed actions. The AI button now offers selection and model setup guidance when nothing is selected. See the [beta.20 guide](docs/BETA20_TESTING.md).
 
 <details>
 <summary>Earlier Android interface screenshots</summary>
 
-These images are from an earlier Android emulator build and show the beta.13 interface, not the current beta.19 UI.
+These images are from an earlier Android emulator build and show the beta.13 interface, not the current beta.20 UI.
 
 ![beta.13 multilingual interface](docs/images/beta13-01-languages.png)
 
@@ -41,11 +41,17 @@ These selected frames show the sample paper, task description, and task-preset s
 
 [Watch the tutorial (36 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Tutorial-zh.mp4) · [Watch the overview (35 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Promo-zh.mp4)
 
+### A real PDF export
+
+This sample page was exported on an Android tablet. Its example text was typed manually; it shows the shareable page output.
+
+![Sample PDF page exported on the tablet](docs/media/2026-10-28/paper-pdf-export.png)
+
 ## How it works
 
 Write, draw, edit, and discuss a note with the model you choose. Share a full-page PDF or send note material to a paired Hermes agent that supports note tasks. PadNote is not tied to a specific model provider. The desktop connection assistant helps with pairing and agent connections; it does not include Hermes, a model, or API credentials. Hermes in WSL must expose an API reachable from Windows; automatic WSL discovery is not available. OpenClaw has discovery and setup guidance. Codex note tasks are not connected.
 
-Android and the Windows connection assistant are both at beta.19. Tasks are saved on the computer before waiting for a Hermes run ID; uncertain outcomes are not automatically replayed. iPad source is available, but there is no installable signed IPA. See the [development status and next steps](docs/DEVELOPMENT_STATUS.md).
+Android and the Windows connection assistant are both at beta.20. Tasks are saved on the computer before waiting for a Hermes run ID; uncertain outcomes are not automatically replayed. iPad source is available, but there is no installable signed IPA. See the [development status and next steps](docs/DEVELOPMENT_STATUS.md).
 
 ## Downloads and verification
 

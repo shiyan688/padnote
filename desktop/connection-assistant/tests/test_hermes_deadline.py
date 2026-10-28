@@ -19,7 +19,7 @@ from padnote_assistant.hermes import (
     _BoundedResolver,
     _RequestDeadline,
 )
-from padnote_assistant.state import AuthorizationError
+from padnote_assistant.state import AuthorizationError, ConflictError
 
 
 
@@ -403,20 +403,6 @@ class HermesDeadlineTests(unittest.TestCase):
                     return HermesClient(url, key, timeout=timeout)
                 connection_id = service.store.authenticate(
                     instance["instance_id"], token)["connection_id"]
-                original_lock = service._operation_lock
-                queued_condition = threading.Condition()
-                queued_count = 0
-
-                def observed_lock(key: str):
-                    nonlocal queued_count
-                    if (key == "connection:" + connection_id
-                            and threading.current_thread().name.startswith("queued-get-")):
-                        with queued_condition:
-                            queued_count += 1
-                            queued_condition.notify_all()
-                    return original_lock(key)
-
-                service._operation_lock = observed_lock
                 self.server.mode = "slow-body"
                 with mock.patch("padnote_assistant.bridge.HermesClient", side_effect=factory):
                     _, first = service.submit_run(
@@ -424,9 +410,11 @@ class HermesDeadlineTests(unittest.TestCase):
                     self.assertEqual("submitting", first["status"])
                     self.assertIn("不会自动重发", first["error"])
                     before_stop = len(self.server.idempotency_keys)
-                    _, stopped_unknown = service.stop_run(
-                        instance["instance_id"], token, first["task_id"])
-                    self.assertEqual("submitting", stopped_unknown["status"])
+                    with self.assertRaises(ConflictError):
+                        service.stop_run(instance["instance_id"], token, first["task_id"])
+                    stopped_row = service.store.snapshot()["runs"][first["task_id"]]
+                    self.assertEqual("submitting", stopped_row["status"])
+                    self.assertNotIn("control_actions", stopped_row)
                     self.assertEqual(before_stop, len(self.server.idempotency_keys))
 
                     self.server.mode = "normal"
@@ -464,11 +452,12 @@ class HermesDeadlineTests(unittest.TestCase):
                     self.assertTrue(self.server.request_started.wait(2.5))
                     requests_before_queue = self.server.request_count
                     queued_errors: list[BaseException] = []
+                    queued_results: list[dict] = []
 
                     def queued_get() -> None:
                         try:
-                            service.get_run(
-                                instance["instance_id"], token, known["task_id"])
+                            queued_results.append(service.get_run(
+                                instance["instance_id"], token, known["task_id"]))
                         except BaseException as error:
                             queued_errors.append(error)
 
@@ -478,9 +467,11 @@ class HermesDeadlineTests(unittest.TestCase):
                     ]
                     for worker in queued_threads:
                         worker.start()
-                    with queued_condition:
-                        self.assertTrue(queued_condition.wait_for(
-                            lambda: queued_count == len(queued_threads), timeout=2.5))
+                    for worker in queued_threads:
+                        worker.join(2.5)
+                        self.assertFalse(worker.is_alive())
+                    self.assertEqual(len(queued_threads), len(queued_results))
+                    self.assertTrue(all(item["status"] == "stopping" for item in queued_results))
                     revoke_thread = threading.Thread(
                         target=service.revoke_connection,
                         args=(connection_id,))
@@ -488,18 +479,13 @@ class HermesDeadlineTests(unittest.TestCase):
                     revoke_thread.start()
                     stop_thread.join(3.5)
                     revoke_thread.join(3.5)
-                    for worker in queued_threads:
-                        worker.join(3.5)
-                        self.assertFalse(worker.is_alive())
                     self.assertFalse(stop_thread.is_alive())
                     self.assertFalse(revoke_thread.is_alive())
                     self.assertLess(time.monotonic() - started,
                                     TEST_HTTP_DEADLINE_SECONDS + TEST_SCHEDULER_GRACE_SECONDS)
                     self.assertEqual("stopping", stop_result[0]["status"])
                     self.assertEqual(requests_before_queue, self.server.request_count)
-                    self.assertEqual(len(queued_threads), len(queued_errors))
-                    self.assertTrue(all(isinstance(error, AuthorizationError)
-                                        for error in queued_errors))
+                    self.assertEqual([], queued_errors)
                     with self.assertRaises(AuthorizationError):
                         service.store.authenticate(instance["instance_id"], token)
 

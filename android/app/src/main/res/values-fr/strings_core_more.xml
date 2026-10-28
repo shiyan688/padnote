@@ -464,4 +464,8 @@
     <string name="core_note_cover_content_desc">Couverture de la note</string>
     <string name="core_pressure_ready">Pression 0,000 · stylet prêt</string>
     <string name="core_ai_written_changes">%1$d modifications de texte effectuées pendant ce tour</string>
+    <string name="core_ai_selection_tutorial_title">Utiliser l’IA avec le contenu sélectionné</string>
+    <string name="core_ai_selection_tutorial_message">Entourez le contenu sur la page avec le lasso, puis appuyez sur IA. Seul le contenu sélectionné sera envoyé après confirmation. Vous pouvez d’abord configurer un modèle.</string>
+    <string name="core_ai_selection_start_lasso">Commencer la sélection</string>
+    <string name="core_ai_selection_ai_settings">Paramètres IA</string>
 </resources>

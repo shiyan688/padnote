@@ -464,4 +464,8 @@
     <string name="core_note_cover_content_desc">ノートの表紙</string>
     <string name="core_pressure_ready">筆圧 0.000 · ペン使用可能</string>
     <string name="core_ai_written_changes">このターンで %1$d 件のテキスト変更を書き込みました</string>
+    <string name="core_ai_selection_tutorial_title">選択した内容でAIを使う</string>
+    <string name="core_ai_selection_tutorial_message">ページ上の内容を投げ縄で囲んでから、AIをタップします。確認後、選択した内容だけが送信されます。先にモデルを設定することもできます。</string>
+    <string name="core_ai_selection_start_lasso">選択を開始</string>
+    <string name="core_ai_selection_ai_settings">AI設定</string>
 </resources>

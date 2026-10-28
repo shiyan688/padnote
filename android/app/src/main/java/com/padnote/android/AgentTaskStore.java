@@ -325,7 +325,11 @@ final class AgentTaskStore {
             if(!statusIdentity(t,connectionId,revision,remoteId) ||
                     (t.status.terminal()&&status.status!=t.status) ||
                     (t.status == Status.STOPPING &&
-                            (status.status == Status.RUNNING || status.status == Status.WAITING_FOR_APPROVAL))) return false;
+                            (status.status == Status.RUNNING || status.status == Status.WAITING_FOR_APPROVAL) &&
+                            !(t.transport == AgentConnectionStore.Transport.BRIDGE &&
+                                    ("not_sent".equals(status.stopDelivery) ||
+                                            "rejected".equals(status.stopDelivery) ||
+                                            "superseded".equals(status.stopDelivery))))) return false;
             if(t.transport==AgentConnectionStore.Transport.BRIDGE && !status.parentTaskId.equals(t.parentTaskId))return false;
             String output=t.status.terminal()&&!t.output.isEmpty()?t.output:status.output;
             List<Artifact> artifacts=t.status.terminal()&&!t.artifacts.isEmpty()?t.artifacts:status.artifacts;
@@ -338,6 +342,20 @@ final class AgentTaskStore {
             write(copy(t,remoteId,status.status,output,status.error,status.approvalId,
                     status.approvalTitle,status.approvalDescription,artifacts,
                     conversation,status.followupAvailable,status.followupReason)); return true; }
+    }
+
+    boolean applyControlStatus(Task expectedTask, AgentTaskClient.RemoteStatus status) throws Exception {
+        if (expectedTask == null) return false;
+        synchronized (LOCK) {
+            Task current = get(expectedTask.clientTaskId);
+            if (current == null || current.updatedAt != expectedTask.updatedAt ||
+                    !statusIdentity(current, expectedTask.connectionId, expectedTask.connectionRevision,
+                            expectedTask.remoteTaskId) ||
+                    (current.transport == AgentConnectionStore.Transport.BRIDGE &&
+                            !status.parentTaskId.equals(current.parentTaskId))) return false;
+            return applyStatus(expectedTask.clientTaskId, expectedTask.connectionId,
+                    expectedTask.connectionRevision, expectedTask.remoteTaskId, status);
+        }
     }
 
     private static boolean sameArtifacts(List<Artifact> left,List<Artifact> right){

@@ -20,6 +20,59 @@ import java.util.concurrent.TimeUnit;
 
 @RunWith(AndroidJUnit4.class)
 public final class AgentTaskStoreInstrumentedTest {
+    @Test public void stopDeliveryControlsWhenStoppingAndRejectsStaleControlCas() throws Exception {
+        AgentConnectionStore.Config bridge=connection();
+        for(String delivery:new String[]{"not_sent","rejected","superseded"}) {
+            AgentTaskStore store=new AgentTaskStore(new File(InstrumentationRegistry.getInstrumentation()
+                    .getTargetContext().getCacheDir(),"stop-recovery-"+delivery+"-"+System.nanoTime()));
+            AgentTaskStore.Task task=store.create(bridge,"Stop test","go","",1L,null);
+            assertTrue(store.applySubmission(task.clientTaskId,bridge.id,bridge.revision,"remote-stop",
+                    AgentTaskStore.Status.RUNNING));
+            assertTrue(store.markLocal(task.clientTaskId,AgentTaskStore.Status.STOPPING,""));
+            AgentTaskClient.RemoteStatus recovered=new AgentTaskClient.RemoteStatus(
+                    AgentTaskStore.Status.RUNNING,"","","","","",Collections.emptyList(),
+                    "","",false,"",delivery);
+            assertTrue(delivery,store.applyStatus(task.clientTaskId,bridge.id,bridge.revision,
+                    "remote-stop",recovered));
+            assertEquals(AgentTaskStore.Status.RUNNING,store.get(task.clientTaskId).status);
+        }
+        for(String delivery:new String[]{"unknown","confirmed"}) {
+            AgentTaskStore store=new AgentTaskStore(new File(InstrumentationRegistry.getInstrumentation()
+                    .getTargetContext().getCacheDir(),"stop-retain-"+delivery+"-"+System.nanoTime()));
+            AgentTaskStore.Task task=store.create(bridge,"Stop test","go","",1L,null);
+            assertTrue(store.applySubmission(task.clientTaskId,bridge.id,bridge.revision,"remote-stop",
+                    AgentTaskStore.Status.RUNNING));
+            assertTrue(store.markLocal(task.clientTaskId,AgentTaskStore.Status.STOPPING,""));
+            AgentTaskClient.RemoteStatus response=new AgentTaskClient.RemoteStatus(
+                    AgentTaskStore.Status.RUNNING,"","","","","",Collections.emptyList(),
+                    "","",false,"",delivery);
+            assertFalse(delivery,store.applyStatus(task.clientTaskId,bridge.id,bridge.revision,
+                    "remote-stop",response));
+            assertEquals(AgentTaskStore.Status.STOPPING,store.get(task.clientTaskId).status);
+        }
+        AgentConnectionStore.Config direct=new AgentConnectionStore.Config("connection-direct","Direct",
+                AgentConnectionStore.Kind.HERMES,"https://hermes.test","token","credential-direct",
+                AgentConnectionStore.Transport.DIRECT,"","",3L,10L,Arrays.asList("run_submission","run_status"));
+        AgentTaskStore directStore=new AgentTaskStore(new File(InstrumentationRegistry.getInstrumentation()
+                .getTargetContext().getCacheDir(),"stop-direct-"+System.nanoTime()));
+        AgentTaskStore.Task directTask=directStore.create(direct,"Direct stop","go","",1L,null);
+        assertTrue(directStore.applySubmission(directTask.clientTaskId,direct.id,direct.revision,"direct-run",
+                AgentTaskStore.Status.RUNNING));
+        assertTrue(directStore.markLocal(directTask.clientTaskId,AgentTaskStore.Status.STOPPING,""));
+        AgentTaskClient.RemoteStatus forged=new AgentTaskClient.RemoteStatus(AgentTaskStore.Status.RUNNING,
+                "","","","","",Collections.emptyList(),"","",false,"","not_sent");
+        assertFalse(directStore.applyStatus(directTask.clientTaskId,direct.id,direct.revision,"direct-run",forged));
+        assertEquals(AgentTaskStore.Status.STOPPING,directStore.get(directTask.clientTaskId).status);
+
+        AgentTaskStore.Task expected=directStore.get(directTask.clientTaskId);
+        assertTrue(directStore.markLocal(directTask.clientTaskId,AgentTaskStore.Status.RUNNING,"newer poll"));
+        AgentTaskClient.RemoteStatus stale=new AgentTaskClient.RemoteStatus(AgentTaskStore.Status.COMPLETED,
+                "old response","","","","",Collections.emptyList());
+        assertFalse(directStore.applyControlStatus(expected,stale));
+        assertEquals(AgentTaskStore.Status.RUNNING,directStore.get(directTask.clientTaskId).status);
+        assertEquals("newer poll",directStore.get(directTask.clientTaskId).error);
+    }
+
     @Test public void taskPersistsSyntheticSourceAndTerminalCannotRegress() throws Exception {
         AgentConnectionStore.Config connection = new AgentConnectionStore.Config(
                 "connection-test", "Test computer", AgentConnectionStore.Kind.HERMES,

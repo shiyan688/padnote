@@ -33,22 +33,32 @@ final class AgentTaskClient {
         final AgentTaskStore.Status status;
         final String output, error, approvalId, approvalTitle, approvalDescription;
         final String conversationId, parentTaskId, followupReason;
+        final String stopDelivery;
         final boolean followupAvailable;
         final List<AgentTaskStore.Artifact> artifacts;
         RemoteStatus(AgentTaskStore.Status status, String output, String error,
                      String approvalId, String approvalTitle, String approvalDescription,
                      List<AgentTaskStore.Artifact> artifacts) {
             this(status,output,error,approvalId,approvalTitle,approvalDescription,artifacts,
-                    "","",false,"");
+                    "","",false,"","");
         }
         RemoteStatus(AgentTaskStore.Status status, String output, String error,
                      String approvalId, String approvalTitle, String approvalDescription,
                      List<AgentTaskStore.Artifact> artifacts, String conversationId,
                      String parentTaskId, boolean followupAvailable, String followupReason) {
+            this(status,output,error,approvalId,approvalTitle,approvalDescription,artifacts,
+                    conversationId,parentTaskId,followupAvailable,followupReason,"");
+        }
+        RemoteStatus(AgentTaskStore.Status status, String output, String error,
+                     String approvalId, String approvalTitle, String approvalDescription,
+                     List<AgentTaskStore.Artifact> artifacts, String conversationId,
+                     String parentTaskId, boolean followupAvailable, String followupReason,
+                     String stopDelivery) {
             this.status=status;this.output=output;this.error=error;this.approvalId=approvalId;
             this.approvalTitle=approvalTitle;this.approvalDescription=approvalDescription;
             this.conversationId=conversationId;this.parentTaskId=parentTaskId;
             this.followupAvailable=followupAvailable;this.followupReason=followupReason;
+            this.stopDelivery=stopDelivery;
             this.artifacts=Collections.unmodifiableList(new ArrayList<>(artifacts));
         }
     }
@@ -110,16 +120,27 @@ final class AgentTaskClient {
                 AgentConnectionClient.path(task.remoteTaskId),connection,
                 Collections.emptyMap(),null,MAX_JSON);
         if(response.status!=200)throw httpError("读取任务状态失败",response);
-        JSONObject json=new JSONObject(response.utf8()); validateRemote(task,json);
-        JSONObject approval=json.optJSONObject("approval");
+        JSONObject json=new JSONObject(response.utf8());
+        return parseRemoteStatus(task,json);
+    }
+
+    RemoteStatus parseRemoteStatus(AgentTaskStore.Task task,JSONObject json) {
+        validateRemote(task,json);
         String approvalId="",approvalTitle="",approvalDescription="";
-        if(approval!=null){
-            approvalId=task.transport==AgentConnectionStore.Transport.BRIDGE
-                    ?approval.optString("approval_id",""):approval.optString("request_id","");
-            if(approvalId.length()>256)throw new IllegalStateException("审批请求ID过长");
-            approvalTitle=plain(approval.optString("title",approval.optString("tool","需要批准")),160);
-            approvalDescription=plain(approval.optString("description",approval.optString("reason",
-                    approval.optString("command",""))),1000);
+        if(task.transport==AgentConnectionStore.Transport.DIRECT &&
+                "waiting_for_approval".equals(json.optString("status",""))) {
+            AgentApprovalIdentity.Parsed parsed=AgentApprovalIdentity.parse(json);
+            approvalId=parsed.id;approvalTitle=parsed.title;
+            approvalDescription=parsed.description;
+        } else {
+            JSONObject approval=json.optJSONObject("approval");
+            if(approval!=null){
+                approvalId=approval.optString("approval_id","");
+                if(approvalId.length()>256)throw new IllegalStateException("审批请求ID过长");
+                approvalTitle=plain(approval.optString("title",approval.optString("tool","需要批准")),160);
+                approvalDescription=plain(approval.optString("description",approval.optString("reason",
+                        approval.optString("command",""))),1000);
+            }
         }
         List<AgentTaskStore.Artifact> artifacts=new ArrayList<>();
         JSONArray values=json.optJSONArray("artifacts");
@@ -148,29 +169,62 @@ final class AgentTaskClient {
                 }
             }
         } else followupReason="Hermes 直连暂不支持继续沟通";
-        return new RemoteStatus(mapStatus(required(json,"status")),
-                output(json.opt("output")),plain(json.optString("error",""),4000),
+        String rawStatus=required(json,"status");
+        String stopDelivery="";
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE && json.has("stop_delivery")) {
+            stopDelivery=required(json,"stop_delivery");
+            if(!java.util.Arrays.asList("queued","sending","unknown","confirmed","rejected",
+                    "not_sent","superseded").contains(stopDelivery))
+                throw new IllegalStateException("Bridge returned invalid stop delivery state");
+        }
+        String error=plain(json.optString("error",""),4000);
+        if(task.transport==AgentConnectionStore.Transport.DIRECT && "unknown".equals(rawStatus)) {
+            rawStatus="running";error="任务结果尚未确认，请刷新状态；不要重新提交。";
+        } else if(task.transport==AgentConnectionStore.Transport.DIRECT && "queued".equals(rawStatus)) {
+            rawStatus="running";error="任务正在排队，尚不代表已开始执行。";
+        }
+        if(task.transport==AgentConnectionStore.Transport.DIRECT &&
+                "waiting_for_approval".equals(required(json,"status"))) {
+            AgentApprovalIdentity.Parsed parsed=AgentApprovalIdentity.parse(json);
+            if(!parsed.message.isEmpty())error=parsed.message;
+        }
+        return new RemoteStatus(mapStatus(rawStatus),
+                output(json.opt("output")),error,
                 approvalId,approvalTitle,approvalDescription,artifacts,conversationId,parentTaskId,
-                followupAvailable,followupReason);
+                followupAvailable,followupReason,stopDelivery);
     }
 
-    void stop(AgentTaskStore.Task task,AgentConnectionStore.Config connection)throws Exception{
+    RemoteStatus stop(AgentTaskStore.Task task,AgentConnectionStore.Config connection)throws Exception{
         requireRemote(task,connection);requireCapability(connection,"run_stop");
+        Map<String,String> headers=new LinkedHashMap<>();
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE)headers.put("X-PadNote-Control-Receipt","1");
         AgentHttpTransport.Response r=request("POST",runsRoot(task)+"/"+AgentConnectionClient.path(task.remoteTaskId)+"/stop",
-                connection,Collections.emptyMap(),"{}".getBytes(StandardCharsets.UTF_8),MAX_JSON);
+                connection,headers,"{}".getBytes(StandardCharsets.UTF_8),MAX_JSON);
         if(r.status<200||r.status>=300)throw httpError("停止任务失败",r);
+        JSONObject json=new JSONObject(r.utf8());
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE)return parseRemoteStatus(task,json);
+        validateRemote(task,json);
+        return new RemoteStatus(AgentTaskStore.Status.STOPPING,"","","","","",
+                Collections.emptyList());
     }
 
-    void approve(AgentTaskStore.Task task,AgentConnectionStore.Config connection,String decision)throws Exception{
+    RemoteStatus approve(AgentTaskStore.Task task,AgentConnectionStore.Config connection,String decision)throws Exception{
         requireRemote(task,connection);requireCapability(connection,"run_approval_response");
         if(task.approvalId.isEmpty())throw new IllegalStateException("当前任务没有可绑定的审批请求");
         if(!"once".equals(decision)&&!"deny".equals(decision))throw new IllegalArgumentException("审批只支持 once 或 deny");
         JSONObject body=task.transport==AgentConnectionStore.Transport.BRIDGE
                 ?new JSONObject().put("approval_id",task.approvalId).put("decision",decision)
-                :new JSONObject().put("request_id",task.approvalId).put("choice",decision);
+                :AgentApprovalIdentity.requestBody(task.approvalId,decision);
+        Map<String,String> headers=new LinkedHashMap<>();
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE)headers.put("X-PadNote-Control-Receipt","1");
         AgentHttpTransport.Response r=request("POST",runsRoot(task)+"/"+AgentConnectionClient.path(task.remoteTaskId)+"/approval",
-                connection,Collections.emptyMap(),body.toString().getBytes(StandardCharsets.UTF_8),MAX_JSON);
+                connection,headers,body.toString().getBytes(StandardCharsets.UTF_8),MAX_JSON);
         if(r.status<200||r.status>=300)throw httpError("提交审批失败",r);
+        JSONObject json=new JSONObject(r.utf8());
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE)return parseRemoteStatus(task,json);
+        validateRemote(task,json);
+        return new RemoteStatus(AgentTaskStore.Status.RUNNING,"","","","","",
+                Collections.emptyList());
     }
 
     URL artifactUrl(AgentTaskStore.Task task,String artifactId)throws Exception{

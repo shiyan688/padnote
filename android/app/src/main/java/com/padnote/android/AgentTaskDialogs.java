@@ -423,11 +423,12 @@ final class AgentTaskDialogs {
     private void control(String id,String action,AlertDialog dialog){
         AgentTaskStore.Task task=tasks.get(id);if(task==null)return;worker.execute(()->{try{
             AgentConnectionStore.Config c=taskConnectionSource.get(task.connectionId);if(!task.matches(c))throw new IllegalStateException(activity.getString(R.string.flow_connection_identity_changed));
-            AgentTaskClient client=taskClientFactory.create();if("stop".equals(action))client.stop(task,c);
-            else client.approve(task,c,action);
+            AgentTaskClient client=taskClientFactory.create();
+            AgentTaskClient.RemoteStatus remote="stop".equals(action)
+                    ?client.stop(task,c):client.approve(task,c,action);
             AgentConnectionStore.Config latest=taskConnectionSource.get(task.connectionId);
             if(!task.matches(latest))throw new IllegalStateException(activity.getString(R.string.flow_task_operation_changed));
-            if("stop".equals(action))tasks.markLocal(id,AgentTaskStore.Status.STOPPING,"");
+            tasks.applyControlStatus(task,remote);
         }catch(Exception e){try{tasks.markError(id,task.updatedAt,
                 activity.getString(R.string.flow_task_operation_error,message(e)));}catch(Exception ignored){}}
             main.post(()->{dialog.dismiss();showDetail(id);});});

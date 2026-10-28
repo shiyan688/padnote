@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
@@ -672,12 +674,44 @@ class StateStore:
             allowed = {"status", "upstream_run_id", "upstream_payload", "upstream_idempotency_key",
                        "submission_uncertain", "output", "error", "approval", "artifacts", "stopped_at", "session_id",
                        "source_snapshot_digest", "video_binding", "video_review_snapshot",
-                       "video_workflow_state", "video_workflow_error"}
+                       "video_workflow_state", "video_workflow_error", "control_actions"}
             for key, value in fields.items():
                 if key not in allowed:
                     raise ValueError(f"unsupported run field: {key}")
                 if key == "submission_uncertain" and not isinstance(value, bool):
                     raise ValidationError("invalid submission uncertainty marker")
+                if key == "control_actions":
+                    if not isinstance(value, dict) or len(value) > 128:
+                        raise ValidationError("invalid control action ledger")
+                    expected = {"kind", "approval_id", "decision", "state", "attempt_id",
+                                "requested_at", "updated_at"}
+                    for action_key, action in value.items():
+                        if not isinstance(action_key, str) or not isinstance(action, dict) \
+                                or set(action) != expected:
+                            raise ValidationError("invalid control action")
+                        kind = action["kind"]
+                        approval_id = action["approval_id"]
+                        decision = action["decision"]
+                        if kind == "stop":
+                            if action_key != "stop" or approval_id != "" or decision != "":
+                                raise ValidationError("invalid stop action")
+                        elif kind == "approval":
+                            if not isinstance(approval_id, str) or not approval_id \
+                                    or len(approval_id) > 256 or not isinstance(decision, str) \
+                                    or decision not in {"once", "deny"} \
+                                    or action_key != "approval:" + hashlib.sha256(
+                                        approval_id.encode("utf-8")).hexdigest():
+                                raise ValidationError("invalid approval action")
+                        else:
+                            raise ValidationError("invalid control action kind")
+                        if not isinstance(action["state"], str) or action["state"] not in {
+                                "queued", "sending", "unknown", "confirmed",
+                                "rejected", "not_sent", "superseded"} \
+                                or not isinstance(action["attempt_id"], str) \
+                                or not re.fullmatch(r"[a-f0-9]{32}", action["attempt_id"]) \
+                                or any(type(action[name]) is not int or action[name] <= 0
+                                       for name in ("requested_at", "updated_at")):
+                            raise ValidationError("invalid control action metadata")
                 if key == "video_workflow_state" and value is not None and value not in {
                         "initialized", "awaiting_storyboard_review", "approved", "completed",
                         "outcome_unknown", "failed", "cancelled"}:
@@ -708,6 +742,26 @@ class StateStore:
                 target["updated_at"] = int(self._clock())
                 return dict(target)
             return self._commit(mutation)
+
+    def update_control_action(self, task_id: str, action_key: str, record: dict[str, Any], *,
+                              expected_attempt_id: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._assert_open()
+            run = self._data["runs"].get(task_id)
+            if not run:
+                raise KeyError(task_id)
+            current = run.get("control_actions", {})
+            if not isinstance(current, dict):
+                current = {}
+            actions = copy.deepcopy(current)
+            existing = actions.get(action_key)
+            if expected_attempt_id is None:
+                if existing is not None:
+                    raise ConflictError("Control action already exists")
+            elif not isinstance(existing, dict) or existing.get("attempt_id") != expected_attempt_id:
+                raise ConflictError("Control action attempt changed")
+            actions[action_key] = copy.deepcopy(record)
+            return self.update_run(task_id, control_actions=actions)
 
     def owned_run(self, connection: dict[str, Any], task_id: str) -> dict[str, Any]:
         with self._lock:

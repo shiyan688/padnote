@@ -656,8 +656,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         setActionEnabled(undoButton, canUndo);
         setActionEnabled(redoButton, canRedo);
         boolean hasSelection = selectedStrokes > 0;
-        setActionEnabled(aiButton, hasSelection || aiConversationSnapshot != null
-                || aiConversationLoading);
+        setActionEnabled(aiButton, true);
         setActionEnabled(duplicateButton, hasSelection);
         setActionEnabled(deleteSelectionButton, hasSelection);
         setActionEnabled(cancelSelectionButton, hasSelection);
@@ -4597,7 +4596,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             } else if (aiConversationLoading) {
                 Toast.makeText(this, getString(R.string.core_ai_restore_loading), Toast.LENGTH_SHORT).show();
             } else {
-                Toast.makeText(this, getString(R.string.core_ai_selection_required), Toast.LENGTH_SHORT).show();
+                ChoiceRows.builder(this).setTitle(R.string.core_ai_selection_tutorial_title)
+                        .setMessage(R.string.core_ai_selection_tutorial_message)
+                        .setPositiveButton(R.string.core_ai_selection_start_lasso,
+                                (dialog, which) -> selectTool(NoteCanvasView.Tool.LASSO))
+                        .setNeutralButton(R.string.core_ai_selection_ai_settings,
+                                (dialog, which) -> showAiManagerDialog(null))
+                        .setNegativeButton(R.string.core_close, null).show();
             }
             return;
         }

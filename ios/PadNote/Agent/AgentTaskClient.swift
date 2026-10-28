@@ -1,5 +1,12 @@
 import Foundation
 import CryptoKit
+import CoreFoundation
+
+enum AgentTaskStopDelivery: String, Sendable {
+    case queued, sending, unknown, confirmed, rejected, notSent = "not_sent", superseded
+
+    var permitsResume: Bool { self == .rejected || self == .notSent || self == .superseded }
+}
 
 public struct AgentTaskRemoteState: Equatable, Sendable {
     public let remoteTaskID: String
@@ -12,12 +19,113 @@ public struct AgentTaskRemoteState: Equatable, Sendable {
     public let parentTaskID: String?
     public let followupAvailable: Bool
     public let followupReason: String?
+    let stopDelivery: AgentTaskStopDelivery?
+
+    init(remoteTaskID: String, status: AgentTaskStatus, output: String?, error: String?,
+         approval: AgentTaskApproval?, artifacts: [AgentTaskArtifact], conversationID: String?,
+         parentTaskID: String?, followupAvailable: Bool, followupReason: String?,
+         stopDelivery: AgentTaskStopDelivery? = nil) {
+        self.remoteTaskID = remoteTaskID; self.status = status; self.output = output; self.error = error
+        self.approval = approval; self.artifacts = artifacts; self.conversationID = conversationID
+        self.parentTaskID = parentTaskID; self.followupAvailable = followupAvailable
+        self.followupReason = followupReason; self.stopDelivery = stopDelivery
+    }
 }
 
 public struct AgentTaskClient {
     private let connectionClient: AgentConnectionClient
     private let session: URLSession
     private let sessionDelegate: URLSessionDelegate?
+
+    static func encodeApprovalToken(promptID: String, generation: Int64) throws -> String {
+        guard generation > 0, generation <= 9_007_199_254_740_991,
+              !promptID.isEmpty, promptID == promptID.trimmingCharacters(in: .whitespacesAndNewlines),
+              !promptID.unicodeScalars.contains(where: { (0...31).contains($0.value) || (127...159).contains($0.value) }) else {
+            throw AgentTaskError.invalidPayload
+        }
+        let token = "pc1:\(generation):\(promptID)"
+        guard token.utf8.count <= 256 else { throw AgentTaskError.invalidPayload }
+        return token
+    }
+
+    static func decodeApprovalToken(_ token: String) throws -> (String, Int64) {
+        guard token.utf8.count <= 256 else { throw AgentTaskError.invalidResponse }
+        let parts = token.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "pc1", !parts[1].isEmpty,
+              parts[1].utf8.allSatisfy({ (48...57).contains($0) }),
+              parts[1].first != "0", let generation = Int64(parts[1]), generation > 0,
+              generation <= 9_007_199_254_740_991 else {
+            throw AgentTaskError.invalidResponse
+        }
+        let promptID = String(parts[2])
+        guard try encodeApprovalToken(promptID: promptID, generation: generation) == token else {
+            throw AgentTaskError.invalidResponse
+        }
+        return (promptID, generation)
+    }
+
+    static func parseDirectApproval(object: [String: Any], status: AgentTaskStatus) -> (AgentTaskApproval?, String?) {
+        guard status == .waitingForApproval else { return (nil, nil) }
+        let fallback = "无法验证这条审批的身份，请在电脑端处理或更新 Hermes。"
+
+        func approval(from source: [String: Any], id: String) -> (AgentTaskApproval?, Bool) {
+            func meaningful(_ value: Any) -> Bool {
+                if value is NSNull { return false }
+                if let string = value as? String { return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                if let dictionary = value as? [String: Any] { return dictionary.values.contains(where: meaningful) }
+                if let array = value as? [Any] { return array.contains(where: meaningful) }
+                return true
+            }
+            let title = String((source["title"] as? String ?? source["tool_name"] as? String ?? "需要批准").prefix(256))
+            var details = [String]()
+            for key in ["description", "command", "reason"] {
+                guard let raw = source[key], meaningful(raw) else { continue }
+                let rendered = raw as? String ?? String(describing: raw)
+                if !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    details.append("\(key): \(rendered)")
+                }
+            }
+            if details.isEmpty {
+                let identityKeys: Set<String> = ["kind", "prompt_id", "request_id", "execution_generation", "session_id", "admission_id", "approval_id", "run_id", "title", "tool_name", "tool"]
+                let readable = source.filter { !identityKeys.contains($0.key) && meaningful($0.value) }
+                if !readable.isEmpty,
+                   let data = try? JSONSerialization.data(withJSONObject: readable, options: [.sortedKeys, .fragmentsAllowed]),
+                   let json = String(data: data, encoding: .utf8), !json.isEmpty {
+                    details = [json]
+                }
+            }
+            let description = details.joined(separator: "\n")
+            guard !description.isEmpty, description.utf16.count <= 2000 else { return (nil, true) }
+            return (AgentTaskApproval(id: id, title: title, description: description), false)
+        }
+
+        let generationNumber = object["execution_generation"] as? NSNumber
+        let generationValid = generationNumber.map {
+            CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue.rounded(.towardZero) == $0.doubleValue
+                && String(cString: $0.objCType) != "f" && String(cString: $0.objCType) != "d"
+                && $0.int64Value > 0 && $0.int64Value <= 9_007_199_254_740_991
+        } ?? false
+        if let controls = object["pending_controls"] as? [[String: Any]], controls.count <= 128,
+           generationValid, let generation = generationNumber?.int64Value {
+            for control in controls where control["kind"] as? String == "approval" {
+                guard let promptID = control["prompt_id"] as? String,
+                      (try? encodeApprovalToken(promptID: promptID, generation: generation)) != nil else { continue }
+                if let bound = control["execution_generation"] {
+                    guard let number = bound as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          String(cString: number.objCType) != "f" && String(cString: number.objCType) != "d",
+                          number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                          number.int64Value == generation else { continue }
+                }
+                let payload = control["payload"] as? [String: Any] ?? control
+                let token = try! encodeApprovalToken(promptID: promptID, generation: generation)
+                let (parsed, oversized) = approval(from: payload, id: token)
+                if oversized { return (nil, fallback) }
+                if let parsed { return (parsed, nil) }
+            }
+        }
+        if object["approval"] is [String: Any] { return (nil, fallback) }
+        return (nil, object["pending_controls"] == nil ? nil : fallback)
+    }
 
     public init(session: URLSession? = nil, pin: String? = nil) {
         if let session {
@@ -72,7 +180,10 @@ public struct AgentTaskClient {
         guard let remoteID = task.remoteTaskID else { throw AgentTaskError.invalidResponse }
         let url = try endpoint(for: task, suffix: "runs/\(remoteID)/stop")
         let body = try JSONSerialization.data(withJSONObject: [:])
-        let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body)
+        let headers = task.connection.transport == .bridge
+            ? ["X-PadNote-Control-Receipt": "1"] : [:]
+        let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body,
+                                                            headers: headers)
         return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .stopping, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
     }
 
@@ -84,11 +195,16 @@ public struct AgentTaskClient {
         let url = try endpoint(for: task, suffix: "runs/\(remoteID)/approval")
         let payload: [String: Any]
         switch task.connection.transport {
-        case .direct: payload = ["request_id": approvalID, "choice": decision]
+        case .direct:
+            let (promptID, generation) = try Self.decodeApprovalToken(approvalID)
+            payload = ["request_id": promptID, "execution_generation": generation, "choice": decision]
         case .bridge: payload = ["approval_id": approvalID, "decision": decision]
         }
         let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body)
+        let headers = task.connection.transport == .bridge
+            ? ["X-PadNote-Control-Receipt": "1"] : [:]
+        let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body,
+                                                            headers: headers)
         return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .running, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
     }
 
@@ -194,18 +310,37 @@ public struct AgentTaskClient {
         let rawFollowupAvailable = object["followup_available"] as? Bool ?? false
         let followupReason = object["followup_reason"] as? String
         let status: AgentTaskStatus
+        var normalizationMessage: String?
         if let rawStatus = object["status"] as? String {
-            if rawStatus == "started" { status = .running }
+            if rawStatus == "started" || rawStatus == "queued" || rawStatus == "unknown" { status = .running }
             else if let parsed = AgentTaskStatus(rawValue: rawStatus) { status = parsed }
             else { throw AgentTaskError.invalidResponse }
+            if rawStatus == "queued" { normalizationMessage = "任务正在排队等待运行。" }
+            if rawStatus == "unknown" { normalizationMessage = "任务结果尚未确认，请在电脑端核对状态，不要重新发送。" }
         } else if let fallbackStatus { status = fallbackStatus }
         else { throw AgentTaskError.invalidResponse }
+        let stopDelivery: AgentTaskStopDelivery?
+        if transport == .bridge, let rawDelivery = object["stop_delivery"] as? String {
+            guard let parsed = AgentTaskStopDelivery(rawValue: rawDelivery) else { throw AgentTaskError.invalidResponse }
+            stopDelivery = parsed
+        } else {
+            stopDelivery = nil
+        }
         let output = object["output"] as? String
         let error: String?
         if let value = object["error"] as? String { error = value }
         else if let value = object["error"] as? [String: Any] { error = value["message"] as? String }
         else { error = nil }
-        let approval = parseApproval(object["approval"], transport: transport)
+        let normalizedApproval: AgentTaskApproval?
+        if transport == .direct {
+            let (parsedApproval, approvalMessage) = parseDirectApproval(object: object, status: status)
+            normalizedApproval = parsedApproval
+            if let approvalMessage { normalizationMessage = approvalMessage }
+        } else {
+            normalizedApproval = parseApproval(object["approval"], transport: transport)
+        }
+        let finalError = [error, normalizationMessage].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: "\n")
         let artifacts: [AgentTaskArtifact]
         if let raw = object["artifacts"], JSONSerialization.isValidJSONObject(raw),
            let data = try? JSONSerialization.data(withJSONObject: raw),
@@ -215,11 +350,12 @@ public struct AgentTaskClient {
         let lineageIsComplete = transport == .bridge && conversationID != nil && parentTaskID != nil
             && parentTaskID == expectedParentTaskID
             && (expectedConversationID == nil ? conversationID == id : conversationID == expectedConversationID)
-        return AgentTaskRemoteState(remoteTaskID: id, status: status, output: output, error: error, approval: approval,
+        return AgentTaskRemoteState(remoteTaskID: id, status: status, output: output,
+            error: finalError.isEmpty ? nil : finalError, approval: normalizedApproval,
             artifacts: artifacts, conversationID: conversationID, parentTaskID: parentTaskID,
             followupAvailable: rawFollowupAvailable && status == .completed && lineageIsComplete
                 && followupReason != nil,
-            followupReason: followupReason)
+            followupReason: followupReason, stopDelivery: stopDelivery)
     }
 
     private static func parseApproval(_ raw: Any?, transport: AgentTransport) -> AgentTaskApproval? {
@@ -401,7 +537,12 @@ public final class AgentTaskService: @unchecked Sendable {
             if wasTerminal && remote.status != value.status { throw AgentTaskError.invalidResponse }
             value.remoteTaskID = remote.remoteTaskID
             if let conversationID = remote.conversationID { value.conversationID = conversationID }
-            value.status = remote.status
+            if value.status == .stopping && remote.status == .running
+                && !(remote.stopDelivery?.permitsResume ?? false) {
+                // Keep an uncertain or accepted stop pending until a later status confirms otherwise.
+            } else {
+                value.status = remote.status
+            }
             value.followupAvailable = value.connection.transport == .bridge && remote.followupAvailable
             if let reason = remote.followupReason { value.followupReason = reason }
             if wasTerminal {

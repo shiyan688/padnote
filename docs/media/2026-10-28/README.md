@@ -10,3 +10,5 @@
 
 - `PadNote-Android-Tutorial-zh.mp4` — SHA-256 `8a647797d33f0c4b3fd424e7936a4003c0686102e6e71be62097c0eacdf43c48`
 - `PadNote-Android-Promo-zh.mp4` — SHA-256 `50fa545d07b9a62e8fc42257f41d8df12f00cc97d1c466308b0fe5cca6f4e556`
+
+`paper-pdf-export.png` 来自 beta.17 已安装 Android 平板实际导出的 `PadNote Paper Demo` PDF，2026-10-28 由 Poppler 渲染为 PNG。仅有人工输入的合成示例文字，无私人笔记或 Agent 结果；PDF 为扁平化页面，文字不作为可搜索文本保留。此图展示导出页面，不作为 beta.20 新界面验收证据。
