@@ -12,3 +12,5 @@
 - `PadNote-Android-Promo-zh.mp4` — SHA-256 `50fa545d07b9a62e8fc42257f41d8df12f00cc97d1c466308b0fe5cca6f4e556`
 
 `paper-pdf-export.png` 来自 beta.17 已安装 Android 平板实际导出的 `PadNote Paper Demo` PDF，2026-10-28 由 Poppler 渲染为 PNG。仅有人工输入的合成示例文字，无私人笔记或 Agent 结果；PDF 为扁平化页面，文字不作为可搜索文本保留。此图展示导出页面，不作为 beta.20 新界面验收证据。
+
+`paper-long-text-pdf.jpg` 与 `PadNote-Paper-PDF-Preview-zh.mp4` 展示 2026-10-28 平板实际导出的 18 页合成长文，使用第1、9、18页的 Poppler 渲染图。原始文字为 36 段中英双语测试资料，7820字符；不含私人资料、模型输出或 Agent 结果。视频是导出页面的编排展示，不是应用操作录屏。原 PDF SHA-256 为 `01ea5c9d8c28cee4cba7ea7264a4a3fb6f794eed3be36b305ec46d7c82570b94`。导出设备安装 beta.17，其 NoteCanvasView、PdfNoteIO、TextFlow、TextFlowCapacity 与 NoteTextBox 五个核心源文件与 beta.20 相同；这些素材不作为 beta.21 新选区界面的验收证据。

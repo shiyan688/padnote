@@ -43,6 +43,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -227,6 +228,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private Button aiCardOutputButton;
     private TextView aiResizeHandle;
     private NoteCanvasView.AiSelectionSnapshot aiSelectionSnapshot;
+    private AiSelectionRenderer aiSelectionRenderer;
+    private AiSelectionRenderer.Job activeAiSelectionJob;
+    private FrameLayout activeAiSelectionHost;
+    private AlertDialog aiSelectionProgress;
+    private int aiSelectionRenderSerial;
+    private long activeAiSelectionSelectionRevision;
     private RectF aiResultAnchorBounds;
     private AiConfigStore aiConfigStore;
     private AiConversationStore aiConversationStore;
@@ -600,6 +607,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     protected void onDestroy() {
+        cancelAiSelectionRender();
+        if (aiSelectionRenderer != null) {
+            aiSelectionRenderer.close();
+            aiSelectionRenderer = null;
+        }
         if (digitizationController != null) digitizationController.close();
         handler.removeCallbacksAndMessages(null);
         if (activePdfExportCancelled != null) activePdfExportCancelled.set(true);
@@ -643,6 +655,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     @Override
     public void onDocumentChanged() {
         documentRevision += 1;
+        cancelAiSelectionRender();
         refreshAiEditCards();
         saveStatusView.setText(R.string.core_waiting_autosave);
         handler.removeCallbacks(delayedSave);
@@ -657,9 +670,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         setActionEnabled(redoButton, canRedo);
         boolean hasSelection = selectedStrokes > 0;
         setActionEnabled(aiButton, true);
+        if (activeAiSelectionJob != null && canvasView != null &&
+                activeAiSelectionSelectionRevision != canvasView.getAiSelectionRevision()) {
+            cancelAiSelectionRender();
+        }
         setActionEnabled(duplicateButton, hasSelection);
         setActionEnabled(deleteSelectionButton, hasSelection);
-        setActionEnabled(cancelSelectionButton, hasSelection);
+        setActionEnabled(cancelSelectionButton,
+                hasSelection || (canvasView != null && canvasView.hasAiSelection()));
     }
 
     @Override
@@ -2774,6 +2792,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        if (!entry.id.equals(currentNoteId)) cancelAiSelectionRender();
         flushPendingAiInputDraft();
         pendingPaperHandoffAfterRestore = false;
         if (!entry.id.equals(currentNoteId)) pendingPaperHandoffAfterSave = false;
@@ -3605,6 +3624,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         commitInlineTextEditorExcept(selected.id);
                         selectedTextBoxId = selected.id;
                         selectedTextFlowId = selected.flowId;
+                        canvasView.selectAiTextFragment(selected.id);
                         updateTextBoxOverlays(canvasView.getTextBoxes());
                         if (pressureView != null) {
                             pressureView.setText(R.string.core_textbox_selected_hint);
@@ -4590,7 +4610,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void openAiCardForSelection() {
-        if (canvasView.getSelectionCount() == 0) {
+        if (!canvasView.hasAiSelection()) {
             if (aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty()) {
                 showAiCard();
             } else if (aiConversationLoading) {
@@ -4621,11 +4641,132 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void replaceAiSelectionWithCurrent() {
-        NoteCanvasView.AiSelectionSnapshot snapshot = canvasView.renderAiSelection(1600);
-        if (snapshot == null) {
-            Toast.makeText(this, getString(R.string.core_ai_selection_not_available), Toast.LENGTH_SHORT).show();
+        startAiSelectionRender();
+    }
+
+    private void startAiSelectionRender() {
+        if (canvasView == null || appFrame == null || currentNoteId == null) return;
+        cancelAiSelectionRender();
+        final String noteId = currentNoteId;
+        final long revision = documentRevision;
+        final long session = aiSessionSerial;
+        final AiConfigStore.Profile profile = aiConfigStore.activeProfile();
+        final String profileIdentity = aiProfileIdentity(profile);
+        final NoteCanvasView.AiSelectionRenderRequest request;
+        try {
+            request = canvasView.captureAiSelectionRenderRequest(1600);
+        } catch (Exception error) {
+            Toast.makeText(this, selectionRenderError(error), Toast.LENGTH_LONG).show();
             return;
         }
+        clearAiRequestState();
+        final long selectionRevision = request.selectionRevision;
+        final int serial = ++aiSelectionRenderSerial;
+        activeAiSelectionSelectionRevision = selectionRevision;
+        FrameLayout host = new FrameLayout(this);
+        host.setAlpha(0.01f);
+        host.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        host.setFocusable(false);
+        host.setClickable(false);
+        appFrame.addView(host, new FrameLayout.LayoutParams(1, 1));
+        activeAiSelectionHost = host;
+        if (aiSelectionRenderer == null) aiSelectionRenderer = new AiSelectionRenderer();
+        LinearLayout progressContent = new LinearLayout(this);
+        progressContent.setOrientation(LinearLayout.HORIZONTAL);
+        progressContent.setGravity(Gravity.CENTER_VERTICAL);
+        progressContent.setPadding(dp(24), dp(18), dp(24), dp(18));
+        ProgressBar progressBar = new ProgressBar(this);
+        progressContent.addView(progressBar, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        TextView progressText = text(getString(R.string.core_ai_selection_rendering), 15, INK_COLOR);
+        LinearLayout.LayoutParams progressTextParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        progressTextParams.leftMargin = dp(16);
+        progressContent.addView(progressText, progressTextParams);
+        aiSelectionProgress = ChoiceRows.builder(this)
+                .setTitle(R.string.core_ai_selection_tutorial_title)
+                .setView(progressContent)
+                .setCancelable(true)
+                .setNegativeButton(R.string.core_ai_selection_cancel,
+                        (dialog, which) -> cancelAiSelectionRender())
+                .create();
+        aiSelectionProgress.setOnCancelListener(dialog -> cancelAiSelectionRender());
+        aiSelectionProgress.show();
+        try {
+            activeAiSelectionJob = aiSelectionRenderer.start(request, host,
+                    new AiSelectionRenderer.Callback() {
+                @Override public void onReady(NoteCanvasView.AiSelectionSnapshot snapshot) {
+                    if (serial != aiSelectionRenderSerial || isFinishing() || isDestroyed()) {
+                        if (snapshot != null && snapshot.bitmap != null && !snapshot.bitmap.isRecycled())
+                            snapshot.bitmap.recycle();
+                        return;
+                    }
+                    clearAiSelectionRenderUi();
+                    if (snapshot == null || !isAiSelectionCaptureCurrent(noteId, revision,
+                            selectionRevision, session, profileIdentity)) {
+                        if (snapshot != null && snapshot.bitmap != null && !snapshot.bitmap.isRecycled())
+                            snapshot.bitmap.recycle();
+                        if (!isFinishing() && !isDestroyed()) {
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.core_ai_selection_changed), Toast.LENGTH_LONG).show();
+                        }
+                        return;
+                    }
+                    applyReadyAiSelection(snapshot);
+                }
+
+                @Override public void onFailure(Exception error) {
+                    if (serial != aiSelectionRenderSerial || isFinishing() || isDestroyed()) return;
+                    clearAiSelectionRenderUi();
+                    Toast.makeText(MainActivity.this, selectionRenderError(error), Toast.LENGTH_LONG).show();
+                }
+            });
+        } catch (RuntimeException error) {
+            request.close();
+            clearAiSelectionRenderUi();
+            Toast.makeText(this, selectionRenderError(error), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean isAiSelectionCaptureCurrent(String noteId, long revision, long selectionRevision,
+                                                 long session, String profileIdentity) {
+        return editorVisible && restoreCompleted && noteId.equals(currentNoteId) &&
+                documentRevision == revision && canvasView != null &&
+                canvasView.getAiSelectionRevision() == selectionRevision &&
+                aiSessionSerial == session &&
+                profileIdentity.equals(aiProfileIdentity(aiConfigStore.activeProfile()));
+    }
+
+    private String selectionRenderError(Exception error) {
+        String detail = error == null || error.getMessage() == null ? "" : error.getMessage();
+        if (detail.toLowerCase(java.util.Locale.ROOT).contains("page") ||
+                detail.contains("跨页") || detail.contains("单页")) {
+            return getString(R.string.core_ai_selection_one_page_required);
+        }
+        return getString(R.string.core_ai_selection_render_failed, detail);
+    }
+
+    private void cancelAiSelectionRender() {
+        aiSelectionRenderSerial += 1;
+        if (activeAiSelectionJob != null) {
+            activeAiSelectionJob.cancel();
+            activeAiSelectionJob = null;
+        }
+        clearAiSelectionRenderUi();
+    }
+
+    private void clearAiSelectionRenderUi() {
+        if (aiSelectionProgress != null) {
+            if (aiSelectionProgress.isShowing()) aiSelectionProgress.dismiss();
+            aiSelectionProgress = null;
+        }
+        if (activeAiSelectionHost != null && activeAiSelectionHost.getParent() == appFrame) {
+            appFrame.removeView(activeAiSelectionHost);
+        }
+        activeAiSelectionHost = null;
+        activeAiSelectionJob = null;
+    }
+
+    private void applyReadyAiSelection(NoteCanvasView.AiSelectionSnapshot snapshot) {
         boolean replacingContext = aiConversationSnapshot != null || !aiVisibleTimeline.isEmpty();
         clearAiRequestState();
         releaseAiSelectionSnapshot();
@@ -7968,6 +8109,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             return;
         }
         commitInlineTextEditorExcept(null);
+        cancelAiSelectionRender();
         handler.removeCallbacks(delayedSave);
         if (!restoreCompleted) {
             showBookshelf();

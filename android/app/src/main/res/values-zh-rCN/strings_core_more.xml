@@ -466,6 +466,11 @@
     <string name="core_ai_written_changes">本轮已写入 %1$d 处文字修改</string>
     <string name="core_ai_selection_tutorial_title">使用选中内容与 AI 对话</string>
     <string name="core_ai_selection_tutorial_message">使用套索圈选纸面内容，再点 AI。仅选中内容会在确认后发送；也可先配置模型。</string>
+    <string name="core_ai_selection_rendering">正在准备选中内容…</string>
+    <string name="core_ai_selection_cancel">取消</string>
+    <string name="core_ai_selection_changed">笔记、选区或 AI 配置已更改，请重新选择内容。</string>
+    <string name="core_ai_selection_one_page_required">一次请选择同一页内的内容，请在单页内重新选择。</string>
+    <string name="core_ai_selection_render_failed">无法准备选中内容：%1$s</string>
     <string name="core_ai_selection_start_lasso">开始圈选</string>
     <string name="core_ai_selection_ai_settings">AI 设置</string>
 </resources>

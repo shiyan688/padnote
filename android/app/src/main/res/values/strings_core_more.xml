@@ -466,6 +466,11 @@
     <string name="core_ai_written_changes">This turn wrote %1$d text changes</string>
     <string name="core_ai_selection_tutorial_title">Use AI with selected content</string>
     <string name="core_ai_selection_tutorial_message">Lasso-select content on the page, then tap AI. Only selected content is sent after you confirm; configure a model first if needed.</string>
+    <string name="core_ai_selection_rendering">Preparing selected paper content…</string>
+    <string name="core_ai_selection_cancel">Cancel</string>
+    <string name="core_ai_selection_changed">The note, selection, or AI profile changed. Select the content again.</string>
+    <string name="core_ai_selection_one_page_required">Select content on one page at a time. Please reselect on a single page.</string>
+    <string name="core_ai_selection_render_failed">Could not prepare the selected content: %1$s</string>
     <string name="core_ai_selection_start_lasso">Start selecting</string>
     <string name="core_ai_selection_ai_settings">AI settings</string>
 </resources>

@@ -466,6 +466,11 @@
     <string name="core_ai_written_changes">In diesem Durchgang wurden %1$d Textänderungen geschrieben</string>
     <string name="core_ai_selection_tutorial_title">KI mit ausgewählten Inhalten verwenden</string>
     <string name="core_ai_selection_tutorial_message">Markiere Inhalte auf der Seite mit dem Lasso und tippe dann auf KI. Nur ausgewählte Inhalte werden nach deiner Bestätigung gesendet. Richte bei Bedarf zuerst ein Modell ein.</string>
+    <string name="core_ai_selection_rendering">Ausgewählte Inhalte werden vorbereitet…</string>
+    <string name="core_ai_selection_cancel">Abbrechen</string>
+    <string name="core_ai_selection_changed">Notiz, Auswahl oder KI-Profil wurde geändert. Bitte wähle die Inhalte erneut aus.</string>
+    <string name="core_ai_selection_one_page_required">Wähle Inhalte jeweils auf einer Seite aus. Bitte wähle eine einzelne Seite erneut aus.</string>
+    <string name="core_ai_selection_render_failed">Ausgewählte Inhalte konnten nicht vorbereitet werden: %1$s</string>
     <string name="core_ai_selection_start_lasso">Auswahl starten</string>
     <string name="core_ai_selection_ai_settings">KI-Einstellungen</string>
 </resources>

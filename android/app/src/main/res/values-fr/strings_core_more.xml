@@ -466,6 +466,11 @@
     <string name="core_ai_written_changes">%1$d modifications de texte effectuées pendant ce tour</string>
     <string name="core_ai_selection_tutorial_title">Utiliser l’IA avec le contenu sélectionné</string>
     <string name="core_ai_selection_tutorial_message">Entourez le contenu sur la page avec le lasso, puis appuyez sur IA. Seul le contenu sélectionné sera envoyé après confirmation. Vous pouvez d’abord configurer un modèle.</string>
+    <string name="core_ai_selection_rendering">Préparation du contenu sélectionné…</string>
+    <string name="core_ai_selection_cancel">Annuler</string>
+    <string name="core_ai_selection_changed">La note, la sélection ou le profil IA a changé. Veuillez sélectionner à nouveau le contenu.</string>
+    <string name="core_ai_selection_one_page_required">Sélectionnez le contenu sur une seule page à la fois. Veuillez recommencer sur une page.</string>
+    <string name="core_ai_selection_render_failed">Impossible de préparer le contenu sélectionné : %1$s</string>
     <string name="core_ai_selection_start_lasso">Commencer la sélection</string>
     <string name="core_ai_selection_ai_settings">Paramètres IA</string>
 </resources>

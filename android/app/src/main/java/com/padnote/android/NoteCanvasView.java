@@ -36,8 +36,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public final class NoteCanvasView extends View {
@@ -85,6 +87,45 @@ public final class NoteCanvasView extends View {
             this.pointCount = pointCount;
             this.lassoMaskApplied = lassoMaskApplied;
         }
+    }
+
+    /** Frozen, single-page input for asynchronous rendering of an AI selection. */
+    static final class AiSelectionRenderRequest implements AutoCloseable {
+        final PdfExportSnapshot snapshot;
+        final int pageIndex;
+        final RectF sourceBounds;
+        final RectF cropBounds;
+        final List<PointF> maskPoints;
+        final List<String> textFragmentIds;
+        final long selectionRevision;
+        final int maxDimensionPx;
+        final int strokeCount;
+        final int pointCount;
+        final boolean lassoMaskApplied;
+
+        AiSelectionRenderRequest(PdfExportSnapshot snapshot, int pageIndex,
+                                 RectF sourceBounds, RectF cropBounds,
+                                 List<PointF> maskPoints, List<String> textFragmentIds,
+                                 long selectionRevision,
+                                 int maxDimensionPx, int strokeCount, int pointCount,
+                                 boolean lassoMaskApplied) {
+            this.snapshot = snapshot;
+            this.pageIndex = pageIndex;
+            this.sourceBounds = new RectF(sourceBounds);
+            this.cropBounds = new RectF(cropBounds);
+            List<PointF> copied = new ArrayList<>(maskPoints.size());
+            for (PointF point : maskPoints) copied.add(new PointF(point.x, point.y));
+            this.maskPoints = Collections.unmodifiableList(copied);
+            this.textFragmentIds = Collections.unmodifiableList(
+                    new ArrayList<>(textFragmentIds));
+            this.selectionRevision = selectionRevision;
+            this.maxDimensionPx = maxDimensionPx;
+            this.strokeCount = strokeCount;
+            this.pointCount = pointCount;
+            this.lassoMaskApplied = lassoMaskApplied;
+        }
+
+        @Override public void close() { snapshot.close(); }
     }
 
     /** Immutable document state used by the final PDF exporter. */
@@ -634,6 +675,10 @@ public final class NoteCanvasView extends View {
     private final Deque<DocumentSnapshot> undoStack = new ArrayDeque<>();
     private final Deque<DocumentSnapshot> redoStack = new ArrayDeque<>();
     private String selectedTextBoxId;
+    private final Set<String> aiSelectedTextFragmentIds = new LinkedHashSet<>();
+    private final List<PointF> aiSelectionMaskPoints = new ArrayList<>();
+    private long aiSelectionRevision;
+    private boolean aiLassoCrossedPage;
 
     private InkStroke currentStroke;
 
@@ -798,10 +843,12 @@ public final class NoteCanvasView extends View {
     }
 
     void clearTextBoxSelection() {
-        if (selectedTextBoxId == null) {
+        if (selectedTextBoxId == null && aiSelectedTextFragmentIds.isEmpty()) {
             return;
         }
         selectedTextBoxId = null;
+        aiSelectedTextFragmentIds.clear();
+        bumpAiSelectionRevision();
         dispatchSelectionState();
     }
 
@@ -843,6 +890,40 @@ public final class NoteCanvasView extends View {
 
     int getSelectionCount() {
         return selectedStrokes.size() + selectedImages.size() + (hasPdfSelection() ? 1 : 0);
+    }
+
+    /** AI-only predicate; deliberately does not change delete/copy selection semantics. */
+    boolean hasAiSelection() {
+        if (aiLassoCrossedPage) return true;
+        if (getSelectionCount() > 0) return true;
+        for (String id : aiSelectedTextFragmentIds) {
+            if (findTextBox(id) != null) return true;
+        }
+        return false;
+    }
+
+    long getAiSelectionRevision() {
+        return aiSelectionRevision;
+    }
+
+    /** Selects one exact visible fragment for AI without promoting its whole flow. */
+    boolean selectAiTextFragment(String fragmentId) {
+        if (Looper.myLooper() != Looper.getMainLooper()) return false;
+        NoteTextBox fragment = findTextBox(fragmentId);
+        if (fragment == null || fragmentId.trim().isEmpty()) return false;
+        clearSelectionInternal();
+        aiSelectedTextFragmentIds.clear();
+        aiSelectedTextFragmentIds.add(fragment.id);
+        selectedTextBoxId = fragment.flowId;
+        bumpAiSelectionRevision();
+        invalidate();
+        dispatchSelectionState();
+        return true;
+    }
+
+    private void bumpAiSelectionRevision() {
+        aiSelectionRevision = aiSelectionRevision == Long.MAX_VALUE
+                ? 1L : aiSelectionRevision + 1L;
     }
 
     private boolean hasMovableSelection() {
@@ -1538,6 +1619,7 @@ public final class NoteCanvasView extends View {
         }
         pushUndoSnapshot();
         List<NoteTextBox> flow = findTextFlow(textBox.flowId);
+        invalidateAiTextSelectionForFlow(textBox.flowId);
         textBoxes.removeAll(flow);
         textFlows.remove(textBox.flowId);
         if (textBox.flowId.equals(selectedTextBoxId)) {
@@ -1572,6 +1654,7 @@ public final class NoteCanvasView extends View {
         if (flow == null) {
             return null;
         }
+        invalidateAiTextSelectionForFlow(flow.id);
         List<NoteTextBox> existing = findTextFlow(flow.id);
         flow.beginRenderLayout();
         int insertionIndex = textBoxes.size();
@@ -1599,6 +1682,22 @@ public final class NoteCanvasView extends View {
         textBoxes.addAll(Math.max(0, Math.min(insertionIndex, textBoxes.size())),
                 replacements);
         return replacements.get(0).copy();
+    }
+
+    private void invalidateAiTextSelectionForFlow(String flowId) {
+        boolean removed = false;
+        for (String id : new ArrayList<>(aiSelectedTextFragmentIds)) {
+            NoteTextBox selected = findTextBox(id);
+            if (selected == null || selected.flowId.equals(flowId)) {
+                aiSelectedTextFragmentIds.remove(id);
+                removed = true;
+            }
+        }
+        if (removed) {
+            if (flowId.equals(selectedTextBoxId)) selectedTextBoxId = null;
+            bumpAiSelectionRevision();
+            dispatchSelectionState();
+        }
     }
 
     /**
@@ -2587,6 +2686,172 @@ public final class NoteCanvasView extends View {
                 imageCopies, textCopies, backgroundCopy);
     }
 
+    /** Freezes only the selected page's crop inputs for AI paper rendering. */
+    AiSelectionRenderRequest captureAiSelectionRenderRequest(int maxDimensionPx)
+            throws IOException {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw new IllegalStateException("AI 选区快照必须在主线程创建");
+        }
+        ensurePageGeometry();
+        if (maxDimensionPx <= 0 || pageWidth <= 0f || pageHeight <= 0f ||
+                !hasAiSelection()) {
+            if (aiLassoCrossedPage) {
+                throw new IOException("纸面 AI 选区跨越多页，请在单页内重新圈选");
+            }
+            throw new IOException("没有可用的纸面 AI 选区");
+        }
+        if (aiLassoCrossedPage) {
+            throw new IOException("纸面 AI 选区跨越多页，请在单页内重新圈选");
+        }
+
+        List<NoteTextBox> selectedText = new ArrayList<>();
+        for (String id : aiSelectedTextFragmentIds) {
+            NoteTextBox box = findTextBox(id);
+            if (box == null) throw new IOException("文字选区已失效，请重新选择");
+            selectedText.add(box);
+        }
+
+        boolean useMask = aiSelectionMaskPoints.size() >= 3;
+        int pageIndex = -1;
+        if (useMask) {
+            pageIndex = pageForSelectionPoints(aiSelectionMaskPoints);
+            if (pageIndex < 0) throw new IOException("请在单页内重新圈选纸面内容");
+        }
+        for (NoteTextBox box : selectedText) {
+            pageIndex = mergeSelectionPage(pageIndex, box.pageIndex);
+        }
+        for (NoteImage image : selectedImages) {
+            pageIndex = mergeSelectionPage(pageIndex, image.page);
+        }
+        for (InkStroke stroke : selectedStrokes) {
+            int strokePage = pageForStroke(stroke);
+            if (strokePage < 0) throw new IOException("请在单页内重新圈选纸面内容");
+            pageIndex = mergeSelectionPage(pageIndex, strokePage);
+        }
+        if (pageIndex < 0 || pageIndex >= pageCount) {
+            throw new IOException("纸面 AI 选区已失效，请重新选择");
+        }
+
+        RectF sourceBounds = useMask ? pointBounds(aiSelectionMaskPoints) : null;
+        float pageTop = pageTop(pageIndex);
+        if (!useMask) {
+            for (NoteTextBox box : selectedText) {
+                sourceBounds = unionBounds(sourceBounds, new RectF(box.x, box.y,
+                        box.x + box.width, box.y + box.height));
+            }
+            for (NoteImage image : selectedImages) {
+                if (image.page == pageIndex) sourceBounds = unionBounds(sourceBounds,
+                        new RectF(image.x, pageTop + image.y,
+                                image.x + image.width, pageTop + image.y + image.height));
+            }
+            for (InkStroke stroke : selectedStrokes) {
+                sourceBounds = unionBounds(sourceBounds, strokeBounds(stroke, true));
+            }
+        }
+        if (sourceBounds == null || sourceBounds.isEmpty()) {
+            throw new IOException("纸面 AI 选区范围无效，请重新选择");
+        }
+        RectF cropWorld = new RectF(sourceBounds);
+        cropWorld.inset(-dp(12), -dp(12));
+        cropWorld.left = Math.max(0f, cropWorld.left);
+        cropWorld.right = Math.min(pageWidth, cropWorld.right);
+        cropWorld.top = Math.max(pageTop, cropWorld.top);
+        cropWorld.bottom = Math.min(pageTop + pageHeight, cropWorld.bottom);
+        if (cropWorld.width() < 1f || cropWorld.height() < 1f) {
+            throw new IOException("纸面 AI 选区范围无效，请重新选择");
+        }
+        RectF cropLocal = new RectF(cropWorld.left, cropWorld.top - pageTop,
+                cropWorld.right, cropWorld.bottom - pageTop);
+        RectF sourceCopy = new RectF(cropWorld);
+        List<PointF> localMask = new ArrayList<>();
+        if (useMask) {
+            for (PointF point : aiSelectionMaskPoints) {
+                localMask.add(new PointF(point.x, point.y - pageTop));
+            }
+        }
+
+        List<InkStroke> strokeCopies = new ArrayList<>();
+        int selectedPointCount = 0;
+        for (InkStroke stroke : strokes) {
+            if (pageForStroke(stroke) != pageIndex ||
+                    !RectF.intersects(cropWorld, strokeBounds(stroke, true))) continue;
+            strokeCopies.add(stroke.copy());
+            selectedPointCount += stroke.points.size();
+        }
+        List<NoteImage> imageCopies = new ArrayList<>();
+        for (NoteImage image : images) {
+            if (image.page != pageIndex) continue;
+            RectF bounds = new RectF(image.x, pageTop + image.y,
+                    image.x + image.width, pageTop + image.y + image.height);
+            if (RectF.intersects(cropWorld, bounds)) imageCopies.add(image.copy(false));
+        }
+        List<NoteTextBox> textCopies = new ArrayList<>();
+        RectF cropWorldCopy = new RectF(cropWorld);
+        for (NoteTextBox box : textBoxes) {
+            if (box.pageIndex != pageIndex) continue;
+            RectF bounds = new RectF(box.x, box.y, box.x + box.width,
+                    box.y + box.height);
+            if (!RectF.intersects(cropWorldCopy, bounds)) continue;
+            TextFlow flow = textFlows.get(box.flowId);
+            if (flow != null && (!flow.lastLayoutComplete || flow.lastRenderHeightUnresolved)) {
+                throw new IOException("选区中的文字尚未完成排版，请稍后重试");
+            }
+            textCopies.add(box.copy());
+        }
+        if (!selectedText.isEmpty() && textCopies.isEmpty()) {
+            throw new IOException("文字选区已失效，请重新选择");
+        }
+        PdfBackground backgroundCopy = pdfBackground == null
+                ? null : pdfBackground.copyFor(this);
+        PdfExportSnapshot snapshot = new PdfExportSnapshot(this, pageCount, pageWidth,
+                pageHeight, pageGap, getResources().getDisplayMetrics().density,
+                pageStyle, strokeCopies, imageCopies, textCopies, backgroundCopy);
+        return new AiSelectionRenderRequest(snapshot, pageIndex, sourceCopy, cropLocal,
+                localMask, new ArrayList<>(aiSelectedTextFragmentIds), aiSelectionRevision,
+                Math.min(1600, maxDimensionPx), strokeCopies.size(),
+                selectedPointCount, useMask);
+    }
+
+    private int mergeSelectionPage(int currentPage, int candidatePage) throws IOException {
+        if (candidatePage < 0 || candidatePage >= pageCount ||
+                (currentPage >= 0 && currentPage != candidatePage)) {
+            throw new IOException("请在单页内重新圈选纸面内容");
+        }
+        return candidatePage;
+    }
+
+    private int pageForSelectionPoints(List<PointF> points) {
+        if (points.size() < 3) return -1;
+        int selectedPage = -1;
+        for (PointF point : points) {
+            int candidate = pageIndexForWorldY(point.y);
+            float localY = point.y - pageTop(candidate);
+            if (localY < 0f || localY > pageHeight || point.x < 0f || point.x > pageWidth ||
+                    (selectedPage >= 0 && selectedPage != candidate)) return -1;
+            selectedPage = candidate;
+        }
+        return selectedPage;
+    }
+
+    private int pageForStroke(InkStroke stroke) {
+        if (stroke == null || stroke.points.isEmpty()) return -1;
+        int selectedPage = -1;
+        for (InkPoint point : stroke.points) {
+            int candidate = pageIndexForWorldY(point.y);
+            float localY = point.y - pageTop(candidate);
+            if (localY < 0f || localY > pageHeight ||
+                    (selectedPage >= 0 && selectedPage != candidate)) return -1;
+            selectedPage = candidate;
+        }
+        return selectedPage;
+    }
+
+    private static RectF unionBounds(RectF existing, RectF addition) {
+        if (existing == null) return new RectF(addition);
+        existing.union(addition);
+        return existing;
+    }
+
     /** Snapshot of the fact-source flows for vault assembly; call on UI thread. */
     public List<TextFlow> getTextFlows() {
         return new ArrayList<>(textFlows.values());
@@ -3043,6 +3308,10 @@ public final class NoteCanvasView extends View {
         for (PointF point : selectionMaskPoints) {
             point.offset(offset, offset);
         }
+        for (PointF point : aiSelectionMaskPoints) {
+            point.offset(offset, offset);
+        }
+        bumpAiSelectionRevision();
         recountPoints();
         rebuildInkBitmap();
         dispatchStats(0, getContext().getString(R.string.canvas_copy_selection));
@@ -3530,6 +3799,9 @@ public final class NoteCanvasView extends View {
         textBoxes.clear();
         textFlows.clear();
         textFlows.putAll(parsed.flows);
+        aiSelectedTextFragmentIds.clear();
+        aiSelectionMaskPoints.clear();
+        bumpAiSelectionRevision();
         selectedStrokes.clear();
         selectedImages.clear();
         lassoPoints.clear();
@@ -3999,6 +4271,14 @@ public final class NoteCanvasView extends View {
     }
 
     private void appendGesturePoint(InkPoint point) {
+        if (activeGestureTool == Tool.LASSO) {
+            int candidatePage = pageIndexForWorldY(point.y);
+            float localY = point.y - pageTop(candidatePage);
+            if (candidatePage != activeGesturePageIndex || localY < 0f ||
+                    localY > pageHeight) {
+                aiLassoCrossedPage = true;
+            }
+        }
         if (!pointInsideAnyPage(point.x, point.y)) {
             return;
         }
@@ -4368,6 +4648,7 @@ public final class NoteCanvasView extends View {
             return;
         }
         clearSelectionInternal();
+        aiLassoCrossedPage = false;
         lassoPoints.clear();
         lassoPoints.add(new PointF(x, y));
         dispatchSelectionState();
@@ -4440,6 +4721,11 @@ public final class NoteCanvasView extends View {
         for (PointF point : selectionMaskPoints) {
             point.offset(dx, dy);
         }
+        if (!aiSelectedTextFragmentIds.isEmpty() || !aiSelectionMaskPoints.isEmpty()) {
+            aiSelectedTextFragmentIds.clear();
+            aiSelectionMaskPoints.clear();
+        }
+        bumpAiSelectionRevision();
         rebuildInkBitmap();
         dispatchStats(0, getContext().getString(R.string.canvas_moving_selection));
     }
@@ -4451,6 +4737,10 @@ public final class NoteCanvasView extends View {
         }
         if (canceled || lassoPoints.size() < 3) {
             lassoPoints.clear();
+            if (aiLassoCrossedPage) {
+                aiLassoCrossedPage = false;
+                bumpAiSelectionRevision();
+            }
             dispatchStats(0, getContext().getString(R.string.canvas_lasso_cancelled));
             return;
         }
@@ -4465,6 +4755,11 @@ public final class NoteCanvasView extends View {
             for (PointF point : lassoPoints) selectionMaskPoints.add(new PointF(point.x, point.y));
         }
         selectTextBoxInsideLasso();
+        aiSelectionMaskPoints.clear();
+        for (PointF point : lassoPoints) {
+            aiSelectionMaskPoints.add(new PointF(point.x, point.y));
+        }
+        bumpAiSelectionRevision();
         lassoPoints.clear();
         if (!selectedImages.isEmpty()) {
             dispatchStats(0, getContext().getString(R.string.canvas_image_selected));
@@ -4504,14 +4799,15 @@ public final class NoteCanvasView extends View {
 
     private void selectTextBoxInsideLasso() {
         selectedTextBoxId = null;
+        aiSelectedTextFragmentIds.clear();
         RectF lassoBounds = pointBounds(lassoPoints);
         for (int index = textBoxes.size() - 1; index >= 0; index--) {
             NoteTextBox textBox = textBoxes.get(index);
             RectF bounds = new RectF(textBox.x, textBox.y,
                     textBox.x + textBox.width, textBox.y + textBox.height);
             if (rectanglesOverlap(lassoBounds, bounds) && textBoxIntersectsLasso(bounds)) {
-                selectedTextBoxId = textBox.flowId;
-                return;
+                if (selectedTextBoxId == null) selectedTextBoxId = textBox.flowId;
+                aiSelectedTextFragmentIds.add(textBox.id);
             }
         }
     }
@@ -4870,6 +5166,7 @@ public final class NoteCanvasView extends View {
         }
         pageCount += 1;
         explicitPageEditSerial += 1;
+        bumpAiSelectionRevision();
         bottomPullDistance = 0;
         if (navigateToNewPage) {
             float targetTop = pageTop(pageCount - 1);
@@ -4914,8 +5211,7 @@ public final class NoteCanvasView extends View {
         pageCount -= 1;
         explicitPageEditSerial += 1;
         pageTopologySerial += 1;
-        selectedStrokes.clear();
-        selectedTextBoxId = null;
+        clearSelectionInternal();
         inkCacheDirty = true;
         clampViewport(false);
         invalidate();
@@ -4972,6 +5268,7 @@ public final class NoteCanvasView extends View {
         pageCount += 1;
         explicitPageEditSerial += 1;
         pageTopologySerial += 1;
+        clearSelectionInternal();
         inkCacheDirty = true;
         invalidate();
         notifyDocumentChanged();
@@ -4987,6 +5284,7 @@ public final class NoteCanvasView extends View {
         pushUndoSnapshot();
         explicitPageEditSerial += 1;
         pageTopologySerial += 1;
+        clearSelectionInternal();
         int[] mapping = new int[pageCount];
         for (int old = 0; old < pageCount; old++) {
             if (old == fromPage) mapping[old] = toPage;
@@ -5776,12 +6074,19 @@ public final class NoteCanvasView extends View {
     }
 
     private void clearSelectionInternal() {
+        boolean hadSelection = !selectedStrokes.isEmpty() || !selectedImages.isEmpty() ||
+                !selectionMaskPoints.isEmpty() || !aiSelectedTextFragmentIds.isEmpty() ||
+                !aiSelectionMaskPoints.isEmpty() || selectedTextBoxId != null;
         selectedStrokes.clear();
         selectedImages.clear();
         resizingImage = null;
         lassoPoints.clear();
         selectionMaskPoints.clear();
+        aiSelectedTextFragmentIds.clear();
+        aiSelectionMaskPoints.clear();
+        aiLassoCrossedPage = false;
         selectedTextBoxId = null;
+        if (hadSelection) bumpAiSelectionRevision();
     }
 
     private void dispatchStats(float pressure, String inputStatus) {
