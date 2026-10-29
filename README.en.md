@@ -18,7 +18,7 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL connection setup](BETA31_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 ## Demo frames
 
@@ -93,7 +93,7 @@ These images are from an earlier Android emulator build and show the beta.13 int
 ## Platforms and connections
 
 - **Android tablets:** GitHub Releases currently provides the published beta.29 APK (versionCode 65).
-- **Windows:** The beta.31 connection assistant comes as a Setup installer or a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
+- **Windows:** The beta.32 connection assistant comes as a Setup installer or a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
 - **iPad:** Source is available; there is no installable signed IPA.
 
 Computer tasks use the Agent you explicitly choose and pair, when it supports PadNote note tasks. Multiple Hermes configurations keep separate Agent identities, credentials, and task ownership. The assistant uses your own configuration and keeps keys in process memory; reopening it requires an explicit reconnect. When gateway mode is unknown, the flow starts with the default configuration and then lets you choose a named configuration. It does not change the provider automatically or restart a gateway managed by another tool. OpenClaw has discovery and setup guidance, but PadNote note tasks are not integrated with OpenClaw; Codex note tasks are not connected.
@@ -102,7 +102,7 @@ See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: this release keeps Android beta.29 and updates the Windows assistant to beta.31. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: this release keeps Android beta.29 and updates the Windows assistant to beta.32. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

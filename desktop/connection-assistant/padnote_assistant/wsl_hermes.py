@@ -8,16 +8,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import threading
 import time
 import uuid
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+
+from .bundles import MAX_EXPANDED_BYTES, input_snapshot_digest
 
 
 _PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -27,6 +32,10 @@ _MAX_OUTPUT = 256 * 1024
 _LIST_TIMEOUT = 4.0
 _GUEST_TIMEOUT = 8.0
 _START_TIMEOUT = 30.0
+_TASK_CONTEXT_TIMEOUT = 15.0
+_TASK_FILE_LIMIT = 8
+_TASK_DEPTH_LIMIT = 5
+_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class WslHermesError(RuntimeError):
@@ -48,6 +57,79 @@ class WslProfile:
     id: str
     label: str
     api_state: str
+
+
+@dataclass(frozen=True)
+class WslTaskFile:
+    relative_path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class WslTaskContext:
+    instance_id: str
+    instance_binding_sha256: str
+    distro_id: str
+    distro_uid: int
+    profile_id: str
+    profile_home: str
+    task_id: str
+    tasks_root: str
+    task_root: str
+    input_files: tuple[WslTaskFile, ...]
+    input_digest: str
+    conversation_id: str | None = None
+    parent_input_root: str | None = None
+    parent_files: tuple[WslTaskFile, ...] = ()
+    parent_digest: str | None = None
+
+
+def _task_manifest_digest(files: tuple[WslTaskFile, ...]) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(files, key=lambda row: row.relative_path):
+        name = item.relative_path.encode("utf-8")
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(item.size.to_bytes(8, "big"))
+        digest.update(bytes.fromhex(item.sha256))
+    return digest.hexdigest()
+
+
+def _validate_task_files(files: tuple[WslTaskFile, ...], expected_digest: str | None) -> list[dict[str, Any]]:
+    if not isinstance(files, tuple) or len(files) > _TASK_FILE_LIMIT:
+        raise WslHermesError("wsl_task_context_invalid", "Task input context is invalid or too large.")
+    seen: set[str] = set()
+    total = 0
+    output: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, WslTaskFile) or not isinstance(item.relative_path, str):
+            raise WslHermesError("wsl_task_context_invalid", "Task input context is invalid.")
+        raw_name = item.relative_path
+        try:
+            encoded = raw_name.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise WslHermesError("wsl_task_context_invalid", "Task input path is invalid.") from error
+        pure = PurePosixPath(raw_name)
+        if (len(encoded) > 512 or not raw_name or raw_name.startswith("/") or "\\" in raw_name or ":" in raw_name
+                or pure.as_posix() != raw_name or pure.is_absolute()
+                or any(part in {"", ".", ".."} for part in pure.parts)
+                or len(pure.parts) > _TASK_DEPTH_LIMIT
+                or any(ord(char) < 32 or ord(char) == 127 for char in raw_name)
+                or raw_name in seen):
+            raise WslHermesError("wsl_task_context_invalid", "Task input path is invalid.")
+        if type(item.size) is not int or item.size < 0 or item.size > MAX_EXPANDED_BYTES \
+                or not isinstance(item.sha256, str) or not _HEX.fullmatch(item.sha256):
+            raise WslHermesError("wsl_task_context_invalid", "Task input metadata is invalid.")
+        seen.add(raw_name)
+        total += item.size
+        if total > MAX_EXPANDED_BYTES:
+            raise WslHermesError("wsl_task_context_invalid", "Task input context is too large.")
+        output.append({"relative_path": raw_name, "size": item.size, "sha256": item.sha256})
+    if not isinstance(expected_digest, str) or not _HEX.fullmatch(expected_digest) \
+            or _task_manifest_digest(files) != expected_digest:
+        raise WslHermesError("wsl_task_context_invalid", "Task input digest does not match its manifest.")
+    return output
 
 
 @dataclass
@@ -451,6 +533,170 @@ except Exception:
 '''
 
 
+_GUEST_TASK_CONTEXT = r'''import hashlib,json,os,re,secrets,selectors,stat,subprocess,sys,time
+MAX_JSON=256*1024
+MAX_BYTES=32*1024*1024
+MAX_FILES=8
+MAX_ENTRIES=32
+MAX_DEPTH=5
+PROFILE=re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+TASK=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+HEX=re.compile(r"^[0-9a-f]{64}$")
+def fail(code):
+ print(json.dumps({"ok":False,"code":code,"message":"Selected WSL task files could not be verified safely."},separators=(",",":"))); sys.exit(0)
+def relpath(value):
+ if not isinstance(value,str) or not value or len(value.encode("utf-8"))>512 or value.startswith("/") or "\\" in value or ":" in value or any(ord(c)<32 or ord(c)==127 for c in value): raise ValueError()
+ parts=value.split("/")
+ if any(p in ("",".","..") for p in parts) or len(parts)>MAX_DEPTH: raise ValueError()
+ return "/".join(parts)
+def canonical(path):
+ st=os.lstat(path)
+ if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode): raise ValueError()
+ real=os.path.realpath(path)
+ if real!=os.path.normpath(path): raise ValueError()
+ return real
+def mapped(host):
+ if not isinstance(host,str) or len(host.encode("utf-8"))>4096 or "\x00" in host or "\r" in host or "\n" in host: raise ValueError()
+ if not re.match(r"^[A-Za-z]:[\\/][^\x00]*$",host): raise ValueError()
+ proc=subprocess.Popen(["/usr/bin/wslpath","-u",host],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,close_fds=True)
+ selector=selectors.DefaultSelector(); selector.register(proc.stdout,selectors.EVENT_READ)
+ output=bytearray(); deadline=time.monotonic()+2
+ try:
+  while selector.get_map():
+   remaining=deadline-time.monotonic()
+   if remaining<=0 or not selector.select(remaining): raise ValueError()
+   chunk=os.read(proc.stdout.fileno(),min(1024,4097-len(output)))
+   if not chunk: selector.unregister(proc.stdout); break
+   output.extend(chunk)
+   if len(output)>4096: raise ValueError()
+  proc.wait(timeout=max(0.01,deadline-time.monotonic()))
+ except Exception:
+  try: proc.kill()
+  except OSError: pass
+  try: proc.wait(timeout=1)
+  except Exception: pass
+  raise
+ finally:
+  selector.close(); proc.stdout.close()
+ if proc.returncode!=0: raise ValueError()
+ value=bytes(output).decode("utf-8","strict")
+ if value.endswith("\n"): value=value[:-1]
+ if not value.startswith("/") or "\n" in value or "\r" in value or "\x00" in value: raise ValueError()
+ return os.path.normpath(value)
+def file_digest(root,manifest):
+ if not isinstance(manifest,list) or len(manifest)>MAX_FILES: raise ValueError()
+ expected={}
+ for row in manifest:
+  if not isinstance(row,dict): raise ValueError()
+  name=relpath(row.get("relative_path")); size=row.get("size"); digest=row.get("sha256")
+  if type(size) is not int or size<0 or size>MAX_BYTES or not isinstance(digest,str) or not HEX.fullmatch(digest) or name in expected: raise ValueError()
+  expected[name]=(size,digest)
+ root=canonical(root)
+ actual={}; stack=[(root,"",0)]; seen=0; total=0
+ while stack:
+  directory,prefix,depth=stack.pop()
+  if depth>MAX_DEPTH: raise ValueError()
+  with os.scandir(directory) as entries:
+   for entry in entries:
+    seen+=1
+    if seen>MAX_ENTRIES or entry.is_symlink(): raise ValueError()
+    name=(prefix+"/" if prefix else "")+entry.name
+    relpath(name)
+    if entry.is_dir(follow_symlinks=False): stack.append((entry.path,name,depth+1)); continue
+    if not entry.is_file(follow_symlinks=False): raise ValueError()
+    flags=os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)|getattr(os,"O_CLOEXEC",0)
+    fd=os.open(entry.path,flags)
+    try:
+     st=os.fstat(fd)
+     if not stat.S_ISREG(st.st_mode) or st.st_size>MAX_BYTES: raise ValueError()
+     h=hashlib.sha256(); size=0
+     while True:
+      chunk=os.read(fd,1024*1024)
+      if not chunk: break
+      size+=len(chunk); total+=len(chunk)
+      if total>MAX_BYTES: raise ValueError()
+      h.update(chunk)
+     after=os.fstat(fd)
+     if size!=st.st_size or after.st_size!=st.st_size or (after.st_dev,after.st_ino)!=(st.st_dev,st.st_ino): raise ValueError()
+     actual[name]=(size,h.hexdigest())
+    finally: os.close(fd)
+ if actual!=expected: raise ValueError()
+ aggregate=hashlib.sha256()
+ for name,(size,digest) in sorted(actual.items()):
+  raw=name.encode("utf-8"); aggregate.update(len(raw).to_bytes(4,"big")); aggregate.update(raw); aggregate.update(size.to_bytes(8,"big")); aggregate.update(bytes.fromhex(digest))
+ return aggregate.hexdigest()
+def run(req):
+ if not isinstance(req,dict) or req.get("op")!="task_context": raise ValueError()
+ profile=req.get("profile"); uid=req.get("uid"); task=req.get("task_id"); conv=req.get("conversation_id")
+ if not isinstance(profile,str) or not PROFILE.fullmatch(profile) or type(uid) is not int or uid<0 or uid!=os.getuid() or not isinstance(task,str) or not TASK.fullmatch(task): fail("wsl_task_identity_mismatch")
+ hermes=os.path.expanduser("~/.hermes")
+ canonical(hermes)
+ if profile!="default":
+  profiles=os.path.join(hermes,"profiles"); canonical(profiles); canonical(os.path.join(profiles,profile))
+ selected_home=hermes if profile=="default" else os.path.join(hermes,"profiles",profile)
+ if not isinstance(req.get("profile_home"),str) or req.get("profile_home")!=canonical(selected_home): fail("wsl_task_profile_mismatch")
+ tasks_host=req.get("tasks_root"); task_host=req.get("task_root")
+ tasks=mapped(tasks_host); taskroot=mapped(task_host)
+ if taskroot!=os.path.normpath(os.path.join(tasks,task)): fail("wsl_task_path_unavailable")
+ taskroot=canonical(taskroot)
+ inputroot=canonical(os.path.join(taskroot,"input")); outputroot=canonical(os.path.join(taskroot,"output"))
+ if inputroot!=os.path.join(taskroot,"input") or outputroot!=os.path.join(taskroot,"output"): fail("wsl_task_path_unavailable")
+ digest=file_digest(inputroot,req.get("input_files"))
+ if digest!=req.get("input_digest"): fail("wsl_task_input_changed")
+ parentroot=None; parentdigest=None
+ parent_host=req.get("parent_input_root")
+ if parent_host is not None:
+  if not isinstance(conv,str) or not TASK.fullmatch(conv): raise ValueError()
+  parent=mapped(parent_host)
+  expected_parent=os.path.normpath(os.path.join(tasks,conv,"input"))
+  if parent!=expected_parent: fail("wsl_task_path_unavailable")
+  parentroot=canonical(parent)
+  parentdigest=file_digest(parentroot,req.get("parent_files"))
+  if parentdigest!=req.get("parent_digest"): fail("wsl_task_input_changed")
+ elif conv is not None or req.get("parent_files") or req.get("parent_digest") is not None: raise ValueError()
+ ost=os.stat(outputroot,follow_symlinks=False)
+ if not stat.S_ISDIR(ost.st_mode) or ost.st_uid!=uid or not os.access(outputroot,os.W_OK|os.X_OK): fail("wsl_task_probe_failed")
+ probe=os.path.join(outputroot,".padnote-path-probe-"+secrets.token_hex(16)); payload=secrets.token_bytes(32); created=None
+ flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0)|getattr(os,"O_CLOEXEC",0)
+ try:
+  fd=os.open(probe,flags,0o600)
+  try:
+   created=os.fstat(fd)
+   if not stat.S_ISREG(created.st_mode) or created.st_uid!=uid: raise ValueError()
+   view=memoryview(payload)
+   while view:
+    written=os.write(fd,view)
+    if written<=0: raise ValueError()
+    view=view[written:]
+   os.fsync(fd)
+  finally: os.close(fd)
+  fd=os.open(probe,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)|getattr(os,"O_CLOEXEC",0))
+  try:
+   current=os.fstat(fd); check=os.read(fd,33)
+   if (current.st_dev,current.st_ino,current.st_uid)!=(created.st_dev,created.st_ino,uid) or check!=payload: raise ValueError()
+  finally: os.close(fd)
+  current=os.lstat(probe)
+  if not stat.S_ISREG(current.st_mode) or (current.st_dev,current.st_ino)!=(created.st_dev,created.st_ino): raise ValueError()
+  os.unlink(probe); created=None
+ except Exception:
+  if created is not None:
+   try:
+    current=os.lstat(probe)
+    if stat.S_ISREG(current.st_mode) and (current.st_dev,current.st_ino)==(created.st_dev,created.st_ino): os.unlink(probe)
+   except OSError: pass
+  fail("wsl_task_probe_failed")
+ result={"ok":True,"tasks_root":tasks,"task_root":taskroot,"input_root":inputroot,"output_root":outputroot,"input_digest":digest,"parent_input_root":parentroot,"parent_digest":parentdigest,"parent_readonly_enforced":False,"instance_id":req.get("instance_id"),"instance_binding_sha256":req.get("instance_binding_sha256"),"distro_id":req.get("distro_id"),"uid":uid,"profile":profile,"profile_home":selected_home,"task_id":task,"conversation_id":conv}
+ return result
+try:
+ raw=sys.stdin.buffer.read(MAX_JSON+1)
+ if len(raw)>MAX_JSON: fail("wsl_task_context_invalid")
+ req=json.loads(raw.decode("utf-8")); value=run(req)
+ print(json.dumps(value,separators=(",",":"),ensure_ascii=True))
+except SystemExit: raise
+except Exception: fail("wsl_task_context_invalid")
+'''
+
+
 def _decode_wsl_output(raw: bytes) -> str:
     """Decode WSL's UTF-16LE console output without treating NUL as noise."""
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -554,6 +800,7 @@ class WslHermesManager:
 
     @staticmethod
     def _bounded_run(args: list[str], *, input: bytes | None, timeout: float) -> Any:
+        deadline = time.monotonic() + max(0.0, timeout)
         process = subprocess.Popen(args, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
         outputs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
@@ -577,29 +824,49 @@ class WslHermesManager:
         readers = [threading.Thread(target=drain, args=(name, stream), daemon=True)
                    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
         for reader in readers: reader.start()
-        writer_error = None
+        writer_error: list[BaseException] = []
+        writer: threading.Thread | None = None
         if input is not None:
-            try:
-                assert process.stdin is not None
-                process.stdin.write(input); process.stdin.close()
-            except (BrokenPipeError, OSError) as error:
-                writer_error = error
+            def write_input() -> None:
+                try:
+                    assert process.stdin is not None
+                    process.stdin.write(input)
+                except (BrokenPipeError, OSError) as error:
+                    writer_error.append(error)
+                finally:
+                    if process.stdin is not None:
+                        try: process.stdin.close()
+                        except OSError as error: writer_error.append(error)
+            writer = threading.Thread(target=write_input, name="wsl-stdin-writer", daemon=True)
+            writer.start()
         try:
-            process.wait(timeout=timeout)
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             try: process.kill()
             except OSError: pass
             process.wait()
+            if writer is not None: writer.join(timeout=0.5)
+            for reader in readers: reader.join(timeout=0.5)
             raise
-        for reader in readers: reader.join(timeout=2)
+        if writer is not None:
+            writer.join(timeout=max(0.0, deadline - time.monotonic()))
+            if writer.is_alive():
+                try: process.kill()
+                except OSError: pass
+                process.wait()
+                writer.join(timeout=0.5)
+                for reader in readers: reader.join(timeout=0.5)
+                raise subprocess.TimeoutExpired(args, timeout)
+        for reader in readers:
+            reader.join(timeout=max(0.0, deadline - time.monotonic()))
         if any(reader.is_alive() for reader in readers):
             try: process.kill()
             except OSError: pass
             raise WslHermesError("wsl_output_incomplete", "WSL output could not be bounded safely")
         if overflow.is_set():
             raise WslHermesError("wsl_output_too_large", "WSL returned too much output")
-        if writer_error is not None and process.returncode == 0:
-            raise writer_error
+        if writer_error and process.returncode == 0:
+            raise writer_error[0]
         return subprocess.CompletedProcess(args, process.returncode,
                                            bytes(outputs["stdout"]), bytes(outputs["stderr"]))
 
@@ -653,6 +920,26 @@ class WslHermesManager:
         return self._run([self._wsl, "--distribution", row.name, "--exec", *command],
                          input=input_bytes, timeout=timeout)
 
+    def _explicit_running_task_guest(self, row: WslDistro, command: list[str], *, timeout: float,
+                                     input_bytes: bytes) -> Any:
+        """Issue task projection only while the latest cached identity is running.
+
+        Recheck the latest cached state immediately before invocation. The registry
+        and running-list checks cannot be atomic with process creation, but stale
+        cached state must not be ignored. Do not hold the manager lock over WSL I/O.
+        """
+        current = self._selected(row.id)
+        if current.name != row.name:
+            raise WslHermesError("stale_distro", "The selected WSL distro identity changed; refresh and select it again")
+        with self._lock:
+            latest = self._known.get(row.id.lower())
+            if latest is None or latest.name != row.name:
+                raise WslHermesError("stale_distro", "The selected WSL distro identity changed; refresh and select it again")
+            if latest.state != "running":
+                raise WslHermesError("wsl_task_distro_not_running", "The selected WSL distro is not running; no task was sent.")
+            args = [self._wsl, "--distribution", row.name, "--exec", *command]
+        return self._run(args, input=input_bytes, timeout=timeout)
+
     def start_selected_distro(self, distro_id: str) -> dict[str, str]:
         row = self._selected(distro_id)
         result = self._explicit_guest(row, ["/usr/bin/uname", "-r"], timeout=_START_TIMEOUT)
@@ -697,6 +984,159 @@ class WslHermesManager:
             message = value.get("message", "Selected WSL Hermes profile is unavailable") if isinstance(value, dict) else "Selected WSL Hermes profile is unavailable"
             raise WslHermesError(str(code)[:80], str(message)[:240])
         return value
+
+    @staticmethod
+    def _task_directory(path_value: str, label: str) -> Path:
+        if not isinstance(path_value, str) or not path_value or len(path_value.encode("utf-8", "strict")) > 4096:
+            raise WslHermesError("wsl_task_context_invalid", "Task path context is invalid.")
+        path = Path(path_value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise WslHermesError("wsl_task_context_invalid", "Task path context is invalid.")
+        try:
+            metadata = path.lstat()
+            reparse = bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or reparse:
+                raise ValueError()
+            resolved = path.resolve(strict=True)
+            if os.path.normcase(str(resolved)) != os.path.normcase(os.path.abspath(str(path))):
+                raise ValueError()
+        except (OSError, ValueError) as error:
+            raise WslHermesError("wsl_task_context_invalid", f"The {label} directory is unavailable or unsafe.") from error
+        return resolved
+
+    @classmethod
+    def _validate_task_context(cls, context: WslTaskContext) -> tuple[dict[str, Any], Path, Path, Path, Path | None]:
+        if not isinstance(context, WslTaskContext):
+            raise WslHermesError("wsl_task_context_invalid", "Task context is invalid.")
+        if (not isinstance(context.instance_id, str) or not _TASK_ID.fullmatch(context.instance_id)
+                or not isinstance(context.instance_binding_sha256, str) or not _HEX.fullmatch(context.instance_binding_sha256)
+                or not isinstance(context.distro_id, str) or not re.fullmatch(r"\{[0-9a-fA-F-]{36}\}", context.distro_id)
+                or type(context.distro_uid) is not int or context.distro_uid < 0
+                or not isinstance(context.profile_id, str) or not _PROFILE_ID.fullmatch(context.profile_id)
+                or not isinstance(context.profile_home, str) or not context.profile_home.startswith("/")
+                or "\x00" in context.profile_home or "\r" in context.profile_home or "\n" in context.profile_home
+                or len(context.profile_home.encode("utf-8", "strict")) > 4096
+                or not isinstance(context.task_id, str) or not _TASK_ID.fullmatch(context.task_id)):
+            raise WslHermesError("wsl_task_context_invalid", "Task context identity is invalid.")
+        tasks_root = cls._task_directory(context.tasks_root, "tasks")
+        task_root = cls._task_directory(context.task_root, "task")
+        expected_task = (tasks_root / context.task_id).resolve(strict=True)
+        if os.path.normcase(str(task_root)) != os.path.normcase(str(expected_task)):
+            raise WslHermesError("wsl_task_context_invalid", "Task directory is not owned by this task id.")
+        input_root = cls._task_directory(str(task_root / "input"), "task input")
+        output_root = cls._task_directory(str(task_root / "output"), "task output")
+        try:
+            actual_digest = input_snapshot_digest(input_root)
+        except Exception as error:
+            raise WslHermesError("wsl_task_input_changed", "Task input snapshot is unavailable or unsafe.") from error
+        files = _validate_task_files(context.input_files, context.input_digest)
+        if actual_digest != context.input_digest:
+            raise WslHermesError("wsl_task_input_changed", "Task input changed before WSL verification.")
+        parent_root: Path | None = None
+        parent_files: list[dict[str, Any]] = []
+        if context.parent_input_root is not None:
+            if not isinstance(context.conversation_id, str) or not _TASK_ID.fullmatch(context.conversation_id):
+                raise WslHermesError("wsl_task_context_invalid", "Follow-up conversation identity is invalid.")
+            parent_root = cls._task_directory(context.parent_input_root, "parent input")
+            expected_parent = (tasks_root / context.conversation_id / "input").resolve(strict=True)
+            if os.path.normcase(str(parent_root)) != os.path.normcase(str(expected_parent)):
+                raise WslHermesError("wsl_task_context_invalid", "Parent input is not owned by this conversation.")
+            parent_files = _validate_task_files(context.parent_files, context.parent_digest)
+            try:
+                parent_actual = input_snapshot_digest(parent_root)
+            except Exception as error:
+                raise WslHermesError("wsl_task_input_changed", "Parent input snapshot is unavailable or unsafe.") from error
+            if parent_actual != context.parent_digest:
+                raise WslHermesError("wsl_task_input_changed", "Parent input changed before WSL verification.")
+        elif context.conversation_id is not None or context.parent_files or context.parent_digest is not None:
+            raise WslHermesError("wsl_task_context_invalid", "Follow-up context is incomplete.")
+        request = {
+            "op": "task_context", "instance_id": context.instance_id,
+            "instance_binding_sha256": context.instance_binding_sha256,
+            "distro_id": context.distro_id.lower(), "uid": context.distro_uid,
+            "profile": context.profile_id, "profile_home": context.profile_home, "task_id": context.task_id,
+            "tasks_root": str(tasks_root), "task_root": str(task_root),
+            "input_files": files, "input_digest": context.input_digest,
+            "conversation_id": context.conversation_id,
+            "parent_input_root": str(parent_root) if parent_root is not None else None,
+            "parent_files": parent_files, "parent_digest": context.parent_digest,
+        }
+        encoded = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if len(encoded) > _MAX_OUTPUT:
+            raise WslHermesError("wsl_task_context_invalid", "Task context is too large to verify safely.")
+        return request, tasks_root, task_root, input_root, parent_root
+
+    def project_task_context(self, context: WslTaskContext) -> dict[str, Any]:
+        """Verify and project one task workspace into its already-running WSL distro.
+
+        This performs passive distro list refreshes followed by one bounded guest helper
+        invocation. It does not start a stopped distro or read profile credentials.
+        """
+        if self._platform != "nt":
+            raise WslHermesError("wsl_unavailable", "WSL task paths are available only on Windows.")
+        request, _, _, _, _ = self._validate_task_context(context)
+        try:
+            self.list_distros()
+            row = self._selected(context.distro_id)
+        except WslHermesError:
+            raise
+        except Exception as error:
+            raise WslHermesError("wsl_task_stale_distro", "The selected WSL distro could not be revalidated.") from error
+        if row.state != "running":
+            raise WslHermesError("wsl_task_distro_not_running", "The selected WSL distro is not running; no task was sent.")
+        # The helper is a single explicitly selected guest call. It accepts paths
+        # only as JSON stdin and executes wslpath with argv, never through a shell.
+        try:
+            result = self._explicit_running_task_guest(
+                row, ["/usr/bin/python3", "-c", _GUEST_TASK_CONTEXT],
+                timeout=_TASK_CONTEXT_TIMEOUT,
+                input_bytes=json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            if len(result.stdout) > _MAX_OUTPUT:
+                raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification returned too much data.")
+            value = json.loads(_decode_wsl_output(result.stdout))
+        except WslHermesError:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+            raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification returned an invalid response.") from error
+        if not isinstance(value, dict) or value.get("ok") is not True:
+            code = value.get("code") if isinstance(value, dict) else None
+            allowed = {"wsl_task_identity_mismatch", "wsl_task_profile_mismatch", "wsl_task_path_unavailable",
+                       "wsl_task_input_changed", "wsl_task_probe_failed"}
+            if code not in allowed:
+                code = "wsl_task_guest_protocol_error"
+            raise WslHermesError(code, "WSL could not verify task files and output access safely.")
+        expected = {
+            "task_id": context.task_id, "instance_id": context.instance_id,
+            "instance_binding_sha256": context.instance_binding_sha256,
+            "distro_id": context.distro_id.lower(), "uid": context.distro_uid,
+            "profile": context.profile_id, "profile_home": context.profile_home, "input_digest": context.input_digest,
+            "conversation_id": context.conversation_id,
+            "parent_digest": context.parent_digest, "parent_readonly_enforced": False,
+        }
+        if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+            raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification did not match the requested identity.")
+        for key in ("task_root", "input_root", "output_root"):
+            candidate = value.get(key)
+            if (not isinstance(candidate, str) or not candidate.startswith("/") or "\\" in candidate
+                    or any(ord(char) < 32 or ord(char) == 127 for char in candidate)
+                    or posixpath.normpath(candidate) != candidate):
+                raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification returned an invalid path.")
+        guest_tasks = value.get("tasks_root")
+        if (not isinstance(guest_tasks, str) or not guest_tasks.startswith("/")
+                or posixpath.normpath(guest_tasks) != guest_tasks
+                or value["task_root"] != posixpath.join(guest_tasks, context.task_id)
+                or value["input_root"] != posixpath.join(value["task_root"], "input")
+                or value["output_root"] != posixpath.join(value["task_root"], "output")):
+            raise WslHermesError("wsl_task_guest_protocol_error", "WSL task paths do not match the requested task namespace.")
+        parent_path = value.get("parent_input_root")
+        if context.parent_input_root is None:
+            if parent_path is not None:
+                raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification returned an unexpected parent path.")
+        elif (not isinstance(parent_path, str) or not parent_path.startswith("/") or "\\" in parent_path
+              or posixpath.normpath(parent_path) != parent_path
+              or parent_path != posixpath.join(guest_tasks, context.conversation_id, "input")):
+            raise WslHermesError("wsl_task_guest_protocol_error", "WSL task verification returned an invalid parent path.")
+        return {key: value[key] for key in (*expected.keys(), "tasks_root", "task_root", "input_root", "output_root", "parent_input_root")}
 
     def list_profiles(self, distro_id: str) -> list[dict[str, str]]:
         row = self._selected(distro_id)

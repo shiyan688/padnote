@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import threading
 import time
+import uuid
 from contextlib import ExitStack, contextmanager
 import copy
 import json
+import posixpath
 import re
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import discovery
@@ -21,6 +25,11 @@ from .bundles import (
     prepare_task_directory,
     public_artifacts,
     task_bundle_type,
+    MAX_ARTIFACT_DEPTH,
+    MAX_BUNDLE_ENTRIES,
+    MAX_EXPANDED_BYTES,
+    _hash_descriptor,
+    _open_relative_regular,
 )
 from .hermes import CredentialVault, HermesClient, HermesError, normalize_run
 from .run_controls import RunControlQueue
@@ -36,7 +45,7 @@ from .video_preview import (binding_from_submission, capture_review_snapshot, op
 from .video_scheduler import VideoOperationScheduler
 from .video_operations import normalize_parameters, payload_digest
 from .video_worker import _MAX_REVISE_FEEDBACK_BYTES, _bounded_feedback_bytes
-from .wsl_hermes import WslHermesError, WslHermesManager
+from .wsl_hermes import WslHermesError, WslHermesManager, WslTaskContext, WslTaskFile
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
@@ -52,6 +61,101 @@ def _valid_cancel_result(result: Any, operation: dict[str, Any]) -> bool:
              or (result.get("status") == "unconfirmed"
                  and result.get("reason") == "cancel_pending" and result.get("ok") is True)
              or (result.get("status") == "unconfirmed" and result.get("ok") is False))
+
+
+def _wsl_input_files(input_root: Path) -> tuple[tuple[WslTaskFile, ...], str]:
+    """Return the exact, bounded input file manifest used by input_snapshot_digest."""
+    digest_before = input_snapshot_digest(input_root)
+    files: list[PurePosixPath] = []
+    pending: list[tuple[Path, PurePosixPath]] = [(input_root, PurePosixPath())]
+    entries_seen = 0
+    try:
+        if not stat.S_ISDIR(os.lstat(input_root).st_mode):
+            raise ValidationError("source snapshot root is not a regular directory")
+        while pending:
+            directory, prefix = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    relative = prefix / entry.name
+                    entries_seen += 1
+                    if entries_seen > 32 or len(relative.parts) > MAX_ARTIFACT_DEPTH or entry.is_symlink():
+                        raise ValidationError("source snapshot contains an unsafe path")
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append((Path(entry.path), relative))
+                    elif entry.is_file(follow_symlinks=False):
+                        files.append(relative)
+                        if len(files) > MAX_BUNDLE_ENTRIES:
+                            raise ValidationError("source snapshot contains too many files")
+                    else:
+                        raise ValidationError("source snapshot contains a non-regular entry")
+    except (OSError, ValueError) as error:
+        raise ValidationError("source snapshot cannot be safely enumerated") from error
+
+    result: list[WslTaskFile] = []
+    total = 0
+    for relative in sorted(files, key=lambda item: item.as_posix()):
+        descriptor = _open_relative_regular(input_root, relative)
+        try:
+            size = os.fstat(descriptor).st_size
+            total += size
+            if size > MAX_EXPANDED_BYTES or total > MAX_EXPANDED_BYTES:
+                raise ValidationError("source snapshot is too large")
+            digest = _hash_descriptor(descriptor, size)
+            result.append(WslTaskFile(relative.as_posix(), size, digest))
+        finally:
+            os.close(descriptor)
+    digest_after = input_snapshot_digest(input_root)
+    if digest_after != digest_before:
+        raise ValidationError("source snapshot changed while being prepared for WSL")
+    return tuple(result), digest_after
+
+
+def _wsl_projection_matches_context(projected: Any, context: WslTaskContext) -> bool:
+    if not isinstance(projected, dict):
+        return False
+    expected = {
+        "task_id": context.task_id,
+        "instance_id": context.instance_id,
+        "instance_binding_sha256": context.instance_binding_sha256,
+        "distro_id": context.distro_id.lower(),
+        "profile": context.profile_id,
+        "profile_home": context.profile_home,
+        "input_digest": context.input_digest,
+        "conversation_id": context.conversation_id,
+        "parent_digest": context.parent_digest,
+        "parent_readonly_enforced": False,
+    }
+    if any(projected.get(key) != value for key, value in expected.items()) \
+            or type(projected.get("uid")) is not int or projected.get("uid") != context.distro_uid:
+        return False
+
+    def clean_absolute_path(value: Any) -> bool:
+        if not isinstance(value, str) or not value.startswith("/") or "\\" in value:
+            return False
+        try:
+            return len(value.encode("utf-8", "strict")) <= 4096 \
+                and not any(ord(char) < 32 or ord(char) == 127 for char in value) \
+                and posixpath.normpath(value) == value
+        except UnicodeEncodeError:
+            return False
+
+    tasks_root = projected.get("tasks_root")
+    task_root = projected.get("task_root")
+    input_root = projected.get("input_root")
+    output_root = projected.get("output_root")
+    if not all(clean_absolute_path(path) for path in
+               (tasks_root, task_root, input_root, output_root)):
+        return False
+    if tasks_root == "/" or task_root != posixpath.join(tasks_root, context.task_id) \
+            or input_root != posixpath.join(task_root, "input") \
+            or output_root != posixpath.join(task_root, "output"):
+        return False
+
+    parent_root = projected.get("parent_input_root")
+    if context.conversation_id is None:
+        return parent_root is None
+    return clean_absolute_path(parent_root) and parent_root == posixpath.join(
+        tasks_root, context.conversation_id, "input")
 
 
 class BridgeService:
@@ -1686,6 +1790,19 @@ class BridgeService:
         upstream_key = hashlib.sha256(
             f"{self.store.bridge_id}\n{connection['connection_id']}\n{instance_id}\n{clean['client_task_id']}".encode("utf-8")
         ).hexdigest()
+        config_ref = instance.get("config_ref")
+        if isinstance(config_ref, str) and config_ref.startswith("wsl://"):
+            # WSL paths are projected only by the worker after local locks are released.
+            # Never persist a prompt containing a Windows or guest absolute path.
+            prompt_payload = {key: value for key, value in clean.items()
+                              if key not in {"bundle_base64", "bundle_sha256"}}
+            run = self.store.update_run(
+                run["task_id"], upstream_payload=None,
+                upstream_idempotency_key=upstream_key,
+            )
+            return self._schedule_upstream_submission(
+                instance_id, connection, run, {}, upstream_key,
+                wsl_prompt_payload=prompt_payload)
         if created or not run.get("upstream_payload"):
             upstream_input = self._upstream_input(
                 clean, task_dir,
@@ -1708,7 +1825,8 @@ class BridgeService:
 
     def _schedule_upstream_submission(self, instance_id: str, connection: dict[str, Any],
                                       run: dict[str, Any], upstream_payload: dict[str, Any],
-                                      upstream_key: str) -> tuple[int, dict[str, Any]]:
+                                      upstream_key: str, *,
+                                      wsl_prompt_payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
         if not self._submission_slots.acquire(blocking=False):
             failed = self.store.update_run(
                 run["task_id"], status="failed", submission_uncertain=False,
@@ -1728,9 +1846,15 @@ class BridgeService:
                 self._submission_slots.release()
                 raise
             try:
+                if wsl_prompt_payload is None:
+                    target = self._run_submission_worker
+                    args = (instance_id, connection, run["task_id"], upstream_payload, upstream_key)
+                else:
+                    target = self._run_wsl_submission_worker
+                    args = (instance_id, connection, run["task_id"], upstream_key, wsl_prompt_payload)
                 worker = threading.Thread(
-                    target=self._run_submission_worker,
-                    args=(instance_id, connection, run["task_id"], upstream_payload, upstream_key),
+                    target=target,
+                    args=args,
                     name="padnote-submit-" + run["task_id"], daemon=True)
             except Exception:
                 self._submission_slots.release()
@@ -1868,6 +1992,132 @@ class BridgeService:
                 self._submission_workers.discard(threading.current_thread())
                 self._submission_condition.notify_all()
             self._submission_slots.release()
+
+    def _mark_wsl_submission_not_sent(self, task_id: str, message: str) -> None:
+        """Resolve only an unsubmitted reservation; never overwrite a later task state."""
+        with self._operation_lock("task:" + task_id):
+            self._update_wsl_submission_not_sent_locked(task_id, message)
+
+    def _update_wsl_submission_not_sent_locked(self, task_id: str, message: str) -> None:
+        current = self.store.snapshot().get("runs", {}).get(task_id)
+        if isinstance(current, dict) and current.get("status") == "submitting" \
+                and not current.get("upstream_run_id"):
+            self.store.update_run(task_id, status="failed", submission_uncertain=False, error=message)
+
+    def _run_wsl_submission_worker(self, instance_id: str, connection: dict[str, Any],
+                                   task_id: str, upstream_key: str,
+                                   prompt_payload: dict[str, Any]) -> None:
+        """Project WSL paths without global locks, then reauthorize immediately before POST."""
+        not_sent_message = (
+            "Hermes未收到请求。所选 WSL 配置或任务文件无法通过访问验证；"
+            "请检查连接和文件权限后重新发起任务。"
+        )
+        post_started = False
+        try:
+            connection_id = connection["connection_id"]
+            with ExitStack() as stack:
+                with self._operation_lock("connection:" + connection_id):
+                    with self._operation_lock("instance:" + instance_id):
+                        stack.enter_context(self._operation_lock("task:" + task_id))
+                        state = self.store.snapshot()
+                        live = state.get("connections", {}).get(connection_id)
+                        instance = self.store.get_instance(instance_id)
+                        current = self.store.owned_run(connection, task_id)
+                        if (not isinstance(live, dict) or live.get("revoked_at") is not None
+                                or live.get("instance_id") != instance_id
+                                or live.get("device_id") != connection.get("device_id")
+                                or instance.get("retired_at") is not None
+                                or current.get("status") != "submitting"
+                                or current.get("error") or current.get("upstream_run_id")
+                                or self._closed):
+                            self._update_wsl_submission_not_sent_locked(task_id, not_sent_message)
+                            return
+                        captured_instance = dict(instance)
+                        captured_run = dict(current)
+
+            # This is the only slow WSL call in the worker, and all Bridge locks are released.
+            context = self._wsl_task_context(captured_instance, captured_run)
+            projected = self.wsl_hermes.project_task_context(context)
+            if not _wsl_projection_matches_context(projected, context):
+                raise WslHermesError(
+                    "wsl_task_guest_protocol_error", "WSL task verification did not match this run.")
+            task_dir = self.store.tasks_dir / task_id
+            upstream_payload = {"input": self._wsl_upstream_input(prompt_payload, task_dir, projected)}
+
+            # Reacquire locks in the established connection -> instance -> task order.
+            # Retain only the per-task lock across POST; never hold connection/instance locks over I/O.
+            with ExitStack() as stack:
+                with self._operation_lock("connection:" + connection_id):
+                    with self._operation_lock("instance:" + instance_id):
+                        stack.enter_context(self._operation_lock("task:" + task_id))
+                        state = self.store.snapshot()
+                        live = state.get("connections", {}).get(connection_id)
+                        instance = self.store.get_instance(instance_id)
+                        current = self.store.owned_run(connection, task_id)
+                        current_profile = self._wsl_profile_binding(instance)
+                        current_input_digest = input_snapshot_digest(
+                            self.store.tasks_dir / task_id / "input")
+                        current_parent_digest = None
+                        if current.get("parent_task_id"):
+                            current_parent_digest = input_snapshot_digest(
+                                self.store.tasks_dir / current.get("conversation_id", "") / "input")
+                        if (not isinstance(live, dict) or live.get("revoked_at") is not None
+                                or live.get("instance_id") != instance_id
+                                or live.get("device_id") != connection.get("device_id")
+                                or instance.get("retired_at") is not None
+                                or current.get("status") != "submitting"
+                                or current.get("error") or current.get("upstream_run_id")
+                                or current.get("submission_uncertain") is not True
+                                or current.get("payload_digest") != captured_run.get("payload_digest")
+                                or current.get("source_snapshot_digest") != captured_run.get("source_snapshot_digest")
+                                or instance.get("config_ref") != captured_instance.get("config_ref")
+                                or instance.get("config_fingerprint") != captured_instance.get("config_fingerprint")
+                                or instance.get("base_url") != captured_instance.get("base_url")
+                                or instance.get("credential_fingerprint") != captured_instance.get("credential_fingerprint")
+                                or current_profile["binding"] != context.instance_binding_sha256
+                                or current_input_digest != context.input_digest
+                                or current_parent_digest != context.parent_digest
+                                or self._closed):
+                            self._update_wsl_submission_not_sent_locked(task_id, not_sent_message)
+                            return
+                        if current.get("conversation_id") != captured_run.get("conversation_id"):
+                            self._update_wsl_submission_not_sent_locked(task_id, not_sent_message)
+                            return
+                        stop = current.get("control_actions", {}).get("stop") \
+                            if isinstance(current.get("control_actions"), dict) else None
+                        if isinstance(stop, dict) and stop.get("state") in {"queued", "sending", "unknown"}:
+                            self._update_wsl_submission_not_sent_locked(task_id, not_sent_message)
+                            return
+                        client = self._hermes(instance_id)
+                post_started = True
+                self._perform_upstream_submission(
+                    instance_id, current, upstream_payload, upstream_key, client=client)
+        except (WslHermesError, ValidationError, OSError, ValueError, TypeError):
+            if post_started:
+                self._mark_wsl_submission_post_unknown(task_id)
+            else:
+                self._mark_wsl_submission_not_sent(task_id, not_sent_message)
+        except Exception:
+            if post_started:
+                self._mark_wsl_submission_post_unknown(task_id)
+            else:
+                self._mark_wsl_submission_not_sent(task_id, not_sent_message)
+        finally:
+            with self._submission_condition:
+                self._submission_workers.discard(threading.current_thread())
+                self._submission_condition.notify_all()
+            self._submission_slots.release()
+
+    def _mark_wsl_submission_post_unknown(self, task_id: str) -> None:
+        message = (
+            "已向 Hermes 发送任务，但连接中断，无法确认是否已接收。为避免重复执行，助手不会自动重发。"
+            "请检查 Hermes 电脑端的任务记录；确认情况前不要重新发送或新建相同任务。"
+        )
+        with self._operation_lock("task:" + task_id):
+            current = self.store.snapshot().get("runs", {}).get(task_id)
+            if isinstance(current, dict) and current.get("status") == "submitting" \
+                    and not current.get("upstream_run_id"):
+                self.store.update_run(task_id, submission_uncertain=True, error=message)
 
     def get_run(self, instance_id: str, bearer: str, task_id: str) -> dict[str, Any]:
         task_id = validate_identifier(task_id, "task_id")
@@ -2084,6 +2334,132 @@ class BridgeService:
         return HermesClient(instance["base_url"], self.vault.get(instance_id),
                             timeout=request_timeout, submission_timeout=45.0,
                             api_prefix=prefix)
+
+    def _wsl_profile_binding(self, instance: dict[str, Any]) -> dict[str, Any]:
+        config_ref = instance.get("config_ref")
+        if instance.get("kind") != "hermes" or not isinstance(config_ref, str) \
+                or not config_ref.startswith("wsl://"):
+            raise ValidationError("Selected Hermes connection is not a WSL profile")
+        try:
+            parsed = urllib.parse.urlsplit(config_ref)
+            path_parts = parsed.path.strip("/").split("/")
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+            if parsed.scheme != "wsl" or parsed.fragment or parsed.username or parsed.password \
+                    or not re.fullmatch(r"[0-9a-f-]{36}", parsed.netloc) \
+                    or len(path_parts) != 2 or not re.fullmatch(r"[0-9]+", path_parts[0]) \
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path_parts[1]) \
+                    or set(query) != {"home", "mode", "prefix"} \
+                    or any(len(values) != 1 for values in query.values()):
+                raise ValueError("invalid WSL profile reference")
+            distro_id = "{" + str(uuid.UUID(parsed.netloc)) + "}"
+            distro_uid = int(path_parts[0], 10)
+            profile_id = path_parts[1]
+            profile_home = query["home"][0]
+            if not profile_home.startswith("/") or "\x00" in profile_home \
+                    or query["mode"][0] not in {"default", "shared", "standalone"}:
+                raise ValueError("invalid WSL profile reference")
+            api_prefix = self._wsl_api_prefix(config_ref)
+            key_fingerprint = instance.get("credential_fingerprint")
+            if not isinstance(key_fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", key_fingerprint):
+                raise ValueError("WSL credential identity is unavailable")
+            binding = hashlib.sha256(canonical_json({
+                "config_ref": config_ref,
+                "base_url": instance.get("base_url"),
+                "api_prefix": api_prefix,
+                "key_fingerprint": key_fingerprint,
+            })).hexdigest()
+            if binding != instance.get("config_fingerprint"):
+                raise ValueError("WSL profile identity changed")
+        except (ValueError, TypeError, KeyError) as error:
+            raise WslHermesError(
+                "wsl_task_context_invalid", "The selected WSL profile identity is invalid; reconnect it before sending.") from error
+        return {"distro_id": distro_id, "distro_uid": distro_uid, "profile_id": profile_id,
+                "profile_home": profile_home, "binding": binding}
+
+    def _wsl_task_context(self, instance: dict[str, Any], run: dict[str, Any]) -> WslTaskContext:
+        profile = self._wsl_profile_binding(instance)
+        task_id = run.get("task_id")
+        if not isinstance(task_id, str):
+            raise ValidationError("Task identity is invalid")
+        task_root = self.store.tasks_dir / task_id
+        input_root = task_root / "input"
+        input_files, input_digest = _wsl_input_files(input_root)
+        parent_input_root = None
+        parent_files: tuple[WslTaskFile, ...] = ()
+        parent_digest = None
+        conversation_id = None
+        if run.get("parent_task_id"):
+            conversation_id = run.get("conversation_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise ValidationError("Follow-up conversation identity is invalid")
+            parent_input_root = self.store.tasks_dir / conversation_id / "input"
+            parent_files, parent_digest = _wsl_input_files(parent_input_root)
+            if parent_digest != run.get("source_snapshot_digest"):
+                raise ValidationError("The follow-up source snapshot changed before WSL submission")
+        elif run.get("source_snapshot_digest") != input_digest:
+            raise ValidationError("The task source snapshot changed before WSL submission")
+        return WslTaskContext(
+            instance_id=instance["instance_id"],
+            instance_binding_sha256=profile["binding"],
+            distro_id=profile["distro_id"],
+            distro_uid=profile["distro_uid"],
+            profile_id=profile["profile_id"],
+            profile_home=profile["profile_home"],
+            task_id=task_id,
+            tasks_root=str(self.store.tasks_dir),
+            task_root=str(task_root),
+            input_files=input_files,
+            input_digest=input_digest,
+            conversation_id=conversation_id,
+            parent_input_root=str(parent_input_root) if parent_input_root is not None else None,
+            parent_files=parent_files,
+            parent_digest=parent_digest,
+        )
+
+    @staticmethod
+    def _wsl_upstream_input(payload: dict[str, Any], task_dir: Path,
+                            projected: dict[str, Any]) -> str:
+        task_root = projected["task_root"]
+        input_root = projected["input_root"]
+        output_root = projected["output_root"]
+        if payload.get("parent_task_id"):
+            parent_root = projected["parent_input_root"]
+            return (
+                f"Follow-up to PadNote task {payload['parent_task_id']}.\n"
+                f"Read the original confirmed snapshot at {parent_root} as a read-only reference.\n\n"
+                f"{payload['title']}\n\n{payload['input']}\n\n"
+                f"PadNote follow-up workspace: {task_root}\n"
+                f"Write only this turn's deliverables under {output_root}/. The reference snapshot belongs to the parent turn. "
+                "This is a workflow boundary, not an operating-system sandbox."
+            )
+        if payload.get("required_capability") == "note_context_bundle":
+            try:
+                request = json.loads((task_dir / "request.json").read_text(encoding="utf-8"))
+                brief, source = request["brief"], request["source"]
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+                raise ValidationError("note.work.v1 instructions are unavailable") from error
+            style = brief.get("style_prompt")
+            style_text = f"\nStyle guidance: {style}" if style else ""
+            return (
+                "This is a generic note-context task selected by the user. Read both immutable source files "
+                f"before acting: {input_root}/content.md (authored text and visible AI conversation context) and "
+                f"{input_root}/paper.pdf (the complete paper, including handwriting).\n"
+                f"User instruction: {brief['instruction']}\nPreset intent: {brief['preset_id']}"
+                f"{style_text}\nSource note: {source['title']} "
+                f"(id {source['note_id']}, revision {source['note_revision']}).\n"
+                "Choose tools and providers according to the user's request and available capabilities; do not "
+                "assume a particular model/provider or incur paid usage without user approval. This is not a "
+                "built-in video job.\n\n"
+                f"PadNote task workspace: {task_root}\n"
+                f"Write deliverable files under {output_root}/. This is a workflow boundary, not an "
+                "operating-system sandbox."
+            )
+        return (
+            f"{payload['title']}\n\n{payload['input']}\n\n"
+            f"PadNote task workspace: {task_root}\n"
+            f"Read only the user-confirmed input in this workspace. Write deliverable files under {output_root}/. "
+            "This is a workflow boundary, not an operating-system sandbox."
+        )
 
     @staticmethod
     def _key_fingerprint(api_key: str) -> str:

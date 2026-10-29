@@ -1,6 +1,6 @@
 # PadNote Windows 连接助手（x64）
 
-候选构建：`2026-10-29-beta31-r1`（PadNote 0.18.0-beta.31）。助手按普通用户运行。
+候选构建：`2026-10-29-beta32-r1`（PadNote 0.18.0-beta.32）。助手按普通用户运行。
 
 Windows 本机验收可在解压的候选目录或安装目录运行 `runtime\python.exe verify_windows_startup.py --report NATIVE_VERIFIER_REPORT.json`。请使用普通、未提权的终端。工具使用全新临时数据和空闲端口，检查证书创建/复用、HTTP/TLS、正常退出，并记录临时数据清理结果；不操作现有配对、SSH或防火墙。它会拒绝将管理员身份运行当作普通用户验收。
 
@@ -12,7 +12,11 @@ Windows 本机验收可在解压的候选目录或安装目录运行 `runtime\py
 
 助手使用你自己的 Hermes 配置，密钥仅在助手进程内存中使用。重新打开助手后需要明确重连；取消只取消 PadNote 的等待，不会停止 Hermes。遇到未知网关模式时，流程先使用默认配置，再由你明确选择命名配置；不会自动修改 provider，也不会重启由其他工具管理的网关。原有本机 API 表单和 Windows 原生连接入口仍可使用。运行中的连接助手只接受同网 TLS 配对，不会把 API 或管理页开放到局域网。
 
-本目录对应 Windows 助手 beta.31；Android 应用保持 beta.29（versionCode 65），两个平台的版本分别管理。连接支持范围与本轮验收记录见仓库中的 `BETA31_TESTING.md`。
+### WSL 任务与文件
+
+提交任务前，助手会核对所选发行版、Hermes 配置和任务输入文件。若发送前检查未通过，任务不会提交给 Hermes；后续任务会引用原任务作为工作流材料，并把结果放在新任务中。父任务文件会按摘要核对，但这不是操作系统级只读权限，WSL 中的同一用户仍可能访问相应文件。提交后的状态若不确定，请查看原任务状态，不要自动重发。
+
+本目录对应 Windows 助手 beta.32；Android 应用保持 beta.29（versionCode 65），两个平台的版本分别管理。连接支持范围与本轮验收记录见仓库中的 `BETA32_TESTING.md`。
 
 助手数据保存在 `%USERPROFILE%\.local\share\padnote-connection-assistant`，与既有默认目录一致。升级和卸载会保留该目录；卸载只移除安装包列出的文件、快捷方式和自身安装目录中的空目录。数据可能包含设备凭据、配对状态和已配对设备正在使用的 TLS 身份。请先备份，再手动清理。
 
@@ -29,7 +33,7 @@ python3 build_setup.py --makensis /path/to/makensis --assistant-root .. \
   --project-root ../../.. --download-cache /path/to/pinned-archives
 ```
 
-第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.31-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。beta.31候选的实际构建、签名状态及Windows原生安装/升级/卸载验收情况，以该轮冻结构建与验证回执为准；本说明不替代这些结果。
+第一条命令生成可审阅的 `build/stage/`，不调用 NSIS；第二条命令生成 `build/PadNote-Connection-Assistant-0.18.0-beta.32-Setup-x64.exe`。构建脚本不会全局安装 Python 包或 NSIS。NSIS 可用 `--makensis` 指定绝对路径。beta.32候选的实际构建、签名状态及Windows原生安装/升级/卸载验收情况，以该轮冻结构建与验证回执为准；本说明不替代这些结果。
 
 固定运行时输入：CPython 3.13.15 embeddable x64（python.org，SHA-256 `d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf`）；cryptography 50.0.1（`55d16b1ef3ee0958d893a977b19777887e546c9954ea81b200c3301a864013f2`）；cffi 2.1.1（`1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d`）；pycparser 3.0（`b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992`）。精确下载地址见 `build_setup.py`，依赖锁见 `requirements-win.lock`。
 
