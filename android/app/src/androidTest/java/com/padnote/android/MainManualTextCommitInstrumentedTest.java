@@ -37,18 +37,24 @@ import static androidx.test.espresso.action.ViewActions.click;
 /** Regressions for MainActivity's real overlay listener and synchronous Canvas rebind. */
 @RunWith(AndroidJUnit4.class)
 public final class MainManualTextCommitInstrumentedTest {
+    private static String repeatForTest(String value, int count) {
+        if (count < 0) throw new IllegalArgumentException("count");
+        StringBuilder result = new StringBuilder(value.length() * count);
+        for (int i = 0; i < count; i++) result.append(value);
+        return result.toString();
+    }
     @Test public void inputLimitAllowsRecoverableDraftAndRejectsOversizeReplacementWhole() {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             AtomicReference<String> previous = new AtomicReference<>();
             scenario.onActivity(activity -> {
                 EditText input = new EditText(activity);
                 input.setFilters(new android.text.InputFilter[]{new ManualDraftInputFilter(activity)});
-                String recoverable = "x".repeat(120_001);
+                String recoverable = repeatForTest("x", 120_001);
                 input.setText(recoverable);
                 assertEquals(120_001, input.length());
                 previous.set(input.getText().toString());
                 input.setSelection(0, input.length());
-                input.getText().replace(0, input.length(), "y".repeat(1_000_001));
+                input.getText().replace(0, input.length(), repeatForTest("y", 1_000_001));
                 assertEquals("an over-limit whole-field replacement is rejected atomically",
                         previous.get(), input.getText().toString());
             });
@@ -121,13 +127,19 @@ public final class MainManualTextCommitInstrumentedTest {
     @Test public void rejectedDoneCheckpointsTheUnmodifiedManualDraft() throws Exception {
         File recoveryDir = new File(InstrumentationRegistry.getInstrumentation().getTargetContext()
                 .getCacheDir(), "manual-draft-rejected-done-test-" + java.util.UUID.randomUUID());
+        AtomicInteger manualDraftWriteStages = new AtomicInteger();
         try {
             try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
                 AtomicReference<String> attemptedSource = new AtomicReference<>();
                 scenario.onActivity(activity -> {
                     try {
                         installSyntheticMainCanvas(activity);
-                        ManualTextDraftStore store = new ManualTextDraftStore(recoveryDir);
+                        ManualTextDraftStore store = new ManualTextDraftStore(recoveryDir,
+                                stage -> {
+                                    if (stage == NoteStore.WriteStage.TEMP_SYNCED) {
+                                        manualDraftWriteStages.incrementAndGet();
+                                    }
+                                });
                         set(activity, "manualTextDraftStore", store);
                         @SuppressWarnings("unchecked")
                         Map<String, NoteTextBoxView> views = (Map<String, NoteTextBoxView>)
@@ -135,7 +147,7 @@ public final class MainManualTextCommitInstrumentedTest {
                         NoteTextBoxView editorView = views.values().iterator().next();
                         editorView.beginInlineEditing();
                         String oversizedTable = "| id | detail |\n| --- | --- |\n| 1 | `"
-                                + "protected-cell-content-".repeat(500) + "` |";
+                                + repeatForTest("protected-cell-content-", 500) + "` |";
                         attemptedSource.set(oversizedTable);
                         EditText editor = (EditText) get(editorView, "sourceEditor");
                         editor.setText(oversizedTable);
@@ -145,11 +157,19 @@ public final class MainManualTextCommitInstrumentedTest {
                                 "synthetic-main-manual-commit");
                         assertEquals(ManualTextDraftStore.LoadStatus.READY, saved.status);
                         assertEquals(attemptedSource.get(), saved.draft.source);
+                        Method checkpoint = MainActivity.class.getDeclaredMethod(
+                                "checkpointActiveManualEditor");
+                        checkpoint.setAccessible(true);
+                        assertTrue("an explicit outer checkpoint remains successful",
+                                (Boolean) checkpoint.invoke(activity));
+                        assertEquals("the failed Done callback wrote one temporary record only",
+                                1, manualDraftWriteStages.get());
                     } catch (Throwable error) {
                         throw new AssertionError(error);
                     }
                 });
             }
+            assertEquals("scenario close adds no test draft write", 1, manualDraftWriteStages.get());
         } finally {
             deleteTree(recoveryDir);
         }

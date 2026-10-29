@@ -97,7 +97,7 @@ final class DigitizationController implements AutoCloseable {
             for (TextFlow flow : canvas.getTextFlows()) flows.add(flow.copy());
             NoteCanvasView.PdfExportSnapshot snapshot = null;
             if (config != null) {
-                try { snapshot = canvas.createPdfExportSnapshot(); }
+                try { snapshot = canvas.createPaperRasterSnapshot(); }
                 catch (Exception unavailableSource) { /* Existing drafts remain readable. */ }
             }
             capture = new Capture(document, snapshot, flows,

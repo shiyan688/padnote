@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">The note already contains this text. The saved draft was not applied. You can review or copy it, leave it for later, or discard it.</string>
     <string name="core_manual_draft_input_limit">This edit exceeds the 1,000,000-character local draft limit. The entire change was rejected and the existing text was kept.</string>
     <string name="core_manual_draft_cleanup_failed">The recovery draft was not cleared and remains on this device. Retry from the note’s More menu.</string>
+    <string name="canvas_pdf_page_size_invalid">The PDF page size is invalid or outside the export range. Keep the original note file and retry with a smaller page size.</string>
 </resources>

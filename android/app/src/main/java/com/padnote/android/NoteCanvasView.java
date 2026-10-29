@@ -144,6 +144,7 @@ public final class NoteCanvasView extends View {
         private final float pageGap;
         private final float density;
         private final PageStyle pageStyle;
+        private final PdfPageGeometry pdfPageGeometry;
         private final List<InkStroke> strokes;
         private final List<NoteImage> images;
         private final List<NoteTextBox> textBoxes;
@@ -157,7 +158,8 @@ public final class NoteCanvasView extends View {
 
         PdfExportSnapshot(NoteCanvasView owner, int pageCount, float pageWidth,
                           float pageHeight, float pageGap, float density,
-                          PageStyle pageStyle, List<InkStroke> strokes,
+                          PageStyle pageStyle, PdfPageGeometry pdfPageGeometry,
+                          List<InkStroke> strokes,
                           List<NoteImage> images, List<NoteTextBox> textBoxes,
                           PdfBackground pdfBackground) {
             this.owner = owner;
@@ -167,6 +169,7 @@ public final class NoteCanvasView extends View {
             this.pageGap = pageGap;
             this.density = density;
             this.pageStyle = pageStyle;
+            this.pdfPageGeometry = pdfPageGeometry;
             this.strokes = strokes;
             this.images = images;
             this.textBoxes = textBoxes;
@@ -180,6 +183,14 @@ public final class NoteCanvasView extends View {
         float getPageWidth() { return pageWidth; }
 
         float getPageHeight() { return pageHeight; }
+
+        PdfPageGeometry getPdfPageGeometry() throws IOException {
+            if (pdfPageGeometry == null) {
+                throw new IOException(owner.getContext().getString(
+                        R.string.canvas_pdf_page_size_invalid));
+            }
+            return pdfPageGeometry;
+        }
 
         /** Draws everything except compiled text. Called by the export worker. */
         Bitmap renderBasePage(int pageIndex, int maxDimensionPx) throws IOException {
@@ -2960,6 +2971,16 @@ public final class NoteCanvasView extends View {
 
     /** Freezes final-export state without changing the OCR-only PNG path above. */
     PdfExportSnapshot createPdfExportSnapshot() throws IOException {
+        return createPaperSnapshot(true);
+    }
+
+    /** Freezes the same validated paper inputs for raster-only consumers such as OCR. */
+    PdfExportSnapshot createPaperRasterSnapshot() throws IOException {
+        return createPaperSnapshot(false);
+    }
+
+    private PdfExportSnapshot createPaperSnapshot(boolean requirePhysicalPdfGeometry)
+            throws IOException {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             throw new IllegalStateException("PDF 导出快照必须在主线程创建");
         }
@@ -2991,9 +3012,38 @@ public final class NoteCanvasView extends View {
         List<NoteTextBox> textCopies = copyTextBoxes(textBoxes);
         PdfBackground backgroundCopy = pdfBackground == null
                 ? null : pdfBackground.copyFor(this);
-        return new PdfExportSnapshot(this, pageCount, pageWidth, pageHeight, pageGap,
-                getResources().getDisplayMetrics().density, pageStyle, strokeCopies,
-                imageCopies, textCopies, backgroundCopy);
+        try {
+            PdfPageGeometry physicalGeometry = requirePhysicalPdfGeometry
+                    ? resolvePdfPageGeometry(backgroundCopy) : null;
+            return new PdfExportSnapshot(this, pageCount, pageWidth, pageHeight, pageGap,
+                    getResources().getDisplayMetrics().density, pageStyle,
+                    physicalGeometry, strokeCopies, imageCopies, textCopies, backgroundCopy);
+        } catch (IOException | RuntimeException failure) {
+            if (backgroundCopy != null) backgroundCopy.close();
+            throw failure;
+        }
+    }
+
+    private PdfPageGeometry resolvePdfPageGeometry(PdfBackground backgroundCopy)
+            throws IOException {
+        int sourceWidthPt = 0;
+        int sourceHeightPt = 0;
+        try {
+            if (backgroundCopy != null) {
+                int[] sourceSize = backgroundCopy.firstPageSizePoints();
+                if (sourceSize == null || sourceSize.length != 2) {
+                    throw new IllegalArgumentException("Missing source PDF dimensions");
+                }
+                sourceWidthPt = sourceSize[0];
+                sourceHeightPt = sourceSize[1];
+            }
+            return PdfPageGeometry.resolve(pageWidth, pageHeight,
+                    pageStyle.ratio == PageStyle.Ratio.A4,
+                    sourceWidthPt, sourceHeightPt);
+        } catch (IOException | IllegalArgumentException failure) {
+            throw new IOException(getContext().getString(R.string.canvas_pdf_page_size_invalid),
+                    failure);
+        }
     }
 
     static boolean isFlowPageLimitFailure(TextFlow flow) {
@@ -3150,9 +3200,11 @@ public final class NoteCanvasView extends View {
         }
         PdfBackground backgroundCopy = pdfBackground == null
                 ? null : pdfBackground.copyFor(this);
+        // AI selection rendering consumes only the canonical raster geometry;
+        // physical-page export limits must not restrict this unrelated renderer.
         PdfExportSnapshot snapshot = new PdfExportSnapshot(this, pageCount, pageWidth,
                 pageHeight, pageGap, getResources().getDisplayMetrics().density,
-                pageStyle, strokeCopies, imageCopies, textCopies, backgroundCopy);
+                pageStyle, null, strokeCopies, imageCopies, textCopies, backgroundCopy);
         return new AiSelectionRenderRequest(snapshot, pageIndex, sourceCopy, cropLocal,
                 localMask, new ArrayList<>(aiSelectedTextFragmentIds), aiSelectionRevision,
                 Math.min(1600, maxDimensionPx), strokeCopies.size(),

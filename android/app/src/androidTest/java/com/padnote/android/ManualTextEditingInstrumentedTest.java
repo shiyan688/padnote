@@ -23,6 +23,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** Synthetic in-memory Canvas tests for atomic manual text-flow editing. */
 @RunWith(AndroidJUnit4.class)
 public final class ManualTextEditingInstrumentedTest {
+    private static String repeatForTest(String value, int count) {
+        if (count < 0) throw new IllegalArgumentException("count");
+        StringBuilder result = new StringBuilder(value.length() * count);
+        for (int i = 0; i < count; i++) result.append(value);
+        return result.toString();
+    }
     private static final String FLOW_ID = "synthetic-manual-edit-flow";
     private static final String ORIGINAL = "Short editable text.";
 
@@ -48,7 +54,7 @@ public final class ManualTextEditingInstrumentedTest {
                 String before = canonicalState(canvas);
                 int notifyCount = documentNotifications.get();
                 String oversizedProtectedTable = "| id | detail |\n| --- | --- |\n| 1 | `" +
-                        "protected-cell-content-".repeat(500) + "` |";
+                        repeatForTest("protected-cell-content-", 500) + "` |";
 
                 String fragmentId = fragmentIdForFlow(canvas, FLOW_ID);
                 NoteCanvasView.TextEditResult failed = canvas.updateTextBox(fragmentId,
@@ -92,7 +98,7 @@ public final class ManualTextEditingInstrumentedTest {
                 NoteCanvasView.TextEditResult rejected = canvas.commitNewTextBox(
                         placeholder.id, NoteTextBox.Format.MARKDOWN,
                         "| id | detail |\n| --- | --- |\n| 1 | `" +
-                                "protected-cell-content-".repeat(500) + "` |", 18f, 1.28f);
+                                repeatForTest("protected-cell-content-", 500) + "` |", 18f, 1.28f);
                 assertFalse(rejected.committed);
                 assertEquals("failed placeholder commit retains its empty draft flow", "",
                         canvas.getTextFlows().get(0).source);
@@ -194,7 +200,7 @@ public final class ManualTextEditingInstrumentedTest {
             canvas.setListener(listener(changed));
             try {
                 canvas.layout(0, 0, 1200, 1000);
-                String protectedCell = "`" + "protected-cell-".repeat(18) + "`";
+                String protectedCell = "`" + repeatForTest("protected-cell-", 18) + "`";
                 String source = "| id | details |\n| --- | --- |\n| 1 | " + protectedCell + " |";
                 canvas.loadJsonDocument(documentWithFlow("protected-table-flow", source, 18d,
                         499, 500));

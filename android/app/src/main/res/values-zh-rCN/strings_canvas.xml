@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">笔记中已包含这段文字，因此未应用草稿。你可以查看或复制、稍后处理，或丢弃草稿。</string>
     <string name="core_manual_draft_input_limit">此次编辑超过本地草稿 1,000,000 字符上限，整次输入已拒绝，原有文字保持不变。</string>
     <string name="core_manual_draft_cleanup_failed">恢复草稿尚未清除，仍保留在本机。可从笔记“更多”菜单重试。</string>
+    <string name="canvas_pdf_page_size_invalid">PDF 纸张尺寸无效或超出导出范围。请保留原笔记文件，并使用较小的纸张尺寸重试。</string>
 </resources>

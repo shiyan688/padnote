@@ -55,6 +55,18 @@ final class PdfBackground {
         return new PdfBackground(sourceFile, exportOwner);
     }
 
+    /** Reads immutable physical dimensions from this renderer without rendering pixels. */
+    synchronized int[] firstPageSizePoints() throws IOException {
+        if (closed || closeRequested.get() || renderer.getPageCount() < 1) {
+            throw new IOException("Source PDF page size is unavailable");
+        }
+        try (PdfRenderer.Page page = renderer.openPage(0)) {
+            return new int[]{page.getWidth(), page.getHeight()};
+        } catch (RuntimeException failure) {
+            throw new IOException("Source PDF page size is unavailable", failure);
+        }
+    }
+
     boolean hasPage(int index) { return index >= 0 && index < renderer.getPageCount(); }
 
     private synchronized Bitmap render(int index) {

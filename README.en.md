@@ -12,7 +12,7 @@ PadNote brings notes, handwriting, and AI-assisted learning together on one page
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [User guide](docs/BETA24_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA24_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 ## Demo frames
 
@@ -31,6 +31,8 @@ These selected frames show the sample paper, task description, and task-preset s
 [Watch the tutorial (36 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Tutorial-zh.mp4) · [Watch the overview (35 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.18/PadNote-Android-Promo-zh.mp4)
 
 ### Exporting the page as PDF
+
+Shared notes should have predictable page sizes. A4-ratio notes export as A4, screen-ratio notes keep their shape, and notes with a PDF background use the first source page's displayed dimensions for every exported page. Content is scaled proportionally, so text and diagrams are not stretched to fill the paper. See the [page-size and sharing guide](docs/BETA25_TESTING.md).
 
 This sample page was exported on an Android tablet. Its example text was typed manually. The PDF preserves the page content for sharing and reading.
 

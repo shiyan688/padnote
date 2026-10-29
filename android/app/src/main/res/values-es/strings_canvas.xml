@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">La nota ya contiene este texto. No se aplicó el borrador guardado. Puedes verlo o copiarlo, dejarlo para después o descartarlo.</string>
     <string name="core_manual_draft_input_limit">Esta edición supera el límite local de 1.000.000 caracteres. Se rechazó por completo y se conservó el texto existente.</string>
     <string name="core_manual_draft_cleanup_failed">El borrador de recuperación no se borró y sigue en este dispositivo. Vuelve a intentarlo desde el menú Más de la nota.</string>
+    <string name="canvas_pdf_page_size_invalid">El tamaño de página del PDF no es válido o supera el límite de exportación. Conserva el archivo original de la nota e inténtalo de nuevo con un tamaño menor.</string>
 </resources>

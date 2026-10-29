@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">노트에 이미 이 텍스트가 있습니다. 저장된 초안은 적용되지 않았습니다. 보기/복사, 나중에 처리 또는 버리기를 선택할 수 있습니다.</string>
     <string name="core_manual_draft_input_limit">편집 내용이 로컬 초안 한도인 1,000,000자를 초과했습니다. 전체 입력을 거부하고 기존 텍스트를 유지했습니다.</string>
     <string name="core_manual_draft_cleanup_failed">복구 초안이 삭제되지 않았으며 이 기기에 남아 있습니다. 노트의 더보기 메뉴에서 다시 시도하세요.</string>
+    <string name="canvas_pdf_page_size_invalid">PDF 용지 크기가 올바르지 않거나 내보내기 범위를 벗어났습니다. 원본 노트 파일을 보존하고 더 작은 용지 크기로 다시 시도하세요.</string>
 </resources>

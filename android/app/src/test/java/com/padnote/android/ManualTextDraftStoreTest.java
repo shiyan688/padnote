@@ -107,6 +107,119 @@ public final class ManualTextDraftStoreTest {
         assertEquals(oldToken, recovered.token);
     }
 
+    @Test public void identicalCheckpointReturnsCurrentTokenWithoutEncodingOrWriting() throws Exception {
+        File root = temporary.newFolder("idempotent-checkpoint");
+        ManualTextDraftStore normal = new ManualTextDraftStore(root);
+        String session = UUID.randomUUID().toString();
+        ManualTextDraftStore.Draft first = draft("note-idempotent", "same complete draft", session, 1);
+        ManualTextDraftStore.DraftToken token = normal.save(first, null).token;
+        java.util.concurrent.atomic.AtomicInteger writeStages = new java.util.concurrent.atomic.AtomicInteger();
+        ManualTextDraftStore faulting = new ManualTextDraftStore(root, stage -> {
+            writeStages.incrementAndGet();
+            throw new java.io.IOException("checkpoint should not write");
+        });
+
+        ManualTextDraftStore.SaveResult duplicate = faulting.checkpointIfChanged(
+                draft("note-idempotent", "same complete draft", session, 2), token);
+        assertEquals(ManualTextDraftStore.SaveStatus.SAVED, duplicate.status);
+        assertEquals("idempotent success returns the current durable token", token, duplicate.token);
+        assertEquals("no write transaction stage ran", 0, writeStages.get());
+        assertEquals(token, normal.load("note-idempotent").token);
+
+        java.util.concurrent.atomic.AtomicInteger strictWriteStages = new java.util.concurrent.atomic.AtomicInteger();
+        ManualTextDraftStore strictFaulting = new ManualTextDraftStore(root, stage -> {
+            strictWriteStages.incrementAndGet();
+            throw new java.io.IOException("legacy strict save must still write");
+        });
+        assertEquals("the original save API retains strict write behavior",
+                ManualTextDraftStore.SaveStatus.IO_ERROR,
+                strictFaulting.save(draft("note-idempotent", "same complete draft", session, 2), token).status);
+        assertTrue(strictWriteStages.get() > 0);
+
+        ManualTextDraftStore.Draft changed = draft("note-idempotent", "next source revision", session, 3);
+        ManualTextDraftStore.SaveResult failure = faulting.checkpointIfChanged(changed, token);
+        assertEquals("a changed source must attempt a real write", ManualTextDraftStore.SaveStatus.IO_ERROR,
+                failure.status);
+        assertTrue(writeStages.get() > 0);
+        assertEquals("the failed write leaves the prior durable draft intact", token,
+                normal.load("note-idempotent").token);
+        assertEquals("same complete draft", normal.load("note-idempotent").draft.source);
+
+        ManualTextDraftStore.SaveResult saved = normal.checkpointIfChanged(changed, token);
+        assertEquals(ManualTextDraftStore.SaveStatus.SAVED, saved.status);
+        org.junit.Assert.assertNotEquals(token, saved.token);
+        assertEquals(ManualTextDraftStore.ClearStatus.STALE,
+                normal.clearIfMatches("note-idempotent", token));
+        assertEquals("next source revision", normal.load("note-idempotent").draft.source);
+    }
+
+    @Test public void changedStyleAndSessionDoNotUseIdempotentFastPath() throws Exception {
+        for (String change : new String[]{"style", "session"}) {
+            File root = temporary.newFolder("changed-" + change);
+            ManualTextDraftStore normal = new ManualTextDraftStore(root);
+            String session = UUID.randomUUID().toString();
+            ManualTextDraftStore.Draft original = draft("note-" + change, "same source", session, 1);
+            ManualTextDraftStore.DraftToken token = normal.save(original, null).token;
+            ManualTextDraftStore.Draft candidate = "style".equals(change)
+                    ? new ManualTextDraftStore.Draft(original.noteId, original.flowId,
+                    original.fragmentId, original.source, NoteTextBox.Format.LATEX.name(),
+                    19f, 1.4f, original.newlyInserted, original.baseSourceFingerprint,
+                    original.sessionId, 2L)
+                    : new ManualTextDraftStore.Draft(original.noteId, original.flowId,
+                    original.fragmentId, original.source, original.format, original.fontSize,
+                    original.lineHeight, original.newlyInserted, original.baseSourceFingerprint,
+                    UUID.randomUUID().toString(), 1L);
+            java.util.concurrent.atomic.AtomicInteger writeStages = new java.util.concurrent.atomic.AtomicInteger();
+            ManualTextDraftStore faulting = new ManualTextDraftStore(root, stage -> {
+                writeStages.incrementAndGet();
+                throw new java.io.IOException("changed payload must write");
+            });
+            ManualTextDraftStore.SaveResult rejectedWrite = faulting.checkpointIfChanged(candidate, token);
+            assertEquals(change + " change is not reported saved when its write fails",
+                    ManualTextDraftStore.SaveStatus.IO_ERROR, rejectedWrite.status);
+            assertTrue(change + " change attempted atomic write", writeStages.get() > 0);
+            assertEquals(token, normal.load(original.noteId).token);
+            assertEquals(original.format, normal.load(original.noteId).draft.format);
+
+            ManualTextDraftStore.SaveResult changed = normal.checkpointIfChanged(candidate, token);
+            assertEquals(ManualTextDraftStore.SaveStatus.SAVED, changed.status);
+            org.junit.Assert.assertNotEquals("new content/style/session advances record identity", token,
+                    changed.token);
+            assertEquals(ManualTextDraftStore.ClearStatus.STALE,
+                    normal.clearIfMatches(original.noteId, token));
+            assertEquals(candidate.sessionId, normal.load(original.noteId).draft.sessionId);
+            assertEquals(candidate.format, normal.load(original.noteId).draft.format);
+        }
+    }
+
+    @Test public void idempotentCheckpointRejectsMissingCorruptAndStaleState() throws Exception {
+        File root = temporary.newFolder("checkpoint-fail-closed");
+        ManualTextDraftStore store = new ManualTextDraftStore(root);
+        ManualTextDraftStore.Draft other = draft("note-other", "other note", UUID.randomUUID().toString(), 1);
+        ManualTextDraftStore.DraftToken otherToken = store.save(other, null).token;
+        ManualTextDraftStore.Draft missing = draft("note-missing", "same", otherToken.sessionId, 2);
+        assertEquals(ManualTextDraftStore.SaveStatus.CONFLICT,
+                store.checkpointIfChanged(missing, otherToken).status);
+
+        File corrupt = recordFile(root, "note-corrupt-checkpoint");
+        assertTrue(corrupt.getParentFile().exists() || corrupt.getParentFile().mkdirs());
+        Files.write(corrupt.toPath(), "not a draft".getBytes(StandardCharsets.UTF_8));
+        assertEquals(ManualTextDraftStore.SaveStatus.INVALID,
+                store.checkpointIfChanged(draft("note-corrupt-checkpoint", "replacement",
+                        UUID.randomUUID().toString(), 1), null).status);
+
+        String session = UUID.randomUUID().toString();
+        ManualTextDraftStore.Draft first = draft("note-stale-checkpoint", "same payload", session, 1);
+        ManualTextDraftStore.DraftToken stale = store.save(first, null).token;
+        ManualTextDraftStore.Draft newer = draft("note-stale-checkpoint", "same payload",
+                UUID.randomUUID().toString(), 1);
+        ManualTextDraftStore.DraftToken current = store.save(newer, stale).token;
+        ManualTextDraftStore.SaveResult staleAttempt = store.checkpointIfChanged(
+                draft("note-stale-checkpoint", "same payload", newer.sessionId, 2), stale);
+        assertEquals(ManualTextDraftStore.SaveStatus.CONFLICT, staleAttempt.status);
+        assertEquals(current, store.load("note-stale-checkpoint").token);
+    }
+
     @Test public void corruptHeadIsFailClosedAndExplicitDiscardCannotResurrectBackup() throws Exception {
         File root = temporary.newFolder("corrupt-head");
         ManualTextDraftStore store = new ManualTextDraftStore(root);

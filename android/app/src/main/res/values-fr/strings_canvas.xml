@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">Cette note contient déjà ce texte. Le brouillon enregistré n’a pas été appliqué. Vous pouvez le consulter ou le copier, le traiter plus tard ou le supprimer.</string>
     <string name="core_manual_draft_input_limit">Cette modification dépasse la limite locale de 1 000 000 caractères. Elle a été entièrement refusée et le texte existant a été conservé.</string>
     <string name="core_manual_draft_cleanup_failed">Le brouillon de récupération n’a pas été supprimé et reste sur cet appareil. Réessayez depuis le menu Plus de la note.</string>
+    <string name="canvas_pdf_page_size_invalid">Le format de page PDF est invalide ou dépasse la limite d’exportation. Conservez la note d’origine et réessayez avec un format plus petit.</string>
 </resources>

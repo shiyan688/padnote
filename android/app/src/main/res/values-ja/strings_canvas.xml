@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">ノートにはすでにこのテキストがあります。保存済み下書きは適用されていません。表示/コピー、後で対応、または破棄できます。</string>
     <string name="core_manual_draft_input_limit">この編集はローカル下書きの1,000,000文字上限を超えています。入力全体を拒否し、既存のテキストを保持しました。</string>
     <string name="core_manual_draft_cleanup_failed">復元用下書きは削除されず、この端末に残っています。ノートの「その他」メニューから再試行できます。</string>
+    <string name="canvas_pdf_page_size_invalid">PDFの用紙サイズが無効か、書き出し可能な範囲を超えています。元のノートを残し、より小さい用紙サイズで再試行してください。</string>
 </resources>

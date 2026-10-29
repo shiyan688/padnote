@@ -124,4 +124,5 @@
     <string name="core_manual_draft_already_saved">Die Notiz enthält diesen Text bereits. Der gespeicherte Entwurf wurde nicht angewendet. Sie können ihn ansehen/kopieren, später bearbeiten oder verwerfen.</string>
     <string name="core_manual_draft_input_limit">Diese Bearbeitung überschreitet das lokale Limit von 1.000.000 Zeichen. Die gesamte Eingabe wurde abgelehnt und der vorhandene Text beibehalten.</string>
     <string name="core_manual_draft_cleanup_failed">Der Wiederherstellungsentwurf wurde nicht gelöscht und bleibt auf diesem Gerät. Versuchen Sie es erneut über das Menü „Mehr“ der Notiz.</string>
+    <string name="canvas_pdf_page_size_invalid">Die PDF-Seitengröße ist ungültig oder überschreitet den Exportbereich. Behalten Sie die Originalnotiz und versuchen Sie es mit einer kleineren Seitengröße erneut.</string>
 </resources>

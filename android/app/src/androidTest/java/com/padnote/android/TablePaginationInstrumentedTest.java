@@ -20,6 +20,12 @@ import java.util.List;
 
 @RunWith(AndroidJUnit4.class)
 public final class TablePaginationInstrumentedTest {
+    private static String repeatForTest(String value, int count) {
+        if (count < 0) throw new IllegalArgumentException("count");
+        StringBuilder result = new StringBuilder(value.length() * count);
+        for (int i = 0; i < count; i++) result.append(value);
+        return result.toString();
+    }
     private static final String TABLE_FLOW_ID = "synthetic-r3-table";
     private static final String TABLE_SOURCE =
             "| MIXED-ID | 类型 | 样本 | 状态 | 说明 | 校验标记 |\n" +
@@ -95,7 +101,7 @@ public final class TablePaginationInstrumentedTest {
                 int pagesBefore = canvas.getPageCount();
                 int undoBefore = canvas.undoDepthForTest();
                 String oversizedCode = "| id | detail |\n| --- | --- |\n| 1 | `" +
-                        "code-content-".repeat(500) + "` |";
+                        repeatForTest("code-content-", 500) + "` |";
                 try {
                     canvas.addAiResultTextBox(NoteTextBox.Format.MARKDOWN,
                             oversizedCode, new RectF(24f, 24f, 240f, 90f));

@@ -4047,7 +4047,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private boolean saveManualDraftCheckpoint(ManualTextDraftStore.Draft record) {
         ManualTextDraftStore.DraftToken previous = manualTextDraftTokens.get(record.noteId);
-        ManualTextDraftStore.SaveResult saved = manualTextDraftStore.save(record, previous);
+        ManualTextDraftStore.SaveResult saved = manualTextDraftStore.checkpointIfChanged(record, previous);
         boolean success = saved.status == ManualTextDraftStore.SaveStatus.SAVED;
         if (success) {
             manualTextDraftTokens.put(record.noteId, saved.token);

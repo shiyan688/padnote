@@ -4,6 +4,9 @@ import android.content.Context;
 import android.graphics.pdf.PdfRenderer;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.pdf.PdfDocument;
 import android.os.Handler;
 import android.os.Looper;
@@ -219,6 +222,7 @@ final class PdfNoteIO {
         }
         PdfDocument pdf = new PdfDocument();
         try {
+            PdfPageGeometry geometry = snapshot.getPdfPageGeometry();
             int pages = snapshot.getPageCount();
             int outputLongEdge = chooseRasterLongEdge(pages, snapshot.getPageWidth(),
                     snapshot.getPageHeight());
@@ -299,8 +303,17 @@ final class PdfNoteIO {
                 PdfDocument.Page current = null;
                 try {
                     current = pdf.startPage(new PdfDocument.PageInfo.Builder(
-                            completedPage.getWidth(), completedPage.getHeight(), page + 1).create());
-                    current.getCanvas().drawBitmap(completedPage, 0, 0, null);
+                            geometry.mediaWidthPt, geometry.mediaHeightPt, page + 1).create());
+                    Canvas pageCanvas = current.getCanvas();
+                    pageCanvas.drawColor(Color.WHITE);
+                    PdfPageGeometry.Rect target = geometry.containRaster(
+                            completedPage.getWidth(), completedPage.getHeight());
+                    RectF destination = new RectF(target.leftPt, target.topPt,
+                            target.leftPt + target.widthPt,
+                            target.topPt + target.heightPt);
+                    Paint containPaint = new Paint(Paint.ANTI_ALIAS_FLAG |
+                            Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+                    pageCanvas.drawBitmap(completedPage, null, destination, containPaint);
                 } finally {
                     if (current != null) pdf.finishPage(current);
                     completedPage.recycle();

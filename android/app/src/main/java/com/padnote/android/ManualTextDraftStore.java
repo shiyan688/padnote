@@ -229,6 +229,84 @@ final class ManualTextDraftStore {
         }
     }
 
+    /**
+     * Checkpoint a lifecycle draft with exact-token CAS, but avoid rewriting an already durable
+     * identical payload. The generation must still advance; an idempotent result returns the
+     * existing disk token without advancing its generation. Equality compares every persisted
+     * payload field except generation, never a source hash alone.
+     */
+    SaveResult checkpointIfChanged(Draft draft, DraftToken expectedPrevious) {
+        Validation validation = validateDraft(draft);
+        if (validation.error != null) {
+            return new SaveResult(validation.tooLarge ? SaveStatus.TOO_LARGE : SaveStatus.INVALID,
+                    null, validation.error);
+        }
+        synchronized (LOCK) {
+            LoadResult current = loadLocked(draft.noteId);
+            if (current.status == LoadStatus.INVALID) {
+                return new SaveResult(SaveStatus.INVALID, null, "existing_record_invalid");
+            }
+            if (current.status == LoadStatus.IO_ERROR) {
+                return new SaveResult(SaveStatus.IO_ERROR, null, "existing_record_unreadable");
+            }
+            if (expectedPrevious == null) {
+                if (current.status != LoadStatus.NONE) {
+                    return new SaveResult(SaveStatus.CONFLICT, current.token,
+                            "previous_record_exists");
+                }
+            } else if (current.status != LoadStatus.READY || current.token == null
+                    || !current.token.equals(expectedPrevious)) {
+                return new SaveResult(SaveStatus.CONFLICT, current.token,
+                        "previous_record_changed");
+            }
+            if (expectedPrevious != null && expectedPrevious.sessionId.equals(draft.sessionId)
+                    && draft.generation <= expectedPrevious.generation) {
+                return new SaveResult(SaveStatus.CONFLICT, current.token,
+                        "generation_not_increasing");
+            }
+            if (current.status == LoadStatus.READY && samePayloadExceptGeneration(draft, current.draft)) {
+                // loadLocked verified the current bytes, and the exact expected token above proves
+                // this is the record the caller owns. Return its disk token without encoding or
+                // invoking the write transaction.
+                return new SaveResult(SaveStatus.SAVED, current.token, null);
+            }
+
+            final byte[] encoded;
+            try {
+                encoded = encode(draft);
+            } catch (IOException error) {
+                return new SaveResult(SaveStatus.INVALID, null, "record_encode_failed");
+            }
+            if (encoded.length > MAX_RECORD_BYTES) {
+                return new SaveResult(SaveStatus.TOO_LARGE, null, "record_byte_limit");
+            }
+            try {
+                File base = recordFile(draft.noteId, true);
+                rejectSidecarSymlinks(base);
+                NoteStore.writeAtomic(base, new String(encoded, StandardCharsets.UTF_8),
+                        value -> validateStoredRecord(value, draft.noteId), faultInjector,
+                        MAX_RECORD_BYTES);
+                return new SaveResult(SaveStatus.SAVED, draft.token(), null);
+            } catch (Exception error) {
+                return new SaveResult(SaveStatus.IO_ERROR, null, "draft_storage_unavailable");
+            }
+        }
+    }
+
+    private static boolean samePayloadExceptGeneration(Draft candidate, Draft stored) {
+        return candidate != null && stored != null
+                && candidate.noteId.equals(stored.noteId)
+                && candidate.flowId.equals(stored.flowId)
+                && candidate.fragmentId.equals(stored.fragmentId)
+                && candidate.source.equals(stored.source)
+                && candidate.format.equals(stored.format)
+                && Float.compare(candidate.fontSize, stored.fontSize) == 0
+                && Float.compare(candidate.lineHeight, stored.lineHeight) == 0
+                && candidate.newlyInserted == stored.newlyInserted
+                && candidate.baseSourceFingerprint.equals(stored.baseSourceFingerprint)
+                && candidate.sessionId.equals(stored.sessionId);
+    }
+
     /** Clear only the exact valid checkpoint that the UI showed to the user. */
     ClearStatus clearIfMatches(String noteId, DraftToken expected) {
         if (expected == null) return ClearStatus.INVALID;
