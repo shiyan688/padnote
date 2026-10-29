@@ -2,6 +2,16 @@
 
 目标：在平板与 AI 在同一张纸上交流学习，方便分享给人，也能把上下文交给自己选择的电脑 Agent。模型、语音和工具由用户或 Agent 选择；当前不建设 PadNote 自有服务器。
 
+## beta.26 草稿检查与恢复
+
+无法读取的编辑草稿先在后台检查，取得完整的当前文件校验后才显示丢弃确认。清理前再次核对同一笔记、存储目录及完整文件集合；后来保存或替换的文件不会被旧确认删除。草稿正文的 8 MiB 解码上限保持不变，超限恢复文件采用固定缓冲的流式校验。有效草稿从备份或临时恢复文件读回后的清理也已覆盖。
+
+恢复读取开始前会暂时保护文字编辑入口，确认没有草稿后解除；检查状态由当前请求管理，结束时不会留下“正在检查”或覆盖较新的纸面状态。检查和清理使用独立后台队列，并区分完成、取消、文件变化、大小限制、超时和清理失败。原笔记正文不被草稿清理改写。中英文操作说明见 [草稿恢复指南](BETA26_TESTING.md)。
+
+安全检查以单次完整文件集合合计 128 MiB 为上限，双遍复核最多读取 256 MiB，并共享 5 秒检查预算；普通有界解码另受原来的 8 MiB 上限保护。超过预算时保留记录，不声称可清理任意大小的损坏文件。同步的普通草稿读写路径与进程内存储锁仍需持续测量。
+
+Android beta.26 versionCode 62 的最终构建：53 suites / 403 JVM tests，0 failures、0 errors、0 skipped；lint 0 errors、161 warnings；4 ABI、原测试签名。Instrumentation tests 仅编译，未在设备运行。Windows 连接助手继续为 beta.20，iPad 本轮未改代码。
+
 ## beta.25 PDF 页面尺寸
 
 PDF 页面物理尺寸现在独立于图像栅格分辨率。A4 比例笔记使用 A4 页面；屏幕比例和旧格式保留原比例并放入 A4 外框，因此页面本身不一定是标准 A4；带 PDF 背景的笔记统一采用源文件第一页的显示尺寸，混合尺寸背景按比例放入页面。导出的 PDF 是纸面图像，不包含可搜索或复制的文字层。若纸张尺寸超出支持范围，应用会在打开系统保存器前提示；原笔记保持不变，可调整尺寸后重试。OCR 使用的栅格流程不受 PDF 物理尺寸限制。
@@ -16,7 +26,7 @@ Android beta.25 versionCode 61 的候选构建：53 suites / 390 JVM tests 全�
 
 Android beta.24 versionCode 60 的构建和产物核验通过：52 suites / 381 JVM tests，0 failures、0 errors、0 skipped；lint 0 errors、161 warnings；4 ABI，app 与 instrumentation APK 使用原测试签名。Instrumentation tests 仅编译，未在设备运行。相较 beta.23 增加的 2 条 lint warning 均为不再使用的旧提示字符串（`UnusedResources`），无功能影响。
 
-每条草稿最多 1,000,000 UTF-16 units、4 MiB UTF-8、8 MiB JSON record。超过上限时应提示无法保存并保留编辑器内容。损坏且超过 8 MiB 的草稿缺少可用于明确丢弃的 bounded raw hash，目前应用内不能按 hash 丢弃。具体检查步骤见 [beta.24 手动文字编辑检查](BETA24_TESTING.md)。Windows 连接助手仍为 beta.20。
+每条草稿最多 1,000,000 UTF-16 units、4 MiB UTF-8、8 MiB JSON record。超过上限时应提示无法保存并保留编辑器内容。beta.24 当时无法在应用内按 hash 丢弃超过 8 MiB 的损坏草稿；beta.26 已增加受限的完整文件检查与明确丢弃流程，超出其大小或时间预算时仍保留文件。具体检查步骤见 [beta.24 手动文字编辑检查](BETA24_TESTING.md)。Windows 连接助手仍为 beta.20。
 
 ## beta.23 的改动
 

@@ -70,4 +70,16 @@
     <string name="core_paper_package_error">ノートを固定またはパッケージ化できません（未送信）：%s</string>
     <string name="core_task_bundle_intro">タスクパッケージの指示「%1$s」を実行してください。ページ画像は input/paper.pdf、読めるノートとこのノートの AI 会話は input/content.md にあります。</string>
     <string name="core_video_style_prefix">解説スタイル：%1$s</string>
+
+    <string name="core_manual_draft_check">下書きを確認</string>
+    <string name="core_manual_draft_checking">保存済みの下書きを確認中…</string>
+    <string name="core_manual_draft_discard_confirm">この保存済み下書きだけを削除しますか？元のノートは変更されません。</string>
+    <string name="core_manual_draft_check_too_large">下書き一式が安全確認の上限を超えています。変更していません。下書きを保持してください。</string>
+    <string name="core_manual_draft_check_cancelled">確認をキャンセルしました。変更はありません。</string>
+    <string name="core_manual_draft_changed">確認中に下書きが変更されました。削除していません。もう一度確認してください。</string>
+    <string name="core_manual_draft_check_failed">下書きを検証できませんでした。変更していません。後で確認できるよう保持してください。</string>
+    <string name="core_manual_draft_check_timed_out">確認がタイムアウトしました。変更していません。下書きを保持してください。</string>
+    <string name="core_manual_draft_discard_complete">破損した保存済み下書きを削除しました。ノートは変更されていません。</string>
+    <string name="core_manual_draft_cleanup_running">保存済みの下書きを削除しています…</string>
+    <string name="core_manual_draft_cleanup_complete">保存済みの下書きを削除しました。元のノートは変更されていません。</string>
 </resources>

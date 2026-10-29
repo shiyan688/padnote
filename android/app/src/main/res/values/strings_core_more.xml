@@ -473,4 +473,16 @@
     <string name="core_ai_selection_render_failed">Could not prepare the selected content: %1$s</string>
     <string name="core_ai_selection_start_lasso">Start selecting</string>
     <string name="core_ai_selection_ai_settings">AI settings</string>
+
+    <string name="core_manual_draft_check">Check draft</string>
+    <string name="core_manual_draft_checking">Checking the saved draft…</string>
+    <string name="core_manual_draft_discard_confirm">Discard only this saved draft? The original note will not be changed.</string>
+    <string name="core_manual_draft_check_too_large">This draft family exceeds the local safety limit. Nothing was changed; keep the draft.</string>
+    <string name="core_manual_draft_check_cancelled">Draft check cancelled. Nothing was changed.</string>
+    <string name="core_manual_draft_changed">The saved draft changed during inspection. Nothing was removed; check again.</string>
+    <string name="core_manual_draft_check_failed">The draft could not be verified. Nothing was changed; keep it for later.</string>
+    <string name="core_manual_draft_check_timed_out">Checking took too long. Nothing was changed; keep the draft for later.</string>
+    <string name="core_manual_draft_discard_complete">Damaged saved draft removed. The note was not changed.</string>
+    <string name="core_manual_draft_cleanup_running">Removing the saved draft…</string>
+    <string name="core_manual_draft_cleanup_complete">Saved draft removed. The original note was not changed.</string>
 </resources>

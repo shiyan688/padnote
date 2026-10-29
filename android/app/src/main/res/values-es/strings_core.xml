@@ -67,4 +67,16 @@
     <string name="core_paper_package_error">No se pudo congelar o empaquetar la nota (no enviada): %s</string>
     <string name="core_task_bundle_intro">Completa la solicitud del paquete de tareas: «%1$s». El papel renderizado está en input/paper.pdf; las notas legibles y la conversación de IA de esta nota están en input/content.md.</string>
     <string name="core_video_style_prefix">Estilo del vídeo: %1$s</string>
+
+    <string name="core_manual_draft_check">Comprobar borrador</string>
+    <string name="core_manual_draft_checking">Comprobando el borrador guardado…</string>
+    <string name="core_manual_draft_discard_confirm">¿Eliminar solo este borrador guardado? La nota original no cambiará.</string>
+    <string name="core_manual_draft_check_too_large">El conjunto del borrador supera el límite de comprobación segura. No se hicieron cambios; conserva el borrador.</string>
+    <string name="core_manual_draft_check_cancelled">Comprobación cancelada. No se hicieron cambios.</string>
+    <string name="core_manual_draft_changed">El borrador cambió durante la comprobación. No se eliminó nada; vuelve a comprobarlo.</string>
+    <string name="core_manual_draft_check_failed">No se pudo verificar el borrador. No se hicieron cambios; consérvalo para más tarde.</string>
+    <string name="core_manual_draft_check_timed_out">La comprobación tardó demasiado. No se hicieron cambios; conserva el borrador.</string>
+    <string name="core_manual_draft_discard_complete">Borrador guardado dañado eliminado. La nota no cambió.</string>
+    <string name="core_manual_draft_cleanup_running">Eliminando el borrador guardado…</string>
+    <string name="core_manual_draft_cleanup_complete">Borrador guardado eliminado. La nota original no cambió.</string>
 </resources>

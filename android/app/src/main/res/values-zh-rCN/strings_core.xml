@@ -72,4 +72,16 @@
     <string name="core_paper_package_error">无法冻结或打包笔记（未发送）：%s</string>
     <string name="core_task_bundle_intro">请按任务包要求完成「%1$s」。实际纸面见 input/paper.pdf，可读笔记和本笔记 AI 交流见 input/content.md。</string>
     <string name="core_video_style_prefix">讲解风格：%1$s</string>
+
+    <string name="core_manual_draft_check">检查草稿</string>
+    <string name="core_manual_draft_checking">正在检查已保存的草稿…</string>
+    <string name="core_manual_draft_discard_confirm">仅删除这份已保存的草稿？原笔记不会更改。</string>
+    <string name="core_manual_draft_check_too_large">草稿文件组超过本地安全检查上限。未作更改，请保留草稿。</string>
+    <string name="core_manual_draft_check_cancelled">检查已取消。未作更改。</string>
+    <string name="core_manual_draft_changed">检查期间草稿已发生变化。未删除任何内容，请重新检查。</string>
+    <string name="core_manual_draft_check_failed">无法验证草稿。未作更改，请保留并稍后处理。</string>
+    <string name="core_manual_draft_check_timed_out">检查超时。未作更改，请保留草稿并稍后处理。</string>
+    <string name="core_manual_draft_discard_complete">已删除损坏的已保存草稿。原笔记未更改。</string>
+    <string name="core_manual_draft_cleanup_running">正在清理已保存的草稿…</string>
+    <string name="core_manual_draft_cleanup_complete">已清理保存的草稿。原笔记未更改。</string>
 </resources>

@@ -69,4 +69,16 @@
     <string name="core_paper_package_error">노트를 고정하거나 패키징할 수 없습니다(전송 안 됨): %s</string>
     <string name="core_task_bundle_intro">작업 패키지 요청 “%1$s”을(를) 수행하세요. 렌더링된 종이는 input/paper.pdf에, 읽을 수 있는 노트와 이 노트의 AI 대화는 input/content.md에 있습니다.</string>
     <string name="core_video_style_prefix">영상 스타일: %1$s</string>
+
+    <string name="core_manual_draft_check">초안 확인</string>
+    <string name="core_manual_draft_checking">저장된 초안을 확인하는 중…</string>
+    <string name="core_manual_draft_discard_confirm">이 저장된 초안만 삭제할까요? 원본 노트는 변경되지 않습니다.</string>
+    <string name="core_manual_draft_check_too_large">초안 파일 묶음이 안전 검사 한도를 초과했습니다. 변경하지 않았습니다. 초안을 보관하세요.</string>
+    <string name="core_manual_draft_check_cancelled">초안 확인이 취소되었습니다. 변경되지 않았습니다.</string>
+    <string name="core_manual_draft_changed">검사 중 저장된 초안이 변경되었습니다. 삭제하지 않았습니다. 다시 확인하세요.</string>
+    <string name="core_manual_draft_check_failed">초안을 확인할 수 없습니다. 변경하지 않았습니다. 나중에 처리할 수 있도록 보관하세요.</string>
+    <string name="core_manual_draft_check_timed_out">초안 확인 시간이 초과되었습니다. 변경하지 않았습니다. 초안을 보관하세요.</string>
+    <string name="core_manual_draft_discard_complete">손상된 저장 초안을 삭제했습니다. 노트는 변경되지 않았습니다.</string>
+    <string name="core_manual_draft_cleanup_running">저장된 초안을 정리하는 중…</string>
+    <string name="core_manual_draft_cleanup_complete">저장된 초안을 정리했습니다. 원본 노트는 변경되지 않았습니다.</string>
 </resources>

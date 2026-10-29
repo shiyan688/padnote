@@ -67,4 +67,16 @@
     <string name="core_paper_package_error">Impossible de figer ou préparer la note (non envoyée) : %s</string>
     <string name="core_task_bundle_intro">Exécutez la demande du lot de tâches : « %1$s ». La page rendue se trouve dans input/paper.pdf ; les notes lisibles et la conversation IA de cette note sont dans input/content.md.</string>
     <string name="core_video_style_prefix">Style vidéo : %1$s</string>
+
+    <string name="core_manual_draft_check">Vérifier le brouillon</string>
+    <string name="core_manual_draft_checking">Vérification du brouillon enregistré…</string>
+    <string name="core_manual_draft_discard_confirm">Supprimer uniquement ce brouillon enregistré ? La note d’origine ne sera pas modifiée.</string>
+    <string name="core_manual_draft_check_too_large">Le dossier du brouillon dépasse la limite de vérification. Aucune modification ; conservez le brouillon.</string>
+    <string name="core_manual_draft_check_cancelled">Vérification annulée. Aucune modification.</string>
+    <string name="core_manual_draft_changed">Le brouillon a changé pendant la vérification. Rien n’a été supprimé ; vérifiez à nouveau.</string>
+    <string name="core_manual_draft_check_failed">Impossible de vérifier le brouillon. Aucune modification ; conservez-le pour plus tard.</string>
+    <string name="core_manual_draft_check_timed_out">La vérification a pris trop de temps. Aucune modification ; conservez le brouillon.</string>
+    <string name="core_manual_draft_discard_complete">Le brouillon endommagé a été supprimé. La note n’a pas été modifiée.</string>
+    <string name="core_manual_draft_cleanup_running">Suppression du brouillon enregistré…</string>
+    <string name="core_manual_draft_cleanup_complete">Brouillon enregistré supprimé. La note d’origine n’a pas été modifiée.</string>
 </resources>

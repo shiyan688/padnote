@@ -67,4 +67,16 @@
     <string name="core_paper_package_error">Notiz konnte nicht eingefroren oder verpackt werden (nicht gesendet): %s</string>
     <string name="core_task_bundle_intro">Führe die Aufgabenanforderung „%1$s“ aus. Das gerenderte Blatt liegt in input/paper.pdf; lesbare Notizen und der KI-Dialog dieser Notiz stehen in input/content.md.</string>
     <string name="core_video_style_prefix">Videostil: %1$s</string>
+
+    <string name="core_manual_draft_check">Entwurf prüfen</string>
+    <string name="core_manual_draft_checking">Gespeicherten Entwurf wird geprüft…</string>
+    <string name="core_manual_draft_discard_confirm">Nur diesen gespeicherten Entwurf löschen? Die ursprüngliche Notiz bleibt unverändert.</string>
+    <string name="core_manual_draft_check_too_large">Die Entwurfsdateien überschreiten das sichere Prüflimit. Nichts wurde geändert; Entwurf behalten.</string>
+    <string name="core_manual_draft_check_cancelled">Prüfung abgebrochen. Nichts wurde geändert.</string>
+    <string name="core_manual_draft_changed">Der gespeicherte Entwurf wurde während der Prüfung geändert. Nichts gelöscht; bitte erneut prüfen.</string>
+    <string name="core_manual_draft_check_failed">Der Entwurf konnte nicht überprüft werden. Nichts wurde geändert; bitte für später behalten.</string>
+    <string name="core_manual_draft_check_timed_out">Die Prüfung hat zu lange gedauert. Nichts wurde geändert; Entwurf behalten.</string>
+    <string name="core_manual_draft_discard_complete">Beschädigter gespeicherter Entwurf entfernt. Die Notiz blieb unverändert.</string>
+    <string name="core_manual_draft_cleanup_running">Gespeicherter Entwurf wird entfernt…</string>
+    <string name="core_manual_draft_cleanup_complete">Gespeicherter Entwurf entfernt. Die ursprüngliche Notiz blieb unverändert.</string>
 </resources>

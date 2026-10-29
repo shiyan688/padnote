@@ -146,6 +146,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService manualDraftRecoveryExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
     private volatile LibraryBackupArchive.StagedArchive pendingLibraryRestoreStage;
     private RestorePreviewRetainedState restorePreviewState;
@@ -527,7 +528,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private final Map<String, ManualTextDraftStore.DraftToken> manualTextDraftTokens = new HashMap<>();
     private final Set<String> unresolvedManualDraftNoteIds = new HashSet<>();
     private final List<PendingManualDraftClear> pendingManualDraftClears = new ArrayList<>();
+    private final Map<String, Long> manualDraftClearOperationIds = new HashMap<>();
+    private final Map<String, AtomicBoolean> manualDraftClearCancellationByNote = new HashMap<>();
+    private long manualDraftClearOperationSerial;
     private String pendingManualDraftRecoveryNoteId;
+    private long manualDraftRecoveryRequestSerial;
+    private long manualDraftCheckingStatusRequestId = -1L;
+    private String manualDraftPreviousPressureStatus;
+    private AtomicBoolean activeManualDraftInspectionCancelled;
+    private Future<?> activeManualDraftInspectionFuture;
+    private AtomicBoolean activeManualDraftDiscardCancelled;
+    private android.app.Dialog activeManualDraftRecoveryDialog;
+    private ManualTextDraftStore.InvalidDiscardToken pendingInvalidDraftDiscardToken;
+    private String pendingInvalidDraftDiscardNoteId;
     private int manualDraftCheckpointStatusId;
     private EditText activeManualDialogSource;
     private NoteTextBox activeManualDialogTarget;
@@ -626,6 +639,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     @Override
     protected void onPause() {
         super.onPause();
+        // Cancel background family scans before a lifecycle checkpoint can contend on the
+        // store lock from the UI thread. The store itself honors cancellation only before delete.
+        cancelManualDraftRecoveryForContextChange();
         if (digitizationController != null) digitizationController.pause();
         if (editorVisible) {
             if (!commitActiveManualEditor()) {
@@ -650,6 +666,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     protected void onDestroy() {
+        cancelManualDraftRecoveryForContextChange();
         cancelAiSelectionRender();
         if (aiSelectionRenderer != null) {
             aiSelectionRenderer.close();
@@ -682,6 +699,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         releaseAiSelectionSnapshot();
         disposeTextBoxViews();
         storageExecutor.shutdown();
+        manualDraftRecoveryExecutor.shutdown();
         aiExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -762,12 +780,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     public void onTextInsertRequested(float worldX, float worldY) {
-        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
-            offerManualDraftRecovery(currentNoteId);
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            Toast.makeText(this, R.string.core_manual_draft_cleanup_running, Toast.LENGTH_LONG).show();
             return;
         }
-        if (hasPendingManualDraftClear(currentNoteId)) {
-            Toast.makeText(this, R.string.tail_saving, Toast.LENGTH_LONG).show();
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
             return;
         }
         if (!commitInlineTextEditorExcept(null)) return;
@@ -791,6 +809,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showBookshelf() {
+        cancelManualDraftRecoveryForContextChange();
         if (editorVisible && !commitOrCheckpointBeforeLeaving()) return;
         flushPendingAiInputDraft();
         bookshelfCatalogRenderedForTest=false;
@@ -2846,6 +2865,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        if (!entry.id.equals(currentNoteId)) cancelManualDraftRecoveryForContextChange();
         if (editorVisible && currentNoteId != null && !entry.id.equals(currentNoteId)
                 && !commitOrCheckpointBeforeLeaving()) return;
         if (!entry.id.equals(currentNoteId)) cancelAiSelectionRender();
@@ -2918,6 +2938,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (CoverStore.has(this, entry.id)) {
             actions.add(2, R.string.core_remove_cover);
         }
+        cancelManualDraftClearScansBeforeSynchronousStoreIo();
         ManualTextDraftStore.LoadResult manualDraft = manualTextDraftStore == null
                 ? null : manualTextDraftStore.load(entry.id);
         boolean hasManualDraft = manualDraft != null
@@ -3460,12 +3481,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Toast.makeText(this, R.string.core_outline_loading, Toast.LENGTH_SHORT).show();
             return;
         }
-        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
-            offerManualDraftRecovery(currentNoteId);
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            Toast.makeText(this, R.string.core_manual_draft_cleanup_running, Toast.LENGTH_LONG).show();
             return;
         }
-        if (hasPendingManualDraftClear(currentNoteId)) {
-            Toast.makeText(this, R.string.tail_saving, Toast.LENGTH_LONG).show();
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
             return;
         }
         if (!commitInlineTextEditorExcept(null)) return;
@@ -3769,6 +3790,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
                     @Override
                     public boolean onSelectAllowed(NoteTextBox selected) {
+                        if (hasPendingManualDraftClear(currentNoteId)) {
+                            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_running);
+                            return false;
+                        }
                         if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
                             offerManualDraftRecovery(currentNoteId);
                             return false;
@@ -3953,12 +3978,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private boolean beginInlineTextEditing(String textBoxId) {
-        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
-            offerManualDraftRecovery(currentNoteId);
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_running);
             return false;
         }
-        if (hasPendingManualDraftClear(currentNoteId)) {
-            if (pressureView != null) pressureView.setText(R.string.tail_saving);
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
             return false;
         }
         if (!commitInlineTextEditorExcept(textBoxId)) return false;
@@ -3976,13 +4001,25 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private boolean hasPendingManualDraftClear(String noteId) {
+        if (noteId != null && manualDraftClearOperationIds.containsKey(noteId)) return true;
         for (PendingManualDraftClear pending : pendingManualDraftClears) {
             if (pending.noteId.equals(noteId)) return true;
         }
         return false;
     }
 
+    /** Avoid waiting on the shared store lock when a synchronous UI-thread draft read/write starts. */
+    private void cancelManualDraftClearScansBeforeSynchronousStoreIo() {
+        for (AtomicBoolean cancelled : new ArrayList<>(manualDraftClearCancellationByNote.values())) {
+            cancelled.set(true);
+        }
+    }
+
     private boolean blockForUnresolvedManualDraft() {
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_running);
+            return true;
+        }
         if (!unresolvedManualDraftNoteIds.contains(currentNoteId)) return false;
         offerManualDraftRecovery(currentNoteId);
         return true;
@@ -4047,6 +4084,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private boolean saveManualDraftCheckpoint(ManualTextDraftStore.Draft record) {
         ManualTextDraftStore.DraftToken previous = manualTextDraftTokens.get(record.noteId);
+        cancelManualDraftClearScansBeforeSynchronousStoreIo();
         ManualTextDraftStore.SaveResult saved = manualTextDraftStore.checkpointIfChanged(record, previous);
         boolean success = saved.status == ManualTextDraftStore.SaveStatus.SAVED;
         if (success) {
@@ -4095,18 +4133,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             PendingManualDraftClear item = pendingManualDraftClears.get(index);
             if (!item.noteId.equals(noteId) || item.editorSessionGeneration != saveGeneration
                     || item.documentRevision > savedRevision) continue;
-            ManualTextDraftStore.ClearStatus status = manualTextDraftStore.clearIfMatches(
-                    item.noteId, item.token);
-            if (status == ManualTextDraftStore.ClearStatus.CLEARED
-                    || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
-                if (item.token.equals(manualTextDraftTokens.get(item.noteId))) {
-                    manualTextDraftTokens.remove(item.noteId);
-                }
-                unresolvedManualDraftNoteIds.remove(item.noteId);
-                pendingManualDraftClears.remove(index);
-            } else if (pressureView != null) {
-                pressureView.setText(R.string.core_manual_draft_cleanup_failed);
-            }
+            startValidManualDraftClear(item, savedRevision, saveGeneration);
         }
     }
 
@@ -4114,53 +4141,490 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (manualTextDraftStore == null || noteId == null) return;
         ManualTextDraftStore.DraftToken token = manualTextDraftTokens.get(noteId);
         if (token == null) return;
-        ManualTextDraftStore.ClearStatus status = manualTextDraftStore.clearIfMatches(noteId, token);
+        pendingManualDraftClears.removeIf(item -> item.noteId.equals(noteId));
+        PendingManualDraftClear item = new PendingManualDraftClear(noteId, token,
+                documentRevision, editorSessionGeneration);
+        pendingManualDraftClears.add(item);
+        unresolvedManualDraftNoteIds.remove(noteId);
+        startValidManualDraftClear(item, documentRevision, editorSessionGeneration);
+    }
+
+    private void startValidManualDraftClear(PendingManualDraftClear item, long savedRevision,
+                                             long saveGeneration) {
+        if (item == null || manualTextDraftStore == null
+                || item.documentRevision > savedRevision
+                || item.editorSessionGeneration != saveGeneration
+                || manualDraftClearOperationIds.containsKey(item.noteId)) return;
+        long operationId = ++manualDraftClearOperationSerial;
+        manualDraftClearOperationIds.put(item.noteId, operationId);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        manualDraftClearCancellationByNote.put(item.noteId, cancelled);
+        if (item.noteId.equals(currentNoteId) && editorSessionGeneration == saveGeneration
+                && pressureView != null) {
+            pressureView.setText(R.string.core_manual_draft_cleanup_running);
+        }
+        try {
+            manualDraftRecoveryExecutor.execute(() -> {
+                ManualTextDraftStore.ClearStatus status = manualTextDraftStore
+                        .clearIfMatches(item.noteId, item.token, cancelled::get);
+                handler.post(() -> finishValidManualDraftClear(item, savedRevision,
+                        saveGeneration, operationId, cancelled, status));
+            });
+        } catch (RuntimeException rejected) {
+            finishValidManualDraftClear(item, savedRevision, saveGeneration, operationId, cancelled,
+                    ManualTextDraftStore.ClearStatus.IO_ERROR);
+        }
+    }
+
+    private void finishValidManualDraftClear(PendingManualDraftClear item, long savedRevision,
+            long saveGeneration, long operationId, AtomicBoolean cancelled,
+            ManualTextDraftStore.ClearStatus status) {
+        if (item == null || !Long.valueOf(operationId).equals(
+                manualDraftClearOperationIds.get(item.noteId))) return;
+        manualDraftClearOperationIds.remove(item.noteId);
+        if (manualDraftClearCancellationByNote.get(item.noteId) == cancelled) {
+            manualDraftClearCancellationByNote.remove(item.noteId);
+        }
+        boolean itemStillPending = false;
+        for (PendingManualDraftClear pending : pendingManualDraftClears) {
+            if (pending == item) { itemStillPending = true; break; }
+        }
+        if (!itemStillPending) {
+            clearManualDraftsSavedThrough(item.noteId, savedRevision, saveGeneration);
+            return;
+        }
+        boolean tokenStillCurrent = item.token.equals(manualTextDraftTokens.get(item.noteId));
+        if (item.documentRevision <= savedRevision
+                && item.editorSessionGeneration == saveGeneration) {
+            if (status == ManualTextDraftStore.ClearStatus.CLEARED
+                    || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
+                pendingManualDraftClears.removeIf(pending -> pending == item);
+                if (tokenStillCurrent) {
+                    manualTextDraftTokens.remove(item.noteId);
+                    unresolvedManualDraftNoteIds.remove(item.noteId);
+                }
+            } else if (!tokenStillCurrent) {
+                // The operation only owned the old token. Let a newer checkpoint proceed.
+                pendingManualDraftClears.removeIf(pending -> pending == item);
+            } else {
+                pendingManualDraftClears.removeIf(pending -> pending == item);
+                unresolvedManualDraftNoteIds.add(item.noteId);
+            }
+        }
+        if (item.noteId.equals(currentNoteId) && editorSessionGeneration == saveGeneration
+                && editorVisible && restoreCompleted && !isFinishing() && !isDestroyed()
+                && pressureView != null) {
+            if (status == ManualTextDraftStore.ClearStatus.CLEARED
+                    || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
+                pressureView.setText(R.string.core_manual_draft_cleanup_complete);
+            } else if (status == ManualTextDraftStore.ClearStatus.CANCELLED) {
+                pressureView.setText(R.string.core_manual_draft_check_cancelled);
+            } else {
+                pressureView.setText(R.string.core_manual_draft_cleanup_failed);
+            }
+        }
+    }
+
+    private long nextManualDraftRecoveryRequest(String noteId) {
+        long requestId = ++manualDraftRecoveryRequestSerial;
+        pendingManualDraftRecoveryNoteId = noteId;
+        pendingInvalidDraftDiscardToken = null;
+        pendingInvalidDraftDiscardNoteId = null;
+        return requestId;
+    }
+
+    private boolean isManualDraftRecoveryCurrent(String noteId, long sessionGeneration,
+                                                  long requestId) {
+        return requestId == manualDraftRecoveryRequestSerial
+                && noteId != null && noteId.equals(pendingManualDraftRecoveryNoteId)
+                && noteId.equals(currentNoteId) && editorSessionGeneration == sessionGeneration
+                && editorVisible && restoreCompleted && !isFinishing() && !isDestroyed();
+    }
+
+    private void restoreManualDraftCheckingStatus(long requestId) {
+        if (requestId < 0 || requestId != manualDraftCheckingStatusRequestId) return;
+        if (pressureView != null && pressureView.getText() != null
+                && getString(R.string.core_manual_draft_checking)
+                        .contentEquals(pressureView.getText())) {
+            pressureView.setText(manualDraftPreviousPressureStatus == null
+                    ? "" : manualDraftPreviousPressureStatus);
+        }
+        manualDraftCheckingStatusRequestId = -1L;
+        manualDraftPreviousPressureStatus = null;
+    }
+
+    private void clearManualDraftRecoveryIfCurrent(String noteId, long requestId) {
+        if (requestId != manualDraftRecoveryRequestSerial
+                || !noteId.equals(pendingManualDraftRecoveryNoteId)) return;
+        pendingManualDraftRecoveryNoteId = null;
+        if (noteId.equals(pendingInvalidDraftDiscardNoteId)) {
+            pendingInvalidDraftDiscardNoteId = null;
+            pendingInvalidDraftDiscardToken = null;
+        }
+        activeManualDraftRecoveryDialog = null;
+    }
+
+    /** Invalidates stale UI callbacks. Store cancellation is honored only before family deletion
+     * starts; after its commit point the store completes the ordered removal. */
+    private void cancelManualDraftRecoveryForContextChange() {
+        restoreManualDraftCheckingStatus(manualDraftCheckingStatusRequestId);
+        manualDraftRecoveryRequestSerial++;
+        AtomicBoolean cancelled = activeManualDraftInspectionCancelled;
+        if (cancelled != null) cancelled.set(true);
+        AtomicBoolean discardCancelled = activeManualDraftDiscardCancelled;
+        if (discardCancelled != null) discardCancelled.set(true);
+        activeManualDraftDiscardCancelled = null;
+        for (AtomicBoolean clearCancelled : manualDraftClearCancellationByNote.values()) {
+            clearCancelled.set(true);
+        }
+        Future<?> future = activeManualDraftInspectionFuture;
+        if (future != null) future.cancel(true);
+        activeManualDraftInspectionCancelled = null;
+        activeManualDraftInspectionFuture = null;
+        pendingManualDraftRecoveryNoteId = null;
+        pendingInvalidDraftDiscardNoteId = null;
+        pendingInvalidDraftDiscardToken = null;
+        android.app.Dialog dialog = activeManualDraftRecoveryDialog;
+        activeManualDraftRecoveryDialog = null;
+        if (dialog != null && dialog.isShowing()) dialog.dismiss();
+    }
+
+    private void startInvalidManualDraftInspection(String noteId, long sessionGeneration,
+                                                    long previousRequestId) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, previousRequestId)) return;
+        long requestId = nextManualDraftRecoveryRequest(noteId);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        activeManualDraftInspectionCancelled = cancelled;
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setTitle(R.string.core_manual_draft_invalid_title);
+        progress.setMessage(getString(R.string.core_manual_draft_checking));
+        progress.setIndeterminate(true);
+        progress.setCancelable(true);
+        progress.setButton(ProgressDialog.BUTTON_NEGATIVE, getString(R.string.core_manual_draft_later),
+                (dialog, which) -> cancelInvalidManualDraftInspection(noteId, requestId, cancelled));
+        progress.setOnCancelListener(dialog ->
+                cancelInvalidManualDraftInspection(noteId, requestId, cancelled));
+        progress.setOnDismissListener(dialog -> {
+            if (activeManualDraftRecoveryDialog == dialog) activeManualDraftRecoveryDialog = null;
+        });
+        activeManualDraftRecoveryDialog = progress;
+        progress.show();
+        try {
+            activeManualDraftInspectionFuture = manualDraftRecoveryExecutor.submit(() -> {
+                ManualTextDraftStore.Inspection inspection = manualTextDraftStore
+                        .inspectInvalidForDiscard(noteId, cancelled::get);
+                handler.post(() -> finishInvalidManualDraftInspection(noteId, sessionGeneration,
+                        requestId, cancelled, inspection));
+            });
+        } catch (RuntimeException rejected) {
+            activeManualDraftInspectionCancelled = null;
+            activeManualDraftInspectionFuture = null;
+            if (progress.isShowing()) progress.dismiss();
+            if (isManualDraftRecoveryCurrent(noteId, sessionGeneration, requestId)) {
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_check_failed);
+            }
+        }
+    }
+
+    private void cancelInvalidManualDraftInspection(String noteId, long requestId,
+                                                     AtomicBoolean cancelled) {
+        cancelled.set(true);
+        if (requestId != manualDraftRecoveryRequestSerial
+                || !noteId.equals(pendingManualDraftRecoveryNoteId)) return;
+        restoreManualDraftCheckingStatus(requestId);
+        Future<?> future = activeManualDraftInspectionFuture;
+        if (future != null) future.cancel(true);
+        activeManualDraftInspectionFuture = null;
+        activeManualDraftInspectionCancelled = null;
+        pendingManualDraftRecoveryNoteId = null;
+        pendingInvalidDraftDiscardToken = null;
+        pendingInvalidDraftDiscardNoteId = null;
+        manualDraftRecoveryRequestSerial++;
+        activeManualDraftRecoveryDialog = null;
+        unresolvedManualDraftNoteIds.add(noteId);
+    }
+
+    private void finishInvalidManualDraftInspection(String noteId, long sessionGeneration,
+            long requestId, AtomicBoolean cancelled, ManualTextDraftStore.Inspection inspection) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, requestId)) return;
+        if (activeManualDraftInspectionCancelled == cancelled) {
+            activeManualDraftInspectionCancelled = null;
+            activeManualDraftInspectionFuture = null;
+        }
+        android.app.Dialog progress = activeManualDraftRecoveryDialog;
+        activeManualDraftRecoveryDialog = null;
+        if (progress != null && progress.isShowing()) progress.dismiss();
+        if (inspection == null) {
+            showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                    R.string.core_manual_draft_check_failed);
+            return;
+        }
+        switch (inspection.status) {
+            case READY:
+                if (inspection.token == null) {
+                    showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                            R.string.core_manual_draft_check_failed);
+                } else {
+                    showInvalidManualDraftDiscardConfirmation(noteId, sessionGeneration,
+                            requestId, inspection.token);
+                }
+                break;
+            case NONE:
+            case VALID:
+            case STALE:
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_changed);
+                break;
+            case TOO_LARGE:
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_check_too_large);
+                break;
+            case TIMED_OUT:
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_check_timed_out);
+                break;
+            case CANCELLED:
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_check_cancelled);
+                break;
+            case IO_ERROR:
+            default:
+                showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                        R.string.core_manual_draft_check_failed);
+                break;
+        }
+    }
+
+    private void showInvalidManualDraftDiscardConfirmation(String noteId, long sessionGeneration,
+            long previousRequestId, ManualTextDraftStore.InvalidDiscardToken token) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, previousRequestId)) return;
+        long requestId = nextManualDraftRecoveryRequest(noteId);
+        pendingInvalidDraftDiscardToken = token;
+        pendingInvalidDraftDiscardNoteId = noteId;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.core_manual_draft_invalid_title)
+                .setMessage(R.string.core_manual_draft_discard_confirm)
+                .setNegativeButton(R.string.core_manual_draft_later, null)
+                .setPositiveButton(R.string.core_manual_draft_discard,
+                        (d, which) -> startInvalidManualDraftDiscard(noteId, sessionGeneration,
+                                requestId, token))
+                .create();
+        dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+        activeManualDraftRecoveryDialog = dialog;
+        dialog.show();
+    }
+
+    private void startInvalidManualDraftDiscard(String noteId, long sessionGeneration,
+            long previousRequestId, ManualTextDraftStore.InvalidDiscardToken token) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, previousRequestId)
+                || token == null || !noteId.equals(pendingInvalidDraftDiscardNoteId)
+                || token != pendingInvalidDraftDiscardToken) return;
+        long requestId = nextManualDraftRecoveryRequest(noteId);
+        long operationId = ++manualDraftClearOperationSerial;
+        manualDraftClearOperationIds.put(noteId, operationId);
+        unresolvedManualDraftNoteIds.remove(noteId);
+        pendingInvalidDraftDiscardToken = token;
+        pendingInvalidDraftDiscardNoteId = noteId;
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        manualDraftClearCancellationByNote.put(noteId, cancelled);
+        activeManualDraftDiscardCancelled = cancelled;
+        ManualTextDraftStore.DraftToken knownDraftToken = manualTextDraftTokens.get(noteId);
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setTitle(R.string.core_manual_draft_invalid_title);
+        progress.setMessage(getString(R.string.core_manual_draft_checking));
+        progress.setIndeterminate(true);
+        progress.setCancelable(true);
+        activeManualDraftRecoveryDialog = progress;
+        progress.setOnCancelListener(dialog -> {
+            cancelled.set(true);
+            if (requestId == manualDraftRecoveryRequestSerial
+                    && noteId.equals(pendingManualDraftRecoveryNoteId)) {
+                manualDraftRecoveryRequestSerial++;
+                pendingManualDraftRecoveryNoteId = null;
+                pendingInvalidDraftDiscardToken = null;
+                pendingInvalidDraftDiscardNoteId = null;
+                activeManualDraftRecoveryDialog = null;
+                activeManualDraftDiscardCancelled = null;
+            }
+        });
+        progress.show();
+        try {
+            // Once the user confirms, do not interrupt the family's compare-and-delete halfway.
+            manualDraftRecoveryExecutor.execute(() -> {
+                ManualTextDraftStore.ClearStatus status = manualTextDraftStore
+                        .clearInvalidIfMatches(noteId, token, cancelled::get);
+                handler.post(() -> finishInvalidManualDraftDiscard(noteId, sessionGeneration,
+                        requestId, operationId, token, knownDraftToken, cancelled, status));
+            });
+        } catch (RuntimeException rejected) {
+            if (progress.isShowing()) progress.dismiss();
+            finishInvalidManualDraftDiscard(noteId, sessionGeneration, requestId, operationId,
+                    token, knownDraftToken, cancelled, ManualTextDraftStore.ClearStatus.IO_ERROR);
+        }
+    }
+
+    private void finishInvalidManualDraftDiscard(String noteId, long sessionGeneration,
+            long requestId, long operationId, ManualTextDraftStore.InvalidDiscardToken token,
+            ManualTextDraftStore.DraftToken expectedKnownDraftToken, AtomicBoolean cancelled,
+            ManualTextDraftStore.ClearStatus status) {
+        if (!Long.valueOf(operationId).equals(manualDraftClearOperationIds.get(noteId))) return;
+        manualDraftClearOperationIds.remove(noteId);
+        if (manualDraftClearCancellationByNote.get(noteId) == cancelled) {
+            manualDraftClearCancellationByNote.remove(noteId);
+        }
+        activeManualDraftDiscardCancelled = null;
+        boolean requestCurrent = isManualDraftRecoveryCurrent(noteId, sessionGeneration, requestId);
+        android.app.Dialog progress = activeManualDraftRecoveryDialog;
+        if (requestCurrent) {
+            activeManualDraftRecoveryDialog = null;
+            if (progress != null && progress.isShowing()) progress.dismiss();
+        }
         if (status == ManualTextDraftStore.ClearStatus.CLEARED
                 || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
-            manualTextDraftTokens.remove(noteId);
-            pendingManualDraftClears.removeIf(item -> item.noteId.equals(noteId));
-            unresolvedManualDraftNoteIds.remove(noteId);
-        } else {
-            unresolvedManualDraftNoteIds.add(noteId);
-            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_failed);
+            ManualTextDraftStore.DraftToken currentKnownToken = manualTextDraftTokens.get(noteId);
+            boolean knownTokenStillCurrent = expectedKnownDraftToken == null
+                    ? currentKnownToken == null : expectedKnownDraftToken.equals(currentKnownToken);
+            if (knownTokenStillCurrent) unresolvedManualDraftNoteIds.remove(noteId);
+            if (token == pendingInvalidDraftDiscardToken
+                    && noteId.equals(pendingInvalidDraftDiscardNoteId)) {
+                pendingInvalidDraftDiscardToken = null;
+                pendingInvalidDraftDiscardNoteId = null;
+            }
+            if (knownTokenStillCurrent && expectedKnownDraftToken != null) {
+                manualTextDraftTokens.remove(noteId);
+            }
+            if (requestCurrent) {
+                clearManualDraftRecoveryIfCurrent(noteId, requestId);
+                Toast.makeText(this, R.string.core_manual_draft_discard_complete,
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
         }
+        unresolvedManualDraftNoteIds.add(noteId);
+        if (!requestCurrent) return;
+        int message;
+        switch (status) {
+            case STALE:
+            case INVALID:
+                message = R.string.core_manual_draft_changed;
+                break;
+            case IO_ERROR:
+                message = R.string.core_manual_draft_cleanup_failed;
+                break;
+            case TOO_LARGE:
+                message = R.string.core_manual_draft_check_too_large;
+                break;
+            case TIMED_OUT:
+                message = R.string.core_manual_draft_check_timed_out;
+                break;
+            case CANCELLED:
+                message = R.string.core_manual_draft_check_cancelled;
+                break;
+            default:
+                message = R.string.core_manual_draft_check_failed;
+                break;
+        }
+        showInvalidManualDraftNotice(noteId, sessionGeneration, requestId, message);
+    }
+
+    private void showInvalidManualDraftNotice(String noteId, long sessionGeneration,
+                                               long previousRequestId, int messageId) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, previousRequestId)) return;
+        long requestId = nextManualDraftRecoveryRequest(noteId);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.core_manual_draft_invalid_title)
+                .setMessage(messageId)
+                .setPositiveButton(R.string.core_manual_draft_later, null)
+                .create();
+        dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+        activeManualDraftRecoveryDialog = dialog;
+        dialog.show();
     }
 
     private void offerManualDraftRecovery(String noteId) {
         if (manualTextDraftStore == null || noteId == null || !noteId.equals(currentNoteId)
                 || !editorVisible || !restoreCompleted
                 || noteId.equals(pendingManualDraftRecoveryNoteId)) return;
-        ManualTextDraftStore.LoadResult loaded = manualTextDraftStore.load(noteId);
+        if (hasPendingManualDraftClear(noteId)) {
+            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_running);
+            return;
+        }
+        long sessionGeneration = editorSessionGeneration;
+        long requestId = nextManualDraftRecoveryRequest(noteId);
+        // Lock manual editing before the async disk read starts. Until it completes, we do not
+        // know whether this note has a recovery draft that must be restored or explicitly kept.
+        unresolvedManualDraftNoteIds.add(noteId);
+        manualDraftCheckingStatusRequestId = requestId;
+        manualDraftPreviousPressureStatus = pressureView == null || pressureView.getText() == null
+                ? null : pressureView.getText().toString();
+        if (pressureView != null) pressureView.setText(R.string.core_manual_draft_checking);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        activeManualDraftInspectionCancelled = cancelled;
+        try {
+            activeManualDraftInspectionFuture = manualDraftRecoveryExecutor.submit(() -> {
+                ManualTextDraftStore.LoadResult loaded = manualTextDraftStore.load(noteId);
+                handler.post(() -> finishManualDraftRecoveryLoad(noteId, sessionGeneration,
+                        requestId, cancelled, loaded));
+            });
+        } catch (RuntimeException rejected) {
+            restoreManualDraftCheckingStatus(requestId);
+            activeManualDraftInspectionCancelled = null;
+            activeManualDraftInspectionFuture = null;
+            clearManualDraftRecoveryIfCurrent(noteId, requestId);
+            unresolvedManualDraftNoteIds.add(noteId);
+            Toast.makeText(this, R.string.core_manual_draft_checkpoint_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void finishManualDraftRecoveryLoad(String noteId, long sessionGeneration,
+            long requestId, AtomicBoolean cancelled, ManualTextDraftStore.LoadResult loaded) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, requestId)) return;
+        restoreManualDraftCheckingStatus(requestId);
+        if (activeManualDraftInspectionCancelled == cancelled) {
+            activeManualDraftInspectionCancelled = null;
+            activeManualDraftInspectionFuture = null;
+        }
+        if (loaded == null) {
+            unresolvedManualDraftNoteIds.add(noteId);
+            showInvalidManualDraftNotice(noteId, sessionGeneration, requestId,
+                    R.string.core_manual_draft_check_failed);
+            return;
+        }
         if (loaded.status == ManualTextDraftStore.LoadStatus.NONE) {
             unresolvedManualDraftNoteIds.remove(noteId);
             manualTextDraftTokens.remove(noteId);
+            clearManualDraftRecoveryIfCurrent(noteId, requestId);
             return;
         }
         if (loaded.status == ManualTextDraftStore.LoadStatus.IO_ERROR) {
             unresolvedManualDraftNoteIds.add(noteId);
             Toast.makeText(this, R.string.core_manual_draft_checkpoint_failed, Toast.LENGTH_LONG).show();
+            clearManualDraftRecoveryIfCurrent(noteId, requestId);
             return;
         }
-        pendingManualDraftRecoveryNoteId = noteId;
         if (loaded.status == ManualTextDraftStore.LoadStatus.INVALID) {
             unresolvedManualDraftNoteIds.add(noteId);
-            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_invalid_title)
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_invalid_title)
                     .setMessage(R.string.core_manual_draft_invalid_message)
                     .setNegativeButton(R.string.core_manual_draft_later, (d, w) ->
                             unresolvedManualDraftNoteIds.add(noteId))
-                    .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> {
-                        ManualTextDraftStore.ClearStatus cleared = manualTextDraftStore
-                                .clearInvalidIfMatches(noteId, loaded.rawSha256);
-                        if (cleared == ManualTextDraftStore.ClearStatus.CLEARED
-                                || cleared == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
-                            unresolvedManualDraftNoteIds.remove(noteId);
-                            manualTextDraftTokens.remove(noteId);
-                        } else Toast.makeText(this, R.string.core_manual_draft_cleanup_failed,
-                                Toast.LENGTH_LONG).show();
-                        pendingManualDraftRecoveryNoteId = null;
-                    }).setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+                    .setPositiveButton(R.string.core_manual_draft_check, (d, w) ->
+                            startInvalidManualDraftInspection(noteId, sessionGeneration, requestId))
+                    .create();
+            dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+            activeManualDraftRecoveryDialog = dialog;
+            dialog.show();
             return;
         }
+        showValidManualDraftRecovery(noteId, sessionGeneration, requestId, loaded);
+    }
+
+    private void showValidManualDraftRecovery(String noteId, long sessionGeneration,
+            long requestId, ManualTextDraftStore.LoadResult loaded) {
+        if (!isManualDraftRecoveryCurrent(noteId, sessionGeneration, requestId)
+                || loaded.status != ManualTextDraftStore.LoadStatus.READY
+                || loaded.draft == null || loaded.token == null) return;
         final ManualTextDraftStore.Draft draft = loaded.draft;
         manualTextDraftTokens.put(noteId, loaded.token);
         NoteTextBox found = null;
@@ -4183,14 +4647,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         ManualTextDraftStore.sourceFingerprint(current.source));
         unresolvedManualDraftNoteIds.add(noteId);
         if (alreadySaved) {
-            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
                     .setMessage(R.string.core_manual_draft_already_saved)
                     .setNegativeButton(R.string.core_manual_draft_later, null)
                     .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
                     .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> clearManualDraftAfterExplicitDiscard(noteId))
-                    .setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+                    .create();
+            dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+            activeManualDraftRecoveryDialog = dialog;
+            dialog.show();
         } else if (baseMatches) {
-            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
                     .setMessage(R.string.core_manual_draft_recover_message)
                     .setNegativeButton(R.string.core_manual_draft_later, null)
                     .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
@@ -4216,14 +4683,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         catch (IllegalArgumentException e) { format = current.format; }
                         view.beginInlineEditingFromDraft(draft.source, format, draft.fontSize,
                                 draft.lineHeight, draft.baseSourceFingerprint);
-                    }).setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+                    }).create();
+            dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+            activeManualDraftRecoveryDialog = dialog;
+            dialog.show();
         } else {
-            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
                     .setMessage(R.string.core_manual_draft_mismatch)
                     .setNegativeButton(R.string.core_manual_draft_later, null)
                     .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
                     .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> clearManualDraftAfterExplicitDiscard(noteId))
-                    .setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+                    .create();
+            dialog.setOnDismissListener(d -> clearManualDraftRecoveryIfCurrent(noteId, requestId));
+            activeManualDraftRecoveryDialog = dialog;
+            dialog.show();
         }
     }
 
@@ -8602,6 +9075,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!editorVisible) {
             return;
         }
+        cancelManualDraftRecoveryForContextChange();
         if (!commitInlineTextEditorExcept(null)) return;
         cancelAiSelectionRender();
         handler.removeCallbacks(delayedSave);
