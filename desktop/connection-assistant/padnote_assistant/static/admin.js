@@ -22,6 +22,22 @@
   };
   focusAddAgent();
   window.addEventListener('hashchange', focusAddAgent);
+  const sectionNav = Array.from(document.querySelectorAll('.sidebar nav a'));
+  const navSections = sectionNav.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+  if ('IntersectionObserver' in window && navSections.length) {
+    const setCurrent = (section) => {
+      for (const link of sectionNav) {
+        if (link.getAttribute('href') === `#${section.id}`) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      }
+    };
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting)
+        .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+      if (visible) setCurrent(visible.target);
+    }, {rootMargin: '-18% 0px -68% 0px', threshold: [0, .15, .35]});
+    navSections.forEach((section) => observer.observe(section));
+  }
   document.querySelectorAll('[data-open-credentials]').forEach((button) => {
     button.addEventListener('click', () => {
       const details = document.querySelector(`[data-credentials="${CSS.escape(button.dataset.openCredentials)}"]`);
@@ -121,6 +137,16 @@
         const card = item.element.closest('.agent-card');
         const status = card?.querySelector('.agent-heading .badge');
         if (status) { status.textContent = '检测结果已过期'; status.classList.remove('good'); status.classList.add('warn'); }
+        const guidance = card?.querySelector('.agent-guidance');
+        if (guidance) guidance.textContent = '上次检测结果已过期。重新检测接口后，再继续配对。';
+        const pairLink = card?.querySelector('[data-pair-agent]');
+        const checkButton = card?.querySelector('[data-check-button]');
+        const checkForm = checkButton?.closest('form');
+        if (checkButton) checkButton.classList.remove('button-quiet');
+        if (pairLink) pairLink.classList.add('button-quiet');
+        if (checkForm && pairLink && pairLink.parentElement === checkForm.parentElement) {
+          checkForm.parentElement.insertBefore(checkForm, pairLink);
+        }
       }
     }
   };

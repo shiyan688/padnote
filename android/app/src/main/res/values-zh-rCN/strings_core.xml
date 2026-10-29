@@ -84,4 +84,7 @@
     <string name="core_manual_draft_discard_complete">已删除损坏的已保存草稿。原笔记未更改。</string>
     <string name="core_manual_draft_cleanup_running">正在清理已保存的草稿…</string>
     <string name="core_manual_draft_cleanup_complete">已清理保存的草稿。原笔记未更改。</string>
+    <string name="core_header_ai">AI 对话</string>
+    <string name="core_header_tasks">任务</string>
+    <string name="core_header_share">分享 / Agent</string>
 </resources>

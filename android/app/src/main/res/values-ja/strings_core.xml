@@ -82,4 +82,7 @@
     <string name="core_manual_draft_discard_complete">破損した保存済み下書きを削除しました。ノートは変更されていません。</string>
     <string name="core_manual_draft_cleanup_running">保存済みの下書きを削除しています…</string>
     <string name="core_manual_draft_cleanup_complete">保存済みの下書きを削除しました。元のノートは変更されていません。</string>
+    <string name="core_header_ai">AI対話</string>
+    <string name="core_header_tasks">タスク</string>
+    <string name="core_header_share">共有 / Agent</string>
 </resources>

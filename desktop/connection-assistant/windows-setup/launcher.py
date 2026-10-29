@@ -56,18 +56,30 @@ class MINMAXINFO(ctypes.Structure):
     _fields_ = [("ptReserved", wintypes.POINT), ("ptMaxSize", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
                 ("ptMinTrackSize", wintypes.POINT), ("ptMaxTrackSize", wintypes.POINT)]
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
 class DRAWITEMSTRUCT(ctypes.Structure):
     _fields_ = [("CtlType", wintypes.UINT), ("CtlID", wintypes.UINT), ("itemID", wintypes.UINT),
                 ("itemAction", wintypes.UINT), ("itemState", wintypes.UINT), ("hwndItem", wintypes.HWND),
                 ("hDC", wintypes.HDC), ("rcItem", wintypes.RECT), ("itemData", ctypes.c_size_t)]
 
+class SCROLLINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("fMask", wintypes.UINT), ("nMin", ctypes.c_int),
+                ("nMax", ctypes.c_int), ("nPage", wintypes.UINT), ("nPos", ctypes.c_int),
+                ("nTrackPos", ctypes.c_int)]
+
 WM_CREATE, WM_DESTROY, WM_COMMAND, WM_TIMER = 1, 2, 0x111, 0x113
 WM_CLOSE, WM_SIZE, WM_DPICHANGED, WM_GETMINMAXINFO = 0x10, 5, 0x2E0, 0x24
+WM_VSCROLL, WM_MOUSEWHEEL = 0x115, 0x20A
 WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DRAWITEM = 0x138, 0x133, 0x2B
 WS_OVERLAPPEDWINDOW, WS_CHILD, WS_VISIBLE, WS_TABSTOP = 0x00CF0000, 0x40000000, 0x10000000, 0x00010000
 BS_OWNERDRAW = 0x0000000B
 ES_MULTILINE, ES_READONLY, ES_AUTOVSCROLL, WS_VSCROLL = 4, 0x800, 0x40, 0x00200000
 DT_SINGLELINE, DT_VCENTER, DT_CENTER = 0x20, 0x04, 0x01
+SB_VERT, SIF_RANGE, SIF_PAGE, SIF_POS, SIF_TRACKPOS = 1, 0x1, 0x2, 0x4, 0x10
+SB_LINEUP, SB_LINEDOWN, SB_PAGEUP, SB_PAGEDOWN, SB_THUMBTRACK, SB_TOP, SB_BOTTOM = 0, 1, 2, 3, 5, 6, 7
 BUTTON_START, BUTTON_OPEN, BUTTON_STOP, BUTTON_FIREWALL = 101, 102, 103, 104
 BUTTON_COPY, BUTTON_SAVE, BUTTON_FOLDER, BUTTON_DETAILS = 105, 106, 107, 108
 BUTTON_HERMES_CONNECT, BUTTON_HERMES_INSTALL = 109, 110
@@ -92,6 +104,19 @@ user32.SetWindowTextW.restype = wintypes.BOOL
 user32.SetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
 user32.GetClientRect.restype = wintypes.BOOL
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowRect.restype = wintypes.BOOL
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.MapWindowPoints.restype = ctypes.c_int
+user32.MapWindowPoints.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.POINTER(wintypes.POINT), wintypes.UINT]
+user32.GetFocus.restype = wintypes.HWND
+user32.IsChild.restype = wintypes.BOOL
+user32.IsChild.argtypes = [wintypes.HWND, wintypes.HWND]
+user32.MonitorFromWindow.restype = wintypes.HANDLE
+user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.MonitorFromRect.restype = wintypes.HANDLE
+user32.MonitorFromRect.argtypes = [ctypes.POINTER(wintypes.RECT), wintypes.DWORD]
+user32.GetMonitorInfoW.restype = wintypes.BOOL
+user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
 user32.SetWindowPos.restype = wintypes.BOOL
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SendMessageW.restype = ctypes.c_ssize_t
@@ -185,6 +210,14 @@ user32.FillRect.restype = ctypes.c_int
 user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
 user32.DrawTextW.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT]
 user32.DrawFocusRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT)]
+user32.SetScrollInfo.restype = ctypes.c_int
+user32.SetScrollInfo.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.POINTER(SCROLLINFO), wintypes.BOOL]
+user32.GetScrollInfo.restype = wintypes.BOOL
+user32.GetScrollInfo.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.POINTER(SCROLLINFO)]
+user32.ShowScrollBar.restype = wintypes.BOOL
+user32.ShowScrollBar.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.BOOL]
+user32.FrameRect.restype = ctypes.c_int
+user32.FrameRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
 comdlg32.GetSaveFileNameW.restype = wintypes.BOOL
 comdlg32.GetSaveFileNameW.argtypes = [ctypes.POINTER(OPENFILENAMEW)]
 shell32.ShellExecuteW.restype = ctypes.c_ssize_t
@@ -193,9 +226,10 @@ shell32.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCW
 
 # COLORREF uses 0x00BBGGRR.
 def rgb(r, g, b): return r | (g << 8) | (b << 16)
-IVORY, NAVY, BLUE, PALE_BLUE, WHITE = rgb(248, 246, 240), rgb(24, 43, 69), rgb(44, 105, 176), rgb(232, 241, 250), rgb(255, 255, 255)
+IVORY, NAVY, BLUE, PALE_BLUE, WHITE = rgb(244, 246, 250), rgb(24, 40, 63), rgb(53, 95, 210), rgb(237, 243, 255), rgb(255, 255, 255)
+MUTED_TEXT, OUTLINE, PALE_RED, RED = rgb(97, 112, 132), rgb(213, 220, 230), rgb(255, 239, 238), rgb(163, 55, 55)
 
-main_hwnd = status_hwnd = details_hwnd = path_hwnd = None
+main_hwnd = status_hwnd = service_state_hwnd = agent_heading_hwnd = details_hwnd = path_hwnd = None
 child = shutdown_event = mutex = None
 shutdown_name = None
 lifecycle = Lifecycle()
@@ -232,6 +266,8 @@ brushes = {}
 closing = False
 window_width = 820
 window_height = 730
+scroll_offset = 0
+startup_work_area = None
 
 
 def scale(n): return (abs(n) * dpi + 48) // 96 * (-1 if n < 0 else 1)
@@ -267,7 +303,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.20", "构建：2026-10-28-beta20-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.28", "构建：2026-10-29-beta28-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -301,19 +337,29 @@ def refresh_diagnostics(force=False):
 def update_buttons():
     start_button = find_control(BUTTON_START)
     open_button = find_control(BUTTON_OPEN)
+    connect_button = find_control(BUTTON_HERMES_CONNECT)
     if start_button:
         user32.SetWindowTextW(start_button, "重试启动" if last_error else "启动助手")
-        control_roles[start_button] = "primary" if lifecycle.can_start else "secondary"
+        control_roles[start_button] = "secondary"
     user32.EnableWindow(start_button, lifecycle.can_start)
     if open_button:
         control_roles[open_button] = "primary" if lifecycle.can_open else "secondary"
     user32.EnableWindow(open_button, lifecycle.can_open)
-    user32.EnableWindow(find_control(BUTTON_STOP), lifecycle.can_stop)
+    stop_button = find_control(BUTTON_STOP)
+    if stop_button: control_roles[stop_button] = "danger" if lifecycle.can_stop else "secondary"
+    user32.EnableWindow(stop_button, lifecycle.can_stop)
     hermes_actions_enabled = (lifecycle.ready or lifecycle.can_start) and not lifecycle.stopping and not hermes_busy and installer_process is None and not closing
-    user32.EnableWindow(find_control(BUTTON_HERMES_CONNECT), hermes_actions_enabled)
+    if connect_button:
+        user32.SetWindowTextW(connect_button, "检查 Agent 连接" if lifecycle.ready else "启动并检查 Agent")
+        control_roles[connect_button] = "primary" if lifecycle.can_start and hermes_actions_enabled else "secondary"
+    user32.EnableWindow(connect_button, hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_INSTALL), hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_CANCEL), hermes_busy)
-    for button in (start_button, open_button, find_control(BUTTON_STOP), find_control(BUTTON_HERMES_CONNECT), find_control(BUTTON_HERMES_INSTALL), find_control(BUTTON_HERMES_CANCEL), find_control(BUTTON_COPY),
+    if service_state_hwnd:
+        service_labels = {"已停止或启动失败": ("启动失败 · 可重试" if last_error else "已停止 · 可启动"),
+                          "正在启动": "正在启动", "已就绪": "已就绪", "正在停止": "正在停止"}
+        user32.SetWindowTextW(service_state_hwnd, "助手服务  ·  " + service_labels.get(current_status(), current_status()))
+    for button in (start_button, open_button, stop_button, connect_button, find_control(BUTTON_HERMES_INSTALL), find_control(BUTTON_HERMES_CANCEL), find_control(BUTTON_COPY),
                    find_control(BUTTON_SAVE), find_control(BUTTON_FOLDER), find_control(BUTTON_FIREWALL)):
         if button:
             user32.InvalidateRect(button, None, True)
@@ -772,8 +818,25 @@ def apply_dpi_fonts():
                 except ValueError: pass
 
 def resize_layout(hwnd, width, height):
-    bottom = height - scale(48)
-    layout = onboarding_layout(width * 96 // dpi, height * 96 // dpi)
+    global scroll_offset
+    width_dip = max(1, width * 96 // dpi)
+    viewport_dip = max(1, height * 96 // dpi)
+    content_dip = max(690, viewport_dip)
+    maximum = max(0, content_dip - viewport_dip)
+    scroll_offset = max(0, min(scroll_offset, maximum))
+    bottom = content_dip - 48
+    layout = onboarding_layout(width_dip, content_dip)
+    if width_dip >= 800:
+        layout.update(hermes_info=(28, 366, 420, 28), log_path=(28, 396, 420, 22),
+                      diagnostics_heading=(26, 424, 210, 28),
+                      details=(26, 456, max(400, width_dip - 52), max(80, bottom - 470)))
+    else:
+        layout.update(tutorial_heading=(26, 322, max(140, width_dip - 52), 24),
+                      tutorial_body=(26, 348, max(140, width_dip - 52), 70),
+                      hermes_info=(28, 452, max(140, width_dip - 56), 28),
+                      log_path=(28, 482, max(140, width_dip - 56), 22),
+                      diagnostics_heading=(26, 510, 210, 28),
+                      details=(26, 542, max(400, width_dip - 52), max(80, bottom - 556)))
     layout_handles = {
         tutorial_heading_hwnd: "tutorial_heading", tutorial_body_hwnd: "tutorial_body",
         hermes_info_hwnd: "hermes_info", path_hwnd: "log_path",
@@ -785,18 +848,79 @@ def resize_layout(hwnd, width, height):
         role = control_roles.get(handle)
         if handle in layout_handles:
             x, y, w, h = layout[layout_handles[handle]]
-            user32.SetWindowPos(handle, None, scale(x), scale(y), scale(w), scale(h), 0x14)
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), scale(w), scale(h), 0x14)
             continue
-        if role in ("header", "header-title") and y < scale(80):
+        if handle == agent_heading_hwnd:
+            agent_y = 340 if width_dip >= 800 else 426
+            user32.SetWindowPos(handle, None, scale(x), scale(agent_y - scroll_offset), scale(max(140, width_dip - x - 52)), scale(h), 0x14)
+            continue
+        if handle == service_state_hwnd:
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), scale(max(140, width_dip - x - 26)), scale(h), 0x14)
+        elif role in ("header", "header-title") and y < 80:
             width_for_control = max(scale(340), width - scale(x))
-            user32.SetWindowPos(handle, None, scale(x), scale(y), width_for_control, scale(h), 0x14)
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), width_for_control, scale(h), 0x14)
         elif handle in footer:
-            user32.SetWindowPos(handle, None, scale(x), bottom, scale(w), scale(h), 0x14)
+            user32.SetWindowPos(handle, None, scale(x), scale(bottom - scroll_offset), scale(w), scale(h), 0x14)
         elif role in ("status", "body", "muted"):
-            user32.SetWindowPos(handle, None, scale(x), scale(y), max(scale(140), width-scale(x)-scale(26)), scale(h), 0x14)
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), max(scale(140), width-scale(x)-scale(26)), scale(h), 0x14)
+        else:
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), scale(w), scale(h), 0x14)
+    info = SCROLLINFO(ctypes.sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS,
+                      0, max(0, content_dip - 1), viewport_dip, scroll_offset, 0)
+    user32.ShowScrollBar(hwnd, SB_VERT, maximum > 0)
+    user32.SetScrollInfo(hwnd, SB_VERT, ctypes.byref(info), True)
+
+def scroll_window(hwnd, new_offset):
+    global scroll_offset
+    scroll_offset = max(0, int(new_offset))
+    rect = wintypes.RECT()
+    if user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        resize_layout(hwnd, rect.right - rect.left, rect.bottom - rect.top)
+
+def ensure_focused_control_visible(hwnd):
+    """Scroll the outer form after dialog navigation, without scrolling an edit's text."""
+    focused = user32.GetFocus()
+    if not focused or not user32.IsChild(hwnd, focused):
+        return
+    rect = wintypes.RECT()
+    client = wintypes.RECT()
+    if not user32.GetWindowRect(focused, ctypes.byref(rect)) or not user32.GetClientRect(hwnd, ctypes.byref(client)):
+        return
+    points = (wintypes.POINT * 2)(wintypes.POINT(rect.left, rect.top),
+                                  wintypes.POINT(rect.right, rect.bottom))
+    user32.MapWindowPoints(None, hwnd, points, 2)
+    delta = 0
+    if focused == details_hwnd and (points[0].y < client.top or points[0].y >= client.bottom):
+        # Bring the edit itself into view on Tab entry; once visible, its own
+        # caret/selection navigation must not move the outer document.
+        delta = (points[0].y - client.top) * 96 // dpi
+    elif focused == details_hwnd:
+        return
+    elif points[1].y > client.bottom:
+        delta = (points[1].y - client.bottom) * 96 // dpi + 8
+    elif points[0].y < client.top:
+        delta = -((client.top - points[0].y) * 96 // dpi + 8)
+    if delta:
+        scroll_window(hwnd, scroll_offset + delta)
+
+def monitor_work_area(hwnd=None, rect=None):
+    """Return the nearest monitor work area, with the startup area as a safe fallback."""
+    if rect is not None:
+        monitor = user32.MonitorFromRect(ctypes.byref(rect), 2)  # MONITOR_DEFAULTTONEAREST
+    elif hwnd:
+        monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+    else:
+        monitor = None
+    if monitor:
+        info = MONITORINFO(ctypes.sizeof(MONITORINFO), wintypes.RECT(), wintypes.RECT(), 0)
+        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return info.rcWork
+    if startup_work_area is not None:
+        return startup_work_area
+    return wintypes.RECT(0, 0, int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
 
 def wndproc(hwnd, message, wparam, lparam):
-    global main_hwnd, status_hwnd, details_hwnd, path_hwnd, dpi, closing, last_error, session_log, previous_log, session_offset, hermes_pending, hermes_pending_setup, hermes_info_hwnd, tutorial_heading_hwnd, tutorial_body_hwnd, diagnostics_heading_hwnd, hermes_cancel_event
+    global main_hwnd, status_hwnd, service_state_hwnd, agent_heading_hwnd, details_hwnd, path_hwnd, dpi, closing, last_error, session_log, previous_log, session_offset, hermes_pending, hermes_pending_setup, hermes_info_hwnd, tutorial_heading_hwnd, tutorial_body_hwnd, diagnostics_heading_hwnd, hermes_cancel_event, scroll_offset
     if message == WM_CREATE:
         main_hwnd = hwnd
         if get_dpi_for_window:
@@ -820,26 +944,29 @@ def wndproc(hwnd, message, wparam, lparam):
         except OSError: session_offset = 0
         brushes.update(ivory=gdi32.CreateSolidBrush(IVORY), navy=gdi32.CreateSolidBrush(NAVY),
                        blue=gdi32.CreateSolidBrush(BLUE), pale=gdi32.CreateSolidBrush(PALE_BLUE),
-                       white=gdi32.CreateSolidBrush(WHITE), muted=gdi32.CreateSolidBrush(rgb(232, 232, 232)))
+                       white=gdi32.CreateSolidBrush(WHITE), outline=gdi32.CreateSolidBrush(OUTLINE),
+                       danger=gdi32.CreateSolidBrush(PALE_RED), muted=gdi32.CreateSolidBrush(rgb(232, 235, 240)))
         control(hwnd, "", 0, 0, 820, 78, role="header", font_size=15)
-        control(hwnd, "PadNote 连接助手", 26, 15, 400, 38, role="header-title", font_size=27)
-        control(hwnd, "本机运行 · TLS 配对 · 同一 Wi-Fi 连接", 28, 52, 560, 22, role="header", font_size=14)
+        control(hwnd, "PadNote 连接助手", 26, 15, 400, 38, role="header-title", font_size=26)
+        control(hwnd, "在平板与电脑之间安全连接", 28, 52, 560, 22, role="header", font_size=14)
         saved_code_label = str(saved_code) if saved_code is not None else "未记录"
         initial_status = (f"上次运行信息：{saved_title}（退出代码 {saved_code_label}）。请查看诊断。"
-                          if saved_title else "已停止。准备好配对平板时，请点击启动。")
-        status_hwnd = control(hwnd, initial_status, 26, 100, 760, 68, style=0x2000, role="status", font_size=17)
+                          if saved_title else "已停止。准备好配对平板时，请启动助手。")
+        service_state_hwnd = control(hwnd, "助手服务  ·  可启动", 26, 88, 760, 24, role="service-state", font_size=14)
+        status_hwnd = control(hwnd, initial_status, 26, 116, 760, 54, style=0x2000, role="status", font_size=15)
         control(hwnd, "启动助手", 26, 184, 126, 40, BUTTON_START, role="secondary")
         control(hwnd, "打开连接设置", 164, 184, 150, 40, BUTTON_OPEN, role="secondary")
         control(hwnd, "停止助手", 326, 184, 126, 40, BUTTON_STOP, role="secondary")
-        control(hwnd, "一键连接 Hermes", 26, 238, 240, 46, BUTTON_HERMES_CONNECT, role="primary", font_size=17)
-        control(hwnd, "安装 / 配置 Hermes…", 276, 238, 160, 46, BUTTON_HERMES_INSTALL, role="secondary", font_size=13)
-        control(hwnd, "取消连接", 446, 238, 112, 46, BUTTON_HERMES_CANCEL, role="secondary")
-        tutorial_heading_hwnd = control(hwnd, "连接小教程", 470, 188, 300, 28, role="section", font_size=17)
-        tutorial_body_hwnd = control(hwnd, "一键连接会启动助手并检查 Hermes。需要时打开配置向导并完成模型登录。随后打开连接设置，同一 Wi-Fi 扫码并批准。Tailscale 不自动改 Serve、防火墙或网络类别。", 470, 220, 310, 118, role="body", font_size=13)
-        hermes_info_hwnd = control(hwnd, "Hermes：尚未检查。模型登录由用户完成。", 28, 296, 420, 30, role="muted", font_size=13)
-        path_hwnd = control(hwnd, str(data_dir() / "launcher.log"), 28, 326, 420, 24, style=ES_READONLY | 0x0080, role="muted", font_size=12)
-        diagnostics_heading_hwnd = control(hwnd, "诊断信息", 26, 354, 170, 28, role="section", font_size=17)
-        details_hwnd = control(hwnd, "", 26, 386, 760, 226, style=ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, role="edit")
+        control(hwnd, "启动并检查 Agent", 26, 238, 200, 44, BUTTON_HERMES_CONNECT, role="secondary", font_size=15)
+        control(hwnd, "配置 Hermes…", 238, 238, 200, 44, BUTTON_HERMES_INSTALL, role="secondary", font_size=14)
+        control(hwnd, "取消检查", 26, 292, 126, 36, BUTTON_HERMES_CANCEL, role="secondary")
+        tutorial_heading_hwnd = control(hwnd, "连接平板", 470, 188, 300, 28, role="section", font_size=17)
+        tutorial_body_hwnd = control(hwnd, "启动助手后，打开连接设置并在平板扫码。确认设备后批准配对。Agent 连接状态会单独显示；需要配置时再打开 Hermes 向导。", 470, 220, 310, 92, role="body", font_size=13)
+        agent_heading_hwnd = control(hwnd, "Agent 连接状态", 26, 300, 420, 24, role="section", font_size=14)
+        hermes_info_hwnd = control(hwnd, "尚未检查。模型登录由用户完成。", 28, 326, 420, 28, role="agent-state", font_size=13)
+        path_hwnd = control(hwnd, str(data_dir() / "launcher.log"), 28, 356, 420, 22, style=ES_READONLY | 0x0080, role="muted", font_size=11)
+        diagnostics_heading_hwnd = control(hwnd, "日志与诊断", 26, 384, 210, 28, role="section", font_size=17)
+        details_hwnd = control(hwnd, "", 26, 416, 760, 240, style=ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, role="edit")
         control(hwnd, "复制诊断", 26, 628, 126, 38, BUTTON_COPY, role="secondary")
         control(hwnd, "保存诊断文本…", 164, 628, 154, 38, BUTTON_SAVE, role="secondary")
         control(hwnd, "打开日志目录", 330, 628, 142, 38, BUTTON_FOLDER, role="secondary")
@@ -861,10 +988,14 @@ def wndproc(hwnd, message, wparam, lparam):
             gdi32.SetTextColor(hdc, WHITE); gdi32.SetBkColor(hdc, NAVY); return brushes["navy"]
         if role == "status":
             gdi32.SetTextColor(hdc, NAVY); gdi32.SetBkColor(hdc, PALE_BLUE); return brushes["pale"]
+        if role == "service-state":
+            gdi32.SetTextColor(hdc, BLUE); gdi32.SetBkColor(hdc, IVORY); return brushes["ivory"]
+        if role == "agent-state":
+            gdi32.SetTextColor(hdc, NAVY); gdi32.SetBkColor(hdc, WHITE); return brushes["white"]
         if role in ("title", "section"):
             gdi32.SetTextColor(hdc, NAVY); gdi32.SetBkColor(hdc, IVORY); return brushes["ivory"]
         if role == "muted":
-            gdi32.SetTextColor(hdc, rgb(91, 105, 120)); gdi32.SetBkColor(hdc, IVORY); return brushes["ivory"]
+            gdi32.SetTextColor(hdc, MUTED_TEXT); gdi32.SetBkColor(hdc, IVORY); return brushes["ivory"]
         gdi32.SetTextColor(hdc, NAVY); gdi32.SetBkColor(hdc, IVORY); return brushes["ivory"]
     if message == WM_CTLCOLOREDIT:
         gdi32.SetTextColor(wparam, NAVY); gdi32.SetBkColor(wparam, WHITE); return brushes.get("white", 0)
@@ -873,11 +1004,13 @@ def wndproc(hwnd, message, wparam, lparam):
         role = control_roles.get(item.hwndItem, "secondary")
         active = bool(item.itemState & 0x11)
         disabled = bool(item.itemState & 0x0004)
-        brush = brushes.get("muted" if disabled else "navy" if role == "primary" else "pale")
+        brush = brushes.get("muted" if disabled else "blue" if role == "primary" else "danger" if role == "danger" else "white")
         user32.FillRect(item.hDC, ctypes.byref(item.rcItem), brush)
+        if role != "primary" and not disabled:
+            user32.FrameRect(item.hDC, ctypes.byref(item.rcItem), brushes.get("outline"))
         font = control_fonts.get(item.hwndItem)
         old_font = gdi32.SelectObject(item.hDC, font) if font else None
-        gdi32.SetTextColor(item.hDC, rgb(80, 87, 96) if disabled else WHITE if role == "primary" else NAVY); gdi32.SetBkMode(item.hDC, 1)
+        gdi32.SetTextColor(item.hDC, rgb(120, 130, 145) if disabled else WHITE if role == "primary" else RED if role == "danger" else NAVY); gdi32.SetBkMode(item.hDC, 1)
         user32.DrawTextW(item.hDC, user32_get_text(item.hwndItem), -1, ctypes.byref(item.rcItem), DT_SINGLELINE | DT_VCENTER | DT_CENTER)
         if active: user32.DrawFocusRect(item.hDC, ctypes.byref(item.rcItem))
         if old_font: gdi32.SelectObject(item.hDC, old_font)
@@ -927,14 +1060,43 @@ def wndproc(hwnd, message, wparam, lparam):
     if message == WM_SIZE:
         resize_layout(hwnd, lparam & 0xffff, (lparam >> 16) & 0xffff)
         return 0
+    if message == WM_VSCROLL:
+        info = SCROLLINFO(ctypes.sizeof(SCROLLINFO), SIF_TRACKPOS, 0, 0, 0, 0, 0)
+        user32.GetScrollInfo(hwnd, SB_VERT, ctypes.byref(info))
+        code = wparam & 0xffff
+        client = wintypes.RECT(); user32.GetClientRect(hwnd, ctypes.byref(client))
+        page = max(1, (client.bottom - client.top) * 96 // dpi - 48)
+        if code == SB_LINEUP: scroll_window(hwnd, scroll_offset - 42)
+        elif code == SB_LINEDOWN: scroll_window(hwnd, scroll_offset + 42)
+        elif code == SB_PAGEUP: scroll_window(hwnd, scroll_offset - page)
+        elif code == SB_PAGEDOWN: scroll_window(hwnd, scroll_offset + page)
+        elif code == SB_THUMBTRACK: scroll_window(hwnd, info.nTrackPos)
+        elif code == SB_TOP: scroll_window(hwnd, 0)
+        elif code == SB_BOTTOM: scroll_window(hwnd, 10000)
+        return 0
+    if message == WM_MOUSEWHEEL:
+        delta = ctypes.c_short((wparam >> 16) & 0xffff).value
+        scroll_window(hwnd, scroll_offset - (delta // 120) * 72)
+        return 0
     if message == WM_GETMINMAXINFO:
         info = ctypes.cast(lparam, ctypes.POINTER(MINMAXINFO)).contents
-        info.ptMinTrackSize.x, info.ptMinTrackSize.y = scale(680), scale(590)
+        work = monitor_work_area(hwnd)
+        max_width_px = max(1, work.right - work.left - 32)
+        max_height_px = max(1, work.bottom - work.top - 32)
+        info.ptMinTrackSize.x = min(scale(680), max_width_px)
+        info.ptMinTrackSize.y = min(scale(500), max_height_px)
         return 0
     if message == WM_DPICHANGED:
         dpi = int(wparam & 0xffff) or 96
-        rect = ctypes.cast(lparam, ctypes.POINTER(wintypes.RECT)).contents
-        user32.SetWindowPos(hwnd, None, rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top, 0x14)
+        suggested = ctypes.cast(lparam, ctypes.POINTER(wintypes.RECT)).contents
+        work = monitor_work_area(rect=suggested)
+        max_width_px = max(1, work.right - work.left - 32)
+        max_height_px = max(1, work.bottom - work.top - 32)
+        width_px = min(suggested.right - suggested.left, max_width_px)
+        height_px = min(suggested.bottom - suggested.top, max_height_px)
+        x = min(max(suggested.left, work.left), work.right - width_px)
+        y = min(max(suggested.top, work.top), work.bottom - height_px)
+        user32.SetWindowPos(hwnd, None, x, y, width_px, height_px, 0x14)
         for handle, x, y, w, h in controls:
             user32.SetWindowPos(handle, None, scale(x), scale(y), scale(w), scale(h), 0x14)
         apply_dpi_fonts()
@@ -967,7 +1129,7 @@ def user32_get_text(hwnd):
     return buffer.value
 
 def main():
-    global mutex, dpi, window_width, window_height
+    global mutex, dpi, window_width, window_height, startup_work_area
     try: user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except (AttributeError, OSError): pass
     dpi = int(get_dpi_for_system()) if get_dpi_for_system else 96
@@ -982,8 +1144,11 @@ def main():
     work = wintypes.RECT()
     if not user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
         work = wintypes.RECT(0, 0, int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
-    work_width = max(680, (work.right - work.left) * 96 // dpi - 32)
-    work_height = max(590, (work.bottom - work.top) * 96 // dpi - 32)
+    startup_work_area = work
+    available_width_px = max(1, work.right - work.left - 32)
+    available_height_px = max(1, work.bottom - work.top - 32)
+    work_width = max(1, available_width_px * 96 // dpi)
+    work_height = max(1, available_height_px * 96 // dpi)
     window_width, window_height = min(820, work_width), min(730, work_height)
     width_px, height_px = scale(window_width), scale(window_height)
     x = work.left + max(0, (work.right-work.left-width_px)//2)
@@ -995,13 +1160,15 @@ def main():
     icon = user32.LoadImageW(None, icon_path, 1, scale(32), scale(32), 0x10)
     wc = WNDCLASSW(0, callback, 0, 0, instance, icon, cursor, None, None, WINDOW_CLASS)
     if not user32.RegisterClassW(ctypes.byref(wc)): return 1
-    hwnd = user32.CreateWindowExW(0, WINDOW_CLASS, "PadNote Connection Assistant", WS_OVERLAPPEDWINDOW,
+    hwnd = user32.CreateWindowExW(0, WINDOW_CLASS, "PadNote Connection Assistant", WS_OVERLAPPEDWINDOW | WS_VSCROLL,
                                   x, y, width_px, height_px, None, None, instance, None)
     if not hwnd: return 1
     user32.ShowWindow(hwnd, 5)
     message = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
-        if user32.IsDialogMessageW(hwnd, ctypes.byref(message)): continue
+        if user32.IsDialogMessageW(hwnd, ctypes.byref(message)):
+            ensure_focused_control_visible(hwnd)
+            continue
         user32.TranslateMessage(ctypes.byref(message)); user32.DispatchMessageW(ctypes.byref(message))
     if mutex: kernel32.CloseHandle(mutex)
     return int(message.wParam)

@@ -18,13 +18,22 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 ## Demo frames
 
-The desktop connection assistant brings Agent preparation, network choice, QR pairing, and timestamped checks onto one page. The image below shows the layout rendered with synthetic data.
+Paper tools are grouped by writing, color, history, and page actions, with AI, tasks, and sharing kept visible. The computer assistant puts Agent checks, QR pairing, and device approval on one page, and prompts for a new check when results expire. The image below shows the management UI with synthetic data. [Media notes](docs/media/2026-10-29/README.md).
 
-![Desktop assistant checks and pairing, with synthetic demo data](docs/media/2026-10-28/beta19-desktop-readiness.jpg)
+![Desktop assistant checks and pairing, with synthetic demo data](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+<details>
+<summary>Windows launcher and diagnostic controls</summary>
+
+This window was rendered by the new launcher on Windows 11 with synthetic service and Agent state. No real Agent was contacted. [Media notes](docs/media/2026-10-29/README.md).
+
+<img src="docs/media/2026-10-29/beta28-windows-launcher.png" alt="Windows connection assistant with synthetic state" width="760">
+
+</details>
 
 These real-device frames show a synthetic sample page, task description, and task-preset selector. See the [capture and frame-rate notes](docs/media/2026-10-28/README.md).
 

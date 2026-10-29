@@ -131,9 +131,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     // 知识库用墨绿区分。改这里即可整体调色，不要在局部散落新颜色。
     private static final int CARD_COLOR = Color.WHITE;
     private static final int CARD_STROKE = Color.rgb(236, 233, 226);
-    private static final int ACCENT_COLOR = Color.rgb(40, 94, 168);
-    private static final int ACCENT_TINT = Color.rgb(232, 240, 250);
-    private static final int SECONDARY_TEXT = Color.rgb(107, 118, 132);
+    private static final int ACCENT_COLOR = PadNoteUi.ACCENT;
+    private static final int ACCENT_TINT = PadNoteUi.ACCENT_TINT;
+    private static final int SECONDARY_TEXT = Color.rgb(91, 107, 128);
     private static final int FAINT_TEXT = Color.rgb(137, 147, 155);
     private static final int VAULT_COLOR = Color.rgb(47, 128, 91);
     private static final int VAULT_TINT = Color.rgb(233, 243, 238);
@@ -198,7 +198,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private ToolIconButton textButton;
     private ToolIconButton eraserButton;
     private ToolIconButton lassoButton;
-    private ToolIconButton aiButton;
+    private View aiButton;
     private ToolIconButton paletteButton;
     private ToolIconButton undoButton;
     private ToolIconButton redoButton;
@@ -848,7 +848,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(30), dp(26), dp(30), dp(18));
+        header.setPadding(dp(24), dp(20), dp(24), dp(12));
         LinearLayout brandRow = new LinearLayout(this);
         brandRow.setOrientation(LinearLayout.HORIZONTAL);
         brandRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -866,39 +866,38 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         Button languageButton = pillButton(getString(R.string.core_language), BUTTON_QUIET);
         brandRow.addView(languageButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
         languageButton.setOnClickListener(view -> showLanguagePicker());
         header.addView(brandRow, matchWrap());
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        actions.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams actionsParams = matchWrap();
-        actionsParams.topMargin = dp(18);
+        actionsParams.topMargin = dp(12);
         HorizontalScrollView actionsScroll = new HorizontalScrollView(this);
         actionsScroll.setHorizontalScrollBarEnabled(false);
         actionsScroll.setFillViewport(true);
+        actionsScroll.setHorizontalFadingEdgeEnabled(true);
+        actionsScroll.setFadingEdgeLength(dp(16));
         actionsScroll.addView(actions, new HorizontalScrollView.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         header.addView(actionsScroll, actionsParams);
+        LinearLayout primaryActions = PadNoteUi.toolbarGroup(this);
+        LinearLayout libraryActions = PadNoteUi.toolbarGroup(this);
         Button createButton = pillButton(getString(R.string.core_create_note), BUTTON_PRIMARY);
         createButton.setOnClickListener(view -> showCreateNoteDialog());
-        actions.addView(createButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        addShelfAction(primaryActions, createButton);
         Button pendingVideoButton=pillButton(getString(R.string.core_pending_videos),BUTTON_QUIET);
         pendingVideoButton.setContentDescription(getString(R.string.core_pending_videos_desc));
         pendingVideoButton.setOnClickListener(view->{if(android.os.Build.VERSION.SDK_INT>=27)showPendingVideoArtifacts(null);});
-        actions.addView(pendingVideoButton,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(42)));
+        addShelfAction(libraryActions, pendingVideoButton);
         Button importButton = pillButton(getString(R.string.core_import_note), BUTTON_QUIET);
         importButton.setOnClickListener(view -> launchImportNote());
-        actions.addView(importButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        addShelfAction(libraryActions, importButton);
         Button removedNotesButton = pillButton(getString(R.string.core_removed_notes_button), BUTTON_QUIET);
         removedNotesButton.setOnClickListener(view -> showRemovedNotes());
-        LinearLayout.LayoutParams removedNotesParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        removedNotesParams.leftMargin = dp(8);
-        actions.addView(removedNotesButton, removedNotesParams);
+        addShelfAction(libraryActions, removedNotesButton);
         Button agentButton = pillButton(getString(R.string.core_agent), BUTTON_QUIET);
         List<AgentConnectionStore.Config> agentProfiles = agentConnectionStore.listSummaries();
         long verifiedAgents = agentProfiles.stream().filter(AgentConnectionStore.Config::verified).count();
@@ -906,17 +905,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ? getString(R.string.core_agent_button_setup)
                 : getString(R.string.core_agent_button_summary, agentProfiles.size(), verifiedAgents));
         agentButton.setOnClickListener(view -> showAgentConnectionDialog());
-        LinearLayout.LayoutParams agentParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        agentParams.leftMargin = dp(8);
-        actions.addView(agentButton, agentParams);
+        addShelfAction(libraryActions, agentButton);
         Button libraryButton = pillButton(getString(R.string.core_library_button), BUTTON_TONAL);
         libraryButton.setContentDescription(getString(R.string.core_library_desc));
         libraryButton.setOnClickListener(view -> showLibraryActions());
-        LinearLayout.LayoutParams libraryParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        libraryParams.leftMargin = dp(8);
-        actions.addView(libraryButton, libraryParams);
+        addShelfAction(libraryActions, libraryButton);
+        actions.addView(primaryActions);
+        LinearLayout.LayoutParams libraryGroupParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        libraryGroupParams.leftMargin = dp(8);
+        actions.addView(libraryActions, libraryGroupParams);
         root.addView(header);
 
         TextView sectionTitle = text(getString(R.string.core_recent_notes), 17, INK_COLOR);
@@ -939,6 +937,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
+    }
+
+    private void addShelfAction(LinearLayout group, Button button) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+        params.setMargins(dp(2), 0, dp(2), 0);
+        group.addView(button, params);
     }
 
     private static final class RemovedNotePreview {
@@ -1937,8 +1942,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         stylePrompt.setText(stylePrompts[0]);View stylePromptField=labeledField(getString(R.string.core_style_prompt_editable),stylePrompt);choices.addView(stylePromptField);
         styleField.setVisibility(View.GONE);stylePromptField.setVisibility(View.GONE);
         style.setVisibility(View.GONE);stylePrompt.setVisibility(View.GONE);
-        body.addView(choices);
-        body.addView(labeledField(getString(R.string.core_specific_request),instruction));
+        LinearLayout.LayoutParams sectionSpacing = matchWrap();
+        sectionSpacing.bottomMargin = dp(10);
+        body.addView(choices, sectionSpacing);
+        LinearLayout requestCard = cardSurface(14, 12);
+        requestCard.addView(labeledField(getString(R.string.core_specific_request), instruction));
+        LinearLayout.LayoutParams requestSpacing = matchWrap();
+        requestSpacing.bottomMargin = dp(10);
+        body.addView(requestCard, requestSpacing);
         style.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){stylePrompt.setText(stylePrompts[position]);}
             @Override public void onNothingSelected(AdapterView<?> parent){}
@@ -1960,19 +1971,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         catch(Exception error){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_read_error,safeError(error)),Toast.LENGTH_LONG).show();return;}
         LinearLayout summary=cardSurface(14,14);
         TextView summaryTitle=text(capture.title,16,INK_COLOR);summaryTitle.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        summaryTitle.setSingleLine(true);
+        summaryTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         summary.addView(summaryTitle,matchWrap());
         TextView summaryMeta=text(getString(R.string.flow_handoff_paper_meta,capture.pageCount,formatBytes(pdf.length())),12,SECONDARY_TEXT);
         summary.addView(summaryMeta,matchWrap());
         Button previewToggle=pillButton(getString(R.string.flow_preview_paper),BUTTON_QUIET);
         summary.addView(previewToggle,matchWrap());
-        TextView readable=text(content,12,INK_COLOR);readable.setTextIsSelectable(true);
+        TextView readable=text(content,13,INK_COLOR);readable.setTextIsSelectable(true);
         ScrollView contentScroll=new ScrollView(this);contentScroll.addView(readable);
         contentScroll.setVisibility(View.GONE);
         summary.addView(contentScroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(180)));
         previewToggle.setOnClickListener(v->{boolean open=contentScroll.getVisibility()!=View.VISIBLE;
             contentScroll.setVisibility(open?View.VISIBLE:View.GONE);
             previewToggle.setText(getString(open?R.string.flow_hide_paper_preview:R.string.flow_preview_paper));});
-        body.addView(summary,0);
+        LinearLayout.LayoutParams summarySpacing = matchWrap();
+        summarySpacing.bottomMargin = dp(10);
+        body.addView(summary, 0, summarySpacing);
         ScrollView formScroll=new ScrollView(this);formScroll.addView(body);
         AlertDialog dialog=ChoiceRows.builder(this).setTitle(R.string.core_paper_composer_title)
                 .setView(formScroll).setNegativeButton(getString(R.string.flow_return_to_note),(d,w)->pdf.delete())
@@ -3128,11 +3143,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void applyChipAppearance(TextView chip, boolean selected) {
         GradientDrawable background = new GradientDrawable();
         background.setCornerRadius(dp(7));
-        background.setColor(selected ? Color.argb(30, 40, 94, 168) : Color.TRANSPARENT);
+        background.setColor(selected ? Color.argb(30, 53, 95, 210) : Color.TRANSPARENT);
         background.setStroke(dp(1), selected
-                ? Color.rgb(40, 94, 168) : Color.rgb(205, 213, 220));
+                ? ACCENT_COLOR : Color.rgb(205, 213, 220));
         chip.setBackground(background);
-        chip.setTextColor(selected ? Color.rgb(40, 94, 168) : INK_COLOR);
+        chip.setTextColor(selected ? ACCENT_COLOR : INK_COLOR);
     }
 
     private void createNote(String title, PageStyle style) {
@@ -3480,50 +3495,175 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private View createHeader() {
         LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(20), dp(8), dp(20), dp(8));
-
+        LinearLayout titleRow = new LinearLayout(this);
         ToolIconButton back = iconButton(ToolIconButton.Icon.BOOKSHELF,
                 getString(R.string.core_back_shelf), view -> leaveEditorToBookshelf());
-        header.addView(back);
 
         LinearLayout titleGroup = new LinearLayout(this);
         titleGroup.setOrientation(LinearLayout.VERTICAL);
         TextView title = text(currentNoteTitle == null ? getString(R.string.core_unnamed_note) : currentNoteTitle,
                 20, INK_COLOR);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titleGroup.addView(title);
         titleGroup.addView(text(getString(R.string.core_paper_zoom),
                 12, SECONDARY_TEXT));
-        header.addView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        Button video = pillButton(getString(R.string.core_tasks), BUTTON_TONAL);
-        video.setContentDescription(getString(R.string.core_tasks_desc));
-        video.setMaxWidth(dp(124));
-        video.setMinWidth(dp(52));
-        video.setMaxLines(2);
-        video.setGravity(Gravity.CENTER);
-        video.setOnClickListener(view -> showVideoHubForCurrentNote());
-        LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
-        videoParams.leftMargin = dp(8);
-        header.addView(video, videoParams);
-
-        Button paper = pillButton(getString(R.string.core_share_agent), BUTTON_TONAL);
-        paper.setContentDescription(getString(R.string.core_share_paper));
-        paper.setOnClickListener(view -> showPaperHandoffForCurrentNote());
-        LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
-        paperParams.leftMargin = dp(6);
-        header.addView(paper, paperParams);
 
         statsView = text(getString(R.string.core_page_stats_visual, 1, 1, 100), 12, SECONDARY_TEXT);
         statsView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
         statsView.setSingleLine(true);
         statsView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        header.addView(statsView);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button aiAction = pillButton(getString(R.string.core_header_ai), BUTTON_PRIMARY);
+        aiAction.setContentDescription(getString(R.string.core_ai_open));
+        aiAction.setMinHeight(dp(48));
+        aiAction.setOnClickListener(view -> openAiCardForSelection());
+        aiButton = aiAction;
+        LinearLayout.LayoutParams aiParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        aiParams.rightMargin = dp(4);
+        actions.addView(aiAction, aiParams);
+
+        Button video = pillButton(getString(R.string.core_header_tasks), BUTTON_TONAL);
+        video.setContentDescription(getString(R.string.core_tasks_desc));
+        video.setMinHeight(dp(48));
+        video.setMinWidth(dp(52));
+        video.setOnClickListener(view -> showVideoHubForCurrentNote());
+        LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        videoParams.leftMargin = 0;
+        videoParams.rightMargin = dp(4);
+        actions.addView(video, videoParams);
+
+        Button paper = pillButton(getString(R.string.core_header_share), BUTTON_TONAL);
+        paper.setContentDescription(getString(R.string.core_share_paper));
+        paper.setMinHeight(dp(48));
+        paper.setOnClickListener(view -> showPaperHandoffForCurrentNote());
+        LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        paperParams.leftMargin = dp(4);
+        actions.addView(paper, paperParams);
+
+        boolean[] compactMode = {shouldUseCompactHeader(
+                dp(getResources().getConfiguration().screenWidthDp), back, actions)};
+        configureNoteHeader(header, titleRow, back, titleGroup, statsView, actions,
+                aiAction, video, paper, aiParams, videoParams, paperParams, compactMode[0]);
+        header.addOnLayoutChangeListener((view, left, top, right, bottom,
+                                          oldLeft, oldTop, oldRight, oldBottom) -> {
+            int availableWidth = right - left;
+            boolean nextCompact = shouldUseCompactHeader(availableWidth, back, actions);
+            if (nextCompact != compactMode[0]) {
+                compactMode[0] = nextCompact;
+                configureNoteHeader(header, titleRow, back, titleGroup, statsView, actions,
+                        aiAction, video, paper, aiParams, videoParams, paperParams, nextCompact);
+            }
+        });
         return header;
+    }
+
+    private boolean shouldUseCompactHeader(int availableWidthPx, View back,
+                                           LinearLayout actions) {
+        int titleMinWidth = dp(100);
+        int statsWidth = dp(132);
+        int required = dp(40 + 8 + 8 + 8) + titleMinWidth + statsWidth;
+        required += back.getMinimumWidth() > 0 ? back.getMinimumWidth() : dp(48);
+        for (int i = 0; i < actions.getChildCount(); i++) {
+            View child = actions.getChildAt(i);
+            if (!(child instanceof Button)) continue;
+            Button button = (Button) child;
+            float textWidth = button.getPaint().measureText(button.getText().toString());
+            int desiredWidth = Math.max(button.getMinWidth(), (int) Math.ceil(textWidth)
+                    + button.getPaddingLeft() + button.getPaddingRight() + dp(20));
+            int maxWidth = button.getMaxWidth();
+            if (maxWidth > 0) desiredWidth = Math.min(desiredWidth, maxWidth);
+            required += desiredWidth;
+        }
+        // Reserve the wide-layout gaps independently of the current mode so the
+        // resize listener cannot oscillate at the compact/wide boundary.
+        required += dp(20);
+        return availableWidthPx < required;
+    }
+
+    private void configureNoteHeader(LinearLayout header, LinearLayout titleRow,
+                                    ToolIconButton back, LinearLayout titleGroup,
+                                    TextView pageStats, LinearLayout actions,
+                                    Button aiAction, Button tasksAction, Button shareAction,
+                                    LinearLayout.LayoutParams aiParams,
+                                    LinearLayout.LayoutParams tasksParams,
+                                    LinearLayout.LayoutParams shareParams,
+                                    boolean compact) {
+        header.removeAllViews();
+        titleRow.removeAllViews();
+        header.setOrientation(compact ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        header.setGravity(compact ? Gravity.START : Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(compact ? 12 : 20), dp(compact ? 4 : 8),
+                dp(compact ? 12 : 20), dp(compact ? 4 : 8));
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleGroup.setMinimumWidth(compact ? 0 : dp(100));
+        pageStats.setMaxWidth(dp(compact ? 112 : 132));
+
+        aiAction.setMinWidth(compact ? 0 : dp(72));
+        aiAction.setMaxLines(compact ? 2 : 1);
+        aiAction.setEllipsize(compact ? android.text.TextUtils.TruncateAt.END : null);
+        aiAction.setGravity(Gravity.CENTER);
+        tasksAction.setMaxLines(compact ? 2 : 1);
+        tasksAction.setEllipsize(compact ? android.text.TextUtils.TruncateAt.END : null);
+        tasksAction.setGravity(Gravity.CENTER);
+        shareAction.setMinWidth(compact ? 0 : dp(72));
+        shareAction.setMaxLines(compact ? 2 : 1);
+        shareAction.setEllipsize(compact ? android.text.TextUtils.TruncateAt.END : null);
+        shareAction.setGravity(Gravity.CENTER);
+
+        aiParams.width = compact ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT;
+        aiParams.weight = compact ? 1f : 0f;
+        aiParams.rightMargin = dp(4);
+        tasksParams.width = compact ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT;
+        tasksParams.weight = compact ? 1f : 0f;
+        tasksParams.leftMargin = dp(compact ? 0 : 8);
+        tasksParams.rightMargin = dp(4);
+        shareParams.width = compact ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT;
+        shareParams.weight = compact ? 1f : 0f;
+        shareParams.leftMargin = dp(4);
+        actions.setWeightSum(compact ? 3f : 0f);
+        actions.setGravity(compact ? Gravity.START : Gravity.CENTER_VERTICAL);
+        aiAction.setLayoutParams(aiParams);
+        tasksAction.setLayoutParams(tasksParams);
+        shareAction.setLayoutParams(shareParams);
+
+        if (compact) {
+            titleRow.addView(back);
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            titleParams.leftMargin = dp(8);
+            titleRow.addView(titleGroup, titleParams);
+            LinearLayout.LayoutParams statsParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            statsParams.leftMargin = dp(8);
+            titleRow.addView(pageStats, statsParams);
+            header.addView(titleRow, matchWrap());
+            LinearLayout.LayoutParams actionParams = matchWrap();
+            actionParams.topMargin = dp(4);
+            header.addView(actions, actionParams);
+        } else {
+            header.addView(back);
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            titleParams.leftMargin = dp(8);
+            header.addView(titleGroup, titleParams);
+            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            actionParams.leftMargin = dp(8);
+            header.addView(actions, actionParams);
+            LinearLayout.LayoutParams statsParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            statsParams.leftMargin = dp(8);
+            header.addView(pageStats, statsParams);
+        }
     }
 
     private View createToolbar() {
@@ -3531,12 +3671,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         scroll.setFillViewport(true);
+        scroll.setHorizontalFadingEdgeEnabled(true);
+        scroll.setFadingEdgeLength(dp(16));
         scroll.setBackgroundColor(TOOLBAR_COLOR);
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(8), dp(6), dp(8), dp(6));
+        row.setPadding(dp(8), dp(4), dp(8), dp(4));
+
+        LinearLayout tools = PadNoteUi.toolbarGroup(this);
+        LinearLayout colors = PadNoteUi.toolbarGroup(this);
+        LinearLayout history = PadNoteUi.toolbarGroup(this);
+        LinearLayout selection = PadNoteUi.toolbarGroup(this);
+        LinearLayout pages = PadNoteUi.toolbarGroup(this);
+        LinearLayout files = PadNoteUi.toolbarGroup(this);
 
         penButton = iconButton(ToolIconButton.Icon.PEN, getString(R.string.core_pen_settings), view -> {
             selectTool(NoteCanvasView.Tool.PEN);
@@ -3563,61 +3712,69 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         canvasView.setTool(NoteCanvasView.Tool.SHAPE);
                     }).show();
         });
-        row.addView(penButton);
-        row.addView(highlighterButton);
-        row.addView(shapeButton);
-        row.addView(textButton);
-        row.addView(eraserButton);
-        row.addView(lassoButton);
-        aiButton = iconButton(ToolIconButton.Icon.AI, getString(R.string.core_ai_open), view -> openAiCardForSelection());
-        row.addView(aiButton);
-        row.addView(separator());
+        PadNoteUi.addToolbarControl(this, tools, penButton);
+        PadNoteUi.addToolbarControl(this, tools, highlighterButton);
+        PadNoteUi.addToolbarControl(this, tools, shapeButton);
+        PadNoteUi.addToolbarControl(this, tools, textButton);
+        PadNoteUi.addToolbarControl(this, tools, eraserButton);
+        PadNoteUi.addToolbarControl(this, tools, lassoButton);
+        penOnlyButton = iconButton(ToolIconButton.Icon.PEN_ONLY,
+                getString(R.string.core_pen_only_label), view -> togglePenOnly());
+        PadNoteUi.addToolbarControl(this, tools, penOnlyButton);
 
         paletteButton = iconButton(ToolIconButton.Icon.PALETTE, getString(R.string.core_palette), view -> showColorPalette());
-        row.addView(paletteButton);
+        PadNoteUi.addToolbarControl(this, colors, paletteButton);
         for (int index = 0; index < PRESET_COLORS.length; index++) {
             int color = PRESET_COLORS[index];
             ColorSwatchButton swatch = new ColorSwatchButton(
                     this, color, getString(R.string.core_use_color, presetColorName(index)));
             swatch.setOnClickListener(view -> applyInkColor(color));
             colorSwatches.add(swatch);
-            LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-            row.addView(swatch, swatchParams);
+            PadNoteUi.addToolbarControl(this, colors, swatch);
         }
 
-        row.addView(separator());
         undoButton = iconButton(ToolIconButton.Icon.UNDO, getString(R.string.core_undo), view -> canvasView.undo());
         redoButton = iconButton(ToolIconButton.Icon.REDO, getString(R.string.core_redo), view -> canvasView.redo());
-        row.addView(undoButton);
-        row.addView(redoButton);
+        PadNoteUi.addToolbarControl(this, history, undoButton);
+        PadNoteUi.addToolbarControl(this, history, redoButton);
 
-        row.addView(separator());
         duplicateButton = iconButton(ToolIconButton.Icon.DUPLICATE, getString(R.string.core_duplicate_selection), view -> canvasView.duplicateSelection());
         deleteSelectionButton = iconButton(ToolIconButton.Icon.DELETE, getString(R.string.core_delete_selection), view -> canvasView.deleteSelection());
         cancelSelectionButton = iconButton(ToolIconButton.Icon.CANCEL, getString(R.string.core_cancel_selection), view -> canvasView.cancelSelection());
-        row.addView(duplicateButton);
-        row.addView(deleteSelectionButton);
-        row.addView(cancelSelectionButton);
+        PadNoteUi.addToolbarControl(this, selection, duplicateButton);
+        PadNoteUi.addToolbarControl(this, selection, deleteSelectionButton);
+        PadNoteUi.addToolbarControl(this, selection, cancelSelectionButton);
 
-        row.addView(separator());
-        row.addView(iconButton(ToolIconButton.Icon.CLEAR, getString(R.string.core_clear_note), view -> confirmClear()));
-        row.addView(iconButton(ToolIconButton.Icon.PAGE_ADD, getString(R.string.core_add_page), view -> canvasView.addPage()));
-        row.addView(iconButton(ToolIconButton.Icon.PAGE_MENU, getString(R.string.core_page_manager), view -> showPageActions()));
-        row.addView(iconButton(ToolIconButton.Icon.IMAGE, getString(R.string.core_insert_image), view -> launchImportImage()));
-        row.addView(iconButton(ToolIconButton.Icon.SAVE, getString(R.string.core_save_now), view -> {
+        PadNoteUi.addToolbarControl(this, pages,
+                iconButton(ToolIconButton.Icon.CLEAR, getString(R.string.core_clear_note), view -> confirmClear()));
+        PadNoteUi.addToolbarControl(this, pages,
+                iconButton(ToolIconButton.Icon.PAGE_ADD, getString(R.string.core_add_page), view -> canvasView.addPage()));
+        PadNoteUi.addToolbarControl(this, pages,
+                iconButton(ToolIconButton.Icon.PAGE_MENU, getString(R.string.core_page_manager), view -> showPageActions()));
+        PadNoteUi.addToolbarControl(this, pages,
+                iconButton(ToolIconButton.Icon.IMAGE, getString(R.string.core_insert_image), view -> launchImportImage()));
+        PadNoteUi.addToolbarControl(this, files, iconButton(ToolIconButton.Icon.SAVE,
+                getString(R.string.core_save_now), view -> {
             if (!commitInlineTextEditorExcept(null)) return;
             handler.removeCallbacks(delayedSave);
             saveDocument(true);
         }));
-        row.addView(iconButton(ToolIconButton.Icon.EXPORT,
+        PadNoteUi.addToolbarControl(this, files, iconButton(ToolIconButton.Icon.EXPORT,
                 getString(R.string.core_export_note_button), view -> exportCurrentNote()));
         Button outlineButton = pillButton(getString(R.string.core_content_outline_button), BUTTON_QUIET);
         outlineButton.setContentDescription(getString(R.string.core_content_outline_desc));
         outlineButton.setOnClickListener(view -> showContentOutline());
-        row.addView(outlineButton);
-        penOnlyButton = iconButton(ToolIconButton.Icon.PEN_ONLY,
-                getString(R.string.core_pen_only_label), view -> togglePenOnly());
-        row.addView(penOnlyButton);
+        LinearLayout.LayoutParams outlineParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+        outlineParams.setMargins(dp(2), 0, dp(2), 0);
+        files.addView(outlineButton, outlineParams);
+
+        PadNoteUi.addToolbarGroup(this, row, tools);
+        PadNoteUi.addToolbarGroup(this, row, colors);
+        PadNoteUi.addToolbarGroup(this, row, history);
+        PadNoteUi.addToolbarGroup(this, row, selection);
+        PadNoteUi.addToolbarGroup(this, row, pages);
+        PadNoteUi.addToolbarGroup(this, row, files);
 
         scroll.addView(row, new HorizontalScrollView.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -3876,10 +4033,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             latexButton.setTextColor(latex ? Color.WHITE : INK_COLOR);
             markdownButton.setTextColor(latex ? INK_COLOR : Color.WHITE);
             latexButton.setBackground(roundedBackground(
-                    latex ? Color.rgb(40, 94, 168) : Color.rgb(240, 242, 243),
+                    latex ? ACCENT_COLOR : Color.rgb(240, 242, 243),
                     Color.rgb(157, 173, 187), 9));
             markdownButton.setBackground(roundedBackground(
-                    latex ? Color.rgb(240, 242, 243) : Color.rgb(40, 94, 168),
+                    latex ? Color.rgb(240, 242, 243) : ACCENT_COLOR,
                     Color.rgb(157, 173, 187), 9));
             sourceInput.setHint(latex ? getString(R.string.core_text_latex_hint)
                     : getString(R.string.core_text_markdown_hint));
@@ -5128,15 +5285,6 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         params.setMargins(dp(1), 0, dp(1), 0);
         button.setLayoutParams(params);
         return button;
-    }
-
-    private View separator() {
-        View separator = new View(this);
-        separator.setBackgroundColor(Color.rgb(208, 214, 218));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(1), dp(28));
-        params.setMargins(dp(4), 0, dp(4), 0);
-        separator.setLayoutParams(params);
-        return separator;
     }
 
     private TextView text(String value, float size, int color) {
@@ -8626,7 +8774,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
     }
 
-    private void setActionEnabled(ToolIconButton button, boolean enabled) {
+    private void setActionEnabled(View button, boolean enabled) {
+        if (button == null) return;
         button.setEnabled(enabled);
         button.setAlpha(enabled ? 1f : 0.38f);
     }

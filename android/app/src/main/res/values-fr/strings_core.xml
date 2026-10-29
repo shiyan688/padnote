@@ -79,4 +79,7 @@
     <string name="core_manual_draft_discard_complete">Le brouillon endommagé a été supprimé. La note n’a pas été modifiée.</string>
     <string name="core_manual_draft_cleanup_running">Suppression du brouillon enregistré…</string>
     <string name="core_manual_draft_cleanup_complete">Brouillon enregistré supprimé. La note d’origine n’a pas été modifiée.</string>
+    <string name="core_header_ai">Chat IA</string>
+    <string name="core_header_tasks">Tâches</string>
+    <string name="core_header_share">Partager / Agent</string>
 </resources>

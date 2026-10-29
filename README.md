@@ -18,13 +18,22 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 电脑接收纸面材料并建立任务；在电脑任务列表查看处理进度，并在任务详情查看返回内容 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 ## 演示画面
 
-电脑连接助手把 Agent 准备、网络选择、扫码配对和带时间的检查结果放在同一页。下图由当前页面渲染器使用合成数据生成，只展示界面布局。
+纸面工具按书写、配色、撤销和页面操作分组；AI 对话、任务与分享入口保持可见。电脑助手把 Agent 检查、扫码配对与设备批准放在同一页，检测过期时会提示重新检查。下图使用合成数据展示电脑助手的管理页布局。[素材说明](docs/media/2026-10-29/README.md)。
 
-![电脑助手检测与配对界面（合成演示数据）](docs/media/2026-10-28/beta19-desktop-readiness.jpg)
+![电脑助手检测与配对界面（合成演示数据）](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+<details>
+<summary>Windows 启动器与诊断入口</summary>
+
+下面是在 Windows 11 上运行新版启动器得到的合成状态窗口。用于展示服务状态、Agent 检查和诊断入口；没有联系真实 Agent。[素材说明](docs/media/2026-10-29/README.md)。
+
+<img src="docs/media/2026-10-29/beta28-windows-launcher.png" alt="Windows 连接助手窗口，合成演示状态" width="760">
+
+</details>
 
 以下画面展示平板纸面、任务说明与预设选择，来自合成示例的实机截图。[拍摄与帧率说明](docs/media/2026-10-28/README.md)。
 

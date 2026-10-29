@@ -81,4 +81,7 @@
     <string name="core_manual_draft_discard_complete">손상된 저장 초안을 삭제했습니다. 노트는 변경되지 않았습니다.</string>
     <string name="core_manual_draft_cleanup_running">저장된 초안을 정리하는 중…</string>
     <string name="core_manual_draft_cleanup_complete">저장된 초안을 정리했습니다. 원본 노트는 변경되지 않았습니다.</string>
+    <string name="core_header_ai">AI 대화</string>
+    <string name="core_header_tasks">작업</string>
+    <string name="core_header_share">공유 / Agent</string>
 </resources>

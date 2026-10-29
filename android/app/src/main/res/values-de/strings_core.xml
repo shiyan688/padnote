@@ -79,4 +79,7 @@
     <string name="core_manual_draft_discard_complete">Beschädigter gespeicherter Entwurf entfernt. Die Notiz blieb unverändert.</string>
     <string name="core_manual_draft_cleanup_running">Gespeicherter Entwurf wird entfernt…</string>
     <string name="core_manual_draft_cleanup_complete">Gespeicherter Entwurf entfernt. Die ursprüngliche Notiz blieb unverändert.</string>
+    <string name="core_header_ai">KI-Chat</string>
+    <string name="core_header_tasks">Aufgaben</string>
+    <string name="core_header_share">Teilen / Agent</string>
 </resources>

@@ -20,8 +20,8 @@ final class ToolIconButton extends View {
 
     private static final int INK_COLOR = Color.rgb(31, 41, 51);
     private static final int DISABLED_COLOR = Color.rgb(137, 147, 155);
-    private static final int SELECTED_COLOR = Color.rgb(40, 94, 168);
-    private static final int SELECTED_BACKGROUND_COLOR = Color.rgb(232, 240, 250);
+    private static final int SELECTED_COLOR = PadNoteUi.ACCENT;
+    private static final int SELECTED_BACKGROUND_COLOR = PadNoteUi.ACCENT_TINT;
     private static final int[] RAINBOW_COLORS = {0xFFE84855, 0xFFC04BB9, 0xFF4D66D8,
             0xFF37AED2, 0xFF40B070, 0xFFEBBE41, 0xFFE84855};
 
@@ -52,7 +52,7 @@ final class ToolIconButton extends View {
         GradientDrawable mask = new GradientDrawable();
         mask.setColor(Color.WHITE);
         mask.setCornerRadius(dp(11));
-        setForeground(new RippleDrawable(ColorStateList.valueOf(Color.argb(34, 40, 94, 168)), null, mask));
+        setForeground(new RippleDrawable(ColorStateList.valueOf(Color.argb(34, 53, 95, 210)), null, mask));
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setStrokeJoin(Paint.Join.ROUND);
     }

@@ -107,4 +107,7 @@
     <string name="core_paper_package_error">Could not freeze or package the note (nothing sent): %s</string>
     <string name="core_task_bundle_intro">Complete the task package request: “%1$s”. The rendered paper is in input/paper.pdf; readable notes and this note’s AI conversation are in input/content.md.</string>
     <string name="core_video_style_prefix">Video style: %1$s</string>
+    <string name="core_header_ai">AI Chat</string>
+    <string name="core_header_tasks">Tasks</string>
+    <string name="core_header_share">Share / Agent</string>
 </resources>

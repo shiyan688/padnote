@@ -3,7 +3,7 @@
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:colorAccent">#285EA8</item>
+        <item name="android:colorAccent">#355FD2</item>
         <item name="android:navigationBarColor">#F0EEE8</item>
         <item name="android:statusBarColor">#F4F1E8</item>
         <item name="android:windowLightStatusBar">true</item>
@@ -34,7 +34,7 @@
     </style>
 
     <style name="PadNoteAlertDialog" parent="android:style/Theme.Material.Light.Dialog.Alert">
-        <item name="android:colorAccent">#285EA8</item>
+        <item name="android:colorAccent">#355FD2</item>
         <item name="android:textColorPrimary">#1F2933</item>
         <item name="android:textColorSecondary">#6B7684</item>
         <item name="android:windowBackground">@drawable/padnote_dialog_background</item>
@@ -53,7 +53,7 @@
     </style>
 
     <style name="PadNoteSelectionDialog" parent="android:style/Theme.Material.Light.Dialog.Alert">
-        <item name="android:colorAccent">#285EA8</item>
+        <item name="android:colorAccent">#355FD2</item>
         <item name="android:textColorPrimary">#1F2933</item>
         <item name="android:textColorSecondary">#6B7684</item>
         <item name="android:windowBackground">@drawable/padnote_selection_dialog_background</item>

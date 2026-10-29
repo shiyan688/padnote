@@ -7,7 +7,7 @@ import android.graphics.Paint;
 import android.view.View;
 
 final class ColorSwatchButton extends View {
-    private static final int SELECTED_COLOR = Color.rgb(40, 94, 168);
+    private static final int SELECTED_COLOR = PadNoteUi.ACCENT;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final int swatchColor;
 

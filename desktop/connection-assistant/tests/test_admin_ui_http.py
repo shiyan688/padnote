@@ -56,7 +56,11 @@ class AdminUIHTTPTests(unittest.TestCase):
     def test_empty_admin_page_and_fixed_static_assets(self) -> None:
         status, headers, body = self.request("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn("Agent 管理", body.decode())
+        page = body.decode()
+        self.assertIn('<main id="main-content"', page)
+        self.assertIn('<h2>Agent</h2>', page)
+        self.assertIn('href="#agents"', page)
+        self.assertIn('action="/admin/instances"', page)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
         self.assertEqual(headers.get("Referrer-Policy"), "same-origin")
         for path, expected in (("/assets/admin.css", "text/css"),

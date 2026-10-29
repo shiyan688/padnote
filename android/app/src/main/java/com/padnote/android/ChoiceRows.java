@@ -17,8 +17,8 @@ import android.widget.TextView;
 /** Shared paper-style rows and popup styling for Android option selectors. */
 final class ChoiceRows {
     private static final int INK = Color.rgb(31, 41, 51);
-    private static final int ACCENT = Color.rgb(40, 94, 168);
-    private static final int SELECTED = Color.rgb(232, 240, 250);
+    private static final int ACCENT = PadNoteUi.ACCENT;
+    private static final int SELECTED = PadNoteUi.ACCENT_TINT;
     private ChoiceRows() {}
 
     static ArrayAdapter<String> adapter(Context context, String[] values) {
@@ -64,14 +64,15 @@ final class ChoiceRows {
             Context context = getContext();
             text.setText(getItem(position));
             text.setTextColor(INK);
-            text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
             text.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             text.setSingleLine(false);
             text.setMaxLines(Integer.MAX_VALUE);
             text.setEllipsize(null);
             text.setIncludeFontPadding(true);
+            text.setLineSpacing(dp(context, 2), 1f);
             int vertical = owner != null && !dropdown ? 8 : 12;
-            text.setPadding(dp(context, 16), dp(context, vertical), dp(context, 16), dp(context, vertical));
+            text.setPadding(dp(context, 18), dp(context, vertical), dp(context, 18), dp(context, vertical));
             text.setMinHeight(dp(context, 48));
             if (dropdown) {
                 boolean selected = owner != null && position == owner.getSelectedItemPosition();
@@ -88,7 +89,7 @@ final class ChoiceRows {
                 } else {
                     text.setCompoundDrawables(null, null, null, null);
                 }
-                ColorStateList rippleColor = ColorStateList.valueOf(Color.argb(42, 40, 94, 168));
+                ColorStateList rippleColor = ColorStateList.valueOf(Color.argb(42, 53, 95, 210));
                 android.graphics.drawable.Drawable mask = new android.graphics.drawable.ColorDrawable(Color.WHITE);
                 if (Build.VERSION.SDK_INT >= 21) {
                     text.setBackground(new android.graphics.drawable.RippleDrawable(rippleColor, states, mask));

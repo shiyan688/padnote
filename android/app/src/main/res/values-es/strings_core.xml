@@ -79,4 +79,7 @@
     <string name="core_manual_draft_discard_complete">Borrador guardado dañado eliminado. La nota no cambió.</string>
     <string name="core_manual_draft_cleanup_running">Eliminando el borrador guardado…</string>
     <string name="core_manual_draft_cleanup_complete">Borrador guardado eliminado. La nota original no cambió.</string>
+    <string name="core_header_ai">Chat IA</string>
+    <string name="core_header_tasks">Tareas</string>
+    <string name="core_header_share">Compartir / Agent</string>
 </resources>
