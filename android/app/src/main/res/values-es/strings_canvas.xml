@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">Flujo de texto multipágina eliminado</string>
     <string name="canvas_flow_deleted">Cuadro de texto eliminado</string>
     <string name="canvas_too_many_pages">El flujo supera 500 páginas. Solo se muestra el contenido colocado; se conserva el texto completo, pero no se puede exportar a PDF</string>
+    <string name="canvas_ai_page_limit">La respuesta no cabe completa en 500 páginas. No se añadió; el texto completo sigue en la tarjeta de respuesta de IA.</string>
+    <string name="canvas_layout_unplaceable">Parte del texto no se puede distribuir de forma segura en una página. Divide la tabla o el texto.</string>
+    <string name="canvas_table_unsupported">Esta tabla no se puede dividir con seguridad con las reglas actuales. Acórtala o divídela manualmente; el texto original está guardado.</string>
+    <string name="canvas_table_expansion_limit">La tabla supera el límite seguro de división. Acórtala o divídela manualmente; el texto original está guardado.</string>
     <string name="canvas_pdf_snapshot_invalid">La instantánea de exportación PDF ya no es válida</string>
     <string name="canvas_pdf_bitmap_fail">No se pudo crear la imagen de la página %1$d</string>
     <string name="canvas_pdf_render_fail">No se pudo renderizar la página %1$d</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">Exportación PDF cancelada</string>
     <string name="canvas_paper_not_ready">El tamaño del papel aún no está listo</string>
     <string name="canvas_pdf_flow_too_long">El flujo supera el límite de 500 páginas. No se exportó el PDF; el texto original sigue guardado</string>
+    <string name="canvas_pdf_unplaceable_block">Parte del texto no se puede paginar de forma segura. No se exportó el PDF; divide la tabla o el texto e inténtalo de nuevo</string>
+    <string name="canvas_pdf_unsupported_table">Esta tabla no se puede dividir con seguridad con las reglas actuales. No se exportó el PDF; acórtala o divídela manualmente. El texto original está guardado.</string>
+    <string name="canvas_pdf_table_expansion_limit">La tabla supera el límite seguro de división. No se exportó el PDF; acórtala o divídela manualmente. El texto original está guardado.</string>
     <string name="canvas_pdf_height_unknown">No se pudo confirmar la altura real del texto. No se exportó el PDF; reduce o divide el texto e inténtalo de nuevo</string>
     <string name="canvas_height_overflow">El texto aún supera el espacio reservado. Se conserva el texto completo; divídelo o redúcelo e inténtalo de nuevo</string>
     <string name="canvas_height_limit">El texto supera el espacio máximo reservado. Se conserva el texto completo; divídelo o redúcelo e inténtalo de nuevo</string>

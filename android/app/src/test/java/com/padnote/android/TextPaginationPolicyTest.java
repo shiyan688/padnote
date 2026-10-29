@@ -4,6 +4,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Arrays;
+import java.util.List;
+
 import org.junit.Test;
 
 public class TextPaginationPolicyTest {
@@ -77,6 +80,92 @@ public class TextPaginationPolicyTest {
         assertEquals(0f, flow.measuredMermaidHeight(horizontal), 0.01f);
         assertEquals(72f, copy.measuredMermaidHeight(horizontal), 0.01f);
         assertEquals(420f, copy.measuredMermaidHeight(vertical), 0.01f);
+    }
+
+    @Test public void pdfGateDistinguishesPageCapFromUnplaceableBlock() {
+        TextFlow pageCap = new TextFlow("cap", NoteTextBox.Format.MARKDOWN, "x",
+                16f, 1.35f, 700f, 0, 16f, 16f);
+        pageCap.lastLayoutComplete = false;
+        pageCap.lastLayoutPageCount = 499;
+        pageCap.lastLayoutFailureReason = TextFlow.LayoutFailureReason.PAGE_LIMIT;
+        assertTrue(NoteCanvasView.isFlowPageLimitFailure(pageCap));
+
+        TextFlow oversizedBlock = new TextFlow("block", NoteTextBox.Format.MARKDOWN, "x",
+                16f, 1.35f, 700f, 0, 16f, 16f);
+        oversizedBlock.lastLayoutComplete = false;
+        oversizedBlock.lastLayoutPageCount = 500;
+        oversizedBlock.lastLayoutFailureReason = TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK;
+        assertFalse(NoteCanvasView.isFlowPageLimitFailure(oversizedBlock));
+
+        TextFlow unsupportedTable = new TextFlow("table", NoteTextBox.Format.MARKDOWN, "x",
+                16f, 1.35f, 700f, 0, 16f, 16f);
+        unsupportedTable.lastLayoutComplete = false;
+        unsupportedTable.lastLayoutFailureReason = TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE;
+        assertFalse(NoteCanvasView.isFlowPageLimitFailure(unsupportedTable));
+    }
+
+    @Test public void flowCapacityMapsLayoutFailuresWithoutMaskingSourceLimits() {
+        assertEquals(TextFlowCapacity.Failure.PAGE_LIMIT,
+                TextFlowCapacity.checkLayout("x", 500, false,
+                        TextFlow.LayoutFailureReason.PAGE_LIMIT));
+        assertEquals(TextFlowCapacity.Failure.UNPLACEABLE_BLOCK,
+                TextFlowCapacity.checkLayout("x", 3, false,
+                        TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK));
+        assertEquals(TextFlowCapacity.Failure.UNSUPPORTED_TABLE,
+                TextFlowCapacity.checkLayout("x", 3, false,
+                        TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE));
+        assertEquals(TextFlowCapacity.Failure.TABLE_EXPANSION_LIMIT,
+                TextFlowCapacity.checkLayout("x", 3, false,
+                        TextFlow.LayoutFailureReason.TABLE_EXPANSION_LIMIT));
+        assertEquals("the physical page cap has priority over a narrower cause",
+                TextFlowCapacity.Failure.PAGE_LIMIT,
+                TextFlowCapacity.checkLayout("x", 501, false,
+                        TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK));
+        assertEquals(TextFlowCapacity.Failure.PAGE_LIMIT,
+                TextFlowCapacity.checkLayout("x", 3, false,
+                        TextFlow.LayoutFailureReason.NONE));
+        assertEquals(TextFlowCapacity.Failure.SOURCE_TOO_LONG,
+                TextFlowCapacity.checkLayout("x".repeat(TextFlow.MAX_SOURCE_LENGTH + 1),
+                        501, false, TextFlow.LayoutFailureReason.TABLE_EXPANSION_LIMIT));
+        TextFlowCapacity.Rejection localized = new TextFlowCapacity.Rejection(
+                TextFlowCapacity.Failure.UNSUPPORTED_TABLE, "localized table message");
+        assertEquals(TextFlowCapacity.Failure.UNSUPPORTED_TABLE, localized.failure);
+        assertEquals("localized table message", localized.getMessage());
+    }
+
+    @Test public void aBlockThatFitsFreshPaperButNotPage500TailIsPageLimit() {
+        assertEquals(TextFlow.LayoutFailureReason.PAGE_LIMIT,
+                NoteCanvasView.classifyNoFitBlockFailure(true,
+                        360f, 300f, 36f, 20f, 220f, 315f,
+                        TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK));
+        assertEquals("a block larger than a complete fresh page remains unsupported",
+                TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE,
+                NoteCanvasView.classifyNoFitBlockFailure(true,
+                        360f, 300f, 36f, 20f, 400f, 315f,
+                        TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE));
+        assertEquals("the same tail on a non-final page is not a page-cap failure",
+                TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK,
+                NoteCanvasView.classifyNoFitBlockFailure(false,
+                        360f, 300f, 36f, 20f, 220f, 315f,
+                        TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK));
+    }
+
+    @Test public void adjacentIntroAndMarkdownTableAreSeparatedWithoutSplittingPlainPipes() {
+        String intro = "Intro immediately before table.";
+        String table = "| id | detail |\n| --- | --- |\n| A | first row |\n| B | second row |";
+        String trailing = "Trailing paragraph remains after the table.";
+        List<String> blocks = NoteCanvasView.splitTextFlowBlocks(NoteTextBox.Format.MARKDOWN,
+                intro + "\n" + table + "\n" + trailing);
+        assertEquals(Arrays.asList(intro, table, trailing), blocks);
+
+        List<String> plainPipe = NoteCanvasView.splitTextFlowBlocks(
+                NoteTextBox.Format.MARKDOWN, "A plain sentence | with a pipe\nand more prose.");
+        assertEquals(Arrays.asList("A plain sentence | with a pipe\nand more prose."), plainPipe);
+
+        List<String> fenced = NoteCanvasView.splitTextFlowBlocks(NoteTextBox.Format.MARKDOWN,
+                "```text\n| header | body |\n| --- | --- |\n```\nAfter fence.");
+        assertEquals(Arrays.asList("```text\n| header | body |\n| --- | --- |\n```",
+                "After fence."), fenced);
     }
 
     @Test public void exportNeverShrinksOrdinaryProsePerFragment() {

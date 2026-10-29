@@ -19,6 +19,7 @@ import android.util.AttributeSet;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.view.animation.DecelerateInterpolator;
@@ -718,6 +719,7 @@ public final class NoteCanvasView extends View {
     private boolean movingSelection = false;
     private boolean documentChangedInGesture = false;
     private boolean showEraserCursor = false;
+    private final TextPlacementPolicy textPlacementPolicy = new TextPlacementPolicy();
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
     private int activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
     private int activeGesturePageIndex = 0;
@@ -824,6 +826,9 @@ public final class NoteCanvasView extends View {
     }
 
     void setTool(Tool tool) {
+        if (textPlacementPolicy.current() != null) {
+            cancelPendingTextPlacement();
+        }
         if (activePointerId != MotionEvent.INVALID_POINTER_ID) {
             return;
         }
@@ -873,6 +878,7 @@ public final class NoteCanvasView extends View {
     }
 
     void setPenOnly(boolean enabled) {
+        if (penOnly != enabled) cancelPendingTextPlacement();
         penOnly = enabled;
     }
 
@@ -1118,9 +1124,11 @@ public final class NoteCanvasView extends View {
         try {
             preparedLayouts = layoutFlow(flow);
             TextFlowCapacity.Failure layoutFailure = TextFlowCapacity.checkLayout(
-                    flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete);
+                    flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete,
+                    flow.lastLayoutFailureReason);
             if (layoutFailure != TextFlowCapacity.Failure.NONE) {
-                throw new TextFlowCapacity.Rejection(layoutFailure);
+                throw new TextFlowCapacity.Rejection(layoutFailure,
+                        localizedLayoutFailureMessage(layoutFailure));
             }
         } finally {
             pageCount = pageCountBeforePreview;
@@ -1645,7 +1653,14 @@ public final class NoteCanvasView extends View {
         List<TextFragmentLayout> layouts = layoutFlow(flow);
         NoteTextBox first = reflowFlow(flow, layouts);
         if (!flow.lastLayoutComplete) {
-            dispatchStats(0, getContext().getString(R.string.canvas_too_many_pages));
+            int message = isFlowPageLimitFailure(flow)
+                    ? R.string.canvas_too_many_pages
+                    : flow.lastLayoutFailureReason == TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE
+                    ? R.string.canvas_table_unsupported
+                    : flow.lastLayoutFailureReason == TextFlow.LayoutFailureReason.TABLE_EXPANSION_LIMIT
+                    ? R.string.canvas_table_expansion_limit
+                    : R.string.canvas_layout_unplaceable;
+            dispatchStats(0, getContext().getString(message));
         }
         return first;
     }
@@ -1708,6 +1723,7 @@ public final class NoteCanvasView extends View {
      */
     private List<TextFragmentLayout> layoutFlow(TextFlow flow) {
         flow.lastLayoutComplete = true;
+        flow.lastLayoutFailureReason = TextFlow.LayoutFailureReason.NONE;
         float margin = dp(16);
         float width = clamp(flow.width, dp(180), Math.max(dp(180), pageWidth - margin * 2f));
         List<String> rawBlocks = splitTextFlowBlocks(flow.format, flow.source.trim());
@@ -1812,6 +1828,11 @@ public final class NoteCanvasView extends View {
                     // The full block does not fit even on a fresh printable page.
                     // Stop; callers that commit a flow must reject this incomplete
                     // layout rather than accepting a clipped fragment.
+                    flow.lastLayoutFailureReason = classifyNoFitBlockFailure(
+                            finalAllowedPage, y, pageTop(pageIndex), margin,
+                            usedHeight, blockHeight,
+                            Math.max(dp(72), pageHeight - margin * 2f),
+                            paginationBlock.failureReason);
                     break pages;
                 }
                 if (!finalAllowedPage && fragment.length() > 0 &&
@@ -1874,6 +1895,7 @@ public final class NoteCanvasView extends View {
             }
             pageIndex = continuation.pageIndex;
             if (pageIndex >= 500) {
+                flow.lastLayoutFailureReason = TextFlow.LayoutFailureReason.PAGE_LIMIT;
                 break;
             }
             pageCount = Math.max(pageCount, pageIndex + 1);
@@ -1881,6 +1903,12 @@ public final class NoteCanvasView extends View {
         }
         flow.lastLayoutComplete = blockIndex >= blocks.size();
         flow.lastLayoutPageCount = Math.max(1, pageCount);
+        if (!flow.lastLayoutComplete && flow.lastLayoutFailureReason ==
+                TextFlow.LayoutFailureReason.NONE) {
+            flow.lastLayoutFailureReason = pageIndex >= 500
+                    ? TextFlow.LayoutFailureReason.PAGE_LIMIT
+                    : TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK;
+        }
         if (layouts.isEmpty()) {
             layouts.add(new TextFragmentLayout("", pageIndex, x, y, width, dp(72)));
         }
@@ -1941,7 +1969,7 @@ public final class NoteCanvasView extends View {
                 && source.trim().matches("(?is)^```mermaid\\s.*");
     }
 
-    private List<String> splitTextFlowBlocks(NoteTextBox.Format format, String source) {
+    static List<String> splitTextFlowBlocks(NoteTextBox.Format format, String source) {
         List<String> blocks = new ArrayList<>();
         String normalized = source == null ? ""
                 : source.replace("\r\n", "\n").replace('\r', '\n').trim();
@@ -1963,7 +1991,10 @@ public final class NoteCanvasView extends View {
         StringBuilder current = new StringBuilder();
         boolean fencedCode = false;
         String mathClose = null;
-        for (String line : normalized.split("\n", -1)) {
+        int tableColumns = 0;
+        String[] lines = normalized.split("\n", -1);
+        for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            String line = lines[lineIndex];
             String trimmed = line.trim();
             if (fencedCode) {
                 appendBlockLine(current, line);
@@ -1982,6 +2013,7 @@ public final class NoteCanvasView extends View {
                 continue;
             }
             if (trimmed.startsWith("```")) {
+                tableColumns = 0;
                 flushTextFlowBlock(blocks, current);
                 appendBlockLine(current, line);
                 fencedCode = true;
@@ -1989,9 +2021,33 @@ public final class NoteCanvasView extends View {
             }
             if ((trimmed.startsWith("\\[") && !trimmed.contains("\\]")) ||
                     (trimmed.startsWith("$$") && trimmed.indexOf("$$", 2) < 0)) {
+                tableColumns = 0;
                 flushTextFlowBlock(blocks, current);
                 appendBlockLine(current, line);
                 mathClose = trimmed.startsWith("\\[") ? "\\]" : "$$";
+                continue;
+            }
+            if (tableColumns > 0) {
+                if (trimmed.isEmpty()) {
+                    flushTextFlowBlock(blocks, current);
+                    tableColumns = 0;
+                    continue;
+                }
+                if (MarkdownTablePagination.isTableRow(line, tableColumns)) {
+                    appendBlockLine(current, line);
+                    continue;
+                }
+                // A non-row ends the table; process the same line again as
+                // prose/heading/list so following authored text is retained.
+                flushTextFlowBlock(blocks, current);
+                tableColumns = 0;
+            }
+            if (format == NoteTextBox.Format.MARKDOWN && lineIndex + 1 < lines.length &&
+                    MarkdownTablePagination.isTableStart(line, lines[lineIndex + 1])) {
+                flushTextFlowBlock(blocks, current);
+                appendBlockLine(current, line);
+                appendBlockLine(current, lines[++lineIndex]);
+                tableColumns = MarkdownTablePagination.columnCount(line);
                 continue;
             }
             if (trimmed.isEmpty()) {
@@ -2031,14 +2087,14 @@ public final class NoteCanvasView extends View {
         return Math.max(dp(72), height);
     }
 
-    private void appendBlockLine(StringBuilder block, String line) {
+    private static void appendBlockLine(StringBuilder block, String line) {
         if (block.length() > 0) {
             block.append('\n');
         }
         block.append(line);
     }
 
-    private void flushTextFlowBlock(List<String> blocks, StringBuilder block) {
+    private static void flushTextFlowBlock(List<String> blocks, StringBuilder block) {
         if (block.length() == 0) {
             return;
         }
@@ -2419,11 +2475,19 @@ public final class NoteCanvasView extends View {
         final String source;
         final boolean softContinuation;
         final int sourceBlock;
+        final TextFlow.LayoutFailureReason failureReason;
 
         PaginationBlock(String source, boolean softContinuation, int sourceBlock) {
+            this(source, softContinuation, sourceBlock, TextFlow.LayoutFailureReason.NONE);
+        }
+
+        PaginationBlock(String source, boolean softContinuation, int sourceBlock,
+                        TextFlow.LayoutFailureReason failureReason) {
             this.source = source;
             this.softContinuation = softContinuation;
             this.sourceBlock = sourceBlock;
+            this.failureReason = failureReason == null
+                    ? TextFlow.LayoutFailureReason.NONE : failureReason;
         }
     }
 
@@ -2432,9 +2496,49 @@ public final class NoteCanvasView extends View {
                                                              float fontSizeSp, float lineHeight,
                                                              float capacity) {
         List<PaginationBlock> expanded = new ArrayList<>();
+        int nextSyntheticSourceBlock = blocks.size();
         for (int sourceBlock = 0; sourceBlock < blocks.size(); sourceBlock++) {
             String block = blocks.get(sourceBlock);
             String trimmed = block.trim();
+            boolean tableEligible = format == NoteTextBox.Format.MARKDOWN &&
+                    !trimmed.startsWith("```") && !trimmed.startsWith("\\[") &&
+                    !trimmed.startsWith("$$");
+            if (tableEligible) {
+                float tableCapacity = Math.max(0f, capacity - dp(20));
+                MarkdownTablePagination.Result table = MarkdownTablePagination.paginate(
+                        block, tableCapacity,
+                        markdown -> estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
+                                markdown, width, fontSizeSp, lineHeight, null));
+                if (table.status == MarkdownTablePagination.Status.FITS) {
+                    expanded.add(new PaginationBlock(block, false, sourceBlock));
+                    continue;
+                }
+                if (table.status == MarkdownTablePagination.Status.PAGINATED) {
+                    for (int index = 0; index < table.fragments.size(); index++) {
+                        // Each repeated-header group is a complete independent
+                        // Markdown table. Keep a blank line if two groups share
+                        // one rendered page so the repeated header is not parsed
+                        // as a body row in the preceding table.
+                        expanded.add(new PaginationBlock(table.fragments.get(index),
+                                false, nextSyntheticSourceBlock++));
+                    }
+                    continue;
+                }
+                if (table.status == MarkdownTablePagination.Status.UNSUPPORTED) {
+                    expanded.add(new PaginationBlock(block, false, sourceBlock,
+                            TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE));
+                    continue;
+                }
+                if (table.status == MarkdownTablePagination.Status.PAGE_LIMIT) {
+                    TextFlow.LayoutFailureReason reason =
+                            MarkdownTablePagination.EXPANSION_LIMIT_REASON.equals(table.reason)
+                                    ? TextFlow.LayoutFailureReason.TABLE_EXPANSION_LIMIT
+                                    : TextFlow.LayoutFailureReason.PAGE_LIMIT;
+                    expanded.add(new PaginationBlock(block, false, sourceBlock,
+                            reason));
+                    continue;
+                }
+            }
             boolean atomic = format == NoteTextBox.Format.LATEX ||
                     trimmed.startsWith("\\[") || trimmed.startsWith("$$") ||
                     trimmed.startsWith("```") || trimmed.contains("\n|");
@@ -2668,7 +2772,16 @@ public final class NoteCanvasView extends View {
         }
         for (TextFlow flow : textFlows.values()) {
             if (!flow.lastLayoutComplete) {
-                throw new IOException(getContext().getString(R.string.canvas_pdf_flow_too_long));
+                if (isFlowPageLimitFailure(flow)) {
+                    throw new IOException(getContext().getString(R.string.canvas_pdf_flow_too_long));
+                }
+                if (flow.lastLayoutFailureReason == TextFlow.LayoutFailureReason.UNSUPPORTED_TABLE) {
+                    throw new IOException(getContext().getString(R.string.canvas_pdf_unsupported_table));
+                }
+                if (flow.lastLayoutFailureReason == TextFlow.LayoutFailureReason.TABLE_EXPANSION_LIMIT) {
+                    throw new IOException(getContext().getString(R.string.canvas_pdf_table_expansion_limit));
+                }
+                throw new IOException(getContext().getString(R.string.canvas_pdf_unplaceable_block));
             }
             if (flow.lastRenderHeightUnresolved) {
                 throw new IOException(getContext().getString(R.string.canvas_pdf_height_unknown));
@@ -2684,6 +2797,43 @@ public final class NoteCanvasView extends View {
         return new PdfExportSnapshot(this, pageCount, pageWidth, pageHeight, pageGap,
                 getResources().getDisplayMetrics().density, pageStyle, strokeCopies,
                 imageCopies, textCopies, backgroundCopy);
+    }
+
+    static boolean isFlowPageLimitFailure(TextFlow flow) {
+        return flow != null && flow.lastLayoutFailureReason ==
+                TextFlow.LayoutFailureReason.PAGE_LIMIT;
+    }
+
+    static TextFlow.LayoutFailureReason classifyNoFitBlockFailure(
+            boolean finalAllowedPage, float currentY, float pageTop, float margin,
+            float usedHeight, float blockHeight, float fullPageCapacity,
+            TextFlow.LayoutFailureReason blockFailure) {
+        if (finalAllowedPage && currentY > pageTop + margin + 1f &&
+                usedHeight + blockHeight <= fullPageCapacity) {
+            return TextFlow.LayoutFailureReason.PAGE_LIMIT;
+        }
+        return blockFailure == null || blockFailure == TextFlow.LayoutFailureReason.NONE
+                ? TextFlow.LayoutFailureReason.UNPLACEABLE_BLOCK : blockFailure;
+    }
+
+    String localizedLayoutFailureMessage(TextFlowCapacity.Failure failure) {
+        int resource;
+        switch (failure) {
+            case UNPLACEABLE_BLOCK:
+                resource = R.string.canvas_layout_unplaceable;
+                break;
+            case UNSUPPORTED_TABLE:
+                resource = R.string.canvas_table_unsupported;
+                break;
+            case TABLE_EXPANSION_LIMIT:
+                resource = R.string.canvas_table_expansion_limit;
+                break;
+            case PAGE_LIMIT:
+            default:
+                resource = R.string.canvas_ai_page_limit;
+                break;
+        }
+        return getContext().getString(resource);
     }
 
     /** Freezes only the selected page's crop inputs for AI paper rendering. */
@@ -3983,6 +4133,74 @@ public final class NoteCanvasView extends View {
         final int action = event.getActionMasked();
         final int actionIndex = event.getActionIndex();
 
+        if (action == MotionEvent.ACTION_DOWN && textPlacementPolicy.current() != null) {
+            cancelPendingTextPlacement();
+        }
+
+        TextPlacementPolicy.Placement pendingPlacement = textPlacementPolicy.current();
+        if (pendingPlacement != null) {
+            if (action == MotionEvent.ACTION_MOVE) {
+                int pointerIndex = event.findPointerIndex(pendingPlacement.pointerId);
+                if (pointerIndex < 0) {
+                    cancelPendingTextPlacement();
+                    return true;
+                }
+                float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+                for (int historyIndex = 0; historyIndex < event.getHistorySize(); historyIndex++) {
+                    if (textPlacementPolicy.cancelIfMoved(pendingPlacement.pointerId,
+                            event.getHistoricalX(pointerIndex, historyIndex),
+                            event.getHistoricalY(pointerIndex, historyIndex), slop)) {
+                        resetPendingPointerState(pendingPlacement.pointerId);
+                        return true;
+                    }
+                }
+                if (textPlacementPolicy.cancelIfMoved(pendingPlacement.pointerId,
+                        event.getX(pointerIndex), event.getY(pointerIndex), slop)) {
+                    resetPendingPointerState(pendingPlacement.pointerId);
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_CANCEL) {
+                cancelPendingTextPlacement();
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_DOWN) {
+                TextPlacementPolicy.Placement canceled = textPlacementPolicy.cancel();
+                if (canceled != null) resetPendingPointerState(canceled.pointerId);
+                if (canceled != null && canceled.toolType == MotionEvent.TOOL_TYPE_FINGER &&
+                        isPureFingerNavigationEvent(event)) {
+                    beginNavigation(event, -1);
+                } else if (selectedTool == Tool.TEXT &&
+                        event.getToolType(actionIndex) == MotionEvent.TOOL_TYPE_ERASER) {
+                    // Preserve the physical eraser's existing priority in mixed streams.
+                    beginEditingPointer(event, actionIndex);
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_UP) {
+                cancelPendingTextPlacement();
+                return true;
+            }
+            if (action == MotionEvent.ACTION_UP) {
+                float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+                boolean moved = textPlacementPolicy.cancelIfMoved(pendingPlacement.pointerId,
+                        event.getX(actionIndex), event.getY(actionIndex), slop);
+                TextPlacementPolicy.Placement placement = moved ? null :
+                        textPlacementPolicy.takeForUp(event.getPointerId(actionIndex));
+                if (moved) textPlacementPolicy.cancel();
+                resetPendingPointerState(pendingPlacement.pointerId);
+                if (placement != null) {
+                    // Clear state before the callback: it may synchronously create
+                    // the inline editor or change the active tool.
+                    if (listener != null) {
+                        listener.onTextInsertRequested(placement.worldX, placement.worldY);
+                    }
+                    dispatchStats(0, getContext().getString(R.string.canvas_text_placement));
+                }
+                return true;
+            }
+        }
+
         if (action == MotionEvent.ACTION_DOWN) {
             requestUnbufferedDispatch(event);
             int toolType = event.getToolType(actionIndex);
@@ -3998,6 +4216,10 @@ public final class NoteCanvasView extends View {
                 dispatchStats(0, getContext().getString(R.string.canvas_input_blocked, toolLabel(event.getToolType(actionIndex))));
                 return true;
             }
+            if (selectedTool == Tool.TEXT && toolType != MotionEvent.TOOL_TYPE_ERASER) {
+                beginPendingTextPlacement(event, actionIndex);
+                return true;
+            }
             beginEditingPointer(event, actionIndex);
             return true;
         }
@@ -4011,6 +4233,9 @@ public final class NoteCanvasView extends View {
                 }
                 if (activePointerId != MotionEvent.INVALID_POINTER_ID) {
                     cancelActiveEditingGesture();
+                }
+                if (selectedTool == Tool.TEXT && toolType == MotionEvent.TOOL_TYPE_STYLUS) {
+                    return true;
                 }
                 beginEditingPointer(event, actionIndex);
                 return true;
@@ -4095,6 +4320,45 @@ public final class NoteCanvasView extends View {
     @Override
     public boolean performClick() {
         super.performClick();
+        return true;
+    }
+
+    private void beginPendingTextPlacement(MotionEvent event, int pointerIndex) {
+        int pointerId = event.getPointerId(pointerIndex);
+        InkPoint point = pointFromEvent(event, pointerIndex, false, 0);
+        if (!pointInsideAnyPage(point.x, point.y)) {
+            dispatchStats(0, getContext().getString(R.string.canvas_write_inside));
+            return;
+        }
+        activePointerId = pointerId;
+        activeToolType = event.getToolType(pointerIndex);
+        activeGestureTool = Tool.TEXT;
+        activeGesturePageIndex = pageIndexForWorldY(point.y);
+        textPlacementPolicy.begin(pointerId, activeToolType,
+                event.getX(pointerIndex), event.getY(pointerIndex), point.x, point.y);
+    }
+
+    private void cancelPendingTextPlacement() {
+        TextPlacementPolicy.Placement canceled = textPlacementPolicy.cancel();
+        if (canceled != null) resetPendingPointerState(canceled.pointerId);
+    }
+
+    private void resetPendingPointerState(int pointerId) {
+        if (activePointerId == pointerId) {
+            activePointerId = MotionEvent.INVALID_POINTER_ID;
+            activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+            activeGesturePageIndex = 0;
+        }
+    }
+
+    private boolean isPureFingerNavigationEvent(MotionEvent event) {
+        if (event.getPointerCount() < 2) return false;
+        for (int index = 0; index < event.getPointerCount(); index++) {
+            if (event.getToolType(index) != MotionEvent.TOOL_TYPE_FINGER ||
+                    isLikelyPalm(event, index)) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -5587,6 +5851,7 @@ public final class NoteCanvasView extends View {
 
     @Override
     protected void onDetachedFromWindow() {
+        cancelPendingTextPlacement();
         cancelViewportReturnAnimation();
         if (pdfBackground != null) { pdfBackground.close(); pdfBackground = null; }
         super.onDetachedFromWindow();
@@ -6300,9 +6565,11 @@ public final class NoteCanvasView extends View {
             try {
                 preparedLayouts = layoutFlow(flow);
                 TextFlowCapacity.Failure layoutFailure = TextFlowCapacity.checkLayout(
-                        flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete);
+                        flow.source, flow.lastLayoutPageCount, flow.lastLayoutComplete,
+                        flow.lastLayoutFailureReason);
                 if (layoutFailure != TextFlowCapacity.Failure.NONE) {
-                    throw new PlacementResolver.Failure(TextFlowCapacity.message(layoutFailure));
+                    throw new PlacementResolver.Failure(
+                            localizedLayoutFailureMessage(layoutFailure));
                 }
             } finally {
                 pageCount = pageCountBeforePreview;

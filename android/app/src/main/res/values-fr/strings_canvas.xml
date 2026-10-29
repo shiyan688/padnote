@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">Flux de texte multipage supprimé</string>
     <string name="canvas_flow_deleted">Zone de texte supprimée</string>
     <string name="canvas_too_many_pages">Le flux dépasse 500 pages. Seul le contenu placé est affiché ; le texte complet est conservé, mais l’export PDF est indisponible</string>
+    <string name="canvas_ai_page_limit">Cette réponse ne tient pas entièrement sur 500 pages. Elle n’a pas été ajoutée ; le texte complet reste dans la carte de réponse IA.</string>
+    <string name="canvas_layout_unplaceable">Un bloc ne peut pas être mis en page sur une seule feuille sans risque. Scindez le tableau ou le texte.</string>
+    <string name="canvas_table_unsupported">Ce tableau ne peut pas être scindé sans risque avec les règles actuelles. Raccourcissez-le ou divisez-le manuellement ; le texte original est enregistré.</string>
+    <string name="canvas_table_expansion_limit">Ce tableau dépasse la limite de découpage sûr. Raccourcissez-le ou divisez-le manuellement ; le texte original est enregistré.</string>
     <string name="canvas_pdf_snapshot_invalid">L’instantané d’export PDF n’est plus valide</string>
     <string name="canvas_pdf_bitmap_fail">Impossible de créer l’image de la page %1$d</string>
     <string name="canvas_pdf_render_fail">Impossible de rendre la page %1$d</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">Export PDF annulé</string>
     <string name="canvas_paper_not_ready">Le format du papier n’est pas prêt</string>
     <string name="canvas_pdf_flow_too_long">Le flux dépasse la limite de 500 pages. Le PDF n’a pas été exporté ; le texte original reste enregistré</string>
+    <string name="canvas_pdf_unplaceable_block">Un bloc de texte ne peut pas être paginé sans risque. PDF non exporté ; scindez le tableau ou le texte puis réessayez</string>
+    <string name="canvas_pdf_unsupported_table">Ce tableau ne peut pas être scindé sans risque avec les règles actuelles. PDF non exporté ; raccourcissez-le ou divisez-le manuellement. Le texte original est enregistré.</string>
+    <string name="canvas_pdf_table_expansion_limit">Ce tableau dépasse la limite de découpage sûr. PDF non exporté ; raccourcissez ou divisez-le manuellement. Le texte original est enregistré.</string>
     <string name="canvas_pdf_height_unknown">Impossible de confirmer la hauteur réelle du texte. Le PDF n’a pas été exporté ; réduisez ou scindez le texte puis réessayez</string>
     <string name="canvas_height_overflow">Le texte dépasse encore l’espace réservé. Le texte complet est conservé ; scindez-le ou réduisez-le puis réessayez</string>
     <string name="canvas_height_limit">Le texte dépasse l’espace réservé maximal. Le texte complet est conservé ; scindez-le ou réduisez-le puis réessayez</string>

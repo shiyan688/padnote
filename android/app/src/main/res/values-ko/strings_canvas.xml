@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">여러 페이지의 텍스트 흐름 전체를 삭제했습니다</string>
     <string name="canvas_flow_deleted">텍스트 상자를 삭제했습니다</string>
     <string name="canvas_too_many_pages">텍스트 흐름이 500페이지를 초과합니다. 배치된 내용만 표시되며 원본은 저장되지만 PDF로 내보낼 수 없습니다</string>
+    <string name="canvas_ai_page_limit">답변을 500페이지 안에 완전히 배치할 수 없습니다. 노트에 추가되지 않았으며 전체 내용은 AI 답변 카드에 남아 있습니다.</string>
+    <string name="canvas_layout_unplaceable">일부 텍스트를 한 페이지에 안전하게 배치할 수 없습니다. 표나 텍스트를 나누세요.</string>
+    <string name="canvas_table_unsupported">현재 규칙으로는 이 표를 안전하게 나눌 수 없습니다. 표를 줄이거나 직접 나누세요. 원문은 저장되어 있습니다.</string>
+    <string name="canvas_table_expansion_limit">이 표가 안전한 분할 처리 한도를 초과했습니다. 줄이거나 직접 나누세요. 원문은 저장되어 있습니다.</string>
     <string name="canvas_pdf_snapshot_invalid">PDF 내보내기 스냅샷이 더 이상 유효하지 않습니다</string>
     <string name="canvas_pdf_bitmap_fail">페이지 %1$d 이미지를 만들 수 없습니다</string>
     <string name="canvas_pdf_render_fail">페이지 %1$d을(를) 렌더링할 수 없습니다</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">PDF 내보내기를 취소했습니다</string>
     <string name="canvas_paper_not_ready">용지 크기가 아직 준비되지 않았습니다</string>
     <string name="canvas_pdf_flow_too_long">텍스트 흐름이 500페이지 제한을 초과합니다. PDF는 내보내지 않았으며 원본 텍스트는 저장되어 있습니다</string>
+    <string name="canvas_pdf_unplaceable_block">안전하게 페이지를 나눌 수 없는 텍스트가 있습니다. PDF를 내보내지 않았습니다. 표나 텍스트를 나누고 다시 시도하세요</string>
+    <string name="canvas_pdf_unsupported_table">현재 규칙으로는 이 표를 안전하게 나눌 수 없습니다. PDF를 내보내지 않았습니다. 표를 줄이거나 직접 나누세요. 원문은 저장되어 있습니다.</string>
+    <string name="canvas_pdf_table_expansion_limit">이 표가 안전한 분할 처리 한도를 초과했습니다. PDF를 내보내지 않았습니다. 줄이거나 직접 나누세요. 원문은 저장되어 있습니다.</string>
     <string name="canvas_pdf_height_unknown">텍스트 실제 높이를 확인할 수 없습니다. PDF를 내보내지 않았습니다. 텍스트를 줄이거나 나눠 다시 시도하세요</string>
     <string name="canvas_height_overflow">텍스트가 예약된 페이지 공간을 계속 초과합니다. 원본은 저장되어 있습니다. 나누거나 줄여 다시 시도하세요</string>
     <string name="canvas_height_limit">텍스트가 최대 예약 공간을 초과합니다. 원본은 저장되어 있습니다. 나누거나 줄여 다시 시도하세요</string>

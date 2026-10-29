@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">複数ページのテキストフロー全体を削除しました</string>
     <string name="canvas_flow_deleted">テキストボックスを削除しました</string>
     <string name="canvas_too_many_pages">テキストフローが 500 ページを超えています。配置済みの内容のみ表示し、原文は保存されていますが PDF に書き出せません</string>
+    <string name="canvas_ai_page_limit">回答を500ページ以内に完全に配置できませんでした。ノートには追加されず、全文はAI回答カードに残っています。</string>
+    <string name="canvas_layout_unplaceable">一部の内容を1ページに安全に配置できません。表またはテキストを分割してください。</string>
+    <string name="canvas_table_unsupported">この表は現在のルールでは安全に分割できません。短くするか手動で分割してください。元のテキストは保存されています。</string>
+    <string name="canvas_table_expansion_limit">この表は安全な分割処理の上限を超えています。短くするか手動で分割してください。元のテキストは保存されています。</string>
     <string name="canvas_pdf_snapshot_invalid">PDF 書き出しスナップショットが無効です</string>
     <string name="canvas_pdf_bitmap_fail">ページ %1$d の画像を作成できません</string>
     <string name="canvas_pdf_render_fail">ページ %1$d を描画できません</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">PDF 書き出しをキャンセルしました</string>
     <string name="canvas_paper_not_ready">用紙サイズがまだ準備できていません</string>
     <string name="canvas_pdf_flow_too_long">テキストフローが 500 ページの上限を超えています。PDF は書き出されず、原文は保存されています</string>
+    <string name="canvas_pdf_unplaceable_block">安全にページ分割できないテキストがあります。PDF は書き出されていません。表またはテキストを分割して再試行してください</string>
+    <string name="canvas_pdf_unsupported_table">この表は現在のルールでは安全に分割できません。PDF は書き出されていません。短くするか手動で分割してください。元のテキストは保存されています。</string>
+    <string name="canvas_pdf_table_expansion_limit">この表は安全な分割処理の上限を超えています。PDF は書き出されていません。短くするか手動で分割してください。元のテキストは保存されています。</string>
     <string name="canvas_pdf_height_unknown">テキストの実際の高さを確認できませんでした。PDF は書き出されていません。テキストを縮小または分割して再試行してください</string>
     <string name="canvas_height_overflow">テキストがページの予約領域を超えています。原文は保存されています。分割または縮小して再試行してください</string>
     <string name="canvas_height_limit">テキストがページの最大予約領域を超えています。原文は保存されています。分割または縮小して再試行してください</string>

@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">已删除整个跨页文本流</string>
     <string name="canvas_flow_deleted">已删除文本框</string>
     <string name="canvas_too_many_pages">文字流超过 500 页，屏幕仅显示已排入部分；完整源码已保留，不能导出 PDF</string>
+    <string name="canvas_ai_page_limit">回答无法在 500 页内完整排版，未写入笔记；完整内容仍保留在 AI 结果卡中。</string>
+    <string name="canvas_layout_unplaceable">部分内容无法在单页安全排版，请拆分表格或文本。</string>
+    <string name="canvas_table_unsupported">此表格无法按当前规则安全分页，请缩短或手动拆分；原文仍已保存。</string>
+    <string name="canvas_table_expansion_limit">此表格超过安全分页处理上限，请缩短或手动拆分；原文仍已保存。</string>
     <string name="canvas_pdf_snapshot_invalid">PDF 导出快照已失效</string>
     <string name="canvas_pdf_bitmap_fail">无法分配第 %1$d 页图像</string>
     <string name="canvas_pdf_render_fail">无法渲染第 %1$d 页</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">PDF 导出已取消</string>
     <string name="canvas_paper_not_ready">纸张尺寸尚未就绪</string>
     <string name="canvas_pdf_flow_too_long">文字流超过 500 页容量，PDF 未导出；原始文字仍保存在笔记中</string>
+    <string name="canvas_pdf_unplaceable_block">部分内容无法安全分页，PDF 未导出；请拆分表格或文本后重试</string>
+    <string name="canvas_pdf_unsupported_table">此表格无法按当前规则安全分页，PDF 未导出；请缩短或手动拆分。原文仍已保存。</string>
+    <string name="canvas_pdf_table_expansion_limit">此表格超过安全分页处理上限，PDF 未导出；请缩短或手动拆分。原文仍已保存。</string>
     <string name="canvas_pdf_height_unknown">文字实际高度未能完整确认，PDF 未导出；请缩小或分段文字后重试</string>
     <string name="canvas_height_overflow">文字实际高度仍超过分页预留；已保留完整源码，请分段或缩小后重试</string>
     <string name="canvas_height_limit">文字实际高度超过分页预留上限；已保留完整源码，请分段或缩小后重试</string>

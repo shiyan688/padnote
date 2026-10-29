@@ -494,6 +494,7 @@ final class NoteStore {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
         validateDocument(imported);
+        validateImportedImageBounds(imported);
         requireWithinLimit(imported.toString());
         if (imported.optInt("pdfPageCount", 0) > 0 && pdfSource == null) {
             throw new IllegalArgumentException("PDF 笔记请导入包含原文的 .padnote.zip 包");
@@ -1357,6 +1358,43 @@ final class NoteStore {
                 imageEncoded > NoteImage.MAX_DOCUMENT_ENCODED) {
             throw new IllegalArgumentException("笔记图片超过容量上限");
         }
+    }
+
+    /**
+     * Reject image geometry that the canvas would reject when first opened, before an
+     * import creates a PDF, note file, or shelf-index entry. This is intentionally
+     * import-only: legacy stored-note recovery keeps its existing validation behavior.
+     */
+    private static void validateImportedImageBounds(JSONObject document) throws Exception {
+        JSONArray images = document.optJSONArray("images");
+        if (images == null || images.length() == 0) return;
+
+        double pageWidth = persistedPageDimension(document, "pageWidth", "canvasWidth");
+        double pageHeight = persistedPageDimension(document, "pageHeight", "canvasHeight");
+        for (int index = 0; index < images.length(); index++) {
+            JSONObject image = images.getJSONObject(index);
+            double x = image.getDouble("x");
+            double y = image.getDouble("y");
+            double width = image.getDouble("width");
+            double height = image.getDouble("height");
+            if (!Double.isFinite(x) || !Double.isFinite(y) || x < 0d || y < 0d) {
+                throw new IllegalArgumentException("图片位置或尺寸无效");
+            }
+            // Match NoteCanvasView.loadJsonDocument exactly, including its one-world-unit
+            // tolerance. When an axis has no persisted positive size, Canvas resolves it
+            // from the measured view/PageStyle; NoteStore has no such measured view, so
+            // leave that axis to the existing default instead of guessing screen bounds.
+            if ((pageWidth > 0d && x + width > pageWidth + 1d)
+                    || (pageHeight > 0d && y + height > pageHeight + 1d)) {
+                throw new IllegalArgumentException("图片超出页面范围");
+            }
+        }
+    }
+
+    /** Mirrors NoteCanvasView's persisted pageWidth/pageHeight then canvasWidth/Height lookup. */
+    private static double persistedPageDimension(JSONObject document, String key, String fallbackKey) {
+        double value = document.optDouble(key, document.optDouble(fallbackKey, 0d));
+        return Double.isFinite(value) && value > 0d ? value : 0d;
     }
 
     private static void requireFinite(double value, String message) {

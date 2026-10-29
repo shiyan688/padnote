@@ -5660,8 +5660,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     NoteTextBox.Format.MARKDOWN, answer, anchor);
         } catch (TextFlowCapacity.Rejection capacity) {
             addAiMessageBubble("assistant", answer, false);
-            addAiNotice(getString(R.string.core_ai_answer_too_long_detail));
-            aiStatusView.setText(R.string.core_ai_answer_not_written);
+            if (isLayoutCapacityFailure(capacity.failure)) {
+                String message = canvasView.localizedLayoutFailureMessage(capacity.failure);
+                addAiNotice(message);
+                aiStatusView.setText(R.string.core_ai_answer_not_written);
+            } else {
+                addAiNotice(getString(R.string.core_ai_answer_too_long_detail));
+                aiStatusView.setText(R.string.core_ai_answer_not_written);
+            }
             return;
         }
         if (inserted == null) {
@@ -5814,6 +5820,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         if (!changed) {
             if (insertionFailure instanceof TextFlowCapacity.Rejection) {
+                TextFlowCapacity.Rejection capacity = (TextFlowCapacity.Rejection) insertionFailure;
+                if (isLayoutCapacityFailure(capacity.failure)) {
+                    aiVisibleTimeline.set(index, entry.withoutAdoption());
+                    button.setText(R.string.core_ai_answer_not_written);
+                    button.setEnabled(false);
+                    String message = canvasView.localizedLayoutFailureMessage(capacity.failure);
+                    addAiNotice(message);
+                    aiStatusView.setText(R.string.core_ai_answer_not_written);
+                    return;
+                }
                 // This exact answer cannot be adopted as one text flow. Keep its
                 // full message in the durable timeline, but remove the stale
                 // one-click adoption capability so it cannot be retried against
@@ -5847,6 +5863,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ? getString(R.string.core_ai_answer_written_undoable)
                 : getString(R.string.core_ai_answer_partial_write_error));
         button.setEnabled(false);
+    }
+
+    private static boolean isLayoutCapacityFailure(TextFlowCapacity.Failure failure) {
+        return failure == TextFlowCapacity.Failure.PAGE_LIMIT ||
+                failure == TextFlowCapacity.Failure.UNPLACEABLE_BLOCK ||
+                failure == TextFlowCapacity.Failure.UNSUPPORTED_TABLE ||
+                failure == TextFlowCapacity.Failure.TABLE_EXPANSION_LIMIT;
     }
 
     private void appendAiBoundary(String message) {
@@ -8513,7 +8536,25 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/pdf");
         intent.putExtra(Intent.EXTRA_TITLE, safeFileName(currentNoteTitle) + ".pdf");
-        startActivityForResult(intent, REQUEST_EXPORT_PDF);
+        launchPdfDocumentAfterPreflight(canvasView,
+                () -> startActivityForResult(intent, REQUEST_EXPORT_PDF),
+                error -> Toast.makeText(this,
+                        getString(R.string.tail_pdf_export_failed, safeError(error)),
+                        Toast.LENGTH_LONG).show());
+    }
+
+    /** Validates export readiness before any picker can create a destination URI. */
+    static boolean launchPdfDocumentAfterPreflight(NoteCanvasView canvas, Runnable launchPicker,
+                                                    Consumer<Exception> onFailure) {
+        try (NoteCanvasView.PdfExportSnapshot snapshot = canvas.createPdfExportSnapshot()) {
+            PdfNoteIO.chooseRasterLongEdge(snapshot.getPageCount(),
+                    snapshot.getPageWidth(), snapshot.getPageHeight());
+        } catch (Exception error) {
+            onFailure.accept(error);
+            return false;
+        }
+        launchPicker.run();
+        return true;
     }
 
     private void launchExportNote(NoteStore.Entry entry) {

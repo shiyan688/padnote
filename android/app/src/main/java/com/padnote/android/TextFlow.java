@@ -22,6 +22,8 @@ import java.util.Map;
  * two pages" the way a raw world Y can.
  */
 final class TextFlow {
+    enum LayoutFailureReason { NONE, PAGE_LIMIT, TABLE_EXPANSION_LIMIT, UNPLACEABLE_BLOCK, UNSUPPORTED_TABLE }
+
     /** Longest source accepted from storage or import, in characters. */
     static final int MAX_SOURCE_LENGTH = 100_000;
 
@@ -62,9 +64,10 @@ final class TextFlow {
     transient float heightCorrection = 1f;
     /** Corrections applied so far, bounding the measure-reflow loop. */
     transient int heightCorrectionPasses;
-    /** False when the page cap stopped layout before every source block was placed. */
+    /** False when pagination stopped before every source block was placed. */
     transient boolean lastLayoutComplete = true;
     transient int lastLayoutPageCount;
+    transient LayoutFailureReason lastLayoutFailureReason = LayoutFailureReason.NONE;
     transient boolean lastRenderHeightUnresolved;
     /** Incremented whenever the committed fragment set changes; rejects stale WebView callbacks. */
     transient int renderLayoutEpoch;
@@ -150,6 +153,7 @@ final class TextFlow {
         duplicate.heightCorrectionPasses = heightCorrectionPasses;
         duplicate.lastLayoutComplete = lastLayoutComplete;
         duplicate.lastLayoutPageCount = lastLayoutPageCount;
+        duplicate.lastLayoutFailureReason = lastLayoutFailureReason;
         duplicate.lastRenderHeightUnresolved = lastRenderHeightUnresolved;
         duplicate.renderLayoutEpoch = renderLayoutEpoch;
         duplicate.unresolvedRenderFragments.putAll(unresolvedRenderFragments);

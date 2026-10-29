@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">Entire multi-page text flow deleted</string>
     <string name="canvas_flow_deleted">Text box deleted</string>
     <string name="canvas_too_many_pages">Text flow exceeds 500 pages. Only placed content is shown; the full source is saved, but PDF export is unavailable</string>
+    <string name="canvas_ai_page_limit">This answer cannot be laid out within 500 pages. It was not added; the full text remains in the AI result card.</string>
+    <string name="canvas_layout_unplaceable">Text cannot be laid out safely on one page. Split the table or text into smaller parts.</string>
+    <string name="canvas_table_unsupported">This table cannot be split safely with the current rules. Shorten it or divide it manually; the original text is saved.</string>
+    <string name="canvas_table_expansion_limit">This table exceeds the safe pagination work limit. Shorten or divide it manually; the original text is saved.</string>
     <string name="canvas_pdf_snapshot_invalid">PDF export snapshot is no longer valid</string>
     <string name="canvas_pdf_bitmap_fail">Could not allocate an image for page %1$d</string>
     <string name="canvas_pdf_render_fail">Could not render page %1$d</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">PDF export canceled</string>
     <string name="canvas_paper_not_ready">Paper size is not ready</string>
     <string name="canvas_pdf_flow_too_long">Text flow exceeds the 500-page limit. PDF was not exported; original text remains saved</string>
+    <string name="canvas_pdf_unplaceable_block">Some text cannot be paginated safely. PDF was not exported; split the table or text into smaller parts and try again</string>
+    <string name="canvas_pdf_unsupported_table">This table cannot be split safely with the current rules. PDF was not exported; shorten or divide it manually. Original text remains saved.</string>
+    <string name="canvas_pdf_table_expansion_limit">This table exceeds the safe pagination work limit. PDF was not exported; shorten or divide it manually. Original text remains saved.</string>
     <string name="canvas_pdf_height_unknown">Could not confirm the rendered text height. PDF was not exported; reduce or split the text and try again</string>
     <string name="canvas_height_overflow">Text still exceeds reserved page space. Full source is saved; split or reduce the text and try again</string>
     <string name="canvas_height_limit">Text exceeds the maximum reserved page space. Full source is saved; split or reduce the text and try again</string>

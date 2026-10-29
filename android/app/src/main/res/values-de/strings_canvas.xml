@@ -51,6 +51,10 @@
     <string name="canvas_flow_deleted_multi">Gesamter mehrseitiger Textfluss gelöscht</string>
     <string name="canvas_flow_deleted">Textfeld gelöscht</string>
     <string name="canvas_too_many_pages">Textfluss überschreitet 500 Seiten. Nur platzierter Inhalt wird angezeigt; der vollständige Quelltext bleibt gespeichert, PDF-Export ist nicht möglich</string>
+    <string name="canvas_ai_page_limit">Diese Antwort passt nicht vollständig auf 500 Seiten. Sie wurde nicht eingefügt; der vollständige Text bleibt in der KI-Antwortkarte.</string>
+    <string name="canvas_layout_unplaceable">Ein Textblock lässt sich nicht sicher auf einer Seite anordnen. Tabelle oder Text aufteilen.</string>
+    <string name="canvas_table_unsupported">Diese Tabelle lässt sich mit den aktuellen Regeln nicht sicher teilen. Kürzen oder manuell aufteilen; der Originaltext ist gespeichert.</string>
+    <string name="canvas_table_expansion_limit">Diese Tabelle überschreitet das sichere Aufteilungslimit. Kürzen oder manuell teilen; der Originaltext ist gespeichert.</string>
     <string name="canvas_pdf_snapshot_invalid">PDF-Exportmomentaufnahme ist nicht mehr gültig</string>
     <string name="canvas_pdf_bitmap_fail">Bild für Seite %1$d konnte nicht erstellt werden</string>
     <string name="canvas_pdf_render_fail">Seite %1$d konnte nicht gerendert werden</string>
@@ -59,6 +63,9 @@
     <string name="canvas_pdf_cancelled">PDF-Export abgebrochen</string>
     <string name="canvas_paper_not_ready">Papiergröße ist noch nicht bereit</string>
     <string name="canvas_pdf_flow_too_long">Textfluss überschreitet 500 Seiten. PDF wurde nicht exportiert; der Originaltext bleibt gespeichert</string>
+    <string name="canvas_pdf_unplaceable_block">Ein Textblock lässt sich nicht sicher paginieren. PDF wurde nicht exportiert; Tabelle oder Text aufteilen und erneut versuchen</string>
+    <string name="canvas_pdf_unsupported_table">Diese Tabelle lässt sich mit den aktuellen Regeln nicht sicher teilen. PDF nicht exportiert; kürzen oder manuell teilen. Originaltext ist gespeichert.</string>
+    <string name="canvas_pdf_table_expansion_limit">Diese Tabelle überschreitet das sichere Aufteilungslimit. PDF nicht exportiert; kürzen oder manuell teilen. Originaltext ist gespeichert.</string>
     <string name="canvas_pdf_height_unknown">Die tatsächliche Texthöhe konnte nicht bestätigt werden. PDF wurde nicht exportiert; Text verkleinern oder aufteilen und erneut versuchen</string>
     <string name="canvas_height_overflow">Text überschreitet weiterhin den reservierten Seitenbereich. Vollständiger Quelltext bleibt gespeichert; Text aufteilen oder verkleinern und erneut versuchen</string>
     <string name="canvas_height_limit">Text überschreitet den maximalen Seitenbereich. Vollständiger Quelltext bleibt gespeichert; Text aufteilen oder verkleinern und erneut versuchen</string>
