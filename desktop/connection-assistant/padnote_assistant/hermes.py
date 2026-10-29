@@ -5,6 +5,7 @@ import http.client
 import ipaddress
 import math
 import queue
+import re
 import socket
 import ssl
 import threading
@@ -396,7 +397,7 @@ class HermesClient:
     MAX_JSON_NESTING = 128
 
     def __init__(self, base_url: str, api_key: str | None, *, timeout: float = 10.0,
-                 submission_timeout: float | None = None):
+                 submission_timeout: float | None = None, api_prefix: str = ""):
         self.base_url = validate_upstream_url(base_url)
         self.api_key = api_key
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
@@ -419,6 +420,10 @@ class HermesClient:
         if not valid_submission_timeout:
             raise ValueError("Hermes submission timeout must be finite and positive")
         self.submission_timeout = float(submission_timeout)
+        if api_prefix:
+            if not isinstance(api_prefix, str) or not re.fullmatch(r"/p/[a-z0-9][a-z0-9_-]{0,63}", api_prefix):
+                raise ValueError("Hermes API prefix is invalid")
+        self.api_prefix = api_prefix
         parsed = urllib.parse.urlsplit(self.base_url)
         try:
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -439,7 +444,8 @@ class HermesClient:
             request_headers["Authorization"] = f"Bearer {self.api_key}"
         if headers:
             request_headers.update(headers)
-        request = urllib.request.Request(self.base_url + path, data=data, headers=request_headers, method=method)
+        request_path = self.api_prefix + path
+        request = urllib.request.Request(self.base_url + request_path, data=data, headers=request_headers, method=method)
         request_timeout = (self.submission_timeout if method.upper() == "POST" and path == "/v1/runs"
                            else self.timeout)
         deadline = _RequestDeadline(request_timeout)
@@ -642,7 +648,8 @@ class HermesClient:
         endpoints = value.get("endpoints") if isinstance(value.get("endpoints"), dict) else {}
         def endpoint(name: str, method: str, path: str) -> bool:
             item = endpoints.get(name)
-            return isinstance(item, dict) and item.get("method") == method and item.get("path") == path
+            return isinstance(item, dict) and item.get("method") == method \
+                and item.get("path") in {path, self.api_prefix + path}
         # Official Hermes exposes both strict booleans and exact endpoint metadata.
         run_submission = raw_features.get("run_submission") is True and endpoint("runs", "POST", "/v1/runs")
         run_status = raw_features.get("run_status") is True and endpoint("run_status", "GET", "/v1/runs/{run_id}")

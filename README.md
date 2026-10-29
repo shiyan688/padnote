@@ -18,13 +18,17 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 电脑接收纸面材料并建立任务；在电脑任务列表查看处理进度，并在任务详情查看返回内容 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 配置连接](BETA30_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 ## 演示画面
 
 纸面工具按书写、配色、撤销和页面操作分组；AI 对话、任务与分享入口保持可见。电脑助手把 Agent 检查、扫码配对与设备批准放在同一页，检测过期时会提示重新检查。下图使用合成数据展示电脑助手的管理页布局。[素材说明](docs/media/2026-10-29/README.md)。
 
 ![电脑助手检测与配对界面（合成演示数据）](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看不含密钥值的变更预览。
+
+![Windows 连接助手 WSL 配置向导（合成发行版与配置）](docs/media/2026-10-29/beta30-wsl-setup.png)
 
 <details>
 <summary>Windows 启动器与诊断入口</summary>
@@ -88,17 +92,17 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 
 ## 平台与连接
 
-- **Android 平板：**可从 GitHub Releases 获取可安装 APK。
-- **Windows：**连接助手是单独分发的配套程序，用于配对与连接 Agent；它不附带 Hermes、模型或 API 密钥。
+- **Android 平板：**GitHub Releases 当前提供已发布的 beta.29 APK（versionCode 65）。
+- **Windows：**连接助手提供 beta.30 Setup 安装包和便携包，不附带 Hermes、模型或 API 密钥。WSL 配置向导让你选择发行版和配置，审阅变更预览后再连接。
 - **iPad：**提供源码，暂无可安装的签名 IPA。
 
-电脑任务目前面向已配对且支持 PadNote 笔记任务的 Hermes Agent。任务会先保存到电脑，再等待 Hermes 返回运行编号；结果未知时不会自动重放。模型供应商由用户配置。OpenClaw 提供发现与设置引导，但这不代表 PadNote 笔记任务已接入 OpenClaw；Codex 纸面任务尚未接入。WSL 中的 Hermes 需要自行提供 Windows 可访问的 API，目前不会自动发现 WSL Agent。
+电脑任务面向你明确选择并配对、且支持 PadNote 笔记任务的 Agent。多个 Hermes 配置各自对应不同 Agent 身份、凭据和任务归属；连接助手使用你自己的配置，密钥仅在其进程内存中使用，重开后需明确重连。未知网关模式先用默认配置，再由你选择命名配置；不会自动修改 provider 或重启外部管理的网关。OpenClaw 提供发现与设置引导，但这不代表 PadNote 笔记任务已接入 OpenClaw；Codex 纸面任务尚未接入。
 
 更多边界与开发状态见[开发状态与后续工作](docs/DEVELOPMENT_STATUS.md)。
 
 ## 下载与校验
 
-Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
+Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：本轮提供 Android beta.29 和 Windows beta.30。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
 
 ## 从源码构建
 

@@ -44,6 +44,16 @@
       }, 0);
     });
   });
+  document.querySelectorAll('[data-open-wsl-hermes]').forEach((link) => {
+    link.addEventListener('click', () => {
+      const section = document.getElementById('wsl-hermes');
+      const target = section?.querySelector('[data-wsl-scan]');
+      window.setTimeout(() => {
+        section?.scrollIntoView({block:'start'});
+        target?.focus({preventScroll:true});
+      }, 0);
+    });
+  });
   const sectionNav = Array.from(document.querySelectorAll('.sidebar nav a'));
   const navSections = sectionNav.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
   if ('IntersectionObserver' in window && navSections.length) {
@@ -204,4 +214,356 @@
   window.setInterval(fetchLive, 3000);
   window.setInterval(refreshCheckAges, 3000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fetchLive(); });
+
+  const wsl = document.getElementById('wsl-hermes');
+  if (wsl) {
+    const distroSelect = wsl.querySelector('[data-wsl-distro]');
+    const profileSelect = wsl.querySelector('[data-wsl-profile]');
+    const scanButton = wsl.querySelector('[data-wsl-scan]');
+    const findButton = wsl.querySelector('[data-wsl-find]');
+    const inspectButton = wsl.querySelector('[data-wsl-inspect]');
+    const connectButton = wsl.querySelector('[data-wsl-connect]');
+    const preview = wsl.querySelector('[data-wsl-preview]');
+    const operation = wsl.querySelector('[data-wsl-operation]');
+    const operationMessage = wsl.querySelector('[data-wsl-message]');
+    const refreshButton = wsl.querySelector('[data-wsl-refresh]');
+    const cancelButton = wsl.querySelector('[data-wsl-cancel]');
+    const pairLink = wsl.querySelector('[data-wsl-pair]');
+    const distroState = wsl.querySelector('[data-wsl-distro-state]');
+    const operationStorageKey = 'padnote.wsl.operation_id';
+    const operationKindStorageKey = 'padnote.wsl.operation_kind';
+    const operationDistroStorageKey = 'padnote.wsl.operation_distro';
+    const pairTargetStorageKey = 'padnote.wsl.pair_instance_id';
+    const validOperationId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value);
+    let selectedDistros = new Map();
+    let previewToken = '';
+    let operationId = '';
+    let polling = false;
+    let operationKind = '';
+    let pollTimer = 0;
+    let selectionRevision = 0;
+
+    const lockSelection = (locked) => {
+      scanButton.disabled = locked;
+      distroSelect.disabled = locked;
+      findButton.disabled = locked || !distroSelect.value;
+      profileSelect.disabled = locked || profileSelect.options.length <= 1;
+      inspectButton.disabled = locked || !distroSelect.value || !profileSelect.value;
+      if (locked) connectButton.disabled = true;
+    };
+
+    const showOperation = (message, {refresh = false, cancel = false, pair = false} = {}) => {
+      operation.hidden = false;
+      operationMessage.textContent = message;
+      refreshButton.hidden = !refresh;
+      cancelButton.hidden = !cancel;
+      pairLink.hidden = !pair;
+    };
+    const clearPreview = () => {
+      previewToken = '';
+      preview.replaceChildren();
+      preview.hidden = true;
+      connectButton.textContent = '选择配置后连接';
+      connectButton.disabled = true;
+    };
+    const makeOption = (label, value = '') => {
+      const item = document.createElement('option'); item.textContent = label; item.value = value; return item;
+    };
+    const csrfHeaders = () => ({'X-PadNote-CSRF': csrf});
+    const postForm = async (url, values) => {
+      const body = new URLSearchParams({csrf, ...values});
+      const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'}, body, credentials: 'same-origin', cache: 'no-store'});
+      let data = {};
+      try { data = await response.json(); } catch (_) { /* fail closed below */ }
+      if (!response.ok) throw new Error(typeof data.message === 'string' ? data.message : `请求失败（${response.status}）`);
+      return {response, data};
+    };
+    const renderProfiles = (profiles) => {
+      selectionRevision += 1;
+      profileSelect.replaceChildren(makeOption('请选择一个 Hermes profile'));
+      for (const profile of profiles) {
+        if (!profile || typeof profile.id !== 'string' || !profile.id || typeof profile.label !== 'string') continue;
+        const option = makeOption(profile.label, profile.id);
+        option.dataset.apiState = typeof profile.api_state === 'string' ? profile.api_state : 'unknown';
+        profileSelect.append(option);
+      }
+      profileSelect.disabled = profileSelect.options.length <= 1;
+      inspectButton.disabled = true;
+      clearPreview();
+    };
+    const loadDistros = async (preferredId = '') => {
+      const response = await fetch('/admin/wsl/distros', {headers: csrfHeaders(), credentials:'same-origin', cache:'no-store'});
+      if (!response.ok) throw new Error(`扫描失败（${response.status}）`);
+      const data = await response.json();
+      if (!Array.isArray(data.distros)) throw new Error('发行版列表格式无效');
+      selectedDistros = new Map();
+      distroSelect.replaceChildren(makeOption(data.distros.length ? '请选择一个发行版' : '没有发现发行版'));
+      for (const distro of data.distros) {
+        if (!distro || typeof distro.id !== 'string' || !distro.id || typeof distro.name !== 'string') continue;
+        selectedDistros.set(distro.id, distro);
+        const state = typeof distro.state === 'string' ? distro.state : 'unknown';
+        const version = distro.version === 1 || distro.version === 2 ? ` · WSL ${distro.version}` : '';
+        distroSelect.append(makeOption(`${distro.name} · ${state}${version}`, distro.id));
+      }
+      if (preferredId && selectedDistros.has(preferredId)) {
+        distroSelect.value = preferredId;
+        findButton.disabled = false;
+        const distro = selectedDistros.get(preferredId);
+        distroState.textContent = `已恢复所选发行版 ${distro.name}。请继续查看操作状态。`;
+        return true;
+      }
+      distroSelect.value = '';
+      findButton.disabled = true;
+      distroState.textContent = data.distros.length ? '发行版已列出；请选择后再继续。不会自动选择第一个。' : '没有找到发行版。可重试扫描；这不代表 WSL 未安装。';
+      return false;
+    };
+    const describeProfileState = (value) => ({ready:'API 已就绪', api_not_enabled:'API 尚未启用', not_running:'服务未运行', needs_setup:'需要配置', unknown:'状态未知'}[value] || '状态未知');
+    const renderImpact = (data) => {
+      const allowedActions = {create:'创建', update:'更新', reuse:'沿用'};
+      const fragment = document.createDocumentFragment();
+      const heading = document.createElement('h4'); heading.textContent = '变更预览'; fragment.append(heading);
+      const summary = document.createElement('p');
+      summary.textContent = `所选配置：${profileSelect.selectedOptions[0]?.textContent || '未知'}；${describeProfileState(data.api_state)}。`;
+      fragment.append(summary);
+      const list = document.createElement('ul');
+      const impact = Array.isArray(data.impact) ? data.impact : [];
+      for (const item of impact) {
+        if (!item || typeof item.path_label !== 'string' || !Array.isArray(item.fields)) continue;
+        const safeFields = item.fields.filter((field) => typeof field === 'string' && /^API_SERVER_[A-Z_]{1,40}$/.test(field));
+        const row = document.createElement('li');
+        row.append(document.createTextNode(`${item.path_label}：${allowedActions[item.action] || '检查'}本机连接设置`));
+        if (safeFields.length) {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary'); summary.textContent = '查看技术字段'; details.append(summary);
+          const fields = document.createElement('span'); fields.textContent = safeFields.join('、'); details.append(fields);
+          row.append(details);
+        }
+        list.append(row);
+      }
+      if (!list.children.length) {
+        const row = document.createElement('li'); row.textContent = '无需修改现有设置；将检查并连接所选配置。'; list.append(row);
+      }
+      fragment.append(list);
+      if (data.requires_enable === true || data.requires_start === true) {
+        const consent = document.createElement('p');
+        const actions = [];
+        if (data.requires_enable === true) actions.push('启用本机 API');
+        if (data.requires_start === true) actions.push('启动 Hermes');
+        consent.textContent = `点击下一步即确认：${actions.join('并')}，随后连接。不会改动模型供应商设置。`;
+        fragment.append(consent);
+      } else {
+        const reuse = document.createElement('p'); reuse.textContent = '将沿用这套配置的现有连接凭据，不会显示或修改凭据值。'; fragment.append(reuse);
+      }
+      if (typeof data.message === 'string' && data.message) {
+        const note = document.createElement('p'); note.textContent = data.message; fragment.append(note);
+      }
+      preview.replaceChildren(fragment);
+      preview.hidden = false;
+      const tokenOk = typeof data.preview_token === 'string' && data.preview_token.length > 0 && data.preview_token.length <= 2048;
+      previewToken = tokenOk ? data.preview_token : '';
+      if (tokenOk) connectButton.textContent = data.requires_enable === true
+        ? '启用并连接'
+        : data.requires_start === true ? '启动并连接' : '连接此配置';
+      connectButton.disabled = !tokenOk;
+      if (!tokenOk) showOperation('预览无效或已过期。请重新检查，不会提交连接。');
+      else preview.scrollIntoView({block:'nearest'});
+    };
+    const finishOperation = (status, data) => {
+      if (status === 'succeeded') {
+        if (operationKind !== 'connect' && Array.isArray(data.profiles)) {
+          renderProfiles(data.profiles);
+          showOperation(data.profiles.length ? `已找到 ${profileSelect.options.length - 1} 个配置。请选择一个继续。` : '没有找到可用的 Hermes 配置。可重新查找或使用现有手动连接。', {refresh:false, cancel:false});
+          findButton.disabled = false;
+        } else {
+          const result = data.result && typeof data.result === 'object' ? data.result : {};
+          const instanceId = typeof result.instance_id === 'string' ? result.instance_id : '';
+          pairLink.dataset.instanceId = instanceId;
+          pairLink.hidden = !instanceId;
+          showOperation(instanceId
+            ? 'Hermes 已连接。前往配对页面时会按这次返回的 Agent ID 明确选择；不会自动生成配对码。'
+            : 'Hermes 已连接，但没有返回 Agent ID。请到 Agent 列表确认目标后，再自行打开配对页面；不会自动选择或生成配对码。',
+          {refresh:false, cancel:false, pair:Boolean(instanceId)});
+        }
+        sessionStorage.removeItem(operationStorageKey);
+        sessionStorage.removeItem(operationKindStorageKey);
+        sessionStorage.removeItem(operationDistroStorageKey);
+        operationId = '';
+        lockSelection(false);
+      } else if (status === 'failed') {
+        if (operationKind === 'profiles') findButton.disabled = false;
+        if (operationKind === 'connect') inspectButton.disabled = !distroSelect.value || !profileSelect.value;
+        showOperation(typeof data.message === 'string' && data.message ? data.message : '操作失败。检查所选配置后可重新扫描或预览。', {refresh:true, cancel:false});
+        lockSelection(false);
+      } else if (status === 'cancelled') {
+        if (operationKind === 'profiles') findButton.disabled = false;
+        showOperation('已取消等待。此操作不会停止 Hermes；如需继续，请重新扫描或检查状态。', {refresh:false, cancel:false});
+        sessionStorage.removeItem(operationStorageKey);
+        sessionStorage.removeItem(operationKindStorageKey);
+        sessionStorage.removeItem(operationDistroStorageKey);
+        operationId = '';
+        lockSelection(false);
+      } else if (status === 'unknown') {
+        showOperation('无法确认操作状态。请刷新此操作或重新检查；不要重复提交连接。', {refresh:true, cancel:false});
+      }
+    };
+    const pollOperation = async () => {
+      if (!operationId || polling) return;
+      polling = true;
+      try {
+        const response = await fetch(`/admin/wsl/operations/${encodeURIComponent(operationId)}`, {headers: csrfHeaders(), credentials:'same-origin', cache:'no-store'});
+        if (!response.ok) throw new Error(`状态查询失败（${response.status}）`);
+        const data = await response.json();
+        if (data.operation_id !== operationId) throw new Error('返回的操作身份不匹配');
+        if (typeof data.distro_id === 'string' && !selectedDistros.has(data.distro_id)) await loadDistros(data.distro_id);
+        const statuses = new Set(['pending','running','succeeded','failed','cancelled','unknown']);
+        const statusValue = statuses.has(data.status) ? data.status : 'unknown';
+        if (statusValue === 'pending' || statusValue === 'running') {
+          const phase = typeof data.phase === 'string' ? data.phase : '处理中';
+          const message = typeof data.message === 'string' && data.message ? data.message : phase;
+          showOperation(`${message}（离开页面后可回来刷新；取消只取消等待。）`, {refresh:true, cancel:true});
+          if (operationKind === 'profiles' && Array.isArray(data.profiles) && data.profiles.length) renderProfiles(data.profiles);
+          window.clearTimeout(pollTimer);
+          pollTimer = window.setTimeout(() => { if (operationId) pollOperation(); }, 1200);
+        } else finishOperation(statusValue, data);
+      } catch (error) {
+        showOperation(`${error.message || '暂时无法读取状态'}。可刷新此操作；不会自动重复启动或连接。`, {refresh:true, cancel:Boolean(operationId)});
+      } finally { polling = false; }
+    };
+    const beginPolling = (id, kind) => {
+      if (!validOperationId(id)) throw new Error('服务器返回了无效操作编号');
+      operationId = id; operationKind = kind;
+      sessionStorage.setItem(operationStorageKey, id);
+      sessionStorage.setItem(operationKindStorageKey, kind);
+      if (distroSelect.value) sessionStorage.setItem(operationDistroStorageKey, distroSelect.value);
+      lockSelection(true);
+      showOperation('操作已受理，正在等待状态。离开页面不会停止 Hermes。', {refresh:true, cancel:true});
+      pollOperation();
+    };
+
+    scanButton.addEventListener('click', async () => {
+      const preferredId = distroSelect.value;
+      scanButton.disabled = true;
+      distroSelect.disabled = true;
+      distroState.textContent = '正在扫描 WSL 发行版…';
+      distroSelect.replaceChildren(makeOption('正在扫描…'));
+      findButton.disabled = true; profileSelect.disabled = true; inspectButton.disabled = true; clearPreview();
+      try {
+        await loadDistros(preferredId);
+      } catch (error) {
+        distroSelect.replaceChildren(makeOption('扫描失败，请重试'));
+        distroState.textContent = `${error.message || '扫描失败'}。未连接或修改任何发行版。`;
+      } finally { scanButton.disabled = false; distroSelect.disabled = false; }
+    });
+    distroSelect.addEventListener('change', () => {
+      selectionRevision += 1;
+      findButton.disabled = !selectedDistros.has(distroSelect.value);
+      profileSelect.replaceChildren(makeOption('先查找配置'));
+      profileSelect.disabled = true; inspectButton.disabled = true; clearPreview();
+      const distro = selectedDistros.get(distroSelect.value);
+      if (distro) distroState.textContent = `已选择 ${distro.name}（${distro.state || '状态未知'}）。`;
+    });
+    findButton.addEventListener('click', async () => {
+      const distro = selectedDistros.get(distroSelect.value);
+      if (!distro) return;
+      if (String(distro.state || '').toLowerCase() === 'stopped'
+          && !window.confirm(`发行版“${distro.name}”当前已停止。确认启动该发行版并查找 Hermes 配置？`)) return;
+      findButton.disabled = true; profileSelect.replaceChildren(makeOption('正在查找…'));
+      try {
+        const {data} = await postForm('/admin/wsl/profiles', {distro_id:distro.id});
+        beginPolling(data.operation_id, 'profiles');
+      } catch (error) {
+        findButton.disabled = false;
+        profileSelect.replaceChildren(makeOption('查找未完成，可重试'));
+        showOperation(`${error.message || '无法开始查找'}。没有自动选择配置。`, {refresh:false, cancel:false});
+      }
+    });
+    profileSelect.addEventListener('change', () => {
+      selectionRevision += 1;
+      inspectButton.disabled = !distroSelect.value || !profileSelect.value;
+      clearPreview();
+    });
+    inspectButton.addEventListener('click', async () => {
+      const revision = selectionRevision;
+      const selectedDistroId = distroSelect.value;
+      const selectedProfileId = profileSelect.value;
+      clearPreview(); inspectButton.disabled = true;
+      try {
+        const {data} = await postForm('/admin/wsl/inspect', {distro_id:selectedDistroId, profile_id:selectedProfileId});
+        if (revision !== selectionRevision || selectedDistroId !== distroSelect.value || selectedProfileId !== profileSelect.value) return;
+        renderImpact(data);
+      } catch (error) {
+        if (revision !== selectionRevision) return;
+        showOperation(`${error.message || '无法预览配置'}。未执行配置更改；请重新检查或返回选择。`);
+        inspectButton.disabled = false;
+      }
+    });
+    connectButton.addEventListener('click', async () => {
+      if (!previewToken) return;
+      const token = previewToken;
+      clearPreview();
+      connectButton.disabled = true;
+      showOperation('正在提交明确确认的连接操作…', {refresh:false, cancel:false});
+      try {
+        const {data} = await postForm('/admin/wsl/connect', {preview_token:token});
+        beginPolling(data.operation_id, 'connect');
+      } catch (error) {
+        inspectButton.disabled = !distroSelect.value || !profileSelect.value;
+        showOperation(`${error.message || '连接结果未知'}。请刷新状态或重新预览；不要重复提交旧预览。`, {refresh:false, cancel:false});
+      }
+    });
+    refreshButton.addEventListener('click', pollOperation);
+    pairLink.addEventListener('click', (event) => {
+      const instanceId = pairLink.dataset.instanceId || '';
+      if (!instanceId) return;
+      event.preventDefault();
+      sessionStorage.setItem(pairTargetStorageKey, instanceId);
+      location.hash = '#pairing';
+      location.reload();
+    });
+    cancelButton.addEventListener('click', async () => {
+      if (!operationId) return;
+      cancelButton.disabled = true;
+      try {
+        await postForm(`/admin/wsl/operations/${encodeURIComponent(operationId)}/cancel`, {});
+        showOperation('已提交取消等待请求；这不会停止 Hermes。正在确认操作状态…', {refresh:true, cancel:false});
+        pollOperation();
+      } catch (error) {
+        showOperation(`${error.message || '无法确认取消结果'}。刷新操作状态；这不会停止 Hermes。`, {refresh:true, cancel:false});
+      } finally { cancelButton.disabled = false; }
+    });
+    const savedOperationId = sessionStorage.getItem(operationStorageKey) || '';
+    if (savedOperationId && validOperationId(savedOperationId)) {
+      operationId = savedOperationId;
+      operationKind = sessionStorage.getItem(operationKindStorageKey) || '';
+      const savedDistroId = sessionStorage.getItem(operationDistroStorageKey) || '';
+      showOperation('正在恢复此页会话中的操作状态…', {refresh:true, cancel:true});
+      lockSelection(true);
+      if (savedDistroId) loadDistros(savedDistroId).then(pollOperation).catch(pollOperation);
+      else pollOperation();
+    } else if (savedOperationId) {
+      sessionStorage.removeItem(operationStorageKey);
+      sessionStorage.removeItem(operationKindStorageKey);
+      sessionStorage.removeItem(operationDistroStorageKey);
+    }
+  }
+  const desiredPairInstance = sessionStorage.getItem('padnote.wsl.pair_instance_id');
+  if (desiredPairInstance) {
+    const pairSelect = document.getElementById('pair-instance');
+    if (pairSelect) {
+      const option = Array.from(pairSelect.options).find((item) => item.value === desiredPairInstance);
+      if (option) {
+        pairSelect.value = desiredPairInstance;
+        pairSelect.dispatchEvent(new Event('change', {bubbles:true}));
+      } else {
+        pairSelect.selectedIndex = -1;
+        const region = document.querySelector('#wsl-hermes [data-wsl-message]');
+        if (region) region.textContent = '新 Agent 尚未出现在配对列表中。请刷新页面后重新确认目标；没有生成配对码。';
+      }
+      sessionStorage.removeItem('padnote.wsl.pair_instance_id');
+    } else {
+      const region = document.querySelector('#wsl-hermes [data-wsl-message]');
+      if (region) region.textContent = '新 Agent 尚未出现在配对列表中。请刷新页面后重新确认目标；没有生成配对码。';
+      sessionStorage.removeItem('padnote.wsl.pair_instance_id');
+    }
+  }
 })();

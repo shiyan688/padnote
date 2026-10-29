@@ -18,13 +18,17 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL connection setup](BETA30_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 ## Demo frames
 
 Paper tools are grouped by writing, color, history, and page actions, with AI, tasks, and sharing kept visible. The computer assistant puts Agent checks, QR pairing, and device approval on one page, and prompts for a new check when results expire. The image below shows the management UI with synthetic data. [Media notes](docs/media/2026-10-29/README.md).
 
 ![Desktop assistant checks and pairing, with synthetic demo data](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+The WSL wizard lets you choose a distribution and Hermes configuration, then review connection changes without exposing key values.
+
+![Windows connection assistant WSL setup wizard with synthetic distributions and profiles](docs/media/2026-10-29/beta30-wsl-setup.png)
 
 <details>
 <summary>Windows launcher and diagnostic controls</summary>
@@ -88,17 +92,17 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 ## Platforms and connections
 
-- **Android tablets:** Installable APKs are available through GitHub Releases.
-- **Windows:** The connection assistant is a separately distributed companion for pairing and Agent connections. It does not include Hermes, a model, or API credentials.
+- **Android tablets:** GitHub Releases currently provides the published beta.29 APK (versionCode 65).
+- **Windows:** The beta.30 connection assistant comes as a Setup installer or a portable package. It does not include Hermes, a model, or API credentials. The WSL setup wizard lets you choose the distribution and configuration and review changes before connecting.
 - **iPad:** Source is available; there is no installable signed IPA.
 
-Computer tasks currently require a paired Hermes Agent that supports PadNote note tasks. Tasks are saved on the computer before PadNote waits for a Hermes run ID; uncertain outcomes are not automatically replayed. You configure the model provider. OpenClaw has discovery and setup guidance, but that does not mean PadNote note tasks are integrated with OpenClaw. Codex note tasks are not connected. Hermes in WSL must expose an API reachable from Windows; automatic WSL Agent discovery is not available.
+Computer tasks use the Agent you explicitly choose and pair, when it supports PadNote note tasks. Multiple Hermes configurations keep separate Agent identities, credentials, and task ownership. The assistant uses your own configuration and keeps keys in process memory; reopening it requires an explicit reconnect. When gateway mode is unknown, the flow starts with the default configuration and then lets you choose a named configuration. It does not change the provider automatically or restart a gateway managed by another tool. OpenClaw has discovery and setup guidance, but PadNote note tasks are not integrated with OpenClaw; Codex note tasks are not connected.
 
 See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more boundaries and project status.
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: this release includes Android beta.29 and Windows beta.30. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

@@ -371,6 +371,23 @@ class AdminHandler(_DeadlineRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _wsl_json(self, status: int, value: Any) -> None:
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._prepare_response()
+        self.send_response(status)
+        self._security_headers()
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _wsl_error(self, error: Exception) -> None:
+        from .wsl_hermes import WslHermesError
+        code = error.code if isinstance(error, WslHermesError) else "invalid_request"
+        message = str(error)[:240]
+        status = 404 if code == "operation_not_found" else 409 if isinstance(error, WslHermesError) else 400
+        self._wsl_json(status, {"error": {"code": code, "message": message}})
+
     def do_GET(self) -> None:
         self._finish_input()
         if not self._host_ok():
@@ -380,6 +397,26 @@ class AdminHandler(_DeadlineRequestHandler):
         origin = self.headers.get("Origin")
         if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
             self._deny()
+            return
+        if parsed.path.startswith("/admin/wsl/"):
+            if parsed.query or parsed.fragment:
+                self._deny(400)
+                return
+            expected = self.server.csrf_token  # type: ignore[attr-defined]
+            if not secrets.compare_digest(self.headers.get("X-PadNote-CSRF", ""), expected):
+                self._deny()
+                return
+            try:
+                if parsed.path == "/admin/wsl/distros":
+                    self._wsl_json(200, {"distros": self.service.wsl_distros()})
+                    return
+                match = re.fullmatch(r"/admin/wsl/operations/([A-Za-z0-9_-]{16,64})", parsed.path)
+                if match:
+                    self._wsl_json(200, self.service.wsl_operation(match.group(1)))
+                    return
+                self._deny(404)
+            except Exception as error:
+                self._wsl_error(error)
             return
         if parsed.path in {"/assets/admin.css", "/assets/admin.js", "/assets/brand.png"}:
             if self.path != parsed.path:
@@ -468,10 +505,50 @@ class AdminHandler(_DeadlineRequestHandler):
         except (UnicodeDecodeError, ValidationError):
             self._deny(400)
             return
-        if not secrets.compare_digest(form.get("csrf", [""])[0], self.server.csrf_token):  # type: ignore[attr-defined]
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/admin/wsl/"):
+            # WSL actions use a strict scalar form contract. parse_qs returns
+            # lists; accepting the list itself or silently choosing the first
+            # duplicate can turn a valid selection into a malformed request.
+            if any(len(values) != 1 for values in form.values()):
+                self._deny(400)
+                return
+            scalar_form = {key: values[0] for key, values in form.items()}
+            csrf = scalar_form.get("csrf", "")
+        else:
+            scalar_form = None
+            csrf = form.get("csrf", [""])[0]
+        if not secrets.compare_digest(csrf, self.server.csrf_token):  # type: ignore[attr-defined]
             self._deny()
             return
-        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/admin/wsl/"):
+            if urllib.parse.urlsplit(self.path).query or urllib.parse.urlsplit(self.path).fragment:
+                self._deny(400)
+                return
+            try:
+                if path == "/admin/wsl/profiles":
+                    assert scalar_form is not None
+                    operation_id = self.service.wsl_begin_profiles(scalar_form.get("distro_id", ""))
+                    self._wsl_json(202, {"operation_id": operation_id, "status": "pending"})
+                    return
+                if path == "/admin/wsl/inspect":
+                    assert scalar_form is not None
+                    value = self.service.wsl_inspect_profile(scalar_form.get("distro_id", ""), scalar_form.get("profile_id", ""))
+                    self._wsl_json(200, value)
+                    return
+                if path == "/admin/wsl/connect":
+                    assert scalar_form is not None
+                    operation_id = self.service.wsl_connect_profile(scalar_form.get("preview_token", ""))
+                    self._wsl_json(202, {"operation_id": operation_id, "status": "pending"})
+                    return
+                match = re.fullmatch(r"/admin/wsl/operations/([A-Za-z0-9_-]{16,64})/cancel", path)
+                if match:
+                    self._wsl_json(202, self.service.wsl_cancel_wait(match.group(1)))
+                    return
+                self._deny(404)
+            except Exception as error:
+                self._wsl_error(error)
+            return
         try:
             message = self._dispatch_post(path, {key: values[0] for key, values in form.items()})
         except Exception as error:

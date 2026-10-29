@@ -7,6 +7,7 @@ from contextlib import ExitStack, contextmanager
 import copy
 import json
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from .video_preview import (binding_from_submission, capture_review_snapshot, op
 from .video_scheduler import VideoOperationScheduler
 from .video_operations import normalize_parameters, payload_digest
 from .video_worker import _MAX_REVISE_FEEDBACK_BYTES, _bounded_feedback_bytes
+from .wsl_hermes import WslHermesError, WslHermesManager
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
@@ -105,6 +107,7 @@ class BridgeService:
             # persisted here -- the Skill's staging directory is the sole
             # durable home for them.
             self._video_revise_feedback: dict[str, str] = {}
+            self.wsl_hermes = WslHermesManager()
             self._reload_configured_profiles()
             self._run_controls = RunControlQueue(self)
             if self.video_worker is not None:
@@ -130,6 +133,9 @@ class BridgeService:
                 self._video_lifecycle_condition.wait()
         try:
             deadline = time.monotonic() + 60.0
+            wsl_manager = getattr(self, "wsl_hermes", None)
+            if wsl_manager is not None and not wsl_manager.close(timeout=max(0.0, deadline - time.monotonic())):
+                raise RuntimeError("WSL operations have not stopped; state owner retained")
             controls = getattr(self, "_run_controls", None)
             if controls is not None and not controls.close(timeout=max(0.0, deadline - time.monotonic())):
                 raise RuntimeError("Run control workers have not stopped; state owner retained")
@@ -248,6 +254,150 @@ class BridgeService:
             self.vault.set(instance["instance_id"], profile.api_key)
             return instance
 
+    def wsl_distros(self) -> list[dict[str, str]]:
+        return self.wsl_hermes.list_distros()
+
+    def wsl_begin_profiles(self, distro_id: str) -> str:
+        return self.wsl_hermes.begin_profile_discovery(distro_id)
+
+    def wsl_operation(self, operation_id: str) -> dict[str, Any]:
+        return self.wsl_hermes.operation_status(operation_id)
+
+    def wsl_cancel_wait(self, operation_id: str) -> dict[str, Any]:
+        return self.wsl_hermes.cancel_wait(operation_id)
+
+    def wsl_inspect_profile(self, distro_id: str, profile_id: str) -> dict[str, Any]:
+        return self.wsl_hermes.create_preview(distro_id, profile_id)
+
+    def wsl_connect_profile(self, preview_token: str) -> str:
+        preview = self.wsl_hermes.consume_preview(preview_token)
+
+        def work(_operation):
+            distro_id = preview["distro_id"]
+            profile_id = preview["profile_id"]
+            plan = preview["plan"]
+            mode = preview["mode"]
+            initial = self.wsl_hermes.inspect(distro_id, profile_id)
+            initial_endpoint = self.wsl_hermes.inspect(distro_id, "default") \
+                if mode == "shared" and profile_id != "default" else initial
+            initial_values = initial_endpoint.get("effective", {})
+            initial_host = initial_values.get("host", "127.0.0.1")
+            initial_port = initial_values.get("port", 8642)
+            if initial_host not in {"127.0.0.1", "::1", "[::1]"} or type(initial_port) is not int:
+                raise WslHermesError("api_endpoint_unsafe", "Hermes API 必须监听本机回环地址。")
+            initial_url_host = "[::1]" if initial_host in {"::1", "[::1]"} else "127.0.0.1"
+            initial_url = f"http://{initial_url_host}:{initial_port}"
+            updates_needed = any(bool(item.get("updates")) for item in plan.get("targets", []))
+            # Detect an already-live endpoint before changing any guest setting,
+            # including when Hermes' private gateway-state file is absent.
+            preflight = HermesClient(initial_url, initial_values.get("key"), timeout=2.0).check_capabilities()
+            if preflight.health != "not_running":
+                if updates_needed:
+                    raise WslHermesError("restart_required", "Hermes API 接口似乎已运行。没有修改配置；请先确认并手动重启所选网关，再重新检查。")
+                if not preflight.executable:
+                    raise WslHermesError("api_check_failed", "已发现本机接口，但未通过 Hermes 能力校验；没有修改配置。")
+            self.wsl_hermes.apply_api_updates(distro_id, plan)
+            snapshot = self.wsl_hermes.inspect(distro_id, profile_id)
+            mode = snapshot.get("mode")
+            selected_values = snapshot.get("effective", {})
+            endpoint_snapshot = self.wsl_hermes.inspect(distro_id, "default") \
+                if mode == "shared" and profile_id != "default" else snapshot
+            endpoint_values = endpoint_snapshot.get("effective", {})
+            if mode == "shared" and profile_id != "default":
+                if not selected_values.get("key") or endpoint_snapshot.get("api_state") != "configured":
+                    raise WslHermesError("api_not_configured", "共享网关或所选 profile 的本机 API key 尚未准备好；未注册连接。")
+            elif snapshot.get("api_state") != "configured":
+                raise WslHermesError("api_not_configured", "Hermes 本机 API 接口尚未准备好；未注册连接。")
+            host = endpoint_values.get("host", "127.0.0.1")
+            port = endpoint_values.get("port")
+            if host not in {"127.0.0.1", "::1", "[::1]"} or type(port) is not int:
+                raise WslHermesError("api_endpoint_unsafe", "Hermes API 必须监听本机回环地址。")
+            host_url = "[::1]" if host in {"::1", "[::1]"} else "127.0.0.1"
+            base_url = f"http://{host_url}:{port}"
+            api_prefix = f"/p/{profile_id}" if mode == "shared" and profile_id != "default" else ""
+            api_key = selected_values.get("key")
+            if not isinstance(api_key, str) or not api_key:
+                raise WslHermesError("api_key_missing", "所选 Hermes 配置没有本机 API key。")
+            identity_key = f"wsl://{snapshot['distro_id'].strip('{}').lower()}/{snapshot['uid']}/{profile_id}"
+            config_ref = identity_key + "?home=" + urllib.parse.quote(snapshot["home"], safe="") \
+                + "&mode=" + urllib.parse.quote(mode, safe="") \
+                + "&prefix=" + urllib.parse.quote(api_prefix, safe="")
+            key_fingerprint = self._key_fingerprint(api_key)
+            identity = {"config_ref": config_ref, "base_url": base_url,
+                        "api_prefix": api_prefix, "key_fingerprint": key_fingerprint}
+            host_key = endpoint_values.get("key")
+            if not isinstance(host_key, str) or not host_key:
+                raise WslHermesError("api_key_missing", "所选网关没有可用的本机 API key。")
+            host_identity = {"distro_id": snapshot["distro_id"], "uid": snapshot["uid"],
+                             "home": endpoint_snapshot["home"],
+                             "host_profile": "default" if mode == "shared" else profile_id,
+                             "mode": mode, "base_url": base_url,
+                             "key_fingerprint": self._key_fingerprint(host_key)}
+            config_fingerprint = hashlib.sha256(canonical_json(identity)).hexdigest()
+            client = HermesClient(base_url, api_key, api_prefix=api_prefix, timeout=2.0)
+            capability = client.check_capabilities()
+            started = False
+            if capability.executable:
+                pass
+            elif capability.health != "not_running":
+                raise WslHermesError("api_check_failed", "已发现本机接口，但身份或能力校验未通过；没有重新启动网关。")
+            else:
+                start_result = self.wsl_hermes.start_gateway(distro_id, profile_id, mode, host_identity)
+                started = bool(start_result.get("started"))
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline:
+                    capability = HermesClient(base_url, api_key, api_prefix=api_prefix,
+                                              timeout=2.0).check_capabilities()
+                    if capability.executable:
+                        break
+                    if capability.health not in {"not_running", "error"}:
+                        raise WslHermesError("api_check_failed", "Hermes 网关已响应，但能力校验未通过。")
+                    time.sleep(0.7)
+                else:
+                    raise WslHermesError("gateway_start_unconfirmed", "已请求启动 Hermes 网关，但在限定时间内未确认接口可用。请检查状态后再试，不要重复启动。")
+            matching = [item for item in self.store.list_instances()
+                        if str(item.get("config_ref", "")).startswith(identity_key + "?")
+                        and not item.get("retired_at")]
+            instance = next((item for item in matching
+                             if item.get("config_fingerprint") == config_fingerprint
+                             and item.get("base_url") == base_url), None)
+            if instance is None:
+                for old in matching:
+                    self.store.retire_instance(old["instance_id"],
+                        "WSL Hermes profile identity changed; its previous task history remains separate.")
+                    self.vault.clear(old["instance_id"])
+                instance = self.store.add_instance(
+                    "hermes", f"Hermes · WSL {snapshot['distro_name']} · {profile_id}", base_url,
+                    config_ref=config_ref, config_fingerprint=config_fingerprint,
+                    credential_fingerprint=key_fingerprint)
+            with self._operation_lock("instance:" + instance["instance_id"]):
+                current_instance = self.store.get_instance(instance["instance_id"])
+                if current_instance.get("retired_at") or current_instance.get("config_fingerprint") != config_fingerprint:
+                    raise WslHermesError("stale_instance", "WSL profile identity changed during connection; inspect it again")
+                self.store.update_instance_check(instance["instance_id"], health=capability.health,
+                    detail=capability.detail, features=capability.features,
+                    executable=capability.executable, expected_identity=current_instance)
+                if capability.executable:
+                    self.vault.set(instance["instance_id"], api_key)
+                else:
+                    self.vault.clear(instance["instance_id"])
+                    raise WslHermesError("capability_missing", "Hermes API 未提供 PadNote 所需的任务能力。")
+            return {"instance_id": instance["instance_id"], "instance_name": instance["name"],
+                    "health": capability.health, "features": capability.features,
+                    "message": "Hermes 已连接并通过能力检查。" if not started else "Hermes 网关已启动并连接。"}
+
+        return self.wsl_hermes.submit_operation(preview["distro_id"], "applying_api_settings", work)
+
+    def _wsl_api_prefix(self, config_ref: str | None) -> str:
+        if not isinstance(config_ref, str) or not config_ref.startswith("wsl://"):
+            return ""
+        parsed = urllib.parse.urlsplit(config_ref)
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+        prefix = query.get("prefix", [""])[0]
+        if prefix and not re.fullmatch(r"/p/[a-z0-9][a-z0-9_-]{0,63}", prefix):
+            raise ValidationError("Stored WSL API route is invalid; reconnect this profile")
+        return prefix
+
     def _reload_configured_profiles(self) -> None:
         for instance in self.store.list_instances():
             if instance.get("retired_at"):
@@ -255,6 +405,13 @@ class BridgeService:
                 continue
             config_ref = instance.get("config_ref")
             if not config_ref:
+                continue
+            if config_ref.startswith("wsl://"):
+                self.vault.clear(instance["instance_id"])
+                self.store.update_instance_check(
+                    instance["instance_id"], health="wsl_reconnect_required",
+                    detail="WSL 配置引用已保留；请明确选择运行中的发行版并重新连接。不会自动启动 WSL。",
+                    features={}, executable=False)
                 continue
             try:
                 profile = read_hermes_profile(Path(config_ref))
@@ -324,6 +481,8 @@ class BridgeService:
                 return instance
             existing_fingerprint = instance.get("credential_fingerprint")
             if existing_fingerprint == fingerprint:
+                if str(instance.get("config_ref", "")).startswith("wsl://"):
+                    raise ValidationError("Reconnect this WSL profile from the WSL section; its key is loaded only from the selected guest profile")
                 self.vault.set(instance_id, api_key)
                 return instance
             if existing_fingerprint is None and not self.store.has_instance_history(instance_id):
@@ -1918,10 +2077,13 @@ class BridgeService:
             raise ValidationError("Hermes task execution is not currently available")
         if not self.vault.has(instance_id):
             raise ValidationError("Hermes key is not loaded on this computer")
+        prefix = self._wsl_api_prefix(instance.get("config_ref"))
         if request_timeout is None:
-            return HermesClient(instance["base_url"], self.vault.get(instance_id), submission_timeout=45.0)
+            return HermesClient(instance["base_url"], self.vault.get(instance_id),
+                                submission_timeout=45.0, api_prefix=prefix)
         return HermesClient(instance["base_url"], self.vault.get(instance_id),
-                            timeout=request_timeout, submission_timeout=45.0)
+                            timeout=request_timeout, submission_timeout=45.0,
+                            api_prefix=prefix)
 
     @staticmethod
     def _key_fingerprint(api_key: str) -> str:

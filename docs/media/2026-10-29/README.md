@@ -1,5 +1,9 @@
 # 界面演示素材 — 2026-10-29
 
+`beta30-wsl-setup.png` 是候选管理页面 WSL 连接向导在 900 × 760 视口中的真实 CSS/DOM 渲染截图。发行版、Hermes 配置和连接状态均为隔离合成数据；截图不代表实际 WSL 扫描、Hermes 连接或 Agent 任务结果。
+
+The beta30 WSL setup image is a real CSS/DOM rendering of the candidate wizard at 900 × 760. Distribution, Hermes configuration, and connection state are synthetic; it does not show a real WSL scan, Hermes connection, or Agent task.
+
 `beta28-desktop-ui.png` 是 beta.28 电脑助手浏览器管理页的合成界面预览。使用候选的真实 HTML 渲染器、CSS、JavaScript 和现有二维码编码器，在全新 Chrome 上下文生成；视口为 1440 × 900，保存完整页面。不是 Windows 原生启动器截图，也不是 Agent 执行过程。
 
 Agent、设备、地址、时间、申请和状态均为合成夹具。二维码只包含保留域 `demo.invalid` 和演示字段，不可用于连接实际助手。有效期由预览时钟设为五分钟，不改变产品的配对规则。没有使用私人笔记、真实配对令牌或用户账户。
