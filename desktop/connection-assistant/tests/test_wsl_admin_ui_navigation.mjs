@@ -237,5 +237,100 @@ try {
     await layoutPage.locator('#wsl-hermes').screenshot({path:path.join(reviewDir,name)});
     await layoutPage.close();
   }
-  console.log('PASS: WSL distro/profile selection, stopped-distro consent, safe preview, explicit connect, separate profiles, resumable polling/cancel wording, and 390/900px layout. All HTTP was mocked.');
+
+  // Error recovery uses only backend codes; raw details never enter the DOM.
+  const recoveryPage = await browser.newPage({viewport:{width:390,height:620}});
+  let scanAttempts = 0;
+  let recoveryConnectCalls = 0;
+  await recoveryPage.route('**/*', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === '/') return route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:html});
+    if (path === '/assets/admin.css' || path === '/assets/admin.js' || path === '/assets/brand.png') {
+      const fs = await import('node:fs/promises');
+      const name = path.split('/').at(-1);
+      const type = name.endsWith('.css') ? 'text/css' : name.endsWith('.js') ? 'text/javascript' : 'image/png';
+      return route.fulfill({status:200,contentType:type,body:await fs.readFile(`${project}/padnote_assistant/static/${name}`)});
+    }
+    if (path === '/admin/wsl/distros' && request.method() === 'GET') {
+      assert.equal(request.headers()['x-padnote-csrf'],'csrf-wsl');
+      scanAttempts += 1;
+      if (scanAttempts === 1) return route.fulfill({status:409,json:{error:{code:'wsl_unavailable',message:'PRIVATE_RAW_DIAGNOSTIC_TOKEN'}}});
+      if (scanAttempts === 3) return route.fulfill({status:409,json:{error:{code:'future_unknown_code',message:'PRIVATE_UNKNOWN_DIAGNOSTIC'}}});
+      return route.fulfill({status:200,json:{distros:[{id:'qa-distro',name:'Ubuntu QA',state:'running',version:2}]}});
+    }
+    if (path === '/admin/wsl/profiles' && request.method() === 'POST')
+      return route.fulfill({status:202,json:{operation_id:'missing-hermes-op'}});
+    if (path === '/admin/wsl/connect' && request.method() === 'POST') {
+      recoveryConnectCalls += 1;
+      return route.fulfill({status:202,json:{operation_id:'unexpected-connect-op'}});
+    }
+    if (path === '/admin/wsl/operations/missing-hermes-op' && request.method() === 'GET')
+      return route.fulfill({status:200,json:{operation_id:'missing-hermes-op',status:'failed',phase:'hermes_missing',message:'PRIVATE_GUEST_STDERR_SECRET',distro_id:'qa-distro',profiles:[]}});
+    if (path === '/admin/wsl/operations/ongoing-op' && request.method() === 'GET')
+      return route.fulfill({status:200,json:{operation_id:'ongoing-op',status:'running',phase:'connect',message:'PRIVATE_ACTIVE_MESSAGE',distro_id:'qa-distro',profiles:[]}});
+    return route.abort();
+  });
+  await recoveryPage.goto('http://recovery.test/');
+  await recoveryPage.locator('[data-open-wsl-hermes]').click();
+  await recoveryPage.locator('[data-wsl-scan]').click();
+  await recoveryPage.locator('[data-wsl-retry]').waitFor({state:'visible'});
+  assert.match(await recoveryPage.locator('[data-wsl-message]').innerText(),/无法查询 WSL/);
+  assert.equal(await recoveryPage.locator('[data-wsl-windows-guide]').getAttribute('href'),'https://learn.microsoft.com/en-us/windows/wsl/install');
+  assert.doesNotMatch(await recoveryPage.locator('#wsl-hermes').innerText(),/PRIVATE_RAW_DIAGNOSTIC_TOKEN/);
+  await recoveryPage.locator('#wsl-hermes').screenshot({path:path.join(reviewDir,'wsl-unavailable-recovery-390x620.png')});
+  const retryBox = await recoveryPage.locator('[data-wsl-retry]').boundingBox();
+  assert.ok(retryBox && retryBox.x >= 0 && retryBox.x + retryBox.width <= 390,`retry action must fit narrow viewport: ${JSON.stringify(retryBox)}`);
+  await recoveryPage.keyboard.press('Tab');
+  // Focus remains usable at a short viewport; the explicit recovery button is keyboard reachable.
+  await recoveryPage.locator('[data-wsl-retry]').focus();
+  assert.equal(await recoveryPage.evaluate(() => document.activeElement.matches('[data-wsl-retry]')),true);
+  await recoveryPage.keyboard.press('Enter');
+  await recoveryPage.waitForFunction(() => document.querySelector('[data-wsl-distro]').options.length === 2);
+  await recoveryPage.locator('[data-wsl-distro]').selectOption('qa-distro');
+  await recoveryPage.locator('[data-wsl-find]').click();
+  await recoveryPage.locator('[data-wsl-install-guide]').waitFor({state:'visible'});
+  const message = await recoveryPage.locator('[data-wsl-message]').innerText();
+  assert.match(message,/没有找到 Hermes/);
+  assert.match(message,/安装与初始化/);
+  assert.doesNotMatch(await recoveryPage.locator('#wsl-hermes').innerText(),/PRIVATE_GUEST_STDERR_SECRET/);
+  assert.equal(await recoveryPage.locator('[data-wsl-profile]').isDisabled(),true);
+  assert.match(await recoveryPage.locator('[data-wsl-profile]').inputValue(),/^$/);
+  await recoveryPage.locator('#wsl-hermes').screenshot({path:path.join(reviewDir,'hermes-missing-recovery-390x620.png')});
+  const guide = recoveryPage.locator('[data-wsl-install-guide]');
+  assert.equal(await guide.getAttribute('href'),'https://hermes-agent.nousresearch.com/docs/getting-started/installation');
+  await guide.focus();
+  const guideBox = await guide.boundingBox();
+  assert.ok(guideBox && guideBox.x >= 0 && guideBox.x + guideBox.width <= 390,`guide link must fit narrow viewport: ${JSON.stringify(guideBox)}`);
+  await recoveryPage.reload();
+  const recent = recoveryPage.locator('[data-wsl-reopen="missing-hermes-op"]');
+  await recent.waitFor({state:'visible'});
+  await recent.click();
+  const recentRecovery = recoveryPage.locator('.wsl-recent-recovery');
+  await recentRecovery.waitFor({state:'visible'});
+  assert.match(await recentRecovery.innerText(),/当前选定的 WSL 发行版/);
+  assert.equal(await recoveryPage.locator('.wsl-recent-operation a[href="https://hermes-agent.nousresearch.com/docs/getting-started/installation"]').count(),1);
+  assert.doesNotMatch(await recoveryPage.locator('.wsl-recent-operation').innerText(),/PRIVATE_GUEST_STDERR_SECRET/);
+  assert.equal(recoveryConnectCalls,0,'reopening a failed record must only read status, never reconnect');
+  await recoveryPage.locator('[data-wsl-scan]').click();
+  await recoveryPage.waitForFunction(() => document.querySelector('[data-wsl-message]').textContent.includes('扫描未能完成'));
+  assert.doesNotMatch(await recoveryPage.locator('#wsl-hermes').innerText(),/PRIVATE_UNKNOWN_DIAGNOSTIC/);
+  assert.equal(await recoveryPage.locator('[data-wsl-install-guide]').isHidden(),true,'unknown error codes use a safe fallback without implying a specific fix');
+  await recoveryPage.evaluate(() => {
+    sessionStorage.setItem('padnote.wsl.operation_id','ongoing-op');
+    sessionStorage.setItem('padnote.wsl.operation_kind','connect');
+    sessionStorage.setItem('padnote.wsl.operation_distro','qa-distro');
+  });
+  await recoveryPage.reload();
+  await recoveryPage.locator('[data-wsl-cancel]').waitFor({state:'visible'});
+  await recoveryPage.locator('[data-wsl-reopen="missing-hermes-op"]').click();
+  await recoveryPage.locator('.wsl-recent-recovery').waitFor({state:'visible'});
+  assert.equal(await recoveryPage.evaluate(() => sessionStorage.getItem('padnote.wsl.operation_id')),'ongoing-op',
+    'reading an older failed operation must not replace the separate active operation');
+  assert.equal(await recoveryPage.locator('[data-wsl-cancel]').isHidden(),false);
+  assert.equal(recoveryConnectCalls,0);
+  assert.equal(await recoveryPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+  await recoveryPage.close();
+  console.log('PASS: WSL selection/connect flow plus code-based WSL/Hermes recovery, retry, official guide, secret-safe rendering, keyboard focus, and narrow viewport. All HTTP was mocked.');
 } finally { await browser.close(); }

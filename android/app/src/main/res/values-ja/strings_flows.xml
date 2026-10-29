@@ -424,4 +424,15 @@
     <string name="flow_retry_same_id_warning">同じタスクIDで再試行します。重複実行を避けるため、先にパソコンの状態を確認してください。</string>
     <string name="flow_task_queue_busy">別のタスクを準備中です。少し待ってから再試行してください。</string>
     <string name="flow_stage_updated_ago">%1$d 秒前に更新</string>
+
+    <!-- beta33 explicit task receipt recovery -->
+    <string name="flow_view_task_progress">進行状況を確認</string>
+    <string name="flow_submission_result_unknown">結果を確認できません</string>
+    <string name="flow_direct_unknown_check_computer">このタスクを再送信する前に、パソコン側で結果を確認してください。</string>
+    <string name="flow_recover_same_task">パソコンが受け取ったか確認</string>
+    <string name="flow_recover_same_task_warning">パソコンがこのタスクを受け取っていれば、PadNoteは新しいタスクを作らず、同じタスクの追跡を再開します。Agentの結果は不明のままの場合があります。</string>
+    <string name="flow_confirm_recover_same_task">続行</string>
+    <string name="flow_send_saved_task">保存済みタスクを送信</string>
+    <string name="flow_send_saved_task_warning">このタスクはまだ送信されていません。既存のタスクIDと保存済みの内容で一度だけ送信します。</string>
+    <string name="flow_send_saved_task_confirm">今すぐ送信</string>
 </resources>

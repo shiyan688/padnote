@@ -424,4 +424,15 @@
     <string name="flow_retry_same_id_warning">Erneuter Versuch mit derselben Aufgaben-ID. Prüfen Sie zuerst den Computer, um eine doppelte Aktion zu vermeiden.</string>
     <string name="flow_task_queue_busy">Eine weitere Aufgabe wird vorbereitet. Versuchen Sie es gleich noch einmal.</string>
     <string name="flow_stage_updated_ago">Vor %1$d Sek. aktualisiert</string>
+
+    <!-- beta33 explicit task receipt recovery -->
+    <string name="flow_view_task_progress">Fortschritt ansehen</string>
+    <string name="flow_submission_result_unknown">Ergebnis nicht bestätigt</string>
+    <string name="flow_direct_unknown_check_computer">Prüfen Sie zuerst das Ergebnis am Computer, bevor Sie diese Aufgabe erneut senden.</string>
+    <string name="flow_recover_same_task">Empfang am Computer prüfen</string>
+    <string name="flow_recover_same_task_warning">Wenn der Computer diese Aufgabe erhalten hat, verfolgt PadNote dieselbe Aufgabe weiter, statt eine zweite anzulegen. Das Ergebnis des Agenten kann weiterhin unbekannt sein.</string>
+    <string name="flow_confirm_recover_same_task">Fortfahren</string>
+    <string name="flow_send_saved_task">Gespeicherte Aufgabe senden</string>
+    <string name="flow_send_saved_task_warning">Diese Aufgabe wurde noch nicht gesendet. Sie wird einmal mit ihrer vorhandenen Aufgaben-ID und dem gespeicherten Inhalt gesendet.</string>
+    <string name="flow_send_saved_task_confirm">Jetzt senden</string>
 </resources>

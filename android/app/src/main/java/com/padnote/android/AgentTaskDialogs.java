@@ -327,8 +327,14 @@ final class AgentTaskDialogs {
             if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));observedVersion[0]=version;}}
             AgentTaskStore.Task task=latestTask[0];if(task==null||!dialog.isShowing())return;
             statusText.setText(statusCardText(task));
-            retry.setVisibility(task.status==AgentTaskStore.Status.SUBMITTING&&
-                    task.remoteTaskId.isEmpty()&&!AgentTaskSubmissionExecutor.isInFlight(task.clientTaskId)?View.VISIBLE:View.GONE);
+            boolean inFlight=AgentTaskSubmissionExecutor.isInFlight(task.clientTaskId);
+            boolean bridgeRecovery=canOfferSameTaskRecovery(task,
+                    tasks.submissionAttemptState(task.clientTaskId),inFlight);
+            boolean savedUnsent=canSendSavedTask(task,tasks.submissionAttemptState(task.clientTaskId),inFlight);
+            retry.setVisibility(bridgeRecovery||savedUnsent?View.VISIBLE:View.GONE);
+            retry.setText(bridgeRecovery?activity.getString(R.string.flow_recover_same_task):savedUnsent?
+                    activity.getString(R.string.flow_send_saved_task):activity.getString(R.string.flow_retry_submit));
+            refresh.setVisibility(canRefreshRemoteStatus(task)?View.VISIBLE:View.GONE);
             copyDiagnostic.setOnClickListener(v->{AgentTaskStore.Task latest=latestTask[0];if(latest!=null){
                 android.content.ClipboardManager clipboard=(android.content.ClipboardManager)activity.getSystemService(Activity.CLIPBOARD_SERVICE);
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("PadNote task diagnostics",diagnostic(latest)));
@@ -349,13 +355,14 @@ final class AgentTaskDialogs {
                 Button save=button(activity.getString(R.string.flow_save_artifact,artifact.name,size(artifact.sizeBytes)));
                 save.setOnClickListener(v->artifactSaveLauncher.choose(task,artifact));artifacts.addView(save);
             }
+            if(!shouldContinueObserving(task.status,task.remoteTaskId,inFlight))return;
             if(activity.getWindow().getDecorView().getWindowVisibility()!=View.VISIBLE){
                 main.postDelayed(update[0],2500L);return;
             }
-            if(!task.status.terminal()&&task.remoteTaskId.isEmpty()) {
+            if(task.remoteTaskId.isEmpty()&&inFlight) {
                 main.postDelayed(update[0],1500L);return;
             }
-        if(!task.status.terminal()&&!task.remoteTaskId.isEmpty()&&polling.compareAndSet(false,true)){
+        if(!task.remoteTaskId.isEmpty()&&polling.compareAndSet(false,true)){
             try {
                 STATUS_REFRESH_EXECUTOR.execute(()->{
                     boolean success=false;AgentTaskStore.Task fresh=null;
@@ -385,7 +392,47 @@ final class AgentTaskDialogs {
         });
         openSource.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t!=null&&sourceNoteOpener.open(t.noteId))dialog.dismiss();else toast(activity.getString(R.string.flow_no_source_note));});
         openTaskList.setOnClickListener(v->{dialog.dismiss();showList();});
-        retry.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t==null)return;ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_retry_submit)).setMessage(activity.getString(R.string.flow_retry_same_id_warning)).setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_retry_submit),(d,w)->{dialog.dismiss();submit(t);}).show();});
+        retry.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t==null)return;
+            int attempt=tasks.submissionAttemptState(t.clientTaskId);
+            boolean bridgeRecovery=canOfferSameTaskRecovery(t,attempt,
+                    AgentTaskSubmissionExecutor.isInFlight(t.clientTaskId));
+            boolean savedUnsent=canSendSavedTask(t,attempt,
+                    AgentTaskSubmissionExecutor.isInFlight(t.clientTaskId));
+            int title=bridgeRecovery?R.string.flow_recover_same_task:savedUnsent?
+                    R.string.flow_send_saved_task:R.string.flow_retry_submit;
+            int message=bridgeRecovery?R.string.flow_recover_same_task_warning:savedUnsent?
+                    R.string.flow_send_saved_task_warning:R.string.flow_retry_same_id_warning;
+            ChoiceRows.builder(activity).setTitle(activity.getString(title))
+                    .setMessage(activity.getString(message))
+                    .setNegativeButton(activity.getString(R.string.flow_cancel),null)
+                    .setPositiveButton(activity.getString(bridgeRecovery?
+                                    R.string.flow_confirm_recover_same_task:savedUnsent?
+                                            R.string.flow_send_saved_task_confirm:R.string.flow_retry_submit),(d,w)->{
+                        AgentTaskStore.Task current=tasks.get(t.clientTaskId);
+                        int latestAttempt=current==null?-1:tasks.submissionAttemptState(current.clientTaskId);
+                        boolean stillEligible=AgentTaskSubmissionExecutor.sameSubmissionSnapshot(t,current)&&
+                                (bridgeRecovery?canOfferSameTaskRecovery(current,latestAttempt,
+                                        AgentTaskSubmissionExecutor.isInFlight(t.clientTaskId)):
+                                        canSendSavedTask(current,latestAttempt,
+                                                AgentTaskSubmissionExecutor.isInFlight(t.clientTaskId)));
+                        AgentConnectionStore.Config latestConnection=null;
+                        try{if(current!=null)latestConnection=taskConnectionSource.get(current.connectionId);}
+                        catch(RuntimeException ignored){}
+                        if(!stillEligible||!current.matches(latestConnection)){
+                            if(current!=null){
+                                latestTask[0]=current;
+                                statusText.setText(statusCardText(current));
+                                content.setText(detail(current,displayInput[0]));
+                            }
+                            toast(activity.getString(R.string.flow_task_changed_during_submit));
+                            update[0].run();
+                            return;
+                        }
+                        if(!AgentTaskSubmissionExecutor.recoverSameTask(current,bridgeRecovery,tasks,
+                                taskConnectionSource,taskClientFactory,activity.getApplicationContext()))
+                            toast(activity.getString(R.string.flow_task_queue_busy));
+                        update[0].run();
+                    }).show();});
         continueTask.setOnClickListener(v->askFollowup(clientId,dialog));
         previous.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&!t.parentClientTaskId.isEmpty()){dialog.dismiss();showDetail(t.parentClientTaskId);}});
         video.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null)videoDialogFactory.create(activity,connections,tasks,worker).show(t);});
@@ -452,7 +499,22 @@ final class AgentTaskDialogs {
         return s.toString().trim();
     }
     static boolean computerHasReceipt(AgentTaskStore.Status status,String remoteTaskId){return status==AgentTaskStore.Status.SUBMITTING&&remoteTaskId!=null&&!remoteTaskId.isEmpty();}
-    private String taskStatus(AgentTaskStore.Task t){if(computerHasReceipt(t.status,t.remoteTaskId))return activity.getString(R.string.flow_status_computer_received);if(t.status==AgentTaskStore.Status.SUBMITTING){AgentTaskSubmissionExecutor.ProgressInfo p=AgentTaskSubmissionExecutor.progressInfo(t.clientTaskId);if(p!=null)switch(p.phase){case QUEUED:return activity.getString(R.string.flow_submission_queued);case CONNECTING:return activity.getString(R.string.flow_connecting_computer);case UPLOADING:return activity.getString(R.string.flow_upload_bytes,p.bytes());case WAITING_FOR_CONFIRMATION:return activity.getString(R.string.flow_waiting_computer_confirmation);case COMPUTER_ACCEPTED:break;case COMPUTER_REJECTED:case RESULT_UNCONFIRMED:return activity.getString(R.string.flow_submission_unconfirmed);}return tasks.submissionAttemptState(t.clientTaskId)==0?activity.getString(R.string.flow_saved_not_sent):activity.getString(R.string.flow_submission_unconfirmed);}return status(t.status);}
+    static boolean canRefreshRemoteStatus(AgentTaskStore.Task task){
+        return task!=null&&!task.status.terminal()&&task.remoteTaskId!=null&&!task.remoteTaskId.isEmpty();
+    }
+    static boolean shouldContinueObserving(AgentTaskStore.Status status,String remoteTaskId,boolean inFlight){
+        return status!=null&&!status.terminal()&&((remoteTaskId!=null&&!remoteTaskId.isEmpty())||inFlight);
+    }
+    static boolean canOfferSameTaskRecovery(AgentTaskStore.Task task,int attemptState,boolean inFlight){
+        return task!=null&&task.transport==AgentConnectionStore.Transport.BRIDGE&&
+                task.status==AgentTaskStore.Status.SUBMITTING&&task.remoteTaskId.isEmpty()&&
+                attemptState!=0&&!inFlight;
+    }
+    static boolean canSendSavedTask(AgentTaskStore.Task task,int attemptState,boolean inFlight){
+        return task!=null&&task.status==AgentTaskStore.Status.SUBMITTING&&task.remoteTaskId.isEmpty()&&
+                attemptState==0&&!inFlight;
+    }
+    private String taskStatus(AgentTaskStore.Task t){if(computerHasReceipt(t.status,t.remoteTaskId))return activity.getString(R.string.flow_status_computer_received);if(t.status==AgentTaskStore.Status.SUBMITTING){AgentTaskSubmissionExecutor.ProgressInfo p=AgentTaskSubmissionExecutor.progressInfo(t.clientTaskId);AgentTaskSubmissionExecutor.Phase live=AgentTaskSubmissionExecutor.visibleProgressPhase(AgentTaskSubmissionExecutor.isInFlight(t.clientTaskId),p==null?null:p.phase);if(live!=null)switch(live){case QUEUED:return activity.getString(R.string.flow_submission_queued);case CONNECTING:return activity.getString(R.string.flow_connecting_computer);case UPLOADING:return activity.getString(R.string.flow_upload_bytes,p.bytes());case WAITING_FOR_CONFIRMATION:return activity.getString(R.string.flow_waiting_computer_confirmation);default:break;}int attempt=tasks.submissionAttemptState(t.clientTaskId);if(attempt==0)return activity.getString(R.string.flow_saved_not_sent);String unknown=activity.getString(R.string.flow_submission_result_unknown);if(t.transport!=AgentConnectionStore.Transport.BRIDGE)return unknown+"\n"+activity.getString(R.string.flow_direct_unknown_check_computer);return unknown;}return status(t.status);}
     private String diagnostic(AgentTaskStore.Task t){
         long bytes=base64PayloadBytes(t);
         String stage=taskStatus(t);

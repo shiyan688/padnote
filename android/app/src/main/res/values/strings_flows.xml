@@ -424,4 +424,15 @@
     <string name="flow_retry_same_id_warning">Retry with the same task ID? Check the computer first to avoid repeating an action.</string>
     <string name="flow_task_queue_busy">Another paper task is still being prepared. Try again shortly.</string>
     <string name="flow_stage_updated_ago">Updated %1$d sec ago</string>
+
+    <!-- beta33 explicit task receipt recovery -->
+    <string name="flow_view_task_progress">View progress</string>
+    <string name="flow_submission_result_unknown">Result not confirmed</string>
+    <string name="flow_direct_unknown_check_computer">Check the computer before deciding whether to submit this task again.</string>
+    <string name="flow_recover_same_task">Confirm whether the computer received it</string>
+    <string name="flow_recover_same_task_warning">If the computer received this task, PadNote will resume tracking that same task instead of creating another one. The Agent result may still be unknown.</string>
+    <string name="flow_confirm_recover_same_task">Continue</string>
+    <string name="flow_send_saved_task">Send saved task</string>
+    <string name="flow_send_saved_task_warning">This task has not been sent. It will be sent once using its existing task ID and saved payload.</string>
+    <string name="flow_send_saved_task_confirm">Send now</string>
 </resources>

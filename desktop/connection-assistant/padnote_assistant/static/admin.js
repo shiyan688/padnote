@@ -229,6 +229,9 @@
     const refreshButton = wsl.querySelector('[data-wsl-refresh]');
     const cancelButton = wsl.querySelector('[data-wsl-cancel]');
     const returnButton = wsl.querySelector('[data-wsl-return]');
+    const retryButton = wsl.querySelector('[data-wsl-retry]');
+    const installGuideLink = wsl.querySelector('[data-wsl-install-guide]');
+    const windowsGuideLink = wsl.querySelector('[data-wsl-windows-guide]');
     const recentContainer = wsl.querySelector('[data-wsl-recent]');
     const pairLink = wsl.querySelector('[data-wsl-pair]');
     const distroState = wsl.querySelector('[data-wsl-distro-state]');
@@ -258,13 +261,72 @@
       if (locked) connectButton.disabled = true;
     };
 
-    const showOperation = (message, {refresh = false, cancel = false, pair = false, leave = false} = {}) => {
+    const showOperation = (message, {refresh = false, cancel = false, pair = false, leave = false, retry = false, guide = false, windowsGuide = false} = {}) => {
       operation.hidden = false;
       operationMessage.textContent = message;
       refreshButton.hidden = !refresh;
       cancelButton.hidden = !cancel;
       returnButton.hidden = !leave;
+      retryButton.hidden = !retry;
+      installGuideLink.hidden = !guide;
+      windowsGuideLink.hidden = !windowsGuide;
       pairLink.hidden = !pair;
+    };
+    const recoveryForCode = (code, stage = 'operation') => {
+      const entries = {
+        wsl_unavailable:['暂时无法查询 WSL。可按 Windows 官方说明安装或修复 WSL，再重试扫描。',true,false,true],
+        wsl_command_failed:['WSL 命令未能完成。请检查所选发行版状态后重试，或换一个发行版。',true,false],
+        wsl_output_incomplete:['WSL 返回的信息不完整。请重试扫描；仍失败时检查 WSL 状态。',true,false],
+        invalid_wsl_output:['无法安全读取 WSL 发行版列表。请重试扫描，或检查 WSL 状态。',true,false],
+        wsl1_unsupported:['此功能需要 WSL 2 发行版。请选择 WSL 2，或先将目标发行版升级到 WSL 2。',true,false,true],
+        wsl_version_unknown:['暂时无法确认发行版的 WSL 版本。请重试扫描，或检查 WSL 状态。',true,false],
+        distro_not_running:['所选发行版当前未运行。请重新选择；查找配置前会再次征求启动确认。',true,false],
+        stale_distro:['发行版列表已变化。请重新扫描并选择仍可用的发行版。',true,false],
+        invalid_distro:['所选发行版已不可用。请重新扫描并选择一个发行版。',true,false],
+        distro_identity_unavailable:['暂时无法验证发行版身份。请重新扫描；不要继续使用旧选择。',true,false],
+        hermes_missing:['在当前选定的 WSL 发行版常见位置没有找到 Hermes。请在该发行版中完成 Hermes 安装与初始化，再回来重试。',true,true,false],
+        guest_runtime_unavailable:['无法安全启动 Hermes 配置检查。请在所选发行版中完成 Hermes 安装与初始化，再重试。',true,true],
+        profile_list_unrecognized:['无法安全读取 Hermes 配置列表。请确认该发行版中的 Hermes 已完成初始化，或换一个发行版。',true,true],
+        guest_operation_failed:['Hermes 配置检查未能完成。请确认所选发行版中的 Hermes 已安装并初始化，然后重试。',true,true],
+        guest_protocol_error:['Hermes 返回的数据无法安全识别。请更新或初始化所选发行版中的 Hermes，再重试。',true,true],
+        api_not_configured:['所选配置尚未启用本机 API。请重新预览连接步骤后，再决定是否启用。',false,false],
+        api_key_missing:['所选配置缺少本机 API 凭据。请检查 Hermes 配置并重新预览；PadNote 不会替你创建供应商密钥。',false,false],
+        api_config_invalid:['本机 API 设置无法验证。请在 Hermes 中检查所选配置，再重新预览。',false,false],
+        api_check_failed:['无法确认 Hermes 本机 API 是否可用。请检查所选配置和服务状态，再重新预览。',false,false],
+        capability_missing:['Hermes 接口未提供 PadNote 所需能力。请检查 Hermes 服务版本或所选配置。',false,false],
+        gateway_mode_unknown:['无法确认 Hermes 网关的配置模式。请先在 Hermes 中检查默认配置，再重新扫描。',true,false],
+        secondary_listener_enabled:['具名配置中检测到额外 API 监听设置。为避免连接到错误服务，请检查 Hermes 网关配置后重新预览。',true,false],
+        stale_instance:['连接目标已变化。请重新扫描并检查新预览；旧任务不会迁移到其他实例。',true,false],
+        invalid_profile:['所选 Hermes 配置已不可用。请重新查找并明确选择一个配置。',true,false],
+        invalid_plan:['连接预览无效。请重新扫描并生成新预览；不会重用旧连接请求。',true,false],
+        partial_config:['部分本机 API 设置已更新，但后续步骤未完成。请重新扫描并检查配置；不会自动重试启动。',true,false],
+        restart_required:['现有 Hermes 服务需要由你手动重启后才能使用新设置。PadNote 没有自动重启服务。',true,false],
+        gateway_start_unconfirmed:['连接结果暂时无法确认。Hermes 可能仍在运行；只刷新此操作状态，不要重新提交。',false,false],
+        stale_config:['Hermes 配置在预览后发生变化。请重新扫描并预览最新设置。',true,false],
+        preview_expired:['连接预览已过期。请重新预览；不会重复提交旧操作。',true,false],
+        operation_not_found:['找不到这条操作记录。请重新扫描并按当前状态继续；不会重发旧操作。',true,false],
+        operation_start_failed:['PadNote 未能开始这次查找。可重试扫描或选择其他发行版。',true,false],
+        operation_capacity:['当前已有较多 WSL 操作在处理。请稍后刷新或返回选择，不会重复提交。',false,false],
+      };
+      const entry = typeof code === 'string' ? entries[code] : null;
+      return entry ? {message:entry[0],retry:entry[1],guide:entry[2],windowsGuide:entry[3] === true} : {
+        message:stage === 'scan' ? '扫描未能完成。请重试，或选择其他发行版；没有自动连接或修改配置。'
+          : '操作未能完成。请查看所选发行版和配置后重试；不会自动重复连接。',
+        retry:stage === 'scan', guide:false, windowsGuide:false
+      };
+    };
+    const safeApiError = async (response, stage = 'operation') => {
+      let code = '';
+      try {
+        const data = await response.json();
+        const candidate = data && data.error && typeof data.error.code === 'string' ? data.error.code
+          : data && typeof data.code === 'string' ? data.code : '';
+        if (/^[a-z0-9_]{1,80}$/.test(candidate)) code = candidate;
+      } catch (_) { /* response may not be JSON; keep the generic recovery copy */ }
+      const recovery = recoveryForCode(code, stage);
+      const error = new Error(recovery.message);
+      error.code = code; error.recovery = recovery;
+      return error;
     };
     const readRecentOperations = () => {
       try {
@@ -274,24 +336,31 @@
           && ['profiles','connect'].includes(item.kind)
           && (item.distroId === '' || typeof item.distroId === 'string' && item.distroId.length <= 256 && !/[\u0000-\u001f\u007f]/.test(item.distroId))
           && ['pending','running','succeeded','failed','cancelled','unknown'].includes(item.status))
-          .slice(0, maxRecentOperations).map((item) => ({id:item.id,kind:item.kind,distroId:item.distroId,status:item.status,label:typeof item.label === 'string' ? item.label.slice(0,120) : ''}));
+          .slice(0, maxRecentOperations).map((item) => ({id:item.id,kind:item.kind,distroId:item.distroId,status:item.status,
+            phase:typeof item.phase === 'string' && /^[a-z0-9_]{1,80}$/.test(item.phase) ? item.phase : '',
+            label:typeof item.label === 'string' ? item.label.slice(0,120) : ''}));
       } catch (_) { return []; }
     };
     const writeRecentOperations = (items) => {
       sessionStorage.setItem(recentOperationsStorageKey, JSON.stringify(items.slice(0, maxRecentOperations)));
       renderRecentOperations();
     };
-    const rememberOperation = (id, kind, distroId, status = 'unknown', label = '') => {
+    const rememberOperation = (id, kind, distroId, status = 'unknown', label = '', phase = '') => {
       if (!validOperationId(id) || !['profiles','connect'].includes(kind)) return;
       const current = readRecentOperations().filter((item) => item.id !== id);
       const safeLabel = typeof label === 'string' ? label.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,120) : '';
-      current.unshift({id,kind,distroId:typeof distroId === 'string' ? distroId : '',status,label:safeLabel});
+      const safePhase = typeof phase === 'string' && /^[a-z0-9_]{1,80}$/.test(phase) ? phase : '';
+      current.unshift({id,kind,distroId:typeof distroId === 'string' ? distroId : '',status,label:safeLabel,phase:safePhase});
       writeRecentOperations(current);
     };
-    const updateRecentStatus = (id, status) => {
+    const updateRecentStatus = (id, status, phase = '') => {
       const items = readRecentOperations();
       const item = items.find((entry) => entry.id === id);
-      if (item) { item.status = status; writeRecentOperations(items); }
+      if (item) {
+        item.status = status;
+        if (typeof phase === 'string' && /^[a-z0-9_]{1,80}$/.test(phase)) item.phase = phase;
+        writeRecentOperations(items);
+      }
     };
     const renderRecentOperations = () => {
       if (!recentContainer) return;
@@ -320,6 +389,25 @@
         hint.className = 'wsl-recent-hint';
         hint.textContent = '只查询原操作，不会重新发送连接请求。';
         row.append(state, hint, button); fragment.append(row);
+        if (entry.status === 'failed' && entry.phase) {
+          const recovery = recoveryForCode(entry.phase, entry.kind === 'profiles' ? 'scan' : 'operation');
+          const explanation = document.createElement('small');
+          explanation.className = 'wsl-recent-recovery';
+          explanation.textContent = recovery.message;
+          row.insertBefore(explanation, button);
+          if (recovery.windowsGuide) {
+            const guide = document.createElement('a'); guide.className = 'text-link';
+            guide.href = 'https://learn.microsoft.com/en-us/windows/wsl/install';
+            guide.target = '_blank'; guide.rel = 'noopener noreferrer'; guide.textContent = 'Windows 官方 WSL 安装说明 ↗';
+            row.insertBefore(guide, button);
+          }
+          if (recovery.guide) {
+            const guide = document.createElement('a'); guide.className = 'text-link';
+            guide.href = 'https://hermes-agent.nousresearch.com/docs/getting-started/installation';
+            guide.target = '_blank'; guide.rel = 'noopener noreferrer'; guide.textContent = 'Hermes 官方安装指南 ↗';
+            row.insertBefore(guide, button);
+          }
+        }
       }
       recentContainer.replaceChildren(fragment);
       recentContainer.hidden = entries.length === 0;
@@ -367,7 +455,15 @@
       const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'}, body, credentials: 'same-origin', cache: 'no-store'});
       let data = {};
       try { data = await response.json(); } catch (_) { /* fail closed below */ }
-      if (!response.ok) throw new Error(typeof data.message === 'string' ? data.message : `请求失败（${response.status}）`);
+      if (!response.ok) {
+        const candidate = data && data.error && typeof data.error.code === 'string' ? data.error.code
+          : data && typeof data.code === 'string' ? data.code : '';
+        const code = /^[a-z0-9_]{1,80}$/.test(candidate) ? candidate : '';
+        const recovery = recoveryForCode(code);
+        const error = new Error(recovery.message);
+        error.code = code; error.recovery = recovery;
+        throw error;
+      }
       return {response, data};
     };
     const renderProfiles = (profiles) => {
@@ -385,10 +481,18 @@
     };
     const loadDistros = async (preferredId = '', isCurrent = () => true) => {
       const response = await fetch('/admin/wsl/distros', {headers: csrfHeaders(), credentials:'same-origin', cache:'no-store'});
-      if (!response.ok) throw new Error(`扫描失败（${response.status}）`);
-      const data = await response.json();
+      if (!response.ok) throw await safeApiError(response, 'scan');
+      let data;
+      try { data = await response.json(); }
+      catch (_) {
+        const recovery = recoveryForCode('invalid_wsl_output','scan');
+        throw Object.assign(new Error(recovery.message), {code:'invalid_wsl_output', recovery});
+      }
       if (!isCurrent()) return false;
-      if (!Array.isArray(data.distros)) throw new Error('发行版列表格式无效');
+      if (!Array.isArray(data.distros)) {
+        const recovery = recoveryForCode('invalid_wsl_output','scan');
+        throw Object.assign(new Error(recovery.message), {code:'invalid_wsl_output', recovery});
+      }
       selectedDistros = new Map();
       distroSelect.replaceChildren(makeOption(data.distros.length ? '请选择一个发行版' : '没有发现发行版'));
       for (const distro of data.distros) {
@@ -447,9 +551,6 @@
       } else {
         const reuse = document.createElement('p'); reuse.textContent = '将沿用这套配置的现有连接凭据，不会显示或修改凭据值。'; fragment.append(reuse);
       }
-      if (typeof data.message === 'string' && data.message) {
-        const note = document.createElement('p'); note.textContent = data.message; fragment.append(note);
-      }
       preview.replaceChildren(fragment);
       preview.hidden = false;
       const tokenOk = typeof data.preview_token === 'string' && data.preview_token.length > 0 && data.preview_token.length <= 2048;
@@ -462,7 +563,7 @@
       else preview.scrollIntoView({block:'nearest'});
     };
     const finishOperation = (status, data) => {
-      updateRecentStatus(operationId, status);
+      updateRecentStatus(operationId, status, typeof data.phase === 'string' ? data.phase : '');
       if (status === 'succeeded') {
         if (operationKind !== 'connect' && Array.isArray(data.profiles)) {
           renderProfiles(data.profiles);
@@ -483,8 +584,15 @@
       } else if (status === 'failed') {
         if (operationKind === 'profiles') findButton.disabled = false;
         if (operationKind === 'connect') inspectButton.disabled = !distroSelect.value || !profileSelect.value;
-        showOperation(typeof data.message === 'string' && data.message ? data.message : '操作失败。检查所选配置后可重新扫描或预览。', {refresh:true, cancel:false});
-        rememberOperation(operationId, operationKind, sessionStorage.getItem(operationDistroStorageKey) || distroSelect.value, 'failed', currentOperationLabel());
+        const recovery = recoveryForCode(data.phase, operationKind === 'profiles' ? 'scan' : 'operation');
+        if (operationKind === 'profiles') {
+          profileSelect.replaceChildren(makeOption('查找未完成，请重新扫描'));
+          profileSelect.disabled = true;
+          inspectButton.disabled = true;
+          clearPreview();
+        }
+        showOperation(recovery.message, {refresh:false, cancel:false, leave:true, retry:recovery.retry, guide:recovery.guide, windowsGuide:recovery.windowsGuide});
+        rememberOperation(operationId, operationKind, sessionStorage.getItem(operationDistroStorageKey) || distroSelect.value, 'failed', currentOperationLabel(), data.phase);
         clearActiveOperation();
       } else if (status === 'cancelled') {
         detachOperation('此操作已结束等待；这不会停止 Hermes。可返回选择，或稍后只读查看记录。', 'cancelled');
@@ -509,16 +617,18 @@
         const statuses = new Set(['pending','running','succeeded','failed','cancelled','unknown']);
         const statusValue = statuses.has(data.status) ? data.status : 'unknown';
         if (statusValue === 'pending' || statusValue === 'running') {
-          const phase = typeof data.phase === 'string' ? data.phase : '处理中';
-          const message = typeof data.message === 'string' && data.message ? data.message : phase;
-          showOperation(`${message}（离开页面后可回来刷新；取消只取消等待。）`, {refresh:true, cancel:true});
+          const phase = typeof data.phase === 'string' ? data.phase : '';
+          updateRecentStatus(requestedId, statusValue, phase);
+          const label = operationKind === 'profiles' ? '正在查找所选发行版中的 Hermes 配置' : '正在连接所选 Hermes 配置';
+          const phaseHint = phase === 'starting_distro' ? '；正在启动你已确认的发行版' : '';
+          showOperation(`${label}${phaseHint}。离开页面后可回来刷新；取消只取消等待。`, {refresh:true, cancel:true});
           if (operationKind === 'profiles' && Array.isArray(data.profiles) && data.profiles.length) renderProfiles(data.profiles);
           clearPollTimer();
           pollTimer = window.setTimeout(() => { if (epoch === operationEpoch && operationId === requestedId) pollOperation(); }, 1200);
         } else finishOperation(statusValue, data);
       } catch (error) {
         if (epoch !== operationEpoch || requestedId !== operationId) return;
-        showOperation(`${error.message || '暂时无法读取状态'}。可刷新此操作；不会自动重复启动或连接。`, {refresh:true, cancel:Boolean(operationId)});
+        showOperation('暂时无法读取这条操作状态。可刷新原操作；不会自动重复启动或连接。', {refresh:true, cancel:Boolean(operationId)});
       }
     };
     const beginPolling = (id, kind) => {
@@ -550,6 +660,7 @@
         const saved = current.find((candidate) => candidate.id === entry.id);
         if (!saved) return;
         saved.status = data.status;
+        saved.phase = typeof data.phase === 'string' && /^[a-z0-9_]{1,80}$/.test(data.phase) ? data.phase : '';
         recentRefreshStates.set(entry.id, 'updated');
         writeRecentOperations(current);
       } catch (error) {
@@ -579,9 +690,12 @@
         await loadDistros(preferredId);
       } catch (error) {
         distroSelect.replaceChildren(makeOption('扫描失败，请重试'));
-        distroState.textContent = `${error.message || '扫描失败'}。未连接或修改任何发行版。`;
+        const recovery = recoveryForCode(error.code, 'scan');
+        distroState.textContent = `${recovery.message} 未连接或修改任何发行版。`;
+        showOperation(recovery.message, {refresh:false, cancel:false, leave:true, retry:recovery.retry, guide:recovery.guide, windowsGuide:recovery.windowsGuide});
       } finally { scanButton.disabled = false; distroSelect.disabled = false; }
     });
+    retryButton.addEventListener('click', () => scanButton.click());
     distroSelect.addEventListener('change', () => {
       clearPairTarget();
       selectionRevision += 1;
@@ -611,7 +725,7 @@
         if (requestRevision !== selectionRevision || requestedDistroId !== distroSelect.value) return;
         findButton.disabled = false;
         profileSelect.replaceChildren(makeOption('查找未完成，可重试'));
-        showOperation(`${error.message || '无法开始查找'}。没有自动选择配置。`, {refresh:false, cancel:false});
+        showOperation(`${error.recovery?.message || '无法开始查找。没有自动选择配置。'}`, {refresh:false, cancel:false, leave:true, retry:true, guide:Boolean(error.recovery?.guide)});
       }
     });
     profileSelect.addEventListener('change', () => {
@@ -631,7 +745,8 @@
         renderImpact(data);
       } catch (error) {
         if (revision !== selectionRevision) return;
-        showOperation(`${error.message || '无法预览配置'}。未执行配置更改；请重新检查或返回选择。`);
+        showOperation(`${error.recovery?.message || '无法安全预览此配置。未执行配置更改；请重新检查或返回选择。'}`,
+          {leave:true, retry:Boolean(error.recovery?.retry), guide:Boolean(error.recovery?.guide)});
         inspectButton.disabled = false;
       }
     });
@@ -660,7 +775,7 @@
         if (requestEpoch !== operationEpoch) return;
         lockSelection(false);
         inspectButton.disabled = !distroSelect.value || !profileSelect.value;
-        showOperation(`${error.message || '连接结果未知'}。请刷新状态或重新预览；不要重复提交旧预览。`, {refresh:false, cancel:false});
+        showOperation(error.recovery?.message || '连接结果暂时无法确认。请刷新状态或重新预览；不要重复提交旧预览。', {refresh:false, cancel:false, leave:true});
       }
     });
     refreshButton.addEventListener('click', pollOperation);

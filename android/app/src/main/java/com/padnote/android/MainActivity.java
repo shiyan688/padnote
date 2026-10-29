@@ -261,6 +261,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private SharedPreferences preferences;
     private String currentNoteId;
     private String currentNoteTitle;
+    private Button noteTaskAction;
+    private String noteProgressTaskId = "";
+    private String noteProgressTaskNoteId = "";
     private String pendingContentOutlineMarkdown;
     private String pendingExportNoteId;
     private String pendingExportJson;
@@ -2125,6 +2128,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     final String noteContext=content;
                     final String presetId=ids[selected];
                     final android.content.Context appContext=getApplicationContext();
+                    final AgentTaskClient.Factory taskClientFactory=videoTaskClientFactory;
                     final Handler feedbackHandler=new Handler(Looper.getMainLooper());
                     if(!AgentTaskSubmissionExecutor.prepare(()->{
                         try {
@@ -2140,9 +2144,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                                 @Override public AgentConnectionStore.Config get(String id){return connectionStore.get(id);}
                             };
                             AgentTaskSubmissionExecutor.submit(task,taskStore,taskConnections,
-                                    AgentTaskClient::new,appContext);
-                            feedbackHandler.post(()->Toast.makeText(appContext,
-                                    appContext.getString(R.string.flow_task_submitting),Toast.LENGTH_LONG).show());
+                                    taskClientFactory,appContext);
+                            feedbackHandler.post(()->{
+                                if(!isFinishing()&&!isDestroyed()&&editorVisible&&
+                                        task.noteId.equals(currentNoteId))
+                                    showTaskProgressEntry(task.noteId,task.clientTaskId);
+                                Toast.makeText(appContext,
+                                        appContext.getString(R.string.flow_task_submitting),Toast.LENGTH_LONG).show();
+                            });
                         }catch(Exception error){
                             String reason=error.getMessage()==null?"Unknown error":error.getMessage().replaceAll("[\\r\\n]"," ");
                             feedbackHandler.post(()->Toast.makeText(appContext,
@@ -3657,10 +3666,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         actions.addView(aiAction, aiParams);
 
         Button video = pillButton(getString(R.string.core_header_tasks), BUTTON_TONAL);
+        noteTaskAction = video;
         video.setContentDescription(getString(R.string.core_tasks_desc));
         video.setMinHeight(dp(48));
         video.setMinWidth(dp(52));
-        video.setOnClickListener(view -> showVideoHubForCurrentNote());
+        restoreTaskProgressEntry(video,currentNoteId);
+        video.setOnClickListener(view -> openTaskProgressOrHub());
         LinearLayout.LayoutParams videoParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         videoParams.leftMargin = 0;
@@ -3792,6 +3803,51 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             statsParams.leftMargin = dp(8);
             header.addView(pageStats, statsParams);
         }
+    }
+
+    private void restoreTaskProgressEntry(Button button,String noteId) {
+        noteProgressTaskId="";
+        noteProgressTaskNoteId="";
+        AgentTaskStore.Task newest=null;
+        if(noteId!=null&&!noteId.isEmpty())for(AgentTaskStore.Task task:new AgentTaskStore(this).list()){
+            if(noteId.equals(task.noteId)&&!task.status.terminal()&&
+                    (newest==null||task.updatedAt>newest.updatedAt))newest=task;
+        }
+        if(newest!=null)showTaskProgressEntry(noteId,newest.clientTaskId);
+        else {
+            button.setText(getString(R.string.core_header_tasks));
+            button.setContentDescription(getString(R.string.core_tasks_desc));
+        }
+    }
+
+    private void showTaskProgressEntry(String noteId,String taskId) {
+        if(noteId==null||taskId==null||!noteId.equals(currentNoteId)||noteTaskAction==null)return;
+        AgentTaskStore.Task task=new AgentTaskStore(this).get(taskId);
+        if(task==null||!noteId.equals(task.noteId)||task.status.terminal())return;
+        noteProgressTaskId=taskId;
+        noteProgressTaskNoteId=noteId;
+        noteTaskAction.setText(getString(R.string.flow_view_task_progress));
+        noteTaskAction.setContentDescription(getString(R.string.flow_view_task_progress));
+    }
+
+    private void openTaskProgressOrHub() {
+        if(currentNoteId!=null&&currentNoteId.equals(noteProgressTaskNoteId)&&
+                !noteProgressTaskId.isEmpty()) {
+            AgentTaskStore.Task task=new AgentTaskStore(this).get(noteProgressTaskId);
+            if(task!=null&&currentNoteId.equals(task.noteId)){
+                if(task.status.terminal()){
+                    noteProgressTaskId="";
+                    noteProgressTaskNoteId="";
+                    noteTaskAction.setText(getString(R.string.core_header_tasks));
+                    noteTaskAction.setContentDescription(getString(R.string.core_tasks_desc));
+                    showVideoHubForCurrentNote();
+                    return;
+                }
+                newVideoTaskDialogs().showDetail(task.clientTaskId);
+                return;
+            }
+        }
+        showVideoHubForCurrentNote();
     }
 
     private View createToolbar() {

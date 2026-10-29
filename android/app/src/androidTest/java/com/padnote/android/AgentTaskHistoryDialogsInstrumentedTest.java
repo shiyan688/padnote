@@ -39,12 +39,16 @@ import java.io.File;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -269,11 +273,260 @@ public final class AgentTaskHistoryDialogsInstrumentedTest {
         }
     }
 
+    @Test public void uncertainBridgeTaskHasExplicitSameTaskRecoveryAndNoFalseRefresh() throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        File activityRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(activityRoot,"cache/task-history");
+        File prefsDirectory=new File(target.getApplicationInfo().dataDir,"shared_prefs");
+        String preferencePrefix="ui-fixture-"+fixtureId+"-";
+        assertFalse("refuse reused fixture UUID",activityRoot.exists());
+        ActivityScenario<IsolatedLibraryRestoreActivity> scenario=null;
+        NoOpExecutor worker=new NoOpExecutor();
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config(
+                "bridge-recovery-"+fixtureId,"合成 Bridge",AgentConnectionStore.Kind.HERMES,
+                "https://bridge.example.test/v1","synthetic-token","credential-ref",
+                AgentConnectionStore.Transport.BRIDGE,"bridge-fixture","instance-fixture",
+                "",7L,System.currentTimeMillis(),Arrays.asList("run_submission","run_status","task_bundle"));
+        AtomicReference<AgentTaskStore> storeRef=new AtomicReference<>();
+        AtomicReference<AgentTaskStore.Task> originalRef=new AtomicReference<>();
+        AtomicReference<String> postedBody=new AtomicReference<>();
+        AtomicReference<String> postedKey=new AtomicReference<>();
+        AtomicInteger posts=new AtomicInteger(),gets=new AtomicInteger();
+        CountDownLatch posted=new CountDownLatch(1);
+        CountDownLatch statusQueried=new CountDownLatch(1);
+        AgentTaskClient.Factory clients=()->new AgentTaskClient(request->{
+            if("POST".equals(request.method)){
+                posts.incrementAndGet();
+                postedBody.set(new String(request.body,StandardCharsets.UTF_8));
+                postedKey.set(request.headers.get("Idempotency-Key"));
+                posted.countDown();
+                return response(request,202,"{\"task_id\":\"remote-task-fixture\",\"status\":\"running\",\"instance_id\":\"instance-fixture\",\"conversation_id\":\"remote-task-fixture\"}");
+            }
+            gets.incrementAndGet();
+            statusQueried.countDown();
+            return response(request,200,"{\"task_id\":\"remote-task-fixture\",\"status\":\"running\",\"instance_id\":\"instance-fixture\"}");
+        });
+        try {
+            scenario=launch(target,fixtureId);
+            scenario.onActivity(activity->{
+                AgentTaskStore store=new AgentTaskStore(taskDirectory);
+                try{
+                    AgentTaskStore.Task original=store.create(profile,"Synthetic paper task",
+                            "synthetic prompt","synthetic-note-"+fixtureId,1L,null);
+                    store.markSubmissionAttempted(original.clientTaskId);
+                    store.markError(original.clientTaskId,original.updatedAt,"synthetic lost response");
+                    originalRef.set(store.get(original.clientTaskId));
+                }catch(Exception error){throw new AssertionError("prepare isolated unknown task",error);}
+                storeRef.set(store);
+                AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+                    @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                    @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+                };
+                new AgentTaskDialogs(activity,isolatedStore(Collections.emptyList()),worker,null,store,
+                        VideoTaskDialogs::new,null,clients,source).showDetail(originalRef.get().clientTaskId);
+            });
+
+            onView(withText(containsString("结果未确认"))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText("确认电脑是否收到")).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText("刷新")).inRoot(isDialog()).check(doesNotExist());
+            assertEquals("an unresolved task is not automatically resent",0,posts.get());
+            assertEquals("without a remote ID no status request is attempted",0,gets.get());
+
+            onView(withText("确认电脑是否收到")).inRoot(isDialog()).perform(click());
+            onView(withText(containsString("不会另建任务"))).inRoot(isDialog())
+                    .check(matches(isDisplayed()));
+            onView(withText("继续找回")).inRoot(isDialog()).perform(click());
+            assertTrue("explicit user confirmation starts same-task recovery",posted.await(5,TimeUnit.SECONDS));
+            long deadline=SystemClock.uptimeMillis()+5000L;
+            AgentTaskStore.Task recovered=null;
+            while(SystemClock.uptimeMillis()<deadline){
+                recovered=storeRef.get().get(originalRef.get().clientTaskId);
+                if(recovered!=null&&!recovered.remoteTaskId.isEmpty())break;
+                SystemClock.sleep(20L);
+            }
+            assertEquals("same persisted payload is used",originalRef.get().submissionJson,postedBody.get());
+            assertEquals("Bridge idempotency key remains the original task ID",
+                    originalRef.get().clientTaskId,postedKey.get());
+            assertEquals("recovery retrieves the existing task receipt", "remote-task-fixture",
+                    recovered==null?"":recovered.remoteTaskId);
+            assertEquals("one explicit recovery request only",1,posts.get());
+            assertTrue("normal remote status polling resumes after receipt",
+                    statusQueried.await(5,TimeUnit.SECONDS));
+            onView(withText("关闭")).inRoot(isDialog()).perform(click());
+        } finally {
+            worker.shutdownNow();
+            try{if(scenario!=null)scenario.close();}
+            finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
+        }
+    }
+
+    @Test public void confirmationRechecksKnownBridgeReceiptAndDirectAttemptBeforeSending() throws Exception {
+        runStaleRecoveryConfirmation(true);
+        runStaleRecoveryConfirmation(false);
+    }
+
+    @Test public void submissionWorkerRechecksAReceiptThatArrivesAfterConfirmation() throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        File ownedRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(ownedRoot,"cache/task-history");
+        assertFalse("refuse reused fixture UUID",ownedRoot.exists());
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config(
+                "queued-recovery-"+fixtureId,"Synthetic Bridge",AgentConnectionStore.Kind.HERMES,
+                "https://queued.example.test/v1","synthetic-token","credential-ref",
+                AgentConnectionStore.Transport.BRIDGE,"bridge-fixture","instance-fixture","",
+                11L,System.currentTimeMillis(),Arrays.asList("run_submission","run_status","task_bundle"));
+        AgentTaskStore store=new AgentTaskStore(taskDirectory);
+        AgentTaskStore.Task original=store.create(profile,"Queued synthetic recovery","synthetic prompt",
+                "synthetic-note-"+fixtureId,1L,null);
+        store.markSubmissionAttempted(original.clientTaskId);
+        store.markError(original.clientTaskId,original.updatedAt,"synthetic timeout");
+        original=store.get(original.clientTaskId);
+        AgentTaskStore.Task confirmedSnapshot=original;
+        AtomicInteger posts=new AtomicInteger();
+        AgentTaskClient.Factory clients=()->new AgentTaskClient(request->{
+            if("POST".equals(request.method))posts.incrementAndGet();
+            return response(request,202,"{\"task_id\":\"should-not-send\",\"status\":\"running\",\"instance_id\":\"instance-fixture\"}");
+        });
+        AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+            @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+            @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+        };
+        String blockerId="executor-blocker-"+fixtureId;
+        CountDownLatch blockerStarted=new CountDownLatch(1),releaseBlocker=new CountDownLatch(1);
+        try{
+            assertTrue("reserve the single executor lane with an isolated blocker",
+                    AgentTaskSubmissionExecutor.execute(blockerId,()->{
+                        blockerStarted.countDown();
+                        try{releaseBlocker.await(5,TimeUnit.SECONDS);}
+                        catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
+                    }));
+            assertTrue("blocker owns the executor lane",blockerStarted.await(5,TimeUnit.SECONDS));
+            assertTrue("queue same-task recovery behind the blocker",AgentTaskSubmissionExecutor.recoverSameTask(
+                    confirmedSnapshot,true,store,source,clients,target.getApplicationContext()));
+            assertTrue("a newer remote receipt wins before the queued worker runs",store.applySubmission(
+                    original.clientTaskId,profile.id,profile.revision,"remote-arrived-first",
+                    AgentTaskStore.Status.RUNNING,"remote-arrived-first",""));
+            releaseBlocker.countDown();
+            long deadline=SystemClock.uptimeMillis()+5000L;
+            while(AgentTaskSubmissionExecutor.isInFlight(original.clientTaskId)&&
+                    SystemClock.uptimeMillis()<deadline)SystemClock.sleep(20L);
+            assertFalse("queued task attempt has finished",AgentTaskSubmissionExecutor.isInFlight(original.clientTaskId));
+            assertEquals("executor's last-moment gate prevents a stale POST",0,posts.get());
+            assertEquals("the receipt that arrived first remains stored","remote-arrived-first",
+                    store.get(original.clientTaskId).remoteTaskId);
+        }finally{
+            releaseBlocker.countDown();
+            long deadline=SystemClock.uptimeMillis()+5000L;
+            while((AgentTaskSubmissionExecutor.isInFlight(blockerId)||
+                    AgentTaskSubmissionExecutor.isInFlight(original.clientTaskId))&&
+                    SystemClock.uptimeMillis()<deadline)SystemClock.sleep(20L);
+            deleteTree(taskDirectory);
+            deleteTree(ownedRoot);
+        }
+    }
+
+    private void runStaleRecoveryConfirmation(boolean bridge) throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        File activityRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(activityRoot,"cache/task-history");
+        File prefsDirectory=new File(target.getApplicationInfo().dataDir,"shared_prefs");
+        String preferencePrefix="ui-fixture-"+fixtureId+"-";
+        assertFalse("refuse reused fixture UUID",activityRoot.exists());
+        ActivityScenario<IsolatedLibraryRestoreActivity> scenario=null;
+        NoOpExecutor worker=new NoOpExecutor();
+        AgentConnectionStore.Transport transport=bridge?AgentConnectionStore.Transport.BRIDGE:
+                AgentConnectionStore.Transport.DIRECT;
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config(
+                "stale-recovery-"+fixtureId,"Synthetic target",AgentConnectionStore.Kind.HERMES,
+                "https://recovery.example.test/v1","synthetic-token","credential-ref",transport,
+                bridge?"bridge-fixture":"","instance-fixture","",9L,System.currentTimeMillis(),
+                Arrays.asList("run_submission","run_status","task_bundle"));
+        AtomicReference<AgentTaskStore> storeRef=new AtomicReference<>();
+        AtomicReference<AgentTaskStore.Task> taskRef=new AtomicReference<>();
+        AtomicInteger postCount=new AtomicInteger();
+        AgentTaskClient.Factory clients=()->new AgentTaskClient(request->{
+            if("POST".equals(request.method))postCount.incrementAndGet();
+            String body=bridge?"{\"task_id\":\"remote-existing\",\"status\":\"running\",\"instance_id\":\"instance-fixture\"}":
+                    "{\"run_id\":\"remote-existing\",\"status\":\"running\"}";
+            return response(request,"POST".equals(request.method)?202:200,body);
+        });
+        try{
+            scenario=launch(target,fixtureId);
+            scenario.onActivity(activity->{
+                AgentTaskStore store=new AgentTaskStore(taskDirectory);
+                try{
+                    AgentTaskStore.Task task=store.create(profile,"Synthetic retry confirmation",
+                            "synthetic prompt","synthetic-note-"+fixtureId,1L,null);
+                    if(bridge){
+                        store.markSubmissionAttempted(task.clientTaskId);
+                        store.markError(task.clientTaskId,task.updatedAt,"synthetic unknown response");
+                    }
+                    taskRef.set(store.get(task.clientTaskId));
+                }catch(Exception error){throw new AssertionError("prepare isolated stale confirmation",error);}
+                storeRef.set(store);
+                AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+                    @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                    @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+                };
+                new AgentTaskDialogs(activity,isolatedStore(Collections.emptyList()),worker,null,store,
+                        VideoTaskDialogs::new,null,clients,source).showDetail(taskRef.get().clientTaskId);
+            });
+
+            String action=bridge?"确认电脑是否收到":"发送已保存任务";
+            onView(withText(action)).inRoot(isDialog()).check(matches(isDisplayed())).perform(click());
+            onView(withText(bridge?"继续找回":"现在发送")).inRoot(isDialog()).check(matches(isDisplayed()));
+            scenario.onActivity(activity->{
+                try{
+                    if(bridge){
+                        assertTrue("inject receipt while confirmation is open",storeRef.get().applySubmission(
+                                taskRef.get().clientTaskId,profile.id,profile.revision,"remote-existing",
+                                AgentTaskStore.Status.RUNNING,"remote-existing",""));
+                    }else{
+                        storeRef.get().markSubmissionAttempted(taskRef.get().clientTaskId);
+                        AgentTaskStore.Task latest=storeRef.get().get(taskRef.get().clientTaskId);
+                        storeRef.get().markError(latest.clientTaskId,latest.updatedAt,"synthetic late attempt");
+                    }
+                }catch(Exception error){throw new AssertionError("mutate UUID-owned task before confirmation",error);}
+            });
+            onView(withText(bridge?"继续找回":"现在发送")).inRoot(isDialog()).perform(click());
+            SystemClock.sleep(250L);
+            assertEquals("a stale confirmation must never POST",0,postCount.get());
+            if(bridge){
+                assertEquals("the independently received bridge receipt is preserved","remote-existing",
+                        storeRef.get().get(taskRef.get().clientTaskId).remoteTaskId);
+                onView(withText("确认电脑是否收到")).inRoot(isDialog()).check(doesNotExist());
+                onView(withText("刷新")).inRoot(isDialog()).check(matches(isDisplayed()));
+            }else{
+                assertTrue("DIRECT attempt is no longer eligible for same-ID send",
+                        storeRef.get().submissionAttemptState(taskRef.get().clientTaskId)==1);
+                onView(withText("发送已保存任务")).inRoot(isDialog()).check(doesNotExist());
+                onView(withText(containsString("结果未确认"))).inRoot(isDialog()).check(matches(isDisplayed()));
+            }
+            onView(withText("关闭")).inRoot(isDialog()).perform(click());
+        }finally{
+            worker.shutdownNow();
+            try{if(scenario!=null)scenario.close();}
+            finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
+        }
+    }
+
     private static androidx.test.core.app.ActivityScenario<IsolatedLibraryRestoreActivity> launch(
             Context target, String fixtureId) {
         Intent intent = new Intent(target, IsolatedLibraryRestoreActivity.class)
                 .putExtra("fixture_id", fixtureId);
         return androidx.test.core.app.ActivityScenario.launch(intent);
+    }
+
+    private static AgentHttpTransport.Response response(AgentHttpTransport.Request request,int status,
+                                                        String body) {
+        try {
+            URL url=request.url;
+            return new AgentHttpTransport.Response(status,url,url,body.getBytes(StandardCharsets.UTF_8),
+                    Collections.emptyMap());
+        } catch(Exception error){throw new AssertionError(error);}
     }
 
     private static AgentConnectionStore isolatedStore(List<AgentConnectionStore.Config> profiles) {

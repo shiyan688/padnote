@@ -20,6 +20,17 @@ The demos use synthetic learning content and real-device screenshots to show the
 
 [Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
+
+## Computer connection guide
+
+Keep writing after you send. Use “View progress” at the top to return to this task anytime. If receipt is unclear, tap “Check whether the computer received it” in the details to keep tracking the same task—no need to prepare the materials again. The Connection Assistant explains WSL or Hermes configuration issues in place and provides retry and installation guidance.
+
+[Watch the computer connection guide (about 37 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm)
+
+[![Computer assistant walkthrough with synthetic data](docs/media/2026-10-29/connection-guide-poster.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm)
+
+Synthetic interface and example state. See the [media provenance and scope](docs/media/2026-10-29/README.md).
+
 ## Demo frames
 
 Paper tools are grouped by writing, color, history, and page actions, with AI, tasks, and sharing kept visible. The computer assistant puts Agent checks, QR pairing, and device approval on one page, and prompts for a new check when results expire. The image below shows the management UI with synthetic data. [Media notes](docs/media/2026-10-29/README.md).
@@ -92,8 +103,8 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 ## Platforms and connections
 
-- **Android tablets:** GitHub Releases currently provides the published beta.29 APK (versionCode 65).
-- **Windows:** The beta.32 connection assistant comes as a Setup installer or a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
+- **Android tablets:** GitHub Releases currently provides the beta.33 APK (versionCode 66; release review pending).
+- **Windows:** The beta.33 connection assistant has a Setup installer and a portable package (release review pending). It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
 - **iPad:** Source is available; there is no installable signed IPA.
 
 Computer tasks use the Agent you explicitly choose and pair, when it supports PadNote note tasks. Multiple Hermes configurations keep separate Agent identities, credentials, and task ownership. The assistant uses your own configuration and keeps keys in process memory; reopening it requires an explicit reconnect. When gateway mode is unknown, the flow starts with the default configuration and then lets you choose a named configuration. It does not change the provider automatically or restart a gateway managed by another tool. OpenClaw has discovery and setup guidance, but PadNote note tasks are not integrated with OpenClaw; Codex note tasks are not connected.
@@ -102,7 +113,7 @@ See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: this release keeps Android beta.29 and updates the Windows assistant to beta.32. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android and Windows builds are complete; publication of beta.33 is still pending review. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

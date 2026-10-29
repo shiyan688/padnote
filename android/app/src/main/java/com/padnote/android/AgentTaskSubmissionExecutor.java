@@ -42,6 +42,13 @@ final class AgentTaskSubmissionExecutor {
 
     static boolean isInFlight(String taskId){return IN_FLIGHT.contains(taskId);}
     static boolean isActive(String taskId){return ACTIVE.contains(taskId);}
+    static Phase visibleProgressPhase(boolean inFlight,Phase phase){
+        if(!inFlight||phase==null)return null;
+        switch(phase){
+            case QUEUED:case CONNECTING:case UPLOADING:case WAITING_FOR_CONFIRMATION:return phase;
+            default:return null;
+        }
+    }
     static boolean prepare(Runnable work){try{PREPARATION.execute(work);return true;}catch(java.util.concurrent.RejectedExecutionException busy){return false;}}
     static void setProgress(String taskId,Phase phase,long sent,long total){PROGRESS.put(taskId,new ProgressInfo(phase,sent,total));trimState();}
     static ProgressInfo progressInfo(String taskId){return PROGRESS.get(taskId);}
@@ -63,10 +70,25 @@ final class AgentTaskSubmissionExecutor {
     static boolean submit(String clientTaskId,AgentTaskStore store,
                           AgentTaskDialogs.TaskConnectionSource connections,
                           AgentTaskClient.Factory clients,Context appContext) {
-        return execute(clientTaskId,()->{
-            AgentTaskStore.Task task=store.get(clientTaskId);
-            if(task==null)return;
-            try {
+        return execute(clientTaskId,()->submitStored(clientTaskId,null,false,store,connections,clients,appContext));
+    }
+
+    static boolean recoverSameTask(AgentTaskStore.Task expected,boolean bridgeRecovery,
+                                   AgentTaskStore store,
+                                   AgentTaskDialogs.TaskConnectionSource connections,
+                                   AgentTaskClient.Factory clients,Context appContext) {
+        if(expected==null)return false;
+        return execute(expected.clientTaskId,()->submitStored(expected.clientTaskId,expected,
+                bridgeRecovery,store,connections,clients,appContext));
+    }
+
+    private static void submitStored(String clientTaskId,AgentTaskStore.Task expected,
+                                    boolean bridgeRecovery,AgentTaskStore store,
+                                    AgentTaskDialogs.TaskConnectionSource connections,
+                                    AgentTaskClient.Factory clients,Context appContext) {
+        AgentTaskStore.Task task=store.get(clientTaskId);
+        if(!canSubmitStored(task,expected,bridgeRecovery,store.submissionAttemptState(clientTaskId)))return;
+        try {
                 if(!AgentTaskStore.sha256(task.submissionJson.getBytes(java.nio.charset.StandardCharsets.UTF_8))
                         .equalsIgnoreCase(task.submissionSha256))throw new IllegalStateException("Saved task payload checksum did not match");
                 AgentConnectionStore.Config connection=connections.get(task.connectionId);
@@ -75,22 +97,32 @@ final class AgentTaskSubmissionExecutor {
                             appContext.getString(R.string.flow_identity_changed_new));
                     return;
                 }
+                AgentTaskStore.Task beforeAttempt=store.get(clientTaskId);
+                if(!canSubmitStored(beforeAttempt,expected,bridgeRecovery,
+                        store.submissionAttemptState(clientTaskId)))return;
+                task=beforeAttempt;
                 store.markSubmissionAttempted(clientTaskId);
-                AgentTaskClient.Submission result=clients.create().submit(task,connection,
+                AgentTaskStore.Task immediatelyBeforeNetwork=store.get(clientTaskId);
+                if(!sameSubmissionSnapshot(task,immediatelyBeforeNetwork)||
+                        immediatelyBeforeNetwork.status!=AgentTaskStore.Status.SUBMITTING||
+                        !immediatelyBeforeNetwork.remoteTaskId.isEmpty())return;
+                AgentConnectionStore.Config currentConnection=connections.get(task.connectionId);
+                if(!task.matches(currentConnection))return;
+                AgentTaskClient.Submission result=clients.create().submit(immediatelyBeforeNetwork,currentConnection,
                         new AgentHttpTransport.Progress(){
                             @Override public void onUploadStarted(long total){setProgress(clientTaskId,Phase.UPLOADING,0,total);}
                             @Override public void onBytesWritten(long sent,long total){setProgress(clientTaskId,Phase.UPLOADING,sent,total);}
                             @Override public void onWaitingForResponse(long total){setProgress(clientTaskId,Phase.WAITING_FOR_CONFIRMATION,total,total);}
                         });
                 AgentConnectionStore.Config latest=connections.get(task.connectionId);
-                if(!task.matches(latest))throw new IllegalStateException(
+                if(!immediatelyBeforeNetwork.matches(latest))throw new IllegalStateException(
                         appContext.getString(R.string.flow_task_changed_during_submit));
                 boolean applied=store.applySubmission(task.clientTaskId,task.connectionId,task.connectionRevision,
                         result.remoteTaskId,result.status,result.conversationId,result.parentTaskId);
                 if(!applied)throw new IllegalStateException("Computer accepted the task but local confirmation could not be saved");
                 ProgressInfo before=PROGRESS.get(clientTaskId);setProgress(clientTaskId,Phase.COMPUTER_ACCEPTED,
                         before==null?0:before.sent,before==null?0:before.total);
-            } catch(Exception error) {
+        } catch(Exception error) {
                 try {
                     if(error instanceof AgentTaskClient.HttpStatusException)
                         store.markFailed(task.clientTaskId,task.updatedAt,safeMessage(error));
@@ -101,8 +133,26 @@ final class AgentTaskSubmissionExecutor {
                 setProgress(clientTaskId,error instanceof AgentTaskClient.HttpStatusException?
                                 Phase.COMPUTER_REJECTED:Phase.RESULT_UNCONFIRMED,
                         before==null?0:before.sent,before==null?0:before.total);
-            }
-        });
+        }
+    }
+
+    static boolean canSubmitStored(AgentTaskStore.Task task,AgentTaskStore.Task expected,
+                                   boolean bridgeRecovery,int attemptState) {
+        if(task==null||task.status!=AgentTaskStore.Status.SUBMITTING||!task.remoteTaskId.isEmpty())return false;
+        if(expected==null)return attemptState==0;
+        if(!sameSubmissionSnapshot(expected,task))return false;
+        if(bridgeRecovery)return AgentTaskDialogs.canOfferSameTaskRecovery(task,attemptState,false);
+        return AgentTaskDialogs.canSendSavedTask(task,attemptState,false);
+    }
+
+    static boolean sameSubmissionSnapshot(AgentTaskStore.Task first,AgentTaskStore.Task second) {
+        return first!=null&&second!=null&&first.clientTaskId.equals(second.clientTaskId)&&
+                first.connectionId.equals(second.connectionId)&&first.connectionRevision==second.connectionRevision&&
+                first.origin.equals(second.origin)&&first.kind==second.kind&&first.transport==second.transport&&
+                first.credentialRef.equals(second.credentialRef)&&first.bridgeId.equals(second.bridgeId)&&
+                first.instanceId.equals(second.instanceId)&&first.noteId.equals(second.noteId)&&
+                first.noteRevision==second.noteRevision&&first.submissionJson.equals(second.submissionJson)&&
+                first.submissionSha256.equalsIgnoreCase(second.submissionSha256);
     }
 
     private static String safeMessage(Throwable error){

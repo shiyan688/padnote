@@ -424,4 +424,15 @@
     <string name="flow_retry_same_id_warning">将沿用同一任务 ID 重试。请先确认电脑状态，避免重复执行。</string>
     <string name="flow_task_queue_busy">另一项纸面任务正在准备中，请稍后重试。</string>
     <string name="flow_stage_updated_ago">%1$d 秒前更新</string>
+
+    <!-- beta33 explicit task receipt recovery -->
+    <string name="flow_view_task_progress">查看进度</string>
+    <string name="flow_submission_result_unknown">结果未确认</string>
+    <string name="flow_direct_unknown_check_computer">请先在电脑端检查结果，再决定是否再次提交此任务。</string>
+    <string name="flow_recover_same_task">确认电脑是否收到</string>
+    <string name="flow_recover_same_task_warning">如果电脑已收到此任务，PadNote 会继续跟踪同一条任务，不会另建任务。Agent 的执行结果仍可能未知。</string>
+    <string name="flow_confirm_recover_same_task">继续找回</string>
+    <string name="flow_send_saved_task">发送已保存任务</string>
+    <string name="flow_send_saved_task_warning">此任务尚未发送，将使用现有任务 ID 和已保存内容发送一次。</string>
+    <string name="flow_send_saved_task_confirm">现在发送</string>
 </resources>

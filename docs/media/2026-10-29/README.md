@@ -19,3 +19,17 @@ The image is a synthetic preview of the beta.28 browser management UI, rendered 
 使用窗口自身的 WM_PRINT / PrintWindow 渲染到内存位图，没有截取其他桌面内容。原始 BMP 无损转换为 PNG，没有重绘或修改界面像素。日志显示路径为明确的演示路径；真实用户日志和配置未读入。验证覆盖停止与就绪两个窗口、96 DPI，以及短窗口中下方诊断按钮获得焦点后进入可见区域。安装、升级、卸载与其他 DPI 的实机检查不在这份演示的证明范围内。
 
 The Windows image is an actual Win32 window rendering with synthetic state, captured from its own HWND and losslessly converted from BMP to PNG. It does not show a real Agent connection or installer run.
+
+## 电脑连接引导视频
+
+本节的 connection-guide-poster.png 和 PadNote-Connection-Guide.webm 来自本轮本地导览渲染。前者是 poster.png 的逐字节副本，后者是 assistant-guide-synthetic.webm 的逐字节副本；视频约 36.96 秒，未重新编码。
+
+界面、发行版、配置、任务状态均为合成示例。视频没有启动 WSL、读取真实 Hermes 配置、连接真实 Agent 或提交任务；它是界面导览，不是 beta.33 实机连接或 Agent 结果录像。素材展示发送后回纸面看进度、在详情中确认电脑是否收到，以及从连接助手处理 WSL/Hermes 配置问题。
+
+本轮发布页下载地址固定为 [beta.33 导览视频](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm)。
+
+The connection-guide-poster.png and PadNote-Connection-Guide.webm in this section come from the local walkthrough render created for this cycle. The poster is a byte-for-byte copy of poster.png; the video is a byte-for-byte copy of assistant-guide-synthetic.webm, about 36.96 seconds long, with no re-encoding.
+
+All interface, distribution, configuration, and task state is synthetic. The video does not start WSL, read a real Hermes configuration, contact an Agent, or submit a task. It is a UI walkthrough, not a beta.33 live connection or Agent-result recording. It illustrates returning to the paper to check progress, confirming receipt from the task details, and handling WSL/Hermes configuration issues in the connection assistant.
+
+The release download URL is pinned to [the beta.33 guide video](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm).

@@ -289,9 +289,12 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
       </div>
       <div class="wsl-operation" data-wsl-operation role="status" aria-live="polite" hidden>
         <p data-wsl-message></p><div class="wsl-operation-actions">
+          <button type="button" class="button-quiet" data-wsl-retry hidden>重新扫描发行版</button>
           <button type="button" class="button-quiet" data-wsl-refresh hidden>刷新操作状态</button>
           <button type="button" class="button-quiet" data-wsl-cancel hidden>取消等待</button>
           <button type="button" class="button-quiet" data-wsl-return hidden>返回选择</button>
+          <a class="text-link" data-wsl-windows-guide href="https://learn.microsoft.com/en-us/windows/wsl/install" target="_blank" rel="noopener noreferrer" hidden>查看 Windows 官方 WSL 安装说明 ↗</a>
+          <a class="text-link" data-wsl-install-guide href="https://hermes-agent.nousresearch.com/docs/getting-started/installation" target="_blank" rel="noopener noreferrer" hidden>查看 Hermes 官方安装指南 ↗</a>
           <a href="#pairing" class="text-link" data-wsl-pair hidden>前往现有配对页面</a>
         </div>
         <div data-wsl-recent aria-label="可稍后查看的操作"></div>
