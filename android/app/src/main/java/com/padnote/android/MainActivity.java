@@ -147,6 +147,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService manualDraftRecoveryExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService removedNotesExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
     private volatile LibraryBackupArchive.StagedArchive pendingLibraryRestoreStage;
     private RestorePreviewRetainedState restorePreviewState;
@@ -286,6 +287,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private String pendingDigitizationNoteId;
     private boolean editorVisible = false;
     private int bookshelfLoadGeneration = 0;
+    private long removedNotesRequestSerial = 0;
+    private ProgressDialog removedNotesProgress;
+    private AlertDialog removedNotesDialog;
+    private AtomicBoolean activeRemovedNotesCancelled;
+    private AtomicBoolean activeRemovedNotesCommitStarted;
     private volatile boolean bookshelfCatalogRenderedForTest;
     /** Group token frozen before an attachment action or confirmation. */
     static final class VideoActionBase {
@@ -638,6 +644,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     protected void onPause() {
+        cancelRemovedNotesUi();
         super.onPause();
         // Cancel background family scans before a lifecycle checkpoint can contend on the
         // store lock from the UI thread. The store itself honors cancellation only before delete.
@@ -666,6 +673,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     protected void onDestroy() {
+        cancelRemovedNotesUi();
         cancelManualDraftRecoveryForContextChange();
         cancelAiSelectionRender();
         if (aiSelectionRenderer != null) {
@@ -700,6 +708,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         disposeTextBoxViews();
         storageExecutor.shutdown();
         manualDraftRecoveryExecutor.shutdown();
+        // Pre-commit work sees the cancellation flag; an already-approved restore is allowed to
+        // finish its transaction without an Activity teardown interrupting publication.
+        removedNotesExecutor.shutdown();
         aiExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -809,6 +820,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showBookshelf() {
+        cancelRemovedNotesUi();
         cancelManualDraftRecoveryForContextChange();
         if (editorVisible && !commitOrCheckpointBeforeLeaving()) return;
         flushPendingAiInputDraft();
@@ -881,6 +893,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         importButton.setOnClickListener(view -> launchImportNote());
         actions.addView(importButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        Button removedNotesButton = pillButton(getString(R.string.core_removed_notes_button), BUTTON_QUIET);
+        removedNotesButton.setOnClickListener(view -> showRemovedNotes());
+        LinearLayout.LayoutParams removedNotesParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        removedNotesParams.leftMargin = dp(8);
+        actions.addView(removedNotesButton, removedNotesParams);
         Button agentButton = pillButton(getString(R.string.core_agent), BUTTON_QUIET);
         List<AgentConnectionStore.Config> agentProfiles = agentConnectionStore.listSummaries();
         long verifiedAgents = agentProfiles.stream().filter(AgentConnectionStore.Config::verified).count();
@@ -921,6 +939,292 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
+    }
+
+    private static final class RemovedNotePreview {
+        final String noteId, currentRevision, currentDigest, title;
+        final String sourceRevision, sourceDigest;
+        final int pages, strokes, videos, vaultItems;
+        final boolean hasPdf, hasCover;
+        RemovedNotePreview(String noteId, String currentRevision, String currentDigest,
+                String title, String sourceRevision, String sourceDigest, int pages, int strokes,
+                int videos, int vaultItems, boolean hasPdf, boolean hasCover) {
+            this.noteId=noteId;this.currentRevision=currentRevision;this.currentDigest=currentDigest;
+            this.title=title;this.sourceRevision=sourceRevision;this.sourceDigest=sourceDigest;
+            this.pages=pages;this.strokes=strokes;this.videos=videos;this.vaultItems=vaultItems;
+            this.hasPdf=hasPdf;this.hasCover=hasCover;
+        }
+    }
+
+    private boolean removedNotesRequestActive(long request, int shelfGeneration) {
+        return request == removedNotesRequestSerial && shelfGeneration == bookshelfLoadGeneration
+                && !editorVisible && !isFinishing() && !isDestroyed();
+    }
+
+    private void cancelRemovedNotesUi() {
+        cancelActiveRemovedNotesOperation();
+        removedNotesRequestSerial++;
+        if (removedNotesProgress != null) {
+            if (removedNotesProgress.isShowing()) removedNotesProgress.dismiss();
+            removedNotesProgress = null;
+        }
+        if (removedNotesDialog != null) {
+            if (removedNotesDialog.isShowing()) removedNotesDialog.dismiss();
+            removedNotesDialog = null;
+        }
+    }
+
+    private void cancelActiveRemovedNotesOperation() {
+        AtomicBoolean cancelled=activeRemovedNotesCancelled;
+        AtomicBoolean committing=activeRemovedNotesCommitStarted;
+        if(cancelled!=null) synchronized(cancelled) {
+            if(committing==null||!committing.get()) cancelled.set(true);
+        }
+        activeRemovedNotesCancelled=null;
+        activeRemovedNotesCommitStarted=null;
+    }
+
+    private AtomicBoolean[] beginRemovedNotesOperation() {
+        cancelActiveRemovedNotesOperation();
+        AtomicBoolean cancelled=new AtomicBoolean(false);
+        AtomicBoolean committing=new AtomicBoolean(false);
+        activeRemovedNotesCancelled=cancelled;
+        activeRemovedNotesCommitStarted=committing;
+        return new AtomicBoolean[]{cancelled,committing};
+    }
+
+    private ProgressDialog showRemovedNotesProgress(long request, int shelfGeneration, String message) {
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setMessage(message);
+        progress.setIndeterminate(true);
+        progress.setCancelable(true);
+        progress.setOnCancelListener(dialog -> {
+            if (request == removedNotesRequestSerial) {
+                cancelActiveRemovedNotesOperation();
+                removedNotesRequestSerial++;
+            }
+            if (removedNotesProgress == progress) removedNotesProgress = null;
+        });
+        progress.show();
+        removedNotesProgress = progress;
+        return progress;
+    }
+
+    private void dismissRemovedNotesProgress(long request) {
+        if (request == removedNotesRequestSerial && removedNotesProgress != null) {
+            if (removedNotesProgress.isShowing()) removedNotesProgress.dismiss();
+            removedNotesProgress = null;
+        }
+    }
+
+    private void showRemovedNotes() {
+        if (android.os.Build.VERSION.SDK_INT < 27) {
+            new AlertDialog.Builder(this).setTitle(R.string.core_removed_notes_button)
+                    .setMessage(R.string.core_removed_notes_legacy_unavailable)
+                    .setPositiveButton(R.string.core_done, null).show();
+            return;
+        }
+        cancelRemovedNotesUi();
+        final long request = removedNotesRequestSerial;
+        final int shelfGeneration = bookshelfLoadGeneration;
+        beginRemovedNotesOperation();
+        showRemovedNotesProgress(request, shelfGeneration, getString(R.string.core_removed_notes_loading));
+        removedNotesExecutor.execute(() -> {
+            RemovedNoteRecoveryStore.Inventory inventory = null;
+            Exception failure = null;
+            try { inventory = RemovedNoteRecoveryStore.list(this); }
+            catch (Exception error) { failure = error; }
+            final RemovedNoteRecoveryStore.Inventory loaded = inventory;
+            final Exception loadFailure = failure;
+            runOnUiThread(() -> {
+                if (!removedNotesRequestActive(request, shelfGeneration)) return;
+                dismissRemovedNotesProgress(request);
+                if (loadFailure != null) {
+                    new AlertDialog.Builder(this).setTitle(R.string.core_removed_notes_button)
+                            .setMessage(R.string.core_removed_notes_load_failed)
+                            .setPositiveButton(R.string.core_done, null).show();
+                    return;
+                }
+                showRemovedNotesInventory(loaded, request, shelfGeneration);
+            });
+        });
+    }
+
+    private void showRemovedNotesInventory(RemovedNoteRecoveryStore.Inventory inventory,
+            long request, int shelfGeneration) {
+        StringBuilder message = new StringBuilder();
+        if (inventory.unavailableCount > 0) {
+            message.append(getString(R.string.core_removed_notes_partial_warning));
+        }
+        if (inventory.entries.isEmpty()) {
+            if (message.length() > 0) message.append("\n\n");
+            message.append(getString(R.string.core_removed_notes_empty));
+            removedNotesDialog = new AlertDialog.Builder(this)
+                    .setTitle(R.string.core_removed_notes_button).setMessage(message)
+                    .setPositiveButton(R.string.core_done, null).show();
+            return;
+        }
+        String[] labels = new String[inventory.entries.size()];
+        for (int i=0;i<labels.length;i++) labels[i]=inventory.entries.get(i).title;
+        LinearLayout content=new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18),dp(8),dp(18),dp(8));
+        if (inventory.unavailableCount > 0) {
+            TextView warning=text(message.toString(),13,AMBER_TEXT);
+            warning.setPadding(dp(6),dp(8),dp(6),dp(12));
+            content.addView(warning,matchWrap());
+        }
+        android.widget.ListView list=new android.widget.ListView(this);
+        list.setDivider(new ColorDrawable(CARD_STROKE));
+        list.setDividerHeight(dp(1));
+        list.setAdapter(ChoiceRows.adapter(this,labels));
+        int listHeight=Math.min(dp(420),Math.max(dp(160),(getResources().getDisplayMetrics().heightPixels*2)/3));
+        content.addView(list,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,listHeight));
+        AlertDialog dialog=ChoiceRows.builder(this).setTitle(R.string.core_removed_notes_button)
+                .setView(content).setNegativeButton(R.string.core_close,null).create();
+        list.setOnItemClickListener((parent,view,which,id)->{
+            dialog.dismiss();
+            inspectRemovedNote(inventory.entries.get(which),request,shelfGeneration);
+        });
+        dialog.setOnDismissListener(d->{if(removedNotesDialog==dialog)removedNotesDialog=null;});
+        removedNotesDialog=dialog;
+        dialog.show();
+    }
+
+    private RemovedNotePreview inspectRemovedNote( String noteId) throws Exception {
+        NoteGroupFacade facade = new NoteGroupFacade(this);
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot current = facade.openGroupIncludingRetired(noteId);
+        if (current == null || !noteId.equals(current.localId)
+                || !"MANUAL_UPDATE_V2".equals(current.action())) throw new java.io.IOException("RETIRED_GROUP_CHANGED");
+        JSONObject retiredBody = new JSONObject(new String(current.readSmall("body.bin",
+                (int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX), StandardCharsets.UTF_8));
+        if (!NoteGroupFacade.isRetiredDocument(retiredBody)
+                || retiredBody.optLong("_padnoteShelfRetiredAt", 0) <= 0) throw new java.io.IOException("GROUP_NOTE_NOT_RETIRED");
+        com.padnote.android.streaming.StreamingGroupStore.BaseRevisionRef base = current.baseRevisionRef();
+        if (base == null) throw new java.io.IOException("RETIRED_RESTORE_BASE_MISSING");
+        com.padnote.android.streaming.StreamingGroupStore.Snapshot source =
+                facade.openGroupRevision(noteId, base.revision, base.digest);
+        if (source == null || !noteId.equals(source.localId) || !current.lineage.equals(source.lineage))
+            throw new java.io.IOException("RETIRED_RESTORE_SOURCE_IDENTITY_INVALID");
+        JSONObject body = new JSONObject(new String(source.readSmall("body.bin",
+                (int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX), StandardCharsets.UTF_8));
+        if (NoteGroupFacade.isRetiredDocument(body)) throw new java.io.IOException("RETIRED_RESTORE_SOURCE_IS_RETIRED");
+        Map<String,Long> members = source.memberSizes();
+        int videos=0, vault=0;
+        for (String member : members.keySet()) {
+            if (member.startsWith("video/") && member.endsWith("/content.bin")) videos++;
+            else if (member.startsWith("vault/") && member.endsWith("/content.bin")) vault++;
+        }
+        String title=body.optString("title", getString(R.string.core_removed_notes_fallback_title));
+        if (title.trim().isEmpty()) title=getString(R.string.core_removed_notes_fallback_title);
+        return new RemovedNotePreview(noteId,current.revision,current.digest,title,
+                source.revision,source.digest,Math.max(1,body.optInt("pageCount",1)),
+                body.optJSONArray("strokes")==null?0:body.optJSONArray("strokes").length(),
+                videos,vault,members.containsKey("pdf.bin"),members.containsKey("cover.bin"));
+    }
+
+    private void inspectRemovedNote(RemovedNoteRecoveryStore.Entry entry, long previousRequest,
+            int shelfGeneration) {
+        if (!removedNotesRequestActive(previousRequest, shelfGeneration)) return;
+        if (removedNotesDialog != null && removedNotesDialog.isShowing()) removedNotesDialog.dismiss();
+        final long request = ++removedNotesRequestSerial;
+        beginRemovedNotesOperation();
+        showRemovedNotesProgress(request, shelfGeneration, getString(R.string.core_removed_notes_loading));
+        removedNotesExecutor.execute(() -> {
+            RemovedNotePreview preview = null;
+            Exception failure = null;
+            try { preview = inspectRemovedNote(entry.noteId); }
+            catch (Exception error) { failure = error; }
+            final RemovedNotePreview ready=preview;
+            final Exception inspectFailure=failure;
+            runOnUiThread(() -> {
+                if (!removedNotesRequestActive(request, shelfGeneration)) return;
+                dismissRemovedNotesProgress(request);
+                if (inspectFailure != null) {
+                    new AlertDialog.Builder(this).setTitle(entry.title)
+                            .setMessage(R.string.core_removed_notes_load_failed)
+                            .setPositiveButton(R.string.core_done, null).show();
+                    return;
+                }
+                showRemovedNoteConfirmation(ready, request, shelfGeneration);
+            });
+        });
+    }
+
+    private void showRemovedNoteConfirmation(RemovedNotePreview preview, long request,
+            int shelfGeneration) {
+        String yes=getString(R.string.core_removed_notes_present);
+        String no=getString(R.string.core_removed_notes_absent);
+        String message=getString(R.string.core_removed_notes_preview_complete)+"\n\n"
+                +getString(R.string.core_removed_notes_preview_summary, preview.pages, preview.strokes,
+                preview.hasPdf?yes:no, preview.hasCover?yes:no, preview.videos, preview.vaultItems)+"\n\n"
+                +getString(R.string.core_removed_notes_preview_identity)+"\n\n"
+                +getString(R.string.core_removed_notes_commit_boundary);
+        AlertDialog dialog=new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.core_removed_notes_preview_title,preview.title))
+                .setMessage(message)
+                .setNegativeButton(R.string.core_cancel,null)
+                .setPositiveButton(R.string.core_removed_notes_restore_action,(d,w)->
+                        restoreRemovedNote(preview,request,shelfGeneration)).create();
+        dialog.setOnDismissListener(d->{if(removedNotesDialog==dialog)removedNotesDialog=null;});
+        removedNotesDialog=dialog;
+        dialog.show();
+    }
+
+    private void restoreRemovedNote(RemovedNotePreview preview, long previousRequest,
+            int shelfGeneration) {
+        if (!removedNotesRequestActive(previousRequest, shelfGeneration)) return;
+        final long request=++removedNotesRequestSerial;
+        AtomicBoolean[] operation=beginRemovedNotesOperation();
+        AtomicBoolean cancelled=operation[0];
+        AtomicBoolean commitStarted=operation[1];
+        showRemovedNotesProgress(request,shelfGeneration,getString(R.string.core_removed_notes_restore_running));
+        removedNotesExecutor.execute(() -> {
+            Exception failure=null;
+            try {
+                new NoteGroupFacade(this).restoreRetiredGroupToBase(preview.noteId,
+                        preview.currentRevision,preview.currentDigest,
+                        preview.sourceRevision,preview.sourceDigest,(before,incoming)->{
+                            synchronized(cancelled) {
+                                if(cancelled.get()) throw new java.io.IOException("RETIRED_RESTORE_CANCELLED");
+                                if(before==null||!preview.noteId.equals(before.localId)
+                                        ||!preview.currentRevision.equals(before.revision)
+                                        ||!preview.currentDigest.equalsIgnoreCase(before.digest)
+                                        ||incoming==null||!preview.noteId.equals(incoming.identity.destinationLocalId())
+                                        ||preview.sourceRevision.equals(incoming.revision)
+                                        ||preview.currentRevision.equals(incoming.revision))
+                                    throw new java.io.IOException("RETIRED_RESTORE_PREVIEW_BINDING_CHANGED");
+                                commitStarted.set(true);
+                            }
+                            handler.post(()->{
+                                if(request==removedNotesRequestSerial&&removedNotesProgress!=null) {
+                                    removedNotesProgress.setCancelable(false);
+                                    removedNotesProgress.setMessage(getString(R.string.core_removed_notes_restore_running));
+                                }
+                            });
+                            return true;
+                        });
+            } catch (Exception error) { failure=error; }
+            final Exception restoreFailure=failure;
+            runOnUiThread(() -> {
+                if (!removedNotesRequestActive(request, shelfGeneration)) {
+                    if (commitStarted.get()&&!editorVisible
+                            &&shelfGeneration==bookshelfLoadGeneration&&!isFinishing()&&!isDestroyed())
+                        refreshBookshelf();
+                    return;
+                }
+                dismissRemovedNotesProgress(request);
+                if (restoreFailure == null) {
+                    refreshBookshelf();
+                    Toast.makeText(this,R.string.core_removed_notes_restore_complete,Toast.LENGTH_LONG).show();
+                } else {
+                    refreshBookshelf();
+                    new AlertDialog.Builder(this).setTitle(preview.title)
+                            .setMessage(R.string.core_removed_notes_restore_failed)
+                            .setPositiveButton(R.string.core_done,null).show();
+                }
+            });
+        });
     }
 
     private void showLanguagePicker() {
@@ -2865,6 +3169,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        cancelRemovedNotesUi();
         if (!entry.id.equals(currentNoteId)) cancelManualDraftRecoveryForContextChange();
         if (editorVisible && currentNoteId != null && !entry.id.equals(currentNoteId)
                 && !commitOrCheckpointBeforeLeaving()) return;
@@ -3061,22 +3366,33 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     shelfDeleteState="DELETE_PUBLISH_PENDING";
                     shelfDeleteFailure="NONE";
                     storageExecutor.execute(() -> {
-                    boolean noteDeleted=false;
                     try {
-                        if(capturedBase!=null)NoteStore.delete(this,entry.id,capturedBase.revision,capturedBase.digest);
-                        else{videoAttachmentStore.removeForNote(entry.id);CoverStore.remove(this,entry.id);aiConversationStore.clear(entry.id);NoteStore.delete(this,entry.id);}
-                        noteDeleted=true;
-                        clearAiInputDraft("note:" + entry.id);
-                        shelfDeleteState="DELETE_PUBLISHED";
-                        runOnUiThread(this::refreshBookshelf);
+                        NoteStore.DeleteResult outcome=NoteStore.deleteWithOutcome(this,entry.id,
+                                capturedBase==null?null:capturedBase.revision,
+                                capturedBase==null?null:capturedBase.digest);
+                        if(outcome.committed()) {
+                            clearAiInputDraft("note:" + entry.id);
+                            shelfDeleteState=outcome.cleanupPending
+                                    ?"DELETE_PUBLISHED_CLEANUP_PENDING":"DELETE_PUBLISHED";
+                            if(outcome.cleanupPending) shelfDeleteFailure=outcome.cleanupCode==null
+                                    ?"CLEANUP_PENDING":outcome.cleanupCode;
+                        } else if(outcome.uncertain()) {
+                            shelfDeleteState="DELETE_COMMIT_UNCERTAIN";
+                        } else {
+                            throw new java.io.IOException("DELETE_NOT_COMMITTED");
+                        }
+                        runOnUiThread(() -> {
+                            refreshBookshelf();
+                            if(outcome.uncertain()) Toast.makeText(this,
+                                    R.string.core_delete_uncertain,Toast.LENGTH_LONG).show();
+                            else if(outcome.cleanupPending) Toast.makeText(this,
+                                    R.string.core_delete_cleanup_pending,Toast.LENGTH_LONG).show();
+                        });
                     } catch (Exception error) {
                         String code=error.getMessage();shelfDeleteFailure=error.getClass().getSimpleName()+((code!=null&&code.matches("[A-Z0-9_]{1,64}"))?":"+code:"");
                         shelfDeleteState="DELETE_FAILED";
-                        final boolean deleted=noteDeleted;
                         runOnUiThread(() -> {
-                            if(deleted)refreshBookshelf();
-                            Toast.makeText(this,deleted?getString(R.string.core_delete_cleanup_failed,safeError(error)):
-                                    getString(R.string.core_delete_failed,safeError(error)),Toast.LENGTH_LONG).show();
+                            Toast.makeText(this,getString(R.string.core_delete_failed,safeError(error)),Toast.LENGTH_LONG).show();
                         });
                     }
                     });

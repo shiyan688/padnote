@@ -604,6 +604,66 @@ public final class NoteGroupFacade {
         if(!current.revision.equals(expectedCurrentRevision)||!current.digest.equals(expectedCurrentDigest))throw new IOException("BASE_CAS_CONFLICT");
         return store.restore(current.lineage,revision,digest,expectedCurrentRevision,expectedCurrentDigest,preview::approve);
     }
+    /** Restores only the exact active parent of the captured retirement, using a fresh CAS revision. */
+    public StreamingGroupStore.Snapshot restoreRetiredGroupToBase(String localNoteId,
+            String expectedCurrentRevision,String expectedCurrentDigest,
+            ManualUpdateCommitter.Preview preview)throws Exception {
+        return restoreRetiredGroupToBase(localNoteId,expectedCurrentRevision,expectedCurrentDigest,
+                null,null,preview);
+    }
+    /** Same operation, additionally binding the previewed immediate parent revision and digest. */
+    public StreamingGroupStore.Snapshot restoreRetiredGroupToBase(String localNoteId,
+            String expectedCurrentRevision,String expectedCurrentDigest,
+            String expectedSourceRevision,String expectedSourceDigest,
+            ManualUpdateCommitter.Preview preview)throws Exception {
+        if(localNoteId==null||expectedCurrentRevision==null||expectedCurrentDigest==null||preview==null)
+            throw new IllegalArgumentException("RETIRED_RESTORE_INPUT_REQUIRED");
+        if((expectedSourceRevision==null)!=(expectedSourceDigest==null))
+            throw new IllegalArgumentException("RETIRED_RESTORE_SOURCE_BINDING_INVALID");
+        StreamingGroupStore.Snapshot current=store.readByLocalId(localNoteId);
+        if(current==null||!current.localId.equals(localNoteId)
+                ||!current.revision.equals(expectedCurrentRevision)
+                ||!current.digest.equalsIgnoreCase(expectedCurrentDigest))
+            throw new IOException("BASE_CAS_CONFLICT");
+        if(!"MANUAL_UPDATE_V2".equals(current.action()))throw new IOException("RETIRED_RESTORE_ACTION_INVALID");
+        JSONObject tombstoneBody=readBody(current);
+        if(!isRetiredDocument(tombstoneBody)||tombstoneBody.optLong("_padnoteShelfRetiredAt",0)<=0)
+            throw new IOException("GROUP_NOTE_NOT_RETIRED");
+        StreamingGroupStore.BaseRevisionRef base=current.baseRevisionRef();
+        if(base==null||base.revision.equals(current.revision))throw new IOException("RETIRED_RESTORE_BASE_MISSING");
+        if(expectedSourceRevision!=null&&(!expectedSourceRevision.equals(base.revision)
+                ||!expectedSourceDigest.equalsIgnoreCase(base.digest)))
+            throw new IOException("BASE_CAS_CONFLICT");
+        StreamingGroupStore.Snapshot source=store.readRevision(current.lineage,base.revision,base.digest);
+        if(source==null||!localNoteId.equals(source.localId)||!current.lineage.equals(source.lineage))
+            throw new IOException("RETIRED_RESTORE_SOURCE_IDENTITY_INVALID");
+        JSONObject sourceBody=readBody(source);
+        if(isRetiredDocument(sourceBody))throw new IOException("RETIRED_RESTORE_SOURCE_IS_RETIRED");
+        return store.restore(current.lineage,source.revision,source.digest,
+                expectedCurrentRevision,expectedCurrentDigest,(before,incoming)->{
+                    if(before==null||!before.localId.equals(localNoteId)
+                            ||!before.lineage.equals(current.lineage)
+                            ||!before.revision.equals(expectedCurrentRevision)
+                            ||!before.digest.equalsIgnoreCase(expectedCurrentDigest)
+                            ||incoming==null||!localNoteId.equals(incoming.identity.destinationLocalId())
+                            ||!current.lineage.equals(incoming.identity.destinationLineage())
+                            ||source.revision.equals(incoming.revision)
+                            ||current.revision.equals(incoming.revision)
+                            ||!sameVerifiedMembers(source,incoming))
+                        throw new IOException("BASE_CAS_CONFLICT");
+                    return preview.approve(before,incoming);
+                });
+    }
+    private static boolean sameVerifiedMembers(StreamingGroupStore.Snapshot source,
+            StreamingGroupStore.VerifiedGroup incoming)throws IOException {
+        Map<String,Long> expected=source.memberSizes();
+        Map<String,Long> actual=incoming.memberSizes();
+        if(!expected.equals(actual))return false;
+        for(Map.Entry<String,Long> member:expected.entrySet()) {
+            if(!source.memberSha256(member.getKey()).equals(incoming.memberSha256(member.getKey())))return false;
+        }
+        return true;
+    }
     /** Explicit UUID recovery; adoption journals cannot publish without a fresh source preview. */
     public StreamingGroupStore.Phase recoverTransaction(String transactionId)throws IOException { return store.recover(transactionId); }
     public CapturedLegacyNote inspectLegacy(String localNoteId)throws Exception { return capture(localNoteId,UUID.randomUUID().toString()).summary; }

@@ -473,4 +473,26 @@
     <string name="core_ai_selection_render_failed">선택한 내용을 준비하지 못했습니다: %1$s</string>
     <string name="core_ai_selection_start_lasso">선택 시작</string>
     <string name="core_ai_selection_ai_settings">AI 설정</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">삭제된 노트</string>
+    <string name="core_removed_notes_fallback_title">제목 없는 노트</string>
+    <string name="core_removed_notes_loading">삭제된 노트를 불러오는 중…</string>
+    <string name="core_removed_notes_empty">복원할 관리 노트가 없습니다.</string>
+    <string name="core_removed_notes_load_failed">삭제된 노트를 확인할 수 없습니다. 변경된 내용은 없습니다.</string>
+    <string name="core_removed_notes_partial_warning">일부 노트를 확인할 수 없어 표시하지 않았습니다.</string>
+    <string name="core_removed_notes_legacy_unavailable">관리 복구 기능이 생기기 전에 완전히 삭제된 노트는 여기서 복원할 수 없습니다.</string>
+    <string name="core_removed_notes_preview_title">“%1$s”을(를) 복원할까요?</string>
+    <string name="core_removed_notes_preview_summary">페이지: %1$d · 획: %2$d · PDF: %3$s · 표지: %4$s · 동영상: %5$d · Vault: %6$d</string>
+    <string name="core_removed_notes_preview_identity">같은 노트가 새 리비전으로 목록에 돌아옵니다. 기존 Agent 작업은 새 리비전으로 연결되지 않습니다.</string>
+    <string name="core_removed_notes_present">포함</string>
+    <string name="core_removed_notes_absent">없음</string>
+    <string name="core_removed_notes_restore_action">노트 복원</string>
+    <string name="core_removed_notes_restore_running">노트 전체를 복원하는 중…</string>
+    <string name="core_removed_notes_restore_complete">노트를 복원했습니다.</string>
+    <string name="core_removed_notes_restore_failed">복원 결과를 확인할 수 없습니다. 다시 시도하기 전에 책장과 삭제된 노트를 확인하세요.</string>
+    <string name="core_delete_uncertain">삭제 결과를 확인할 수 없습니다. 노트 목록을 새로고침합니다. 다시 시도하기 전에 상태를 확인하세요.</string>
+<string name="core_removed_notes_preview_complete">노트 전체와 첨부 자료를 복원합니다.</string>
+    <string name="core_removed_notes_commit_boundary">최종 커밋이 시작되면 화면을 나가도 복원이 완료될 수 있습니다.</string>
+    <string name="core_delete_cleanup_pending">노트가 목록에서 제거되었습니다. 일부 로컬 자료는 안전한 정리를 위해 보관되었습니다.</string>
 </resources>

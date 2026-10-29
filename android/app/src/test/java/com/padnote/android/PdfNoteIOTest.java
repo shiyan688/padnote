@@ -14,11 +14,24 @@ import static org.junit.Assert.*;
 
 public class PdfNoteIOTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
-    private Context context() {
-        return new ContextWrapper(null) {
-            @Override public File getFilesDir() { return temporary.getRoot(); }
-            @Override public File getCacheDir() { return temporary.getRoot(); }
-        };
+    private Context context() throws Exception {
+        return new TestContext();
+    }
+    private final class TestContext extends ContextWrapper
+            implements LegacyDeleteJournal.StorageEnvironment {
+        private final LegacyDeleteJournal.FileIdentityReader identities;
+        TestContext() throws Exception {
+            super(null);
+            identities = new LegacyDeleteJournalTest.NioIdentityReader(temporary.getRoot());
+        }
+        @Override public File getFilesDir() { return temporary.getRoot(); }
+        @Override public File getCacheDir() { return temporary.getRoot(); }
+        @Override public LegacyDeleteJournal.FileIdentityReader fileIdentityReader() {
+            return identities;
+        }
+        @Override public LegacyDeleteJournal.DirectorySync directorySync() {
+            return LegacyDeleteJournalTest.testDirectorySync();
+        }
     }
     private JSONObject document() throws Exception {
         return new JSONObject().put("schemaVersion", 6).put("title", "测试笔记")

@@ -473,4 +473,26 @@
     <string name="core_ai_selection_render_failed">選択した内容を準備できませんでした：%1$s</string>
     <string name="core_ai_selection_start_lasso">選択を開始</string>
     <string name="core_ai_selection_ai_settings">AI設定</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">削除済みノート</string>
+    <string name="core_removed_notes_fallback_title">無題のノート</string>
+    <string name="core_removed_notes_loading">削除済みノートを読み込み中…</string>
+    <string name="core_removed_notes_empty">復元可能な管理対象ノートはありません。</string>
+    <string name="core_removed_notes_load_failed">削除済みノートを検証できませんでした。変更はありません。</string>
+    <string name="core_removed_notes_partial_warning">一部のノートを検証できず、表示していません。</string>
+    <string name="core_removed_notes_legacy_unavailable">管理復元機能より前に完全削除されたノートはここから復元できません。</string>
+    <string name="core_removed_notes_preview_title">「%1$s」を復元しますか？</string>
+    <string name="core_removed_notes_preview_summary">ページ：%1$d · ストローク：%2$d · PDF：%3$s · カバー：%4$s · 動画：%5$d · Vault：%6$d</string>
+    <string name="core_removed_notes_preview_identity">同じノートを新しいリビジョンで一覧に戻します。既存のAgentタスクは引き継がれません。</string>
+    <string name="core_removed_notes_present">あり</string>
+    <string name="core_removed_notes_absent">なし</string>
+    <string name="core_removed_notes_restore_action">ノートを復元</string>
+    <string name="core_removed_notes_restore_running">ノート全体を復元中…</string>
+    <string name="core_removed_notes_restore_complete">ノートを復元しました。</string>
+    <string name="core_removed_notes_restore_failed">復元結果を確認できません。再試行を決める前に、書架と削除済みノートを確認してください。</string>
+    <string name="core_delete_uncertain">削除結果を確認できません。ノート一覧を更新します。再試行する前に状態を確認してください。</string>
+<string name="core_removed_notes_preview_complete">ノート全体と添付資料を復元します。</string>
+    <string name="core_removed_notes_commit_boundary">最終コミット開始後は、画面を離れても復元が完了する場合があります。</string>
+    <string name="core_delete_cleanup_pending">ノートを一覧から削除しました。一部のローカル資料は安全な整理のため保持しています。</string>
 </resources>

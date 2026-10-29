@@ -7,6 +7,7 @@ import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withHint;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
@@ -606,6 +607,131 @@ public final class GroupRenameDeleteInstrumentedTest {
             if(scenario!=null)scenario.close();
             fixture.cleanup();
         }
+    }
+
+    @Test public void removedNotesUiPreviewsAndRestoresEveryMemberWithFreshCasAfterExplicitConfirmation() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Fixture fixture=createCompleteGroup(context,"B27 restore "+UUID.randomUUID());
+        NoteGroupFacade facade=new NoteGroupFacade(context);
+        ActivityScenario<MainActivity> scenario=null;
+        StreamingGroupStore.Snapshot retired=null;
+        try {
+            retired=facade.retireGroup(fixture.id,fixture.base.revision,fixture.base.digest);
+            assertFalse("retired complete note is absent from ordinary shelf",NoteStore.list(context)
+                    .stream().anyMatch(entry->fixture.id.equals(entry.id)));
+            assertRetirementMembersEqual(fixture.base,retired,fixture.id);
+            scenario=ActivityScenario.launch(MainActivity.class);
+            String[] uiStrings=new String[5];
+            scenario.onActivity(activity->{
+                uiStrings[0]=activity.getString(R.string.core_removed_notes_button);
+                uiStrings[1]=activity.getString(R.string.core_removed_notes_preview_title,fixture.title);
+                uiStrings[2]=activity.getString(R.string.core_removed_notes_present);
+                uiStrings[3]=activity.getString(R.string.core_removed_notes_absent);
+                uiStrings[4]=activity.getString(R.string.core_cancel);
+            });
+            String removedButton=uiStrings[0];
+            onView(withText(removedButton)).perform(scrollTo(),click());
+            waitDisplayed(withText(fixture.title));
+            onView(withText(fixture.title)).perform(click());
+            String previewTitle=uiStrings[1];
+            waitDisplayed(withText(previewTitle));
+            String present=uiStrings[2];
+            JSONObject fixtureBody=body(fixture.base);
+            int videos=0,vaultItems=0;
+            for(String member:fixture.base.memberSizes().keySet()) {
+                if(member.startsWith("video/")&&member.endsWith("/content.bin")) videos++;
+                else if(member.startsWith("vault/")&&member.endsWith("/content.bin")) vaultItems++;
+            }
+            final String[] previewSummary={null};
+            int expectedPages=Math.max(1,fixtureBody.optInt("pageCount",1));
+            int expectedStrokes=fixtureBody.optJSONArray("strokes")==null?0:fixtureBody.optJSONArray("strokes").length();
+            String expectedPdf=fixture.base.memberSizes().containsKey("pdf.bin")?present:uiStrings[3];
+            String expectedCover=fixture.base.memberSizes().containsKey("cover.bin")?present:uiStrings[3];
+            final int expectedVideos=videos;
+            final int expectedVaultItems=vaultItems;
+            // The activity can override the device locale; format the expected summary in that same context.
+            scenario.onActivity(activity->{
+                previewSummary[0]=activity.getString(R.string.core_removed_notes_preview_summary,
+                        expectedPages,expectedStrokes,expectedPdf,expectedCover,expectedVideos,expectedVaultItems);
+                uiStrings[4]=activity.getString(R.string.core_cancel);
+            });
+            onView(withText(containsString(previewSummary[0]))).check(matches(isDisplayed()));
+            onView(withText(uiStrings[4])).perform(click());
+            StreamingGroupStore.Snapshot afterCancel=facade.openGroupIncludingRetired(fixture.id);
+            assertEquals("closing the preview leaves the retired revision unchanged",retired.revision,afterCancel.revision);
+            assertEquals(retired.digest,afterCancel.digest);
+
+            onView(withText(removedButton)).perform(scrollTo(),click());
+            waitDisplayed(withText(fixture.title));
+            onView(withText(fixture.title)).perform(click());
+            waitDisplayed(withText(previewTitle));
+            final String[] restoreLabel={null};
+            scenario.onActivity(activity->restoreLabel[0]=activity.getString(R.string.core_removed_notes_restore_action));
+            onView(positiveDialogButton(restoreLabel[0])).perform(click());
+            String cardDescription="打开笔记 "+fixture.title+"。长按可重命名或更换封面。";
+            waitDisplayed(withContentDescription(cardDescription));
+
+            StreamingGroupStore.Snapshot restored=facade.openGroup(fixture.id);
+            assertEquals("recovery keeps the same note identity",fixture.id,restored.localId);
+            assertEquals("recovery keeps its group lineage",fixture.base.lineage,restored.lineage);
+            assertNotEquals("recovery publishes a new revision, not an old pointer",retired.revision,restored.revision);
+            assertNotEquals(fixture.base.revision,restored.revision);
+            assertFalse(NoteGroupFacade.isRetiredDocument(body(restored)));
+            assertFullMembersEqual(fixture.base,restored);
+            assertTrue("restored note is visible after an ordinary cold facade read",
+                    NoteStore.list(context).stream().anyMatch(entry->fixture.id.equals(entry.id)));
+            StreamingGroupStore.Snapshot coldRead=new NoteGroupFacade(context).openGroup(fixture.id);
+            assertEquals(restored.revision,coldRead.revision);
+            assertFullMembersEqual(fixture.base,coldRead);
+            try {
+                facade.restoreRetiredGroupToBase(fixture.id,retired.revision,retired.digest,(before,incoming)->true);
+                fail("duplicate confirmation with the old retired CAS must be rejected");
+            } catch(java.io.IOException expected) {
+                assertEquals("BASE_CAS_CONFLICT",expected.getMessage());
+            }
+            assertEquals("stale duplicate cannot overwrite the winner",restored.revision,
+                    facade.openGroup(fixture.id).revision);
+        } finally {
+            if(scenario!=null)scenario.close();
+            fixture.cleanup();
+        }
+    }
+
+    @Test public void partialRemovedNotesInventoryKeepsVerifiedRowsVisibleAndSelectable() throws Exception {
+        ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class);
+        String title="B27 verified row "+UUID.randomUUID();
+        try {
+            java.util.concurrent.atomic.AtomicReference<Throwable> setupFailure=new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> warningText=new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> failedText=new java.util.concurrent.atomic.AtomicReference<>();
+            scenario.onActivity(activity->{
+                try {
+                    warningText.set(activity.getString(R.string.core_removed_notes_partial_warning));
+                    failedText.set(activity.getString(R.string.core_removed_notes_load_failed));
+                    com.padnote.android.streaming.StreamingGroupStore.Store.ShelfMetadata metadata=
+                            new com.padnote.android.streaming.StreamingGroupStore.Store.ShelfMetadata(
+                                    "note-"+UUID.randomUUID().toString().replace("-",""),title,
+                                    System.currentTimeMillis(),2,3,true,true,true);
+                    RemovedNoteRecoveryStore.Inventory inventory=new RemovedNoteRecoveryStore.Inventory(
+                            Collections.singletonList(new RemovedNoteRecoveryStore.Entry(metadata,
+                                    activity.getString(R.string.core_removed_notes_fallback_title))),1);
+                    java.lang.reflect.Field generationField=MainActivity.class.getDeclaredField("bookshelfLoadGeneration");
+                    generationField.setAccessible(true);
+                    java.lang.reflect.Field requestField=MainActivity.class.getDeclaredField("removedNotesRequestSerial");
+                    requestField.setAccessible(true);
+                    java.lang.reflect.Method show=MainActivity.class.getDeclaredMethod("showRemovedNotesInventory",
+                            RemovedNoteRecoveryStore.Inventory.class,long.class,int.class);
+                    show.setAccessible(true);
+                    show.invoke(activity,inventory,requestField.getLong(activity),generationField.getInt(activity));
+                } catch(Throwable failure) { setupFailure.set(failure); }
+            });
+            if(setupFailure.get()!=null)throw new AssertionError("isolated inventory UI setup",setupFailure.get());
+            waitDisplayed(withText(warningText.get()));
+            waitDisplayed(withText(title));
+            onView(withText(title)).check(matches(isDisplayed())).check(matches(isEnabled()));
+            onView(withText(title)).perform(click());
+            waitDisplayed(withText(failedText.get()));
+        } finally { scenario.close(); }
     }
 
     private static JSONObject unavailableDiagnostic() {

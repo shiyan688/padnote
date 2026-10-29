@@ -473,4 +473,26 @@
     <string name="core_ai_selection_render_failed">Impossible de préparer le contenu sélectionné : %1$s</string>
     <string name="core_ai_selection_start_lasso">Commencer la sélection</string>
     <string name="core_ai_selection_ai_settings">Paramètres IA</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">Notes supprimées</string>
+    <string name="core_removed_notes_fallback_title">Note sans titre</string>
+    <string name="core_removed_notes_loading">Chargement des notes supprimées…</string>
+    <string name="core_removed_notes_empty">Aucune note gérée supprimée.</string>
+    <string name="core_removed_notes_load_failed">Impossible de vérifier les notes supprimées. Aucun changement effectué.</string>
+    <string name="core_removed_notes_partial_warning">Certaines notes n’ont pas pu être vérifiées et ne sont pas affichées.</string>
+    <string name="core_removed_notes_legacy_unavailable">Les notes définitivement supprimées avant la récupération gérée ne peuvent pas être restaurées ici.</string>
+    <string name="core_removed_notes_preview_title">Restaurer « %1$s » ?</string>
+    <string name="core_removed_notes_preview_summary">Pages : %1$d · traits : %2$d · PDF : %3$s · couverture : %4$s · vidéos : %5$d · éléments Vault : %6$d</string>
+    <string name="core_removed_notes_preview_identity">La même note reviendra avec une nouvelle révision. Les tâches Agent existantes ne seront pas redirigées.</string>
+    <string name="core_removed_notes_present">Inclus</string>
+    <string name="core_removed_notes_absent">Aucun</string>
+    <string name="core_removed_notes_restore_action">Restaurer la note</string>
+    <string name="core_removed_notes_restore_running">Restauration de la note complète…</string>
+    <string name="core_removed_notes_restore_complete">La note a été restaurée.</string>
+    <string name="core_removed_notes_restore_failed">Impossible de confirmer la restauration. Vérifiez la bibliothèque et les notes supprimées avant de décider de réessayer.</string>
+    <string name="core_delete_uncertain">Impossible de confirmer la suppression. La liste sera actualisée ; vérifiez son état avant de réessayer.</string>
+<string name="core_removed_notes_preview_complete">La note complète et ses pièces jointes seront restaurées.</string>
+    <string name="core_removed_notes_commit_boundary">Une fois la validation finale commencée, la restauration peut aboutir même si vous quittez cet écran.</string>
+    <string name="core_delete_cleanup_pending">La note a été retirée de la liste. Certains éléments locaux sont conservés en attendant un nettoyage sûr.</string>
 </resources>

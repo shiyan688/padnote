@@ -466,14 +466,22 @@ final class AiConversationStore {
 
     private final File directory;
     private final NoteStore.WriteFaultInjector faults;
+    private final File noteFilesRoot;
 
     AiConversationStore(Context context) {
-        this(new File(context.getFilesDir(), "ai-conversations"), NoteStore.NO_WRITE_FAULTS);
+        this(new File(context.getFilesDir(), "ai-conversations"), NoteStore.NO_WRITE_FAULTS,
+                context.getFilesDir());
     }
 
     AiConversationStore(File directory, NoteStore.WriteFaultInjector faults) {
+        this(directory,faults,null);
+    }
+
+    private AiConversationStore(File directory, NoteStore.WriteFaultInjector faults,
+                                File noteFilesRoot) {
         this.directory = directory;
         this.faults = faults == null ? NoteStore.NO_WRITE_FAULTS : faults;
+        this.noteFilesRoot = noteFilesRoot;
     }
 
     Snapshot create(String noteId, List<VisibleEntry> visible,
@@ -481,6 +489,7 @@ final class AiConversationStore {
                     AiVaultSnapshot vault, Binding binding, String transcript,
                     boolean uploadConfirmed) throws Exception {
         synchronized (GLOBAL_LOCK) {
+            requireNoteNotDeleted(noteId);
             validateId(noteId);
             File target = sessionFile(noteId);
             if (familyExists(target)) {
@@ -499,6 +508,7 @@ final class AiConversationStore {
 
     Snapshot save(Snapshot value) throws Exception {
         synchronized (GLOBAL_LOCK) {
+            requireNoteNotDeleted(value.noteId);
             validate(value);
             if (value.generation <= clearedGeneration(value.noteId)) {
                 throw new IOException("AI 会话已清空，拒绝晚到结果");
@@ -519,6 +529,7 @@ final class AiConversationStore {
 
     Snapshot load(String noteId) throws Exception {
         synchronized (GLOBAL_LOCK) {
+            requireNoteNotDeleted(noteId);
             validateId(noteId);
             File target = sessionFile(noteId);
             NoteStore.recoverAtomicFile(target, AiConversationStore::validateJson);
@@ -581,6 +592,7 @@ final class AiConversationStore {
 
     void preserveUnsaved(Snapshot value) throws Exception {
         synchronized (GLOBAL_LOCK) {
+            requireNoteNotDeleted(value.noteId);
             validateId(value.noteId);
             if (value.generation <= clearedGeneration(value.noteId)) {
                 throw new IOException("AI 会话已清空，拒绝保留晚到副本");
@@ -657,6 +669,11 @@ final class AiConversationStore {
         if (!directory.exists() && !directory.mkdirs()) {
             throw new IOException("无法创建 AI 会话目录");
         }
+    }
+
+    private void requireNoteNotDeleted(String noteId) throws Exception {
+        if (noteFilesRoot != null && NoteStore.isLegacyDeleteCommitted(noteFilesRoot,noteId))
+            throw new IOException("LEGACY_NOTE_DELETED");
     }
 
     private static void deleteFamily(File target) throws IOException {

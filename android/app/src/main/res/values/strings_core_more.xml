@@ -485,4 +485,26 @@
     <string name="core_manual_draft_discard_complete">Damaged saved draft removed. The note was not changed.</string>
     <string name="core_manual_draft_cleanup_running">Removing the saved draft…</string>
     <string name="core_manual_draft_cleanup_complete">Saved draft removed. The original note was not changed.</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">Removed notes</string>
+    <string name="core_removed_notes_fallback_title">Untitled note</string>
+    <string name="core_removed_notes_loading">Loading removed notes…</string>
+    <string name="core_removed_notes_empty">No managed notes have been removed.</string>
+    <string name="core_removed_notes_load_failed">Removed notes could not be verified. Nothing was changed.</string>
+    <string name="core_removed_notes_partial_warning">Some notes could not be verified and are not shown.</string>
+    <string name="core_removed_notes_legacy_unavailable">Notes permanently deleted before managed recovery was available cannot be restored here.</string>
+    <string name="core_removed_notes_preview_title">Restore “%1$s”?</string>
+    <string name="core_removed_notes_preview_summary">Pages: %1$d · strokes: %2$d · PDF: %3$s · cover: %4$s · videos: %5$d · Vault items: %6$d</string>
+    <string name="core_removed_notes_preview_identity">The same note will return to the shelf with a new revision. Existing agent tasks will not be redirected.</string>
+    <string name="core_removed_notes_present">Included</string>
+    <string name="core_removed_notes_absent">None</string>
+    <string name="core_removed_notes_restore_action">Restore note</string>
+    <string name="core_removed_notes_restore_running">Restoring the complete note…</string>
+    <string name="core_removed_notes_restore_complete">The note was restored.</string>
+    <string name="core_removed_notes_restore_failed">Could not confirm the restore result. Recheck the bookshelf and Removed notes before deciding whether to retry.</string>
+    <string name="core_delete_uncertain">The delete result could not be confirmed. The note list will be refreshed; check its status before retrying.</string>
+<string name="core_removed_notes_preview_complete">The complete note and its attached materials will be restored.</string>
+    <string name="core_removed_notes_commit_boundary">Once the final commit starts, leaving the screen may not stop the restore.</string>
+    <string name="core_delete_cleanup_pending">The note was removed from the shelf. Some local materials were retained for safe cleanup later.</string>
 </resources>

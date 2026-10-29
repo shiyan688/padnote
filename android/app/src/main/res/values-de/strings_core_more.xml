@@ -473,4 +473,26 @@
     <string name="core_ai_selection_render_failed">Ausgewählte Inhalte konnten nicht vorbereitet werden: %1$s</string>
     <string name="core_ai_selection_start_lasso">Auswahl starten</string>
     <string name="core_ai_selection_ai_settings">KI-Einstellungen</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">Entfernte Notizen</string>
+    <string name="core_removed_notes_fallback_title">Unbenannte Notiz</string>
+    <string name="core_removed_notes_loading">Entfernte Notizen werden geladen…</string>
+    <string name="core_removed_notes_empty">Keine verwalteten Notizen entfernt.</string>
+    <string name="core_removed_notes_load_failed">Entfernte Notizen konnten nicht geprüft werden. Es wurde nichts geändert.</string>
+    <string name="core_removed_notes_partial_warning">Einige Notizen konnten nicht geprüft werden und werden nicht angezeigt.</string>
+    <string name="core_removed_notes_legacy_unavailable">Vor der verwalteten Wiederherstellung dauerhaft gelöschte Notizen können hier nicht wiederhergestellt werden.</string>
+    <string name="core_removed_notes_preview_title">„%1$s“ wiederherstellen?</string>
+    <string name="core_removed_notes_preview_summary">Seiten: %1$d · Striche: %2$d · PDF: %3$s · Titelbild: %4$s · Videos: %5$d · Vault-Elemente: %6$d</string>
+    <string name="core_removed_notes_preview_identity">Dieselbe Notiz kehrt mit einer neuen Revision zurück. Vorhandene Agent-Aufgaben werden nicht umgeleitet.</string>
+    <string name="core_removed_notes_present">Enthalten</string>
+    <string name="core_removed_notes_absent">Keine</string>
+    <string name="core_removed_notes_restore_action">Notiz wiederherstellen</string>
+    <string name="core_removed_notes_restore_running">Vollständige Notiz wird wiederhergestellt…</string>
+    <string name="core_removed_notes_restore_complete">Die Notiz wurde wiederhergestellt.</string>
+    <string name="core_removed_notes_restore_failed">Das Wiederherstellungsergebnis konnte nicht bestätigt werden. Prüfen Sie Bücherregal und entfernte Notizen, bevor Sie erneut versuchen.</string>
+    <string name="core_delete_uncertain">Das Löschergebnis konnte nicht bestätigt werden. Die Liste wird aktualisiert; bitte vor einem erneuten Versuch den Status prüfen.</string>
+<string name="core_removed_notes_preview_complete">Die vollständige Notiz samt Anhängen wird wiederhergestellt.</string>
+    <string name="core_removed_notes_commit_boundary">Nach Beginn des endgültigen Commits kann die Wiederherstellung auch beim Verlassen dieses Bildschirms abgeschlossen werden.</string>
+    <string name="core_delete_cleanup_pending">Die Notiz wurde aus der Liste entfernt. Einige lokale Materialien bleiben bis zur sicheren Bereinigung erhalten.</string>
 </resources>

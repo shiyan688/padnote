@@ -473,4 +473,26 @@
     <string name="core_ai_selection_render_failed">无法准备选中内容：%1$s</string>
     <string name="core_ai_selection_start_lasso">开始圈选</string>
     <string name="core_ai_selection_ai_settings">AI 设置</string>
+
+    <!-- Managed removed-note recovery -->
+    <string name="core_removed_notes_button">已移除的笔记</string>
+    <string name="core_removed_notes_fallback_title">未命名笔记</string>
+    <string name="core_removed_notes_loading">正在加载已移除的笔记…</string>
+    <string name="core_removed_notes_empty">没有已移除的托管笔记。</string>
+    <string name="core_removed_notes_load_failed">无法验证已移除的笔记，未更改任何内容。</string>
+    <string name="core_removed_notes_partial_warning">部分笔记无法验证，因此未显示。</string>
+    <string name="core_removed_notes_legacy_unavailable">托管恢复功能启用前永久删除的笔记无法在此恢复。</string>
+    <string name="core_removed_notes_preview_title">恢复“%1$s”？</string>
+    <string name="core_removed_notes_preview_summary">页数：%1$d · 笔迹：%2$d · PDF：%3$s · 封面：%4$s · 视频：%5$d · Vault：%6$d</string>
+    <string name="core_removed_notes_preview_identity">笔记将以新版本恢复到书架。已有 Agent 任务不会转向此版本。</string>
+    <string name="core_removed_notes_present">有</string>
+    <string name="core_removed_notes_absent">无</string>
+    <string name="core_removed_notes_restore_action">恢复笔记</string>
+    <string name="core_removed_notes_restore_running">正在恢复完整笔记…</string>
+    <string name="core_removed_notes_restore_complete">笔记已恢复。</string>
+    <string name="core_removed_notes_restore_failed">无法确认恢复结果。请重新检查书架与已移除笔记，再决定是否重试。</string>
+    <string name="core_delete_uncertain">无法确认删除结果。将刷新笔记列表；请先核对状态再重试。</string>
+<string name="core_removed_notes_preview_complete">将恢复完整笔记及其附件。</string>
+    <string name="core_removed_notes_commit_boundary">最终提交开始后，即使离开页面，恢复也可能继续完成。</string>
+    <string name="core_delete_cleanup_pending">笔记已从书架移除。部分本地材料已保留，等待安全清理。</string>
 </resources>

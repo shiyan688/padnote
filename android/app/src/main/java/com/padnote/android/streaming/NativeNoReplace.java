@@ -6,18 +6,17 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 
 /** Atomic no-replace syscall bridge; streaming remains gated at API 27 and fails closed if unavailable. */
-final class NativeNoReplace {
+public final class NativeNoReplace {
     private static volatile boolean loaded;
     private NativeNoReplace() {}
 
-    static int renameNoReplace(Path sourceParent, String sourceName, Path destinationParent,
-            String destinationName) throws IOException {
+    public static int renameNoReplace(String sourceParent, String sourceName,
+            String destinationParent, String destinationName) throws IOException {
         ensureLoaded();
-        byte[][] args = {utf8(sourceParent.toString()), asciiName(sourceName),
-                utf8(destinationParent.toString()), asciiName(destinationName)};
+        byte[][] args = {utf8(sourceParent), asciiName(sourceName),
+                utf8(destinationParent), asciiName(destinationName)};
         return renameNoReplaceNative(args[0], args[1], args[2], args[3]);
     }
 

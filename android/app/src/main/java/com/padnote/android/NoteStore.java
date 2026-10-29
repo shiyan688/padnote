@@ -76,6 +76,27 @@ final class NoteStore {
         }
     }
 
+    enum DeleteCommitStatus { NOT_COMMITTED, COMMITTED, UNCERTAIN }
+
+    /** Result separating a durable logical delete from cleanup of its private sidecars. */
+    static final class DeleteResult {
+        final boolean retired;
+        final boolean committed;
+        final boolean uncertain;
+        final DeleteCommitStatus commitStatus;
+        final boolean cleanupPending;
+        final String cleanupCode;
+        DeleteResult(boolean retired, DeleteCommitStatus commitStatus, boolean cleanupPending,
+                     String cleanupCode) {
+            this.retired=retired; this.commitStatus=commitStatus;
+            this.committed=commitStatus==DeleteCommitStatus.COMMITTED;
+            this.uncertain=commitStatus==DeleteCommitStatus.UNCERTAIN;
+            this.cleanupPending=cleanupPending; this.cleanupCode=cleanupCode;
+        }
+        boolean committed() { return committed; }
+        boolean uncertain() { return uncertain; }
+    }
+
     /** A retained file which the user can restore or export instead of losing silently. */
     static final class RecoveryEntry {
         final String noteId;
@@ -246,7 +267,9 @@ final class NoteStore {
         recordListDiagnostic(context,profile,"RECONCILE_INDEX",total,visited,groupReads,rejected,startedAt,lastErrorCode);
         stageStarted=System.nanoTime();
         if(profile!=null)profile.beginStage("reconciliation_ns");
-        if (reconcileIndex(context, index,attempt,profile,catalogReader)) saveIndex(context, index);
+        boolean reconciled = reconcileIndex(context, index,attempt,profile,catalogReader);
+        boolean removedDeletedIds = filterDeletedRows(index, committedLegacyDeleteIds(context));
+        if (reconciled || removedDeletedIds) saveIndex(context, index);
         if(profile!=null)profile.stage("reconciliation_ns",System.nanoTime()-stageStarted);
         List<Entry> entries = new ArrayList<>();
         List<Entry> indexedEntries=entriesFromIndex(index);total=indexedEntries.size();
@@ -319,6 +342,7 @@ final class NoteStore {
     static JSONObject load(Context context,String noteId)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+                requireNotLegacyDeleted(context,noteId);
                 RestoreOwner owner = readRestoreOwner(context, noteId);
                 if ((owner != null && "pending".equals(owner.state)) || !restoreGroupVisible(context,noteId))
                     throw new IllegalStateException("RESTORE_NOTE_PENDING");
@@ -330,6 +354,7 @@ final class NoteStore {
     }
     /** Called only after the same locked full-catalog inventory proved no group marker exists. */
     private static JSONObject loadLegacyDocumentAfterCatalogAbsence(Context context,String noteId)throws Exception {
+        requireNotLegacyDeleted(context,noteId);
         File file=noteFile(context,noteId);recoverAtomicFile(file,NOTE_VALIDATOR);
         if(!file.exists())throw new IllegalStateException("笔记文件不存在");
         String value=readFile(file);NOTE_VALIDATOR.validate(value);return new JSONObject(value);
@@ -430,50 +455,66 @@ final class NoteStore {
 }
 
     static void delete(Context context,String noteId)throws Exception {
-        delete(context,noteId,null,null);
+        DeleteResult result=deleteWithOutcome(context,noteId,null,null);
+        if(result.uncertain())throw new IOException("LEGACY_DELETE_COMMIT_UNCERTAIN");
     }
 
     /** Returns true when a managed group was retired without deleting its immutable history. */
     static boolean delete(Context context,String noteId,String expectedGroupRevision,
                           String expectedGroupDigest)throws Exception {
+        DeleteResult result=deleteWithOutcome(context,noteId,expectedGroupRevision,expectedGroupDigest);
+        if(result.uncertain())throw new IOException("NOTE_DELETE_OUTCOME_UNKNOWN");
+        return result.retired;
+    }
+
+    static DeleteResult deleteWithOutcome(Context context,String noteId,
+                                          String expectedGroupRevision,
+                                          String expectedGroupDigest)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
         requireNotPendingRestore(context, noteId);
+        validateNoteId(noteId);
+        if(isLegacyDeleteCommitted(context,noteId))
+            return LegacyNoteDeleteTransaction.retryCommittedCleanup(context,noteId);
         if(Build.VERSION.SDK_INT>=27){
             com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(context,noteId);
             if(managed!=null){
                 if(expectedGroupRevision==null||expectedGroupDigest==null)
                     throw new IOException("GROUP_NOTE_REQUIRES_FULL_REVISION_SAVE");
-                new NoteGroupFacade(context).retireGroup(noteId,expectedGroupRevision,
-                        expectedGroupDigest);
-                return true;
+                try {
+                    new NoteGroupFacade(context).retireGroup(noteId,expectedGroupRevision,
+                            expectedGroupDigest);
+                } catch(NoteGroupFacade.CommittedScratchCleanupException committedCleanup) {
+                    return new DeleteResult(true,DeleteCommitStatus.COMMITTED,true,
+                            "GROUP_RETIRE_SCRATCH_CLEANUP_PENDING");
+                } catch(Exception failure) {
+                    // If the commit path failed, re-read the authoritative latest revision.
+                    // A durable retired marker is success; an unreadable outcome is unknown.
+                    JSONObject latestBody;
+                    try {
+                        com.padnote.android.streaming.StreamingGroupStore.Snapshot latest=
+                                new NoteGroupFacade(context).openGroupIncludingRetired(noteId);
+                        if(latest==null)
+                            return new DeleteResult(false,DeleteCommitStatus.UNCERTAIN,true,
+                                    "GROUP_RETIRE_COMMIT_UNCERTAIN");
+                        latestBody=new JSONObject(new String(
+                                latest.readSmall("body.bin",(int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX),
+                                StandardCharsets.UTF_8));
+                    } catch(Exception rereadFailure) {
+                        return new DeleteResult(false,DeleteCommitStatus.UNCERTAIN,true,
+                                "GROUP_RETIRE_COMMIT_UNCERTAIN");
+                    }
+                    if("retired".equals(latestBody.optString("_padnoteShelfState","")))
+                        return new DeleteResult(true,DeleteCommitStatus.COMMITTED,true,
+                                "GROUP_RETIRE_RESULT_REQUIRES_REFRESH");
+                    throw failure;
+                }
+                return new DeleteResult(true,DeleteCommitStatus.COMMITTED,false,null);
             }
         }
         if(expectedGroupRevision!=null||expectedGroupDigest!=null)
             throw new IOException("BASE_CAS_CONFLICT");
-        // The non-destructive group tombstone path is token-bound above; all
-        // legacy deletion and sidecar cleanup stays behind this guard.
-        requireNoteMaterialAccess(context,noteId);
-        JSONObject index = loadIndex(context);
-        File target = noteFile(context, noteId);
-        File tombstone = new File(target.getParentFile(), target.getName() + ".deleted");
-        if (tombstone.exists() && !tombstone.delete()) throw new IOException("无法清理旧删除标记");
-        if (target.exists() && !target.renameTo(tombstone)) throw new IOException("无法移动待删除笔记");
-        removeEntry(index, noteId);
-        try {
-            saveIndex(context, index);
-        } catch (Exception error) {
-            if (tombstone.exists()) tombstone.renameTo(target);
-            throw error;
-        }
-        if (tombstone.exists()) tombstone.delete();
-        File pdf = pdfFile(context, noteId);
-        deleteFileFamily(target);
-        deleteFileFamily(pdf);
-        deleteFileFamily(recoveryDraftFile(context, noteId));
-        File owner = restoreOwnerFile(context, noteId);
-        if (owner.exists()) { Os.remove(owner.getAbsolutePath()); syncParent(owner); }
-        return false;
+        return LegacyNoteDeleteTransaction.deleteLocked(context,noteId);
     
             }
         }
@@ -552,6 +593,7 @@ final class NoteStore {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
         validateNoteId(localId);
+        requireNotLegacyDeleted(context,localId);
         validateDocument(imported);
         if (imported.optInt("pdfPageCount", 0) > 0 && pdfSource == null)
             throw new IllegalArgumentException("PDF 笔记缺少已验证原文");
@@ -597,6 +639,7 @@ final class NoteStore {
             synchronized (NoteStore.class) {
         String localId = restored.optString("id", "");
         validateNoteId(localId);
+        requireNotLegacyDeleted(context,localId);
         validateDocument(restored);
         byte[] noteBytes = NoteJsonCodec.stringify(restored).getBytes(StandardCharsets.UTF_8);
         String noteSha = sha256(noteBytes);
@@ -651,6 +694,7 @@ final class NoteStore {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
         validateNoteId(localId);
+        requireNotLegacyDeleted(context,localId);
         if (transactionId == null || !transactionId.matches("[0-9a-fA-F-]{36}") ||
                 groupId == null || !groupId.matches("i-[0-9a-f]{32}") ||
                 !isSha256(noteSha) || (pdfSha != null && !isSha256(pdfSha)) ||
@@ -726,6 +770,7 @@ final class NoteStore {
     static  void verifyRestoreV2MemberAbsent(Context context,String localId,LibraryRestoreGroupV2.Kind kind)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+        requireNotLegacyDeleted(context,localId);
         validateNoteId(localId);File note=noteFile(context,localId),pdf=pdfFile(context,localId),cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(kind==LibraryRestoreGroupV2.Kind.NOTE){verifyRestoreV2Absent(context,localId);return;}
         File target=kind==LibraryRestoreGroupV2.Kind.PDF?pdf:kind==LibraryRestoreGroupV2.Kind.ASSIGNED_COVER?cover:null;
@@ -738,6 +783,7 @@ final class NoteStore {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
         requireNotPendingRestore(context,localId);
+        requireNotLegacyDeleted(context,localId);
         if(Build.VERSION.SDK_INT>=27)GroupAuthorityBridge.requireLegacyWriteAllowed(context,localId);
     
             }
@@ -749,6 +795,7 @@ final class NoteStore {
             String pdfSha,String coverSha)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+        requireNotLegacyDeleted(context,restored.optString("id",""));
         String state=restoreOwnerState(context,localId);
         if("pending".equals(state))return restorePreparedDocument(context,restored,pdfSource,true,transactionId,sourceGroupId,noteSha,pdfSha,coverSha);
         if(!"committed".equals(state))throw new IOException("RESTORE_V2_OWNER_MISSING");
@@ -801,6 +848,7 @@ final class NoteStore {
     static  void verifyRestoreV2Absent(Context context,String localId)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+        requireNotLegacyDeleted(context,localId);
         File note=noteFile(context,localId),pdf=pdfFile(context,localId),cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(lstatOrNull(note)!=null||lstatOrNull(pdf)!=null||lstatOrNull(cover)!=null||lstatOrNull(restoreOwnerFile(context,localId))!=null||lstatOrNull(restoreV2ReferenceFile(context,localId))!=null)throw new IOException("RESTORE_V2_RESIDUE");
         for(Entry entry:entriesFromIndex(loadIndex(context)))if(entry.id.equals(localId))throw new IOException("RESTORE_V2_RESIDUE");
@@ -829,6 +877,7 @@ final class NoteStore {
     static  void ensureRestoreTargetUnused(Context context,String localId)throws Exception{
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+        requireNotLegacyDeleted(context,localId);
         validateNoteId(localId);File note=noteFile(context,localId),pdf=pdfFile(context,localId),owner=restoreOwnerFile(context,localId);
         File cover=CoverStore.coverFile(note.getParentFile(),localId);
         if(note.exists()||pdf.exists()||cover.exists()||owner.exists())throw new IOException("RESTORE_TARGET_EXISTS");
@@ -854,6 +903,7 @@ final class NoteStore {
             String localId, String noteSha, long updatedAt, String pdfSha, String coverSha) throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
+        requireNotLegacyDeleted(context,localId);
         commitRestoreOwnership(context, transactionId, groupId, localId, noteSha, updatedAt, pdfSha, coverSha, null);
     
             }
@@ -1168,18 +1218,22 @@ final class NoteStore {
     }
 
     private static JSONObject loadIndex(Context context) throws Exception {
+        Set<String> deletedIds = committedLegacyDeleteIds(context);
         File file = new File(context.getFilesDir(), INDEX_FILE);
         try {
             recoverAtomicFile(file, INDEX_VALIDATOR);
         } catch (Exception invalidIndex) {
             quarantineInvalidCandidates(file, INDEX_VALIDATOR);
         }
+        JSONObject index;
         if (!file.exists()) {
-            return new JSONObject().put("schemaVersion", 1).put("legacyMigrated", false)
+            index = new JSONObject().put("schemaVersion", 1).put("legacyMigrated", false)
                     .put("notes", new JSONArray());
+        } else {
+            index = new JSONObject(readFile(file));
+            validateIndex(index);
         }
-        JSONObject index = new JSONObject(readFile(file));
-        validateIndex(index);
+        filterDeletedRows(index, deletedIds);
         return index;
     }
 
@@ -1241,7 +1295,154 @@ final class NoteStore {
     }
 
     private static void saveIndex(Context context, JSONObject index) throws Exception {
+        filterDeletedRows(index, committedLegacyDeleteIds(context));
         writeAtomic(new File(context.getFilesDir(), INDEX_FILE), index.toString(), INDEX_VALIDATOR);
+    }
+
+    private static Set<String> committedLegacyDeleteIds(Context context) throws Exception {
+        Set<String> ids = new HashSet<>();
+        for (LegacyDeleteJournal.Record record : LegacyDeleteJournal.readAllCommitted(
+                context.getFilesDir(), legacyDeleteIdentityReader(context),
+                legacyDeleteDirectorySync(context))) ids.add(record.noteId);
+        return ids;
+    }
+
+    private static LegacyDeleteJournal.FileIdentityReader legacyDeleteIdentityReader(Context context)
+            throws IOException {
+        if (context instanceof LegacyDeleteJournal.StorageEnvironment) {
+            LegacyDeleteJournal.FileIdentityReader reader =
+                    ((LegacyDeleteJournal.StorageEnvironment) context).fileIdentityReader();
+            if (reader == null) throw new IOException("DELETE_STORAGE_ADAPTER_INVALID");
+            return reader;
+        }
+        return LegacyDeleteJournal.androidIdentityReader();
+    }
+
+    private static LegacyDeleteJournal.DirectorySync legacyDeleteDirectorySync(Context context)
+            throws IOException {
+        if (context instanceof LegacyDeleteJournal.StorageEnvironment) {
+            LegacyDeleteJournal.DirectorySync sync =
+                    ((LegacyDeleteJournal.StorageEnvironment) context).directorySync();
+            if (sync == null) throw new IOException("DELETE_STORAGE_ADAPTER_INVALID");
+            return sync;
+        }
+        return LegacyDeleteJournal.androidDirectorySync();
+    }
+
+    private static boolean filterDeletedRows(JSONObject index, Set<String> deletedIds)
+            throws Exception {
+        if (deletedIds == null || deletedIds.isEmpty()) return false;
+        List<Entry> kept = new ArrayList<>();
+        boolean changed = false;
+        for (Entry entry : entriesFromIndex(index)) {
+            if (deletedIds.contains(entry.id)) changed = true;
+            else kept.add(entry);
+        }
+        if (changed) writeEntries(index, kept);
+        return changed;
+    }
+
+    static boolean isLegacyDeleteCommitted(Context context, String noteId) throws Exception {
+        return LegacyDeleteJournal.readCommitted(context.getFilesDir(), noteId,
+                legacyDeleteIdentityReader(context), legacyDeleteDirectorySync(context)) != null;
+    }
+
+    static boolean isLegacyDeleteCommitted(File filesRoot,String noteId) throws Exception {
+        return LegacyDeleteJournal.readCommitted(filesRoot, noteId,
+                LegacyDeleteJournal.androidIdentityReader(),
+                LegacyDeleteJournal.androidDirectorySync()) != null;
+    }
+
+    private static void requireNotLegacyDeleted(Context context, String noteId) throws Exception {
+        if (isLegacyDeleteCommitted(context, noteId))
+            throw new IOException("LEGACY_NOTE_DELETED");
+    }
+
+    /** Read-only shelf-catalog view for recovery UI; does not recover or rewrite the index. */
+    static List<String> indexedNoteIds(Context context) throws Exception {
+        try (LegacyGroupMutationLock.Lease ignored = LegacyGroupMutationLock.acquire()) {
+            synchronized (NoteStore.class) {
+                File indexFile = new File(context.getFilesDir(), INDEX_FILE);
+                JSONObject index = readIndexFamilyWithoutMutation(indexFile);
+                if (index == null) return java.util.Collections.emptyList();
+                Set<String> deleted = committedLegacyDeleteIds(context);
+                List<String> ids = new ArrayList<>();
+                for (Entry entry : entriesFromIndex(index)) {
+                    if (!deleted.contains(entry.id)) ids.add(entry.id);
+                }
+                return java.util.Collections.unmodifiableList(ids);
+            }
+        }
+    }
+
+    static LegacyDeleteJournal.CommitResult commitLegacyDeleteMarker(Context context,String noteId,
+            LegacyDeleteJournal.FaultInjector faults) throws Exception {
+        validateNoteId(noteId);
+        requireNoteMaterialAccess(context,noteId);
+        JSONObject index=loadIndex(context);
+        boolean indexed=false;
+        for(Entry entry:entriesFromIndex(index))if(entry.id.equals(noteId)){indexed=true;break;}
+        if(!indexed)throw new IOException("DELETE_NOTE_NOT_INDEXED");
+        File note=noteFile(context,noteId);
+        if(!note.isFile())throw new IOException("DELETE_CANONICAL_NOTE_MISSING");
+        String text=readFile(note);NOTE_VALIDATOR.validate(text);
+        JSONObject document=new JSONObject(text);
+        if(!noteId.equals(document.getString("id")))throw new IOException("DELETE_NOTE_ID_MISMATCH");
+        LegacyDeleteJournal.Record record=LegacyDeleteJournal.captureCanonicalNote(
+                context.getFilesDir(),noteId,UUID.randomUUID().toString(),
+                Math.max(1,System.currentTimeMillis()),LegacyDeleteJournal.androidIdentityReader());
+        return LegacyDeleteJournal.createCommitted(context.getFilesDir(),record,faults,
+                LegacyDeleteJournal.androidIdentityReader(),LegacyDeleteJournal.androidPublisher(),
+                LegacyDeleteJournal.androidDirectorySync());
+    }
+
+    static void persistCommittedLegacyDeleteInIndex(Context context,String noteId)throws Exception {
+        if(!isLegacyDeleteCommitted(context,noteId))throw new IOException("DELETE_MARKER_NOT_COMMITTED");
+        JSONObject index=loadIndex(context);
+        saveIndex(context,index);
+    }
+
+    /** Delete only the exact canonical note revision captured by the durable marker. */
+    static boolean deleteCapturedCanonicalNote(Context context,
+                                               LegacyDeleteJournal.Record record)throws Exception {
+        if(record==null||!isLegacyDeleteCommitted(context,record.noteId))
+            throw new IOException("DELETE_MARKER_NOT_COMMITTED");
+        File note=noteFile(context,record.noteId);
+        if(!note.exists())return true;
+        LegacyDeleteJournal.FileIdentityReader identities=LegacyDeleteJournal.androidIdentityReader();
+        if(!LegacyDeleteJournal.matchesCapturedCanonicalNote(context.getFilesDir(),record,
+                record.noteId,identities))return false;
+        StructStat current=lstatOrNull(note);
+        if(current==null)return true;
+        if(!OsConstants.S_ISREG(current.st_mode)||current.st_nlink!=record.noteLinkCount
+                ||current.st_uid!=record.noteUid||current.st_dev!=record.noteDevice
+                ||current.st_ino!=record.noteInode||current.st_size!=record.noteSize
+                ||current.st_mtime!=record.noteModifiedSeconds)return false;
+        Os.remove(note.getAbsolutePath());
+        syncParent(note);
+        return true;
+    }
+
+    /** Mirrors recoverAtomicFile's selection precedence without changing any candidate. */
+    private static JSONObject readIndexFamilyWithoutMutation(File target) throws Exception {
+        File backup = new File(target.getParentFile(), target.getName() + ".bak");
+        File temporary = new File(target.getParentFile(), target.getName() + ".tmp");
+        File[] candidates = {target, backup, temporary};
+        for (File candidate : candidates) {
+            StructStat state = lstatOrNull(candidate);
+            if (state == null) continue;
+            if (state == null || !OsConstants.S_ISREG(state.st_mode) || state.st_nlink != 1
+                    || state.st_uid != android.os.Process.myUid())
+                throw new IOException("INDEX_CANDIDATE_UNSAFE");
+            if (!isValid(candidate, INDEX_VALIDATOR)) continue;
+            JSONObject index = new JSONObject(readFile(candidate));
+            validateIndex(index);
+            return index;
+        }
+        boolean any = false;
+        for (File candidate : candidates) any |= lstatOrNull(candidate) != null;
+        if (any) throw new IOException("INDEX_FAMILY_HAS_NO_VALID_VERSION");
+        return null;
     }
 
     private static File notesDirectory(Context context) throws Exception {
@@ -1260,7 +1461,7 @@ final class NoteStore {
         return new File(notesDirectory(context), noteId + UNSAVED_SUFFIX);
     }
 
-    private static void validateNoteId(String noteId) {
+    static void validateNoteId(String noteId) {
         if (noteId == null || !noteId.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("非法笔记 ID");
         }

@@ -179,7 +179,7 @@ public final class AndroidIdentityOps implements StreamingGroupStore.IdentityOps
         List<StreamingGroupStore.FileIdentity> destinationAncestors=ancestorSnapshot(dst.getParent());
         StreamingGroupStore.FileIdentity before=identity(src);requireRegularSingleLink(before);
         if(existsNoFollow(dst))throw new FileAlreadyExistsException(dst.toString());
-        int error=NativeNoReplace.renameNoReplace(src.getParent(),src.getFileName().toString(),dst.getParent(),dst.getFileName().toString());
+        int error=NativeNoReplace.renameNoReplace(src.getParent().toString(),src.getFileName().toString(),dst.getParent().toString(),dst.getFileName().toString());
         if(error==OsConstants.EEXIST||error==OsConstants.ENOTEMPTY)throw new FileAlreadyExistsException(dst.toString());
         if(error!=0)throw new IOException("NOREPLACE_NATIVE_ERRNO_"+error);
         if(installObserver!=null)installObserver.afterAtomicNoReplaceMove(src,dst);

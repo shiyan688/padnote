@@ -268,6 +268,14 @@ public final class StreamingGroupStore {
             Ref ref=parseManifest(manifest).get(member);if(ref==null)throw fail("GROUP_MEMBER_UNKNOWN");return openVerifiedStream(root,ref,ops);
         }
         public Map<String,Long> memberSizes()throws IOException {TreeMap<String,Long> out=new TreeMap<>();parseManifest(manifest).forEach((k,v)->out.put(k,v.size));return Collections.unmodifiableMap(out);}
+        /** Verified immediate base reference from this immutable manifest, when one exists. */
+        public BaseRevisionRef baseRevisionRef() throws IOException {
+            ManifestData data=parseData(manifest);
+            if(data.base==null&&data.digest==null)return null;
+            if(data.base==null||data.digest==null)throw fail("MANIFEST_BASE_INVALID");
+            return new BaseRevisionRef(data.action,data.base,data.digest);
+        }
+        public String action() throws IOException { return parseData(manifest).action; }
         /** Immutable facts for read-only preview models; this does not expose a write capability. */
         public List<MemberSummary> memberSummaries()throws IOException {
             ArrayList<MemberSummary> result=new ArrayList<>();
@@ -279,6 +287,12 @@ public final class StreamingGroupStore {
         public ReuseToken reuseToken(String member)throws IOException {
             Ref ref=parseManifest(manifest).get(member);if(ref==null)throw fail("GROUP_MEMBER_UNKNOWN");
             return new ReuseToken(root,digest,ref);
+        }
+    }
+    public static final class BaseRevisionRef {
+        public final String action,revision,digest;
+        private BaseRevisionRef(String action,String revision,String digest) {
+            this.action=action;this.revision=revision;this.digest=digest;
         }
     }
     public static final class MemberSummary {

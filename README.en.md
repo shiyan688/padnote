@@ -2,9 +2,15 @@
 
 <img src="assets/brand/PadNote-128.png" width="88" height="88" alt="PadNote mark">
 
-**Learn, write, and discuss on your tablet. Share the current note as a PDF or send it to a computer Agent on your network.**
+**Put your thinking on the page. Work through it with AI. Hand the next task to your computer.**
 
-PadNote brings notes, handwriting, and AI-assisted learning together on one page. Choose your model and service, then read, write, draw, and discuss on the tablet. Export the current note as a PDF when you want to share it, or send the current note and its readable context to a paired computer Agent. You choose the model and service.
+PadNote is an open-source AI notebook for tablets. Read a document, write out a derivation, draw the connections, and discuss them on the same page. Share your work as a PDF, or send the note and its context to a paired computer Agent on your network to continue the task. You choose the model and service.
+
+[![A learning note in 30 seconds](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
+
+[Watch the learning-note tour (30 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4) · [Download the app and computer assistant](https://github.com/shiyan688/padnote/releases) · [中文](README.md)
+
+The demos use synthetic learning content and real-device screenshots to show the page and sharing experience. They do not record AI or computer-Agent execution. [Media provenance](docs/media/2026-10-28/README.md).
 
 | Step | What you do in PadNote | What you get |
 | --- | --- | --- |
@@ -12,7 +18,7 @@ PadNote brings notes, handwriting, and AI-assisted learning together on one page
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 ## Demo frames
 
@@ -20,7 +26,7 @@ The desktop connection assistant brings Agent preparation, network choice, QR pa
 
 ![Desktop assistant checks and pairing, with synthetic demo data](docs/media/2026-10-28/beta19-desktop-readiness.jpg)
 
-These selected frames show the sample paper, task description, and task-preset selector. They were captured from the beta.17 UI as a low-frame-rate sequence of real device screenshots. Note text was typed manually as synthetic sample content; no Agent result is shown. See the [media provenance note](docs/media/2026-10-28/README.md).
+These real-device frames show a synthetic sample page, task description, and task-preset selector. See the [capture and frame-rate notes](docs/media/2026-10-28/README.md).
 
 ![Sample paper](docs/media/2026-10-28/beta18-paper-promo-poster.png)
 
@@ -46,12 +52,7 @@ Long notes can also be shared in page form. These are the first, middle, and fin
 
 ### A worked learning example
 
-These images show a five-page Bayesian inspection example, from the paper view to a closer look at its formula and decision-flow diagram. The prose was written by a person, the blue strokes are synthetic, and the diagram was drawn by hand; no model or Agent output is included. The app screenshots were captured on a beta.17 tablet and do not show beta.23 running. See the [media notes](docs/media/2026-10-28/README.md) for capture and crop details.
-
-
-[![30-second real-device screenshot tour of a synthetic learning note](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
-
-[Watch the 30-second real-device screenshot tour](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4). It uses fixed screenshots from the previously published synthetic learning note, with dissolves; it is not a continuous beta.24 interaction recording. See the [media notes](docs/media/2026-10-28/README.md).
+This five-page Bayesian inspection example brings prose, formulas, handwriting, and a decision-flow diagram together. The prose was written by a person, the blue strokes are synthetic, and the diagram was drawn by hand. The 30-second tour at the top uses these real-device screenshots. See the [media notes](docs/media/2026-10-28/README.md) for capture and crop details.
 
 
 <p align="center"><img src="docs/media/2026-10-28/paper-learning-app.png" alt="PadNote app view of a synthetic learning example" width="820"></p>
