@@ -291,8 +291,10 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
         <p data-wsl-message></p><div class="wsl-operation-actions">
           <button type="button" class="button-quiet" data-wsl-refresh hidden>刷新操作状态</button>
           <button type="button" class="button-quiet" data-wsl-cancel hidden>取消等待</button>
+          <button type="button" class="button-quiet" data-wsl-return hidden>返回选择</button>
           <a href="#pairing" class="text-link" data-wsl-pair hidden>前往现有配对页面</a>
         </div>
+        <div data-wsl-recent aria-label="可稍后查看的操作"></div>
       </div>
       <p class="wsl-safety-note">取消只取消 PadNote 的等待，不会停止 Hermes。若连接结果暂时未知，请刷新操作状态；不要重复提交连接。</p>
     </section>'''

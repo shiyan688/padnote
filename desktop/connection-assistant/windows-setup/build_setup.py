@@ -181,7 +181,7 @@ def main() -> int:
                         help="connection-assistant source directory (for integration, pass its parent)")
     parser.add_argument("--project-root", type=Path, default=ROOT,
                         help="project root containing LICENSE, LICENSING.md, and THIRD_PARTY_NOTICES.md")
-    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.30-Setup-x64.exe")
+    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.31-Setup-x64.exe")
     args = parser.parse_args()
     if args.download_cache:
         DOWNLOAD_CACHE = args.download_cache.resolve()

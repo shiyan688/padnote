@@ -84,8 +84,50 @@ BUTTON_START, BUTTON_OPEN, BUTTON_STOP, BUTTON_FIREWALL = 101, 102, 103, 104
 BUTTON_COPY, BUTTON_SAVE, BUTTON_FOLDER, BUTTON_DETAILS = 105, 106, 107, 108
 BUTTON_HERMES_CONNECT, BUTTON_HERMES_INSTALL = 109, 110
 BUTTON_HERMES_CANCEL = 111
+BUTTON_WSL_FIND = 112
 WINDOW_CLASS, MUTEX_NAME = "PadNoteConnectionAssistantWindow", "Local\\PadNoteConnectionAssistantLauncher"
 LOG_MARKER = "PadNote management UI: http://127.0.0.1:8766"
+WSL_MANAGEMENT_URL = "http://127.0.0.1:8766/#wsl-hermes"
+
+
+def wsl_navigation_click_action(*, ready, can_start, stopping, closing, pending, cooldown_active):
+    """Choose a launcher-only WSL-page action; never requests Hermes work."""
+    if closing or stopping:
+        return "unavailable"
+    if pending:
+        return "already_pending"
+    if cooldown_active:
+        return "cooldown"
+    if ready:
+        return "open"
+    if can_start:
+        return "start_service"
+    return "unavailable"
+
+
+def wsl_navigation_readiness_action(*, pending, ready, closing, cooldown_active=False, process_exited=False):
+    """Resolve a pending page-only navigation on service readiness/failure."""
+    if not pending:
+        return "none"
+    if closing or process_exited:
+        return "cancel"
+    return "open" if ready and not cooldown_active else "wait"
+
+
+def wsl_entry_button_rect(width_dip):
+    """Keep the WSL entry beside the cancel control without overlapping content."""
+    return (164, 280, 196, 36)
+
+
+def wsl_entry_layout(width_dip):
+    """Native launcher geometry at wide and narrow logical widths."""
+    if width_dip >= 800:
+        return {"button": wsl_entry_button_rect(width_dip),
+                "tutorial_heading": (470, 188, 300, 28),
+                "tutorial_body": (470, 220, 310, 92)}
+    return {"button": wsl_entry_button_rect(width_dip),
+            "tutorial_heading": (26, 322, max(140, width_dip - 52), 24),
+            "tutorial_body": (26, 348, max(140, width_dip - 52), 70)}
 
 # Explicit signatures keep 64-bit HWND/HANDLE values intact on Windows x64.
 user32.CreateWindowExW.restype = wintypes.HWND
@@ -241,6 +283,8 @@ hermes_busy = False
 hermes_pending = False
 hermes_pending_setup = False
 hermes_cancel_event = None
+wsl_navigation_pending = False
+wsl_navigation_cooldown_until = 0.0
 hermes_status = "尚未检查"
 hermes_instance = ""
 hermes_details = {}
@@ -303,7 +347,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.30", "构建：2026-10-29-beta30-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.31", "构建：2026-10-29-beta31-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -355,11 +399,18 @@ def update_buttons():
     user32.EnableWindow(connect_button, hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_INSTALL), hermes_actions_enabled)
     user32.EnableWindow(find_control(BUTTON_HERMES_CANCEL), hermes_busy)
+    wsl_button = find_control(BUTTON_WSL_FIND)
+    wsl_enabled = ((lifecycle.ready or lifecycle.can_start) and not lifecycle.stopping and not closing
+                   and not wsl_navigation_pending and not hermes_pending)
+    if wsl_button:
+        control_roles[wsl_button] = "secondary"
+        user32.SetWindowTextW(wsl_button, "在 WSL 中查找")
+    user32.EnableWindow(wsl_button, wsl_enabled)
     if service_state_hwnd:
         service_labels = {"已停止或启动失败": ("启动失败 · 可重试" if last_error else "已停止 · 可启动"),
                           "正在启动": "正在启动", "已就绪": "已就绪", "正在停止": "正在停止"}
         user32.SetWindowTextW(service_state_hwnd, "助手服务  ·  " + service_labels.get(current_status(), current_status()))
-    for button in (start_button, open_button, stop_button, connect_button, find_control(BUTTON_HERMES_INSTALL), find_control(BUTTON_HERMES_CANCEL), find_control(BUTTON_COPY),
+    for button in (start_button, open_button, stop_button, connect_button, find_control(BUTTON_HERMES_INSTALL), find_control(BUTTON_HERMES_CANCEL), wsl_button, find_control(BUTTON_COPY),
                    find_control(BUTTON_SAVE), find_control(BUTTON_FOLDER), find_control(BUTTON_FIREWALL)):
         if button:
             user32.InvalidateRect(button, None, True)
@@ -422,6 +473,24 @@ def start_service():
         last_error = f"{type(exc).__name__}: {exc}。请检查日志目录权限或修复安装后重试。"
         status_text("连接助手无法启动。请查看下方诊断并重试。")
         update_buttons(); refresh_diagnostics(force=True)
+
+def open_wsl_management_page():
+    global wsl_navigation_cooldown_until
+    if closing or not lifecycle.ready or time.monotonic() < wsl_navigation_cooldown_until:
+        return False
+    # Short cooldown absorbs double-clicks; the button remains available for
+    # a later explicit request if the user closes the WSL page.
+    wsl_navigation_cooldown_until = time.monotonic() + 1.5
+    try:
+        opened = webbrowser.open(WSL_MANAGEMENT_URL, new=0)
+    except Exception:
+        opened = False
+    if opened:
+        status_text("已打开 WSL 查找页面。请手动选择发行版和配置；此操作不会启动 Hermes 或修改配置。")
+    else:
+        status_text("无法自动打开浏览器。可手动打开 http://127.0.0.1:8766/#wsl-hermes；此操作不会启动 Hermes 或修改配置。")
+    update_buttons()
+    return bool(opened)
 
 def stop_async():
     global stop_worker
@@ -495,7 +564,7 @@ def poll_session_log():
             refresh_diagnostics()
 
 def update_status():
-    global child, last_error, session_log, session_offset, startup_error, hermes_pending, hermes_pending_setup
+    global child, last_error, session_log, session_offset, startup_error, hermes_pending, hermes_pending_setup, wsl_navigation_pending
     finish_stop()
     finish_hermes_action()
     poll_hermes_installer()
@@ -513,6 +582,7 @@ def update_status():
     if code is not None:
         was_ready = lifecycle.ready
         if lifecycle.exited(process):
+            wsl_navigation_pending = False
             try:
                 exit_record = f"PADNOTE_LAUNCHER_EXIT_CODE {code}\n"
                 with (data_dir() / "launcher.log").open("a", encoding="utf-8") as output:
@@ -535,6 +605,7 @@ def update_status():
         status_text("已就绪。本机管理页已启动；请让平板连接同一 Wi-Fi 并扫描配对二维码。")
         update_buttons(); refresh_diagnostics(force=True)
         if hermes_pending:
+            wsl_navigation_pending = False
             pending_setup = hermes_pending_setup
             hermes_pending = False
             hermes_pending_setup = False
@@ -543,6 +614,16 @@ def update_status():
         status_text("启动已超过 90 秒，仍在等待管理页就绪。进程会继续运行；请查看诊断。")
         last_error = "启动尚未报告管理页就绪。慢速电脑可能仍在启动，请检查诊断后再决定是否重试。"
         refresh_diagnostics(force=True)
+    if wsl_navigation_pending:
+        action = wsl_navigation_readiness_action(
+            pending=True, ready=lifecycle.ready, closing=closing,
+            cooldown_active=(time.monotonic() < wsl_navigation_cooldown_until))
+        if action == "open":
+            wsl_navigation_pending = False
+            open_wsl_management_page()
+        elif action == "cancel":
+            wsl_navigation_pending = False
+            update_buttons()
 
 def start_hermes_action(*, setup=False, delay=0.0):
     global hermes_worker, hermes_busy, hermes_cancel_event
@@ -837,6 +918,9 @@ def resize_layout(hwnd, width, height):
                       log_path=(28, 482, max(140, width_dip - 56), 22),
                       diagnostics_heading=(26, 510, 210, 28),
                       details=(26, 542, max(400, width_dip - 52), max(80, bottom - 556)))
+    entry_layout = wsl_entry_layout(width_dip)
+    layout.update(tutorial_heading=entry_layout["tutorial_heading"],
+                  tutorial_body=entry_layout["tutorial_body"])
     layout_handles = {
         tutorial_heading_hwnd: "tutorial_heading", tutorial_body_hwnd: "tutorial_body",
         hermes_info_hwnd: "hermes_info", path_hwnd: "log_path",
@@ -848,6 +932,10 @@ def resize_layout(hwnd, width, height):
         role = control_roles.get(handle)
         if handle in layout_handles:
             x, y, w, h = layout[layout_handles[handle]]
+            user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), scale(w), scale(h), 0x14)
+            continue
+        if handle == find_control(BUTTON_WSL_FIND):
+            x, y, w, h = entry_layout["button"]
             user32.SetWindowPos(handle, None, scale(x), scale(y - scroll_offset), scale(w), scale(h), 0x14)
             continue
         if handle == agent_heading_hwnd:
@@ -920,7 +1008,7 @@ def monitor_work_area(hwnd=None, rect=None):
     return wintypes.RECT(0, 0, int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
 
 def wndproc(hwnd, message, wparam, lparam):
-    global main_hwnd, status_hwnd, service_state_hwnd, agent_heading_hwnd, details_hwnd, path_hwnd, dpi, closing, last_error, session_log, previous_log, session_offset, hermes_pending, hermes_pending_setup, hermes_info_hwnd, tutorial_heading_hwnd, tutorial_body_hwnd, diagnostics_heading_hwnd, hermes_cancel_event, scroll_offset
+    global main_hwnd, status_hwnd, service_state_hwnd, agent_heading_hwnd, details_hwnd, path_hwnd, dpi, closing, last_error, session_log, previous_log, session_offset, hermes_pending, hermes_pending_setup, hermes_info_hwnd, tutorial_heading_hwnd, tutorial_body_hwnd, diagnostics_heading_hwnd, hermes_cancel_event, scroll_offset, wsl_navigation_pending
     if message == WM_CREATE:
         main_hwnd = hwnd
         if get_dpi_for_window:
@@ -957,11 +1045,14 @@ def wndproc(hwnd, message, wparam, lparam):
         control(hwnd, "启动助手", 26, 184, 126, 40, BUTTON_START, role="secondary")
         control(hwnd, "打开连接设置", 164, 184, 150, 40, BUTTON_OPEN, role="secondary")
         control(hwnd, "停止助手", 326, 184, 126, 40, BUTTON_STOP, role="secondary")
-        control(hwnd, "启动并检查 Agent", 26, 238, 200, 44, BUTTON_HERMES_CONNECT, role="secondary", font_size=15)
-        control(hwnd, "配置 Hermes…", 238, 238, 200, 44, BUTTON_HERMES_INSTALL, role="secondary", font_size=14)
-        control(hwnd, "取消检查", 26, 292, 126, 36, BUTTON_HERMES_CANCEL, role="secondary")
-        tutorial_heading_hwnd = control(hwnd, "连接平板", 470, 188, 300, 28, role="section", font_size=17)
-        tutorial_body_hwnd = control(hwnd, "启动助手后，打开连接设置并在平板扫码。确认设备后批准配对。Agent 连接状态会单独显示；需要配置时再打开 Hermes 向导。", 470, 220, 310, 92, role="body", font_size=13)
+        control(hwnd, "启动并检查 Agent", 26, 230, 200, 44, BUTTON_HERMES_CONNECT, role="secondary", font_size=15)
+        control(hwnd, "配置 Hermes…", 238, 230, 200, 44, BUTTON_HERMES_INSTALL, role="secondary", font_size=14)
+        control(hwnd, "取消检查", 26, 280, 126, 36, BUTTON_HERMES_CANCEL, role="secondary")
+        entry_layout = wsl_entry_layout(window_width)
+        wsl_x, wsl_y, wsl_w, wsl_h = entry_layout["button"]
+        control(hwnd, "在 WSL 中查找", wsl_x, wsl_y, wsl_w, wsl_h, BUTTON_WSL_FIND, role="secondary", font_size=13)
+        tutorial_heading_hwnd = control(hwnd, "连接平板", *entry_layout["tutorial_heading"], role="section", font_size=17)
+        tutorial_body_hwnd = control(hwnd, "连接平板：打开连接设置并扫码，确认设备后批准配对。Hermes 可用 Windows 本机或 WSL 配置；点击“在 WSL 中查找”只打开向导，不会启动 Hermes 或修改配置。", *entry_layout["tutorial_body"], role="body", font_size=13)
         agent_heading_hwnd = control(hwnd, "Agent 连接状态", 26, 300, 420, 24, role="section", font_size=14)
         hermes_info_hwnd = control(hwnd, "尚未检查。模型登录由用户完成。", 28, 326, 420, 28, role="agent-state", font_size=13)
         path_hwnd = control(hwnd, str(data_dir() / "launcher.log"), 28, 356, 420, 22, style=ES_READONLY | 0x0080, role="muted", font_size=11)
@@ -1032,12 +1123,40 @@ def wndproc(hwnd, message, wparam, lparam):
                 hermes_pending_setup = True
                 start_service()
             else: status_text("连接助手就绪后，请再次点击 Hermes 配置按钮。")
+        elif ident == BUTTON_WSL_FIND:
+            if hermes_pending:
+                status_text("已有 Hermes 操作等待服务就绪；请先取消或等待该操作完成，再打开 WSL 页面。")
+            else:
+                action = wsl_navigation_click_action(
+                    ready=lifecycle.ready, can_start=lifecycle.can_start,
+                    stopping=lifecycle.stopping, closing=closing,
+                    pending=wsl_navigation_pending,
+                    cooldown_active=(time.monotonic() < wsl_navigation_cooldown_until))
+                if action == "open":
+                    open_wsl_management_page()
+                elif action == "start_service":
+                    wsl_navigation_pending = True
+                    status_text("正在启动 PadNote 服务；就绪后会打开 WSL 查找页面。此操作不会启动 Hermes。")
+                    update_buttons()
+                    start_service()
+                    if lifecycle.process is None:
+                        wsl_navigation_pending = False
+                        status_text("PadNote 服务未能启动，没有打开页面或检查 Hermes。请查看诊断后重试。")
+                        update_buttons(); refresh_diagnostics(force=True)
+                elif action == "already_pending":
+                    status_text("正在等待 PadNote 服务就绪；可停止服务以取消这次页面打开。")
+                elif action == "cooldown":
+                    status_text("刚才已请求打开 WSL 页面，请稍候后再尝试。")
+                else:
+                    status_text("PadNote 服务正在停止或窗口正在关闭，暂时无法打开 WSL 页面。")
         elif ident == BUTTON_HERMES_CANCEL:
             if hermes_busy and hermes_cancel_event:
                 hermes_cancel_event.set()
                 status_text("已请求取消本机检查；若请求已发送，后台最多还需等待超时。")
                 update_buttons()
-        elif ident == BUTTON_STOP: stop_async()
+        elif ident == BUTTON_STOP:
+            wsl_navigation_pending = False
+            stop_async()
         elif ident == BUTTON_OPEN:
             process = lifecycle.process
             if lifecycle.can_open and process is not None and process.poll() is None:
@@ -1106,6 +1225,7 @@ def wndproc(hwnd, message, wparam, lparam):
         return 0
     if message == WM_CLOSE:
         closing = True
+        wsl_navigation_pending = False
         if hermes_cancel_event: hermes_cancel_event.set()
         lifecycle.closing = True
         update_buttons()

@@ -34,7 +34,7 @@ print(json.dumps({"html":admin_ui.render_admin_page(service,"csrf-wsl",8766,8765
 const rendered = spawnSync(python, ['-c', renderFixture], {cwd: project, encoding: 'utf8', env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
 if (rendered.status !== 0) throw new Error(`render failed: ${rendered.stderr}`);
 const html = JSON.parse(rendered.stdout).html;
-const reviewDir = path.resolve(project, '../../..', 'ui-review-r1');
+const reviewDir = process.env.PADNOTE_UI_REVIEW_DIR ? path.resolve(process.env.PADNOTE_UI_REVIEW_DIR) : path.resolve(project, '../../..', 'ui-review-r1');
 await mkdir(reviewDir, {recursive:true});
 
 const browser = await chromium.launch({headless:true, executablePath:process.env.CHROME_PATH});
@@ -166,8 +166,10 @@ try {
   assert.equal(connectBodies.length,1);
   assert.match(connectBodies[0],/preview_token=preview-33333333-3333-4333-8333-333333333333/);
   assert.doesNotMatch(connectBodies[0],/API_SERVER_KEY|secret/i);
-  assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.includes('wsl')).length),0,
-    'completed operations should remove the saved operation id');
+  assert.equal(await page.evaluate(() => sessionStorage.getItem('padnote.wsl.operation_id')),null,
+    'completed operations should clear the active operation lock');
+  assert.ok(await page.evaluate(() => JSON.parse(sessionStorage.getItem('padnote.wsl.recent_operations') || '[]').some(item => item.id === 'connect-op-1')),
+    'completed operation remains available as a bounded read-only reference');
   assert.equal(await page.locator('[data-wsl-connect]').textContent(),'选择配置后连接');
   await page.locator('[data-wsl-pair]').click();
   assert.equal(new URL(page.url()).hash,'#pairing');

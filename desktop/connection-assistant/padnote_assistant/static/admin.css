@@ -117,6 +117,9 @@ form { margin: 0; }
 .wsl-operation p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 .wsl-operation-actions { margin-top: 9px; display: flex; flex-wrap: wrap; align-items: center; gap: 9px 14px; }
 .wsl-operation-actions button { white-space: normal; }
+.wsl-recent-operation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 10px 0 0 !important; padding: 10px 12px; border: 1px solid #d6e2f6; border-radius: 8px; background: #fff; overflow-wrap: anywhere; }
+.wsl-recent-operation button { flex: 0 0 auto; }
+.wsl-recent-hint { flex: 1 1 100%; color: #61728c; }
 .wsl-safety-note { margin: 12px 1px 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 
 .agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 14px; }
