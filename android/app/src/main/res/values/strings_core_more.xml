@@ -507,4 +507,5 @@
 <string name="core_removed_notes_preview_complete">The complete note and its attached materials will be restored.</string>
     <string name="core_removed_notes_commit_boundary">Once the final commit starts, leaving the screen may not stop the restore.</string>
     <string name="core_delete_cleanup_pending">The note was removed from the shelf. Some local materials were retained for safe cleanup later.</string>
+    <string name="core_viewport_save_failed">The page position could not be saved. Note content is unchanged.</string>
 </resources>

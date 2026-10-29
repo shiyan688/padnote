@@ -508,11 +508,13 @@ class AdminHandler(_DeadlineRequestHandler):
             messages = {
                 "ready": "Hermes 已连接，可以继续生成配对二维码。",
                 "needs_setup": "Hermes 本机 API Server 需要配置。请分别完成 API 设置和模型供应商登录后重试。",
-                "not_installed": "未找到 Hermes。请先查看官方安装指南。",
+                "not_installed": "未在常见安装位置或 PATH 中找到 Hermes。可查看官方安装指南，或在 Agent 区域手动填写可访问的本机 API 地址。",
                 "ambiguous": "发现多个 Hermes 配置，请先选择要使用的实例。",
                 "starting": "Hermes 正在启动，请稍候再检查。",
                 "error": "Hermes 连接未完成。请检查安装与配置后重试。",
             }
+            if status == "not_installed":
+                return messages[status]
             if status != "ready" and isinstance(result, dict):
                 detail = result.get("message")
                 if isinstance(detail, str) and detail.strip():

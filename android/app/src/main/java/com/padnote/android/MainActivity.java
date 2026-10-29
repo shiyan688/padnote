@@ -495,11 +495,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private boolean restoreCompleted = false;
     private long documentRevision;
     private long lastSavedRevision;
+    private long inFlightDocumentRevision = -1L;
     private boolean saveInFlight;
     private boolean saveQueued;
     private boolean pendingLeaveAfterSave;
+    private boolean leaveAfterViewportFailure;
     private boolean pendingSaveToast;
     private String pendingUnsavedJson;
+    private long savedViewportRevision;
+    private long observedViewportRevision;
+    private boolean viewportSaveInFlight;
+    private int viewportSaveInFlightCount;
+    private long latestQueuedViewportRevision;
+    private final Runnable delayedViewportSave = () -> saveViewportState(false);
     private final Map<String, NoteTextBoxView> textBoxViews = new LinkedHashMap<>();
     /** Bookshelf entries from the last render; vault staleness checks read it. */
     private List<NoteStore.Entry> lastShelfEntries = new ArrayList<>();
@@ -659,6 +667,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         handler.removeCallbacks(delayedSave);
         if (editorVisible) {
             saveDocument(false);
+            saveViewportState(true);
             persistAiConversation();
         }
     }
@@ -763,7 +772,116 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         if (canvasView != null) {
             updateTextBoxOverlays(canvasView.getTextBoxes());
+            if (editorVisible && restoreCompleted) {
+                long revision = canvasView.getViewportRevision();
+                if (revision > observedViewportRevision) {
+                    observedViewportRevision = revision;
+                    scheduleViewportSave();
+                }
+            }
         }
+    }
+
+    private void scheduleViewportSave() {
+        if (!editorVisible || !restoreCompleted || canvasView == null) return;
+        handler.removeCallbacks(delayedViewportSave);
+        handler.postDelayed(delayedViewportSave, 600);
+    }
+
+    /** Persists navigation separately from the authored note/group revision. */
+    private void saveViewportState(boolean immediate) {
+        if (!editorVisible || !restoreCompleted || canvasView == null || currentNoteId == null) return;
+        if (immediate) handler.removeCallbacks(delayedViewportSave);
+        final long revision = canvasView.getViewportRevision();
+        if (revision <= savedViewportRevision) {
+            maybeFinishPendingLeaveAfterViewport();
+            return;
+        }
+        if (revision <= latestQueuedViewportRevision) return;
+        if (viewportSaveInFlight && !immediate) return;
+        final NoteCanvasView.PersistedViewport captured = canvasView.capturePersistedViewport();
+        if (captured == null) {
+            if (pendingLeaveAfterSave) failViewportSaveAndLeave();
+            return;
+        }
+        final String noteId = currentNoteId;
+        final long session = editorSessionGeneration;
+        viewportSaveInFlight = true;
+        viewportSaveInFlightCount++;
+        latestQueuedViewportRevision = revision;
+        try {
+            NoteViewportStore.writeAsync(getApplicationContext(), noteId,
+                    new NoteViewportStore.State(captured.relativeZoom, captured.centerX, captured.centerY),
+                    saved -> runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || !noteId.equals(currentNoteId) ||
+                            session != editorSessionGeneration) return;
+                    viewportSaveInFlightCount = Math.max(0, viewportSaveInFlightCount - 1);
+                    viewportSaveInFlight = viewportSaveInFlightCount > 0;
+                    if (saved) {
+                        savedViewportRevision = Math.max(savedViewportRevision, revision);
+                        if (!viewportSaveInFlight && canvasView != null &&
+                                canvasView.getViewportRevision() > savedViewportRevision) {
+                            if (pendingLeaveAfterSave) saveViewportState(true);
+                            else scheduleViewportSave();
+                        } else if (!viewportSaveInFlight) {
+                            maybeFinishPendingLeaveAfterViewport();
+                        }
+                    } else {
+                        if (revision >= latestQueuedViewportRevision) {
+                            latestQueuedViewportRevision = savedViewportRevision;
+                        }
+                        if (!viewportSaveInFlight) {
+                            if (pendingLeaveAfterSave) failViewportSaveAndLeave();
+                            else Toast.makeText(this, R.string.core_viewport_save_failed, Toast.LENGTH_LONG).show();
+                        }
+                    }
+            }));
+        } catch (RuntimeException rejected) {
+            viewportSaveInFlightCount = Math.max(0, viewportSaveInFlightCount - 1);
+            viewportSaveInFlight = viewportSaveInFlightCount > 0;
+            if (revision >= latestQueuedViewportRevision) {
+                latestQueuedViewportRevision = savedViewportRevision;
+            }
+            if (pendingLeaveAfterSave) failViewportSaveAndLeave();
+            else Toast.makeText(this, R.string.core_viewport_save_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void maybeFinishPendingLeaveAfterViewport() {
+        if (!pendingLeaveAfterSave || saveInFlight || viewportSaveInFlight) return;
+        if (documentRevision != lastSavedRevision) {
+            saveDocument(false);
+            return;
+        }
+        if (leaveAfterViewportFailure) {
+            leaveAfterViewportFailure = false;
+            pendingLeaveAfterSave = false;
+            showBookshelf();
+            return;
+        }
+        if (canvasView != null && canvasView.getViewportRevision() > savedViewportRevision) {
+            saveViewportState(true);
+            return;
+        }
+        pendingLeaveAfterSave = false;
+        showBookshelf();
+    }
+
+    private void failViewportSaveAndLeave() {
+        Toast.makeText(this, R.string.core_viewport_save_failed, Toast.LENGTH_LONG).show();
+        leaveAfterViewportFailure = true;
+        if (saveInFlight) {
+            pendingLeaveAfterSave = true;
+            return;
+        }
+        if (documentRevision != lastSavedRevision) {
+            pendingLeaveAfterSave = true;
+            saveDocument(false);
+            return;
+        }
+        pendingLeaveAfterSave = false;
+        leaveAfterViewportFailure = false;
+        showBookshelf();
     }
 
     @Override
@@ -828,10 +946,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         pendingVideoHubAfterSave=false;
         if (digitizationController != null) digitizationController.pause();
         handler.removeCallbacks(delayedSave);
+        handler.removeCallbacks(delayedViewportSave);
         disposeTextBoxViews();
         editorVisible = false;
         restoreCompleted = false;
         pendingLeaveAfterSave = false;
+        leaveAfterViewportFailure = false;
         bookshelfLoadGeneration += 1;
         if (toolSettingsPopup != null) {
             toolSettingsPopup.dismiss();
@@ -3215,9 +3335,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         restoreCompleted = false;
         documentRevision = 0;
         lastSavedRevision = 0;
+        savedViewportRevision = 0;
+        observedViewportRevision = 0;
+        handler.removeCallbacks(delayedViewportSave);
+        viewportSaveInFlight = false;
+        viewportSaveInFlightCount = 0;
+        latestQueuedViewportRevision = 0;
         saveInFlight = false;
+        inFlightDocumentRevision = -1L;
         saveQueued = false;
         pendingLeaveAfterSave = false;
+        leaveAfterViewportFailure = false;
         pendingSaveToast = false;
         pendingUnsavedJson = null;
         pendingPageStyle = styleForNewNote;
@@ -9548,12 +9676,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             showBookshelf();
             return;
         }
-        if (documentRevision == lastSavedRevision && !saveInFlight) {
+        if (documentRevision == lastSavedRevision && !saveInFlight &&
+                (canvasView == null || canvasView.getViewportRevision() <= savedViewportRevision) &&
+                !viewportSaveInFlight) {
             showBookshelf();
             return;
         }
         pendingLeaveAfterSave = true;
-        saveDocument(false);
+        leaveAfterViewportFailure = false;
+        if (documentRevision != lastSavedRevision && !saveInFlight) saveDocument(false);
+        saveViewportState(true);
     }
 
     private void launchImportNote() {
@@ -10501,6 +10633,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
             return;
         }
+        handler.removeCallbacks(delayedViewportSave);
         super.onBackPressed();
     }
 
@@ -10514,6 +10647,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             AiConversationStore.Snapshot restoredConversation = null;
             String conversationError = null;
             String pdfDigest = "";
+            NoteViewportStore.State restoredViewport = null;
             try {
                 com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(this,noteId);
                 if(managed==null)restoredDocument=NoteStore.load(this,noteId);
@@ -10526,6 +10660,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }
             } catch (Exception error) {
                 restoreError = getString(R.string.tail_local_note_read_failed, safeError(error));
+            }
+            if (restoredDocument != null) {
+                // Observe any prior Activity's queued onPause viewport write before restore.
+                try { restoredViewport = NoteViewportStore.readAfterQueuedWrites(this, noteId); }
+                catch (Exception ignored) { restoredViewport = null; }
             }
             if (restoredDocument != null && restoredDocument.optInt("pdfPageCount", 0) > 0) {
                 try {
@@ -10547,6 +10686,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             AiConversationStore.Snapshot conversation = restoredConversation;
             String conversationLoadError = conversationError;
             String restoredPdfDigest = pdfDigest;
+            NoteViewportStore.State viewportState = restoredViewport;
             runOnUiThread(() -> {
                 if (!editorVisible || !noteId.equals(currentNoteId)) return;
                 if (document == null) {
@@ -10555,9 +10695,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }
                 try {
                     canvasView.loadJsonDocument(document);
+                    // A viewport sidecar is UI-only state and takes precedence over the
+                    // legacy JSON fields without creating a new note/group revision.
+                    if (viewportState != null) canvasView.applyPersistedViewport(viewportState);
+                    long restoredViewportRevision = canvasView.getViewportRevision();
+                    savedViewportRevision = restoredViewportRevision > 0 ? restoredViewportRevision - 1L : 0L;
+                    latestQueuedViewportRevision = savedViewportRevision;
+                    observedViewportRevision = savedViewportRevision;
                     restoreCompleted = true;
                     canvasView.setEnabled(true);
                     lastSavedRevision = documentRevision;
+                    if (restoredViewportRevision > savedViewportRevision) {
+                        observedViewportRevision = restoredViewportRevision;
+                        scheduleViewportSave();
+                    }
                     currentGroupLineage=groupLineage;currentGroupRevision=groupRevision;currentGroupDigest=groupDigest;
                     currentNoteTitle=document.optString("title",currentNoteTitle);
                     aiPdfDigest = restoredPdfDigest;
@@ -10727,7 +10878,19 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void saveDocument(boolean showToast) {
         if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
         pendingSaveToast |= showToast;
-        if (saveInFlight) { saveQueued=true; return; }
+        if (saveInFlight) {
+            if (documentRevision > inFlightDocumentRevision) saveQueued = true;
+            return;
+        }
+        if (documentRevision == lastSavedRevision) {
+            clearManualDraftsSavedThrough(currentNoteId, lastSavedRevision, editorSessionGeneration);
+            if (showToast) {
+                pendingSaveToast = false;
+                Toast.makeText(this, getString(R.string.tail_saved_device), Toast.LENGTH_SHORT).show();
+            }
+            maybeFinishPendingLeaveAfterViewport();
+            return;
+        }
         final String json,noteId=currentNoteId,noteTitle=currentNoteTitle;
         final long savingRevision=documentRevision,saveGeneration=editorSessionGeneration;
         final String lineage=currentGroupLineage,baseRevision=currentGroupRevision,baseDigest=currentGroupDigest;
@@ -10739,7 +10902,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         catch(Exception error){saveStatusView.setText(getString(R.string.tail_could_not_create_unsaved_copy, safeError(error)));pendingLeaveAfterSave=false;return;}
         final String editorSession=groupEditorSessionId;
         final long capture=managed?++groupDraftCaptureSequence:0;
-        saveInFlight=true;saveQueued=false;saveStatusView.setText(getString(R.string.tail_saving));
+        saveInFlight=true;inFlightDocumentRevision=savingRevision;saveQueued=false;saveStatusView.setText(getString(R.string.tail_saving));
         storageExecutor.execute(()->{
             GroupEditorDraftStore.Draft draft=null;
             try{
@@ -10755,11 +10918,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 runOnUiThread(()->{
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
                     if(saved!=null){currentGroupLineage=saved.lineage;currentGroupRevision=saved.revision;currentGroupDigest=saved.digest;}
-                    saveInFlight=false;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
+                    saveInFlight=false;inFlightDocumentRevision=-1L;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
                     clearManualDraftsSavedThrough(noteId, savingRevision, saveGeneration);
                     if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));pendingSaveToast=false;
                         if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;continueDigitizationForCurrentNote();}
-                        if(pendingLeaveAfterSave){showBookshelf();return;}}
+                        if (pendingLeaveAfterSave) {
+                            if (leaveAfterViewportFailure) {
+                                maybeFinishPendingLeaveAfterViewport();
+                            } else if (canvasView != null && canvasView.getViewportRevision() > savedViewportRevision) {
+                                saveViewportState(true);
+                            } else {
+                                maybeFinishPendingLeaveAfterViewport();
+                            }
+                            return;
+                        }}
+                    if (canvasView != null && canvasView.getViewportRevision() > savedViewportRevision) {
+                        scheduleViewportSave();
+                    }
                     if(saveQueued||savingRevision<documentRevision){saveQueued=false;saveDocument(false);}
                     else if(pendingVideoHubAfterSave){pendingVideoHubAfterSave=false;NoteStore.Entry latest=findNoteEntry(noteId);if(latest!=null)showNoteVideoHub(latest);}
                     else if(pendingPaperHandoffAfterSave){pendingPaperHandoffAfterSave=false;showPaperHandoffActions();}
@@ -10770,7 +10945,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 final boolean hasDraft=retained;final String failure=safeError(error);
                 runOnUiThread(()->{
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
-                    saveInFlight=false;saveQueued=false;saveStatusView.setText(hasDraft?getString(R.string.tail_save_failed_recovery_draft_kept_retry_export):getString(R.string.tail_save_failed_unsaved_changes_retried_exported));
+                    saveInFlight=false;inFlightDocumentRevision=-1L;saveQueued=false;saveStatusView.setText(hasDraft?getString(R.string.tail_save_failed_recovery_draft_kept_retry_export):getString(R.string.tail_save_failed_unsaved_changes_retried_exported));
                     pendingLeaveAfterSave=false;
                     if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;Toast.makeText(this,getString(R.string.tail_note_save_failed_digitization_did_not_start),Toast.LENGTH_LONG).show();}
                     if(pendingVideoHubAfterSave)pendingVideoHubAfterSave=false;
@@ -10783,6 +10958,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void onSaveSucceeded(String noteId, long savedRevision) {
         if (!noteId.equals(currentNoteId)) return;
         saveInFlight = false;
+        inFlightDocumentRevision = -1L;
         lastSavedRevision = Math.max(lastSavedRevision, savedRevision);
         clearManualDraftsSavedThrough(noteId, savedRevision, editorSessionGeneration);
         if (savedRevision == documentRevision) {
@@ -10818,6 +10994,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void onSaveFailed(String noteId, String message) {
         if (!noteId.equals(currentNoteId)) return;
         saveInFlight = false;
+        inFlightDocumentRevision = -1L;
         saveQueued = false;
         pendingPaperHandoffAfterSave = false;
         saveStatusView.setText(getString(R.string.tail_save_failed_unsaved_changes_retried_exported));

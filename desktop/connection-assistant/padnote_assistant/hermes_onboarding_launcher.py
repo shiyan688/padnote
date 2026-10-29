@@ -53,7 +53,7 @@ def message_label(status: str, phase: str, message: str) -> str:
     if "multiple" in text or "ambigu" in text:
         return "发现多个 Hermes；请在管理页选择目标实例。"
     if "not found" in text or "was not found" in text:
-        return "未找到 Hermes；请按官方 Windows 指南安装。"
+        return "未在常见位置找到 Hermes；打开连接设置可手动填写本机 API，或查看官方安装指南。"
     if "api configuration" in text or "api settings" in text or "api server is not configured" in text:
         return "保留现有配置，完成 API Server 设置和模型登录。"
     if "already running" in text or "responding" in text:

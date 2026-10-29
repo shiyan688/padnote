@@ -125,7 +125,7 @@ class AdminUiTests(unittest.TestCase):
         self.assertIn("未知 · 需要重新检测", page)
         self.assertNotIn("上次检测：-", page)
 
-    def test_onboarding_tutorial_and_missing_hermes_install_link_are_rendered(self):
+    def test_onboarding_tutorial_and_not_found_guidance_offers_manual_api_path(self):
         with patch("padnote_assistant.admin_ui.hermes_onboarding_status",
                    return_value={"status": "not_installed"}):
             page = self.render(service([]))
@@ -133,8 +133,27 @@ class AdminUiTests(unittest.TestCase):
         self.assertIn("检查 Agent", page)
         self.assertIn("生成配对二维码", page)
         self.assertIn("扫码并批准", page)
+        self.assertIn("常见位置未找到 Hermes", page)
+        self.assertIn("只检查了已知安装位置和 PATH", page)
+        self.assertIn('href="#add-agent" data-open-manual-hermes', page)
         self.assertIn("https://hermes-agent.nousresearch.com/docs/getting-started/installation", page)
+        self.assertIn('id="manual-api-endpoint" name="base_url"', page)
         self.assertNotIn("<script>", page)
+
+    def test_ambiguous_status_links_to_discovered_profile_selection(self):
+        svc = service([], discovery_results=[
+            {"kind": "hermes", "path": "/home/demo/.hermes/.env", "guidance": "Known config"},
+            {"kind": "hermes", "path": "/home/demo/.config/hermes/.env", "guidance": "Known config"},
+        ])
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status",
+                   return_value={"status": "ambiguous"}):
+            page = self.render(svc)
+        self.assertIn("发现多个 Hermes 配置", page)
+        self.assertIn('href="#discovered-configs" data-open-discovery', page)
+        self.assertIn('<details id="discovered-configs" class="advanced discovery">', page)
+        self.assertIn("使用此配置</button>", page)
+        self.assertIn('href="#add-agent" data-open-manual-hermes', page)
+        self.assertNotIn("请在 Hermes 配置向导中选择", page)
 
     def test_hermes_status_message_is_html_escaped(self):
         with patch("padnote_assistant.admin_ui.hermes_onboarding_status", return_value={
@@ -151,8 +170,8 @@ class AdminUiTests(unittest.TestCase):
             "status": "not_installed", "message": "Hermes was not found on this computer.",
         }):
             page = self.render(service([]))
-        self.assertIn("尚未安装 Hermes", page)
-        self.assertIn("先按官方指南安装并配置 Hermes。", page)
+        self.assertIn("常见位置未找到 Hermes", page)
+        self.assertIn("若 Hermes 位于 WSL 或自定义目录", page)
         details = page.split('<details class="onboarding-detail">', 1)[1].split('</details>', 1)[0]
         self.assertIn("Hermes was not found on this computer.", details)
         self.assertNotIn("Hermes was not found on this computer.</p><a", page)

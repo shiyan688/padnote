@@ -58,6 +58,9 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         self.assertIn("API Server", advice)
         self.assertIn("保留现有配置", advice)
         self.assertIn("API 已响应", helper.message_label("ready", "check", "Hermes API is already running and responding."))
+        missing = helper.message_label("not_installed", "discovery", "Hermes was not found in standard install locations or PATH.")
+        self.assertIn("未在常见位置找到 Hermes", missing)
+        self.assertIn("打开连接设置可手动填写本机 API", missing)
 
     def test_fixed_upstream_source_pin_matches_supplied_script(self):
         pin = json.loads((self.FIXTURE_DIR / "PIN.json").read_text(encoding="utf-8"))

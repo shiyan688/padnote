@@ -771,6 +771,10 @@ public final class NoteCanvasView extends View {
     private double viewportCenterX64 = 0d;
     private double viewportCenterY64 = 0d;
     private boolean viewportCenterDirty;
+    /** Changes only when the user or a real resize changes the visible viewport. */
+    private long viewportRevision;
+    private boolean sidecarViewportRestorePending;
+    private double sidecarExpectedZoom, sidecarExpectedCenterX, sidecarExpectedCenterY;
     private float pageWidth = 0;
     private float pageHeight = 0;
     private float pageGap = 0;
@@ -1046,6 +1050,48 @@ public final class NoteCanvasView extends View {
 
     float getViewportPanY() {
         return viewportPanY;
+    }
+
+    static final class PersistedViewport {
+        final double relativeZoom;
+        final double centerX;
+        final double centerY;
+
+        PersistedViewport(double relativeZoom, double centerX, double centerY) {
+            this.relativeZoom = relativeZoom;
+            this.centerX = centerX;
+            this.centerY = centerY;
+        }
+    }
+
+    long getViewportRevision() { return viewportRevision; }
+
+    PersistedViewport capturePersistedViewport() {
+        if (getWidth() <= 0 || getHeight() <= 0 || pageWidth <= 0 || pageHeight <= 0) return null;
+        double centerX = viewportCenterDirty ? screenToWorldX(getWidth() / 2f) : viewportCenterX64;
+        double centerY = viewportCenterDirty ? screenToWorldY(getHeight() / 2f) : viewportCenterY64;
+        double relativeZoom = viewportScale / Math.max(0.001f, fittedPageScale());
+        NoteViewportStore.State state = new NoteViewportStore.State(relativeZoom, centerX, centerY);
+        if (!state.isValid()) return null;
+        return new PersistedViewport(relativeZoom, centerX, centerY);
+    }
+
+    boolean applyPersistedViewport(NoteViewportStore.State state) {
+        if (state == null || !state.isValid()) return false;
+        viewportRevision = 0;
+        long previousRevision = viewportRevision;
+        sidecarExpectedZoom = state.relativeZoom;
+        sidecarExpectedCenterX = state.centerX;
+        sidecarExpectedCenterY = state.centerY;
+        sidecarViewportRestorePending = true;
+        restoredViewportZoom = (float) state.relativeZoom;
+        restoredViewportCenterX = (float) state.centerX;
+        restoredViewportCenterY = (float) state.centerY;
+        restoreViewportCenter = true;
+        viewportInitialized = false;
+        initializeViewportIfReady(false);
+        invalidate();
+        return viewportRevision != previousRevision;
     }
 
     List<NoteTextBox> getTextBoxes() {
@@ -1597,11 +1643,21 @@ public final class NoteCanvasView extends View {
     }
 
     private void scrollViewportToPage(int pageIndex) {
+        float oldPanX = viewportPanX;
+        float oldPanY = viewportPanY;
+        float oldViewportScale = viewportScale;
         viewportCenterDirty = true;
         viewportPanY = dp(18) - pageTop(clampPageIndex(pageIndex)) * viewportScale;
         navigationRawPanY = viewportPanY;
         clampViewport(false);
+        if (Float.compare(oldPanX, viewportPanX) != 0 || Float.compare(oldPanY, viewportPanY) != 0 ||
+                Float.compare(oldViewportScale, viewportScale) != 0) noteViewportMutation();
         dispatchViewportState(getContext().getString(R.string.canvas_scrolled_page, pageIndex + 1));
+    }
+
+    private void noteViewportMutation() {
+        if (viewportRevision < Long.MAX_VALUE) viewportRevision++;
+        viewportCenterDirty = true;
     }
 
     /** Moves a flow to an adjacent page, keeping its position within the page. */
@@ -4215,6 +4271,8 @@ public final class NoteCanvasView extends View {
         explicitPageEditSerial = parsed.authorPageEditSerial;
         pageTopologySerial = parsed.authorPageTopologySerial;
         viewportInitialized = false;
+        viewportRevision = 0;
+        sidecarViewportRestorePending = false;
         if (oldBackground != null) oldBackground.close();
 
         recountPoints();
@@ -4258,9 +4316,13 @@ public final class NoteCanvasView extends View {
         if (width <= 0 || height <= 0) {
             return;
         }
+        boolean hadViewport = viewportInitialized && oldWidth > 0 && oldHeight > 0;
         ensurePageGeometry();
         initializeViewportIfReady(false);
         clampViewport(false);
+        if (hadViewport && (width != oldWidth || height != oldHeight)) {
+            noteViewportMutation();
+        }
         invalidate();
         dispatchViewportState(getContext().getString(R.string.canvas_pan_zoom));
     }
@@ -4685,6 +4747,9 @@ public final class NoteCanvasView extends View {
         float focusX = focus[0];
         float focusY = focus[1];
         float span = fingerSpan(event, -1);
+        float oldPanX = viewportPanX;
+        float oldPanY = viewportPanY;
+        float oldViewportScale = viewportScale;
         if (fingerCount >= 2 && span > 1 && navigationLastSpan > 1) {
             float oldScale = viewportScale;
             float requestedScale = clamp(oldScale * span / navigationLastSpan,
@@ -4724,7 +4789,8 @@ public final class NoteCanvasView extends View {
         navigationLastFocusX = focusX;
         navigationLastFocusY = focusY;
         navigationLastSpan = span;
-        viewportCenterDirty = true;
+        if (Float.compare(oldPanX, viewportPanX) != 0 || Float.compare(oldPanY, viewportPanY) != 0 ||
+                Float.compare(oldViewportScale, viewportScale) != 0) noteViewportMutation();
         invalidate();
     }
 
@@ -5649,6 +5715,10 @@ public final class NoteCanvasView extends View {
                 pageWidth <= 0 || pageHeight <= 0) {
             return;
         }
+        boolean restoreDocumentCenter = restoreViewportCenter && !forceFit && !sidecarViewportRestorePending;
+        double expectedDocumentZoom = restoredViewportZoom;
+        double expectedDocumentX = restoredViewportCenterX;
+        double expectedDocumentY = restoredViewportCenterY;
         if (restoredViewportZoom > 0) {
             viewportScale = clamp(fittedPageScale() * restoredViewportZoom,
                     MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE);
@@ -5667,6 +5737,29 @@ public final class NoteCanvasView extends View {
         restoredViewportZoom = 0;
         viewportInitialized = true;
         clampViewport(false);
+        if (sidecarViewportRestorePending) {
+            double actualX = screenToWorldX(getWidth() / 2f);
+            double actualY = screenToWorldY(getHeight() / 2f);
+            double actualZoom = viewportScale / Math.max(0.001f, fittedPageScale());
+            viewportCenterX64 = actualX;
+            viewportCenterY64 = actualY;
+            viewportCenterDirty = false;
+            boolean clamped = Math.abs(actualX - sidecarExpectedCenterX) > 0.01d ||
+                    Math.abs(actualY - sidecarExpectedCenterY) > 0.01d ||
+                    Math.abs(actualZoom - sidecarExpectedZoom) > 0.001d;
+            sidecarViewportRestorePending = false;
+            if (clamped) noteViewportMutation();
+        } else if (restoreDocumentCenter) {
+            double actualX = screenToWorldX(getWidth() / 2f);
+            double actualY = screenToWorldY(getHeight() / 2f);
+            double actualZoom = viewportScale / Math.max(0.001f, fittedPageScale());
+            viewportCenterX64 = actualX;
+            viewportCenterY64 = actualY;
+            viewportCenterDirty = false;
+            if (Math.abs(actualX - expectedDocumentX) > 0.01d ||
+                    Math.abs(actualY - expectedDocumentY) > 0.01d ||
+                    Math.abs(actualZoom - expectedDocumentZoom) > 0.001d) noteViewportMutation();
+        }
     }
 
     private void addPageInternal(boolean addToHistory, boolean navigateToNewPage) {

@@ -495,4 +495,5 @@
 <string name="core_removed_notes_preview_complete">ノート全体と添付資料を復元します。</string>
     <string name="core_removed_notes_commit_boundary">最終コミット開始後は、画面を離れても復元が完了する場合があります。</string>
     <string name="core_delete_cleanup_pending">ノートを一覧から削除しました。一部のローカル資料は安全な整理のため保持しています。</string>
+    <string name="core_viewport_save_failed">ページ位置を保存できませんでした。ノートの内容は変更されていません。</string>
 </resources>

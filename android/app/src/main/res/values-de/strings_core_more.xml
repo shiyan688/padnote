@@ -495,4 +495,5 @@
 <string name="core_removed_notes_preview_complete">Die vollständige Notiz samt Anhängen wird wiederhergestellt.</string>
     <string name="core_removed_notes_commit_boundary">Nach Beginn des endgültigen Commits kann die Wiederherstellung auch beim Verlassen dieses Bildschirms abgeschlossen werden.</string>
     <string name="core_delete_cleanup_pending">Die Notiz wurde aus der Liste entfernt. Einige lokale Materialien bleiben bis zur sicheren Bereinigung erhalten.</string>
+    <string name="core_viewport_save_failed">Die Seitenposition konnte nicht gespeichert werden. Der Notizinhalt ist unverändert.</string>
 </resources>

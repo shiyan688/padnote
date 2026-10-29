@@ -22,6 +22,28 @@
   };
   focusAddAgent();
   window.addEventListener('hashchange', focusAddAgent);
+  document.querySelectorAll('[data-open-manual-hermes]').forEach((link) => {
+    link.addEventListener('click', () => {
+      if (kind) { kind.value = 'hermes'; applyKind(); }
+      if (addDetails) addDetails.open = true;
+      window.setTimeout(() => {
+        const name = addDetails?.querySelector('#add-agent-form input[name="name"]');
+        name?.scrollIntoView({block: 'center'});
+        name?.focus();
+      }, 0);
+    });
+  });
+  const discovered = document.getElementById('discovered-configs');
+  document.querySelectorAll('[data-open-discovery]').forEach((link) => {
+    link.addEventListener('click', () => {
+      if (discovered) discovered.open = true;
+      window.setTimeout(() => {
+        const summary = discovered?.querySelector('summary');
+        summary?.scrollIntoView({block: 'center'});
+        summary?.focus();
+      }, 0);
+    });
+  });
   const sectionNav = Array.from(document.querySelectorAll('.sidebar nav a'));
   const navSections = sectionNav.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
   if ('IntersectionObserver' in window && navSections.length) {

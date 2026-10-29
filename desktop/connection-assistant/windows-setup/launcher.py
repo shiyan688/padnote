@@ -303,7 +303,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.28", "构建：2026-10-29-beta28-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.29", "构建：2026-10-29-beta29-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -747,7 +747,7 @@ def finish_hermes_action():
     update_buttons(); refresh_diagnostics(force=True)
 
 def hermes_label(status):
-    return {"ready": "已连接", "needs_setup": "需要配置", "not_installed": "未安装", "ambiguous": "发现多个实例", "starting": "正在启动", "error": "检查失败"}.get(status, "状态未知")
+    return {"ready": "已连接", "needs_setup": "需要配置", "not_installed": "常见位置未找到", "ambiguous": "发现多个实例", "starting": "正在启动", "error": "检查失败"}.get(status, "状态未知")
 
 def set_clipboard_text(text):
     if not user32.OpenClipboard(main_hwnd): return False, "Windows 剪贴板当前不可用。"

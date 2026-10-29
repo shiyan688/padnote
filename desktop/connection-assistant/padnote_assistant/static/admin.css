@@ -88,7 +88,11 @@ form { margin: 0; }
 .hermes-status-card form { display: grid; gap: 9px; }
 .hermes-connect-button { width: 100%; min-height: 48px; }
 .connect-progress { color: #304f97; font-size: 12px; text-align: center; }
-.hermes-status-card > .text-link { font-size: 12px; }
+.onboarding-actions { min-width: 0; max-width: 100%; margin: 10px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.onboarding-actions > * { min-width: 0; max-width: 100%; }
+.hermes-status-card .onboarding-actions form { display: flex; flex: 0 1 auto; }
+.onboarding-actions .text-link { font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.onboarding-actions button { max-width: 100%; white-space: normal; text-align: left; }
 .onboarding-detail { margin-top: 10px; }
 .onboarding-detail summary { min-height: 28px; color: #53647c; font-size: 12px; font-weight: 650; cursor: pointer; }
 .onboarding-detail p { margin: 5px 0 0; overflow-wrap: anywhere; }

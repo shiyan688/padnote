@@ -139,6 +139,20 @@ class AdminUIHTTPTests(unittest.TestCase):
                 self.assertEqual(status, 403)
                 connect.assert_not_called()
 
+    def test_not_installed_connect_result_distinguishes_missing_from_not_installed(self) -> None:
+        csrf = self.group.admin.csrf_token
+        with patch("padnote_assistant.hermes_onboarding.connect_hermes", return_value={
+            "status": "not_installed",
+            "message": "Hermes was not found in the standard install locations or PATH.",
+        }):
+            status, headers, _body = self.post_form(
+                "/admin/hermes/connect", origin=f"http://{self.host}", csrf=csrf)
+        self.assertEqual(status, 303)
+        message = urllib.parse.parse_qs(urllib.parse.urlsplit(headers["Location"]).query)["message"][0]
+        self.assertIn("未在常见安装位置或 PATH 中找到 Hermes", message)
+        self.assertIn("手动填写可访问的本机 API 地址", message)
+        self.assertNotIn("尚未安装", message)
+
     def test_hermes_setup_post_uses_origin_csrf(self) -> None:
         csrf = self.group.admin.csrf_token
         with patch("padnote_assistant.hermes_onboarding.open_hermes_setup", return_value={"status": "opened"}) as setup:

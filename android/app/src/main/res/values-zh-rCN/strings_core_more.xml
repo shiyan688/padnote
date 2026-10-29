@@ -495,4 +495,5 @@
 <string name="core_removed_notes_preview_complete">将恢复完整笔记及其附件。</string>
     <string name="core_removed_notes_commit_boundary">最终提交开始后，即使离开页面，恢复也可能继续完成。</string>
     <string name="core_delete_cleanup_pending">笔记已从书架移除。部分本地材料已保留，等待安全清理。</string>
+    <string name="core_viewport_save_failed">页面位置未能保存，笔记内容未受影响。</string>
 </resources>
