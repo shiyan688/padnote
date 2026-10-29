@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">Azul tinta</string>
     <string name="canvas_stroke_width_preview_desc">Vista previa del grosor del trazo</string>
     <string name="canvas_size_preview_desc">Vista previa del grosor actual</string>
+    <string name="canvas_manual_source_limit">Este texto supera el límite de 100.000 caracteres y no se colocó en la página. El borrador completo sigue abierto; acórtalo o divídelo e inténtalo de nuevo.</string>
+    <string name="canvas_manual_render_limit">Este texto supera el límite de renderizado local y no se colocó en la página. El borrador completo sigue abierto; acórtalo o divídelo e inténtalo de nuevo.</string>
+    <string name="canvas_manual_page_limit">Este texto no cabe completo en el límite de 500 páginas y no se colocó. El borrador completo sigue abierto; acórtalo o divídelo e inténtalo de nuevo.</string>
+    <string name="canvas_manual_unplaceable">Parte del contenido no se puede distribuir de forma segura en una página. El borrador completo sigue abierto; divide la tabla o el texto e inténtalo de nuevo.</string>
+    <string name="canvas_manual_table_unsupported">Esta tabla no se puede dividir con seguridad con las reglas actuales. El borrador completo sigue abierto; acórtala o divídela e inténtalo de nuevo.</string>
+    <string name="canvas_manual_table_expansion_limit">La tabla supera el límite seguro de división. El borrador completo sigue abierto; acórtala o divídela e inténtalo de nuevo.</string>
+    <string name="widget_commit_empty_text">Escribe texto antes de pulsar «Listo». El borrador sigue abierto.</string>
+    <string name="canvas_manual_change_rejected">Este cambio no se puede distribuir por completo. Se conservaron el texto y el diseño originales. Prueba con una fuente menor, divide el contenido o muévelo.</string>
+    <string name="core_manual_draft_saved">El borrador de texto sin terminar se guardó por separado.</string>
+    <string name="core_manual_draft_checkpoint_failed">No se pudo guardar el borrador sin terminar. Sigue abierto; cópialo antes de salir.</string>
+    <string name="core_manual_draft_recover_title">Borrador de texto sin terminar</string>
+    <string name="core_manual_draft_recover_message">Hay un borrador manual guardado. Puedes continuar editándolo en este flujo, dejarlo para después o descartarlo.</string>
+    <string name="core_manual_draft_restore">Continuar editando</string>
+    <string name="core_manual_draft_later">Más tarde</string>
+    <string name="core_manual_draft_discard">Descartar borrador</string>
+    <string name="core_manual_draft_mismatch">Este borrador ya no coincide con su flujo original y no se aplicó. Puedes verlo o copiarlo, dejarlo para después o descartarlo.</string>
+    <string name="core_manual_draft_view_copy">Ver/copiar borrador</string>
+    <string name="core_manual_draft_copy">Copiar borrador</string>
+    <string name="core_manual_draft_invalid_title">No se puede leer el borrador guardado</string>
+    <string name="core_manual_draft_invalid_message">El registro del borrador está dañado y no se modificó. Puedes dejarlo para después o descartar este registro.</string>
+    <string name="core_manual_draft_already_saved">La nota ya contiene este texto. No se aplicó el borrador guardado. Puedes verlo o copiarlo, dejarlo para después o descartarlo.</string>
+    <string name="core_manual_draft_input_limit">Esta edición supera el límite local de 1.000.000 caracteres. Se rechazó por completo y se conservó el texto existente.</string>
+    <string name="core_manual_draft_cleanup_failed">El borrador de recuperación no se borró y sigue en este dispositivo. Vuelve a intentarlo desde el menú Más de la nota.</string>
 </resources>

@@ -590,6 +590,28 @@ public final class NoteCanvasView extends View {
         }
     }
 
+    /** Result of a manual flow edit. A NONE failure is only valid on commit. */
+    static final class TextEditResult {
+        final boolean committed;
+        final TextFlowCapacity.Failure failure;
+
+        private TextEditResult(boolean committed, TextFlowCapacity.Failure failure) {
+            this.committed = committed;
+            this.failure = failure;
+        }
+
+        static TextEditResult committed() {
+            return new TextEditResult(true, TextFlowCapacity.Failure.NONE);
+        }
+
+        static TextEditResult rejected(TextFlowCapacity.Failure failure) {
+            if (failure == null || failure == TextFlowCapacity.Failure.NONE) {
+                throw new IllegalArgumentException("a rejected text edit needs a failure reason");
+            }
+            return new TextEditResult(false, failure);
+        }
+    }
+
     /**
      * Applied to estimated block heights. Reserving slightly more than the
      * measured height keeps content from being clipped when device font metrics
@@ -675,6 +697,8 @@ public final class NoteCanvasView extends View {
     private final List<PointF> selectionMaskPoints = new ArrayList<>();
     private final Deque<DocumentSnapshot> undoStack = new ArrayDeque<>();
     private final Deque<DocumentSnapshot> redoStack = new ArrayDeque<>();
+    /** Exact pre-insertion undo snapshot owned by each in-session empty text draft. */
+    private final Map<String, DocumentSnapshot> placeholderUndoOwners = new LinkedHashMap<>();
     private String selectedTextBoxId;
     private final Set<String> aiSelectedTextFragmentIds = new LinkedHashSet<>();
     private final List<PointF> aiSelectionMaskPoints = new ArrayList<>();
@@ -1036,7 +1060,6 @@ public final class NoteCanvasView extends View {
             dispatchStats(0, getContext().getString(R.string.canvas_insert_text_tap));
             return null;
         }
-        pushUndoSnapshot();
         float margin = dp(16);
         float minimumWidth = Math.min(dp(180), pageWidth - margin * 2f);
         int pageIndex = pageIndexForWorldY(requestedY);
@@ -1052,6 +1075,30 @@ public final class NoteCanvasView extends View {
                 "flow-" + UUID.randomUUID().toString().replace("-", ""),
                 format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT, width,
                 pageIndex, x, y - top);
+        TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(flow.source);
+        if (sourceFailure != TextFlowCapacity.Failure.NONE) {
+            throw new TextFlowCapacity.Rejection(sourceFailure);
+        }
+        String normalizedSource = flow.source;
+        if (!normalizedSource.isEmpty()) {
+            List<TextFragmentLayout> preparedLayouts = prepareTextFlowLayouts(flow);
+            pushUndoSnapshot();
+            textFlows.put(flow.id, flow);
+            pageCount = Math.max(pageCount, flow.lastLayoutPageCount);
+            NoteTextBox first = reflowFlow(flow, preparedLayouts);
+            dispatchTextBoxesChanged();
+            dispatchSelectionState();
+            dispatchStats(0, getContext().getString(R.string.canvas_flow_inserted,
+                    flow.format.displayName()));
+            notifyDocumentChanged();
+            return first;
+        }
+        DocumentSnapshot previousUndoTop = undoStack.peek();
+        pushUndoSnapshot();
+        DocumentSnapshot placeholderUndo = undoStack.peek();
+        if (placeholderUndo != null && placeholderUndo != previousUndoTop) {
+            placeholderUndoOwners.put(flow.id, placeholderUndo);
+        }
         textFlows.put(flow.id, flow);
         NoteTextBox first = reflowFlow(flow);
         dispatchTextBoxesChanged();
@@ -1147,40 +1194,68 @@ public final class NoteCanvasView extends View {
                 : laidOutFlow.get(laidOutFlow.size() - 1).copy();
     }
 
-    void commitNewTextBox(String id, NoteTextBox.Format format, String source) {
+    TextEditResult commitNewTextBox(String id, NoteTextBox.Format format, String source) {
         NoteTextBox existing = findTextBox(id);
-        commitNewTextBox(id, format, source,
+        return commitNewTextBox(id, format, source,
                 existing == null ? 16f : existing.fontSizeSp,
                 existing == null ? TextFlow.DEFAULT_LINE_HEIGHT : existing.lineHeight);
     }
 
-    void commitNewTextBox(String id, NoteTextBox.Format format, String source,
-                          float fontSizeSp, float lineHeight) {
+    TextEditResult commitNewTextBox(String id, NoteTextBox.Format format, String source,
+                                    float fontSizeSp, float lineHeight) {
         NoteTextBox textBox = findTextBox(id);
         if (textBox == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(textBox.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
         }
         NoteTextBox.Format normalizedFormat = format == null
                 ? NoteTextBox.Format.LATEX : format;
-        boolean renderContentChanged = flow.format != normalizedFormat
-                || !flow.source.equals(source == null ? "" : source)
-                || Math.abs(flow.fontSizeSp - TextFlow.clampFontSize(fontSizeSp)) >= 0.01f
-                || Math.abs(flow.lineHeight - TextFlow.clampLineHeight(lineHeight)) >= 0.001f;
-        flow.format = normalizedFormat;
-        flow.source = source == null ? "" : source;
-        flow.setStyle(TextFlow.clampFontSize(fontSizeSp),
-                TextFlow.clampLineHeight(lineHeight), flow.width64);
-        if (renderContentChanged) flow.clearRenderHeightFailure();
-        NoteTextBox firstFragment = reflowFlow(flow);
+        String normalizedSource = source == null ? "" : source;
+        TextFlow candidate = flow.copy();
+        candidate.format = normalizedFormat;
+        candidate.source = normalizedSource;
+        candidate.setStyle(TextFlow.clampFontSize(fontSizeSp),
+                TextFlow.clampLineHeight(lineHeight), candidate.width64);
+        boolean contentChanged = flow.format != normalizedFormat
+                || !flow.source.equals(normalizedSource)
+                || Math.abs(flow.fontSizeSp - candidate.fontSizeSp) >= 0.01f
+                || Math.abs(flow.lineHeight - candidate.lineHeight) >= 0.001f;
+        if (contentChanged) {
+            candidate.clearRenderHeightFailure();
+            candidate.heightCorrection = 1f;
+            candidate.heightCorrectionPasses = 0;
+            candidate.clearMeasuredMermaidHeights();
+        }
+        boolean unchanged = flow.format == candidate.format
+                && flow.source.equals(candidate.source)
+                && Math.abs(flow.fontSizeSp - candidate.fontSizeSp) < 0.01f
+                && Math.abs(flow.lineHeight - candidate.lineHeight) < 0.001f;
+        if (unchanged) {
+            TextEditResult result = validateCurrentTextFlow(flow);
+            if (result.committed) placeholderUndoOwners.remove(flow.id);
+            return result;
+        }
+        DocumentSnapshot ownedUndo = placeholderUndoOwners.get(flow.id);
+        boolean reusePlaceholderUndo = ownedUndo != null && undoStack.peek() == ownedUndo;
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate,
+                !reusePlaceholderUndo);
+        if (!result.committed) return result;
+        placeholderUndoOwners.remove(flow.id);
+        List<NoteTextBox> committedFragments = findTextFlow(flow.id);
+        NoteTextBox firstFragment = committedFragments.isEmpty()
+                ? null : committedFragments.get(0);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
         dispatchViewportState(getContext().getString(R.string.canvas_flow_done));
-        dispatchStats(0, getContext().getString(R.string.canvas_flow_inserted_format, normalizedFormat.displayName(), getContext().getString(firstFragment != null && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow : R.string.canvas_text_object)));
+        dispatchStats(0, getContext().getString(R.string.canvas_flow_inserted_format,
+                normalizedFormat.displayName(), getContext().getString(firstFragment != null
+                        && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow
+                        : R.string.canvas_text_object)));
         notifyDocumentChanged();
+        return result;
     }
 
     void discardNewTextBox(String id) {
@@ -1188,11 +1263,17 @@ public final class NoteCanvasView extends View {
         if (textBox == null) {
             return;
         }
+        DocumentSnapshot ownedUndo = placeholderUndoOwners.remove(textBox.flowId);
+        boolean canRemoveOwnedUndo = ownedUndo != null && undoStack.peek() == ownedUndo;
+        if (!canRemoveOwnedUndo) {
+            // A restored draft has no insertion snapshot. If intervening edits
+            // pushed history, preserve every unrelated snapshot and make deleting
+            // the restored placeholder itself a normal undoable action.
+            pushUndoSnapshot();
+        }
         textBoxes.removeAll(findTextFlow(textBox.flowId));
         textFlows.remove(textBox.flowId);
-        if (!undoStack.isEmpty()) {
-            undoStack.pop();
-        }
+        if (canRemoveOwnedUndo) undoStack.pop();
         redoStack.clear();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1200,22 +1281,22 @@ public final class NoteCanvasView extends View {
         notifyDocumentChanged();
     }
 
-    void updateTextBox(String id, NoteTextBox.Format format, String source) {
+    TextEditResult updateTextBox(String id, NoteTextBox.Format format, String source) {
         NoteTextBox existing = findTextBox(id);
-        updateTextBox(id, format, source,
+        return updateTextBox(id, format, source,
                 existing == null ? 16f : existing.fontSizeSp,
                 existing == null ? TextFlow.DEFAULT_LINE_HEIGHT : existing.lineHeight);
     }
 
-    void updateTextBox(String id, NoteTextBox.Format format, String source,
-                       float fontSizeSp, float lineHeight) {
+    TextEditResult updateTextBox(String id, NoteTextBox.Format format, String source,
+                                 float fontSizeSp, float lineHeight) {
         NoteTextBox textBox = findTextBox(id);
         if (textBox == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(textBox.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
         }
         String normalizedSource = source == null ? "" : source;
         NoteTextBox.Format normalizedFormat = format == null ? NoteTextBox.Format.LATEX : format;
@@ -1224,24 +1305,92 @@ public final class NoteCanvasView extends View {
         if (flow.format == normalizedFormat && flow.source.equals(normalizedSource) &&
                 Math.abs(flow.fontSizeSp - normalizedFont) < 0.01f &&
                 Math.abs(flow.lineHeight - normalizedLeading) < 0.001f) {
-            return;
+            return validateCurrentTextFlow(flow);
         }
-        pushUndoSnapshot();
-        flow.format = normalizedFormat;
-        flow.source = normalizedSource;
-        flow.setStyle(normalizedFont, normalizedLeading, flow.width64);
-        flow.clearRenderHeightFailure();
+        TextFlow candidate = flow.copy();
+        candidate.format = normalizedFormat;
+        candidate.source = normalizedSource;
+        candidate.setStyle(normalizedFont, normalizedLeading, candidate.width64);
+        candidate.clearRenderHeightFailure();
         // The correction was learned from the previous content, so keeping it would
         // over-reserve space for simpler text. Relearn from the new render.
-        flow.heightCorrection = 1f;
-        flow.heightCorrectionPasses = 0;
-        flow.clearMeasuredMermaidHeights();
-        NoteTextBox firstFragment = reflowFlow(flow);
+        candidate.heightCorrection = 1f;
+        candidate.heightCorrectionPasses = 0;
+        candidate.clearMeasuredMermaidHeights();
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate,
+                true);
+        if (!result.committed) return result;
+        List<NoteTextBox> committedFragments = findTextFlow(flow.id);
+        NoteTextBox firstFragment = committedFragments.isEmpty()
+                ? null : committedFragments.get(0);
         dispatchTextBoxesChanged();
         dispatchSelectionState();
         dispatchViewportState(getContext().getString(R.string.canvas_flow_relayout));
-        dispatchStats(0, getContext().getString(R.string.canvas_flow_updated, normalizedFormat.displayName(), getContext().getString(firstFragment != null && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow : R.string.canvas_text_object)));
+        dispatchStats(0, getContext().getString(R.string.canvas_flow_updated,
+                normalizedFormat.displayName(), getContext().getString(firstFragment != null
+                        && firstFragment.flowCount > 1 ? R.string.canvas_cross_page_flow
+                        : R.string.canvas_text_object)));
         notifyDocumentChanged();
+        return result;
+    }
+
+    /**
+     * Preflights a detached flow copy, then atomically installs the already-laid-out
+     * candidate. Placeholder-owned edits deliberately do not add another undo item.
+     */
+    private TextEditResult prepareAndCommitTextFlowEdit(TextFlow current,
+                                                         TextFlow candidate,
+                                                         boolean pushUndo) {
+        List<TextFragmentLayout> preparedLayouts;
+        try {
+            preparedLayouts = prepareTextFlowLayouts(candidate);
+        } catch (TextFlowCapacity.Rejection rejected) {
+            return TextEditResult.rejected(rejected.failure);
+        }
+        if (pushUndo) pushUndoSnapshot();
+        textFlows.put(current.id, candidate);
+        pageCount = Math.max(pageCount, candidate.lastLayoutPageCount);
+        reflowFlow(candidate, preparedLayouts);
+        return TextEditResult.committed();
+    }
+
+    private List<TextFragmentLayout> prepareTextFlowLayouts(TextFlow candidate) {
+        TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(candidate.source);
+        if (sourceFailure != TextFlowCapacity.Failure.NONE) {
+            throw new TextFlowCapacity.Rejection(sourceFailure);
+        }
+        int pageCountBeforePreview = pageCount;
+        try {
+            List<TextFragmentLayout> preparedLayouts = layoutFlow(candidate);
+            TextFlowCapacity.Failure layoutFailure = TextFlowCapacity.checkLayout(
+                    candidate.source, candidate.lastLayoutPageCount,
+                    candidate.lastLayoutComplete, candidate.lastLayoutFailureReason);
+            if (layoutFailure != TextFlowCapacity.Failure.NONE) {
+                throw new TextFlowCapacity.Rejection(layoutFailure);
+            }
+            return preparedLayouts;
+        } finally {
+            // layoutFlow uses the canvas page count as an existing-document floor.
+            // Previewing must never extend the committed document on failure.
+            pageCount = pageCountBeforePreview;
+        }
+    }
+
+    private TextEditResult validateCurrentTextFlow(TextFlow flow) {
+        TextFlowCapacity.Failure failure = TextFlowCapacity.checkSource(flow.source);
+        if (failure == TextFlowCapacity.Failure.NONE) {
+            failure = TextFlowCapacity.checkLayout(flow.source, flow.lastLayoutPageCount,
+                    flow.lastLayoutComplete, flow.lastLayoutFailureReason);
+        }
+        return failure == TextFlowCapacity.Failure.NONE
+                ? TextEditResult.committed() : TextEditResult.rejected(failure);
+    }
+
+    private void dispatchManualChangeRejected() {
+        // Overlay gestures may have moved/resized a child optimistically. Rebind it
+        // from the unchanged canonical flow before reporting the rejected edit.
+        dispatchTextBoxesChanged();
+        dispatchStats(0, getContext().getString(R.string.canvas_manual_change_rejected));
     }
 
     /**
@@ -1253,27 +1402,33 @@ public final class NoteCanvasView extends View {
      * Because the anchor is page relative, dragging across a page boundary is
      * expressed as a page index change and cannot land "between" pages.
      */
-    void moveTextBox(String id, float requestedX, float requestedY) {
+    TextEditResult moveTextBox(String id, float requestedX, float requestedY) {
         NoteTextBox fragment = findTextBox(id);
         if (fragment == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(fragment.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
         }
         TextFlowAnchor target = anchorForDraggedFragment(flow, fragment,
                 requestedX, requestedY);
         if (target.pageIndex == flow.anchorPageIndex &&
                 Math.abs(target.xInPage - flow.anchorXInPage) < 0.5f &&
                 Math.abs(target.yInPage - flow.anchorYInPage) < 0.5f) {
-            dispatchTextBoxesChanged();
-            return;
+            TextEditResult unchanged = validateCurrentTextFlow(flow);
+            if (unchanged.committed) dispatchTextBoxesChanged();
+            else dispatchManualChangeRejected();
+            return unchanged;
         }
-        pushUndoSnapshot();
-        flow.anchorPageIndex = target.pageIndex;
-        flow.setAnchor(target.xInPage, target.yInPage);
-        reflowFlow(flow);
+        TextFlow candidate = flow.copy();
+        candidate.anchorPageIndex = target.pageIndex;
+        candidate.setAnchor(target.xInPage, target.yInPage);
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+        if (!result.committed) {
+            dispatchManualChangeRejected();
+            return result;
+        }
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1282,6 +1437,7 @@ public final class NoteCanvasView extends View {
                 ? getContext().getString(R.string.canvas_flow_reflow_pages, fragmentCount)
                 : getContext().getString(R.string.canvas_flow_moved_object));
         notifyDocumentChanged();
+        return result;
     }
 
     /** A candidate flow anchor, in page-relative coordinates. */
@@ -1346,13 +1502,15 @@ public final class NoteCanvasView extends View {
         candidate.anchorPageIndex = target.pageIndex;
         candidate.setAnchor(target.xInPage, target.yInPage);
         dragPreviewRects.clear();
-        for (TextFragmentLayout layout : layoutFlow(candidate)) {
-            dragPreviewRects.add(new RectF(layout.x, layout.y,
-                    layout.x + layout.width, layout.y + layout.height));
+        try {
+            for (TextFragmentLayout layout : layoutFlow(candidate)) {
+                dragPreviewRects.add(new RectF(layout.x, layout.y,
+                        layout.x + layout.width, layout.y + layout.height));
+            }
+        } finally {
+            // layoutFlow grows pageCount during pagination; preview must remain read-only.
+            pageCount = savedPageCount;
         }
-        // layoutFlow grows pageCount when content overflows; a preview must not
-        // change the document, so put it back.
-        pageCount = savedPageCount;
         dragPreviewFlowId = flow.id;
         dragPreviewPageLabel = target.pageIndex + 1;
         updateEdgeHoldScroll(requestedY);
@@ -1445,16 +1603,24 @@ public final class NoteCanvasView extends View {
         if (target < 0) {
             return false;
         }
-        pushUndoSnapshot();
-        flow.anchorPageIndex = clampPageIndex(target);
-        if (flow.anchorPageIndex >= pageCount) {
-            pageCount = flow.anchorPageIndex + 1;
+        TextFlow candidate = flow.copy();
+        candidate.anchorPageIndex = clampPageIndex(target);
+        if (candidate.anchorPageIndex == flow.anchorPageIndex) {
+            TextEditResult unchanged = validateCurrentTextFlow(flow);
+            if (!unchanged.committed) dispatchManualChangeRejected();
+            return false;
         }
-        reflowFlow(flow);
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+        if (!result.committed) {
+            dispatchManualChangeRejected();
+            return false;
+        }
         dispatchTextBoxesChanged();
         dispatchSelectionState();
-        dispatchViewportState(getContext().getString(R.string.canvas_flow_moved_page, flow.anchorPageIndex + 1));
-        dispatchStats(0, getContext().getString(R.string.canvas_moved_to_page, flow.anchorPageIndex + 1));
+        dispatchViewportState(getContext().getString(R.string.canvas_flow_moved_page,
+                candidate.anchorPageIndex + 1));
+        dispatchStats(0, getContext().getString(R.string.canvas_moved_to_page,
+                candidate.anchorPageIndex + 1));
         notifyDocumentChanged();
         return true;
     }
@@ -1466,28 +1632,34 @@ public final class NoteCanvasView extends View {
      * editing session; this is also the shape a {@code set_text_flow_style} tool
      * call will use.
      */
-    void setTextFlowFontSize(String id, float fontSizeSp) {
+    TextEditResult setTextFlowFontSize(String id, float fontSizeSp) {
         NoteTextBox fragment = findTextBox(id);
         if (fragment == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(fragment.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
         }
         float normalized = TextFlow.clampFontSize(fontSizeSp);
         if (Math.abs(flow.fontSizeSp - normalized) < 0.01f) {
-            return;
+            TextEditResult unchanged = validateCurrentTextFlow(flow);
+            if (!unchanged.committed) dispatchManualChangeRejected();
+            return unchanged;
         }
-        pushUndoSnapshot();
-        flow.setStyle(normalized, flow.lineHeight64, flow.width64);
-        flow.clearRenderHeightFailure();
+        TextFlow candidate = flow.copy();
+        candidate.setStyle(normalized, candidate.lineHeight64, candidate.width64);
+        candidate.clearRenderHeightFailure();
         // Height scales with size, so the old correction no longer describes this
         // content; relearn it from the next render.
-        flow.heightCorrection = 1f;
-        flow.heightCorrectionPasses = 0;
-        flow.clearMeasuredMermaidHeights();
-        reflowFlow(flow);
+        candidate.heightCorrection = 1f;
+        candidate.heightCorrectionPasses = 0;
+        candidate.clearMeasuredMermaidHeights();
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+        if (!result.committed) {
+            dispatchManualChangeRejected();
+            return result;
+        }
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1496,6 +1668,7 @@ public final class NoteCanvasView extends View {
                 ? getContext().getString(R.string.canvas_font_reflow_pages, Math.round(normalized), fragmentCount)
                 : getContext().getString(R.string.canvas_font_single, Math.round(normalized)));
         notifyDocumentChanged();
+        return result;
     }
 
     /**
@@ -1513,14 +1686,20 @@ public final class NoteCanvasView extends View {
      * {@code set_text_flow_style} write, so dragging and tapping are two inputs to
      * one value rather than competing sources of truth.
      */
-    void scaleTextFlowToArea(String id, float requestedWidth, float requestedHeight) {
+    TextEditResult scaleTextFlowToArea(String id, float requestedWidth, float requestedHeight) {
         NoteTextBox fragment = findTextBox(id);
         if (fragment == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(fragment.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
+        }
+        TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(flow.source);
+        if (sourceFailure != TextFlowCapacity.Failure.NONE) {
+            TextEditResult rejected = TextEditResult.rejected(sourceFailure);
+            dispatchManualChangeRejected();
+            return rejected;
         }
         ensurePageGeometry();
         float margin = dp(16);
@@ -1550,20 +1729,26 @@ public final class NoteCanvasView extends View {
                 1f + (flow.lineHeight - 1f) * leadingRatio);
         if (Math.abs(chosen - flow.fontSizeSp) < 0.01f &&
                 Math.abs(width - flow.width) < 0.5f) {
-            dispatchTextBoxesChanged();
-            return;
+            TextEditResult unchanged = validateCurrentTextFlow(flow);
+            if (unchanged.committed) dispatchTextBoxesChanged();
+            else dispatchManualChangeRejected();
+            return unchanged;
         }
 
-        pushUndoSnapshot();
-        flow.setStyle(chosen, chosenLeading, width);
-        flow.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
-                flow.anchorXInPage64)), flow.anchorYInPage64);
-        flow.clearRenderHeightFailure();
+        TextFlow candidate = flow.copy();
+        candidate.setStyle(chosen, chosenLeading, width);
+        candidate.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
+                candidate.anchorXInPage64)), candidate.anchorYInPage64);
+        candidate.clearRenderHeightFailure();
         // Learned at the previous size, so it no longer describes this content.
-        flow.heightCorrection = 1f;
-        flow.heightCorrectionPasses = 0;
-        flow.clearMeasuredMermaidHeights();
-        reflowFlow(flow);
+        candidate.heightCorrection = 1f;
+        candidate.heightCorrectionPasses = 0;
+        candidate.clearMeasuredMermaidHeights();
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+        if (!result.committed) {
+            dispatchManualChangeRejected();
+            return result;
+        }
         int fragmentCount = findTextFlow(flow.id).size();
         dispatchTextBoxesChanged();
         dispatchSelectionState();
@@ -1572,6 +1757,7 @@ public final class NoteCanvasView extends View {
                 ? getContext().getString(R.string.canvas_font_across_pages, Math.round(chosen), fragmentCount)
                 : getContext().getString(R.string.canvas_font_single, Math.round(chosen)));
         notifyDocumentChanged();
+        return result;
     }
 
     /** Total laid-out height of a flow at a candidate width and size, in world px. */
@@ -1582,42 +1768,52 @@ public final class NoteCanvasView extends View {
         probe.clearMeasuredMermaidHeights();
         int savedPageCount = pageCount;
         float total = 0f;
-        for (TextFragmentLayout layout : layoutFlow(probe)) {
-            total += layout.height;
+        try {
+            for (TextFragmentLayout layout : layoutFlow(probe)) {
+                total += layout.height;
+            }
+        } finally {
+            pageCount = savedPageCount;
         }
-        pageCount = savedPageCount;
         return total;
     }
 
-    void resizeTextBox(String id, float requestedWidth, float requestedHeight) {
+    TextEditResult resizeTextBox(String id, float requestedWidth, float requestedHeight) {
         NoteTextBox textBox = findTextBox(id);
         if (textBox == null) {
-            return;
+            throw new IllegalArgumentException("text flow fragment no longer exists");
         }
         TextFlow flow = textFlows.get(textBox.flowId);
         if (flow == null) {
-            return;
+            throw new IllegalArgumentException("text flow no longer exists");
         }
         float margin = dp(16);
         float width = clamp(requestedWidth, dp(180), Math.max(dp(180), pageWidth - dp(16)));
         if (Math.abs(flow.width - width) < 0.5f) {
-            dispatchTextBoxesChanged();
-            return;
+            TextEditResult unchanged = validateCurrentTextFlow(flow);
+            if (unchanged.committed) dispatchTextBoxesChanged();
+            else dispatchManualChangeRejected();
+            return unchanged;
         }
-        pushUndoSnapshot();
-        flow.setWidth(width);
-        flow.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
-                flow.anchorXInPage64)), flow.anchorYInPage64);
-        flow.clearRenderHeightFailure();
-        flow.heightCorrection = 1f;
-        flow.heightCorrectionPasses = 0;
-        flow.clearMeasuredMermaidHeights();
-        reflowFlow(flow);
+        TextFlow candidate = flow.copy();
+        candidate.setWidth(width);
+        candidate.setAnchor(Math.max(margin, Math.min(pageWidth - width - margin,
+                candidate.anchorXInPage64)), candidate.anchorYInPage64);
+        candidate.clearRenderHeightFailure();
+        candidate.heightCorrection = 1f;
+        candidate.heightCorrectionPasses = 0;
+        candidate.clearMeasuredMermaidHeights();
+        TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+        if (!result.committed) {
+            dispatchManualChangeRejected();
+            return result;
+        }
         dispatchTextBoxesChanged();
         dispatchSelectionState();
         dispatchViewportState(getContext().getString(R.string.canvas_width_relayout));
         dispatchStats(0, getContext().getString(R.string.canvas_width_relayout_hint));
         notifyDocumentChanged();
+        return result;
     }
 
     void deleteTextBox(String id) {
@@ -1630,6 +1826,7 @@ public final class NoteCanvasView extends View {
         invalidateAiTextSelectionForFlow(textBox.flowId);
         textBoxes.removeAll(flow);
         textFlows.remove(textBox.flowId);
+        placeholderUndoOwners.remove(textBox.flowId);
         if (textBox.flowId.equals(selectedTextBoxId)) {
             selectedTextBoxId = null;
         }
@@ -3958,6 +4155,7 @@ public final class NoteCanvasView extends View {
         selectionMaskPoints.clear();
         undoStack.clear();
         redoStack.clear();
+        placeholderUndoOwners.clear();
         continuousAiUndoOwner = null;
         aiUndoTransactionOwner = null;
         pendingAiUndoSnapshot = null;
@@ -6190,6 +6388,13 @@ public final class NoteCanvasView extends View {
             stack.removeLast();
         }
         stack.push(snapshot);
+        if (stack == undoStack && !placeholderUndoOwners.isEmpty()) {
+            for (String flowId : new ArrayList<>(placeholderUndoOwners.keySet())) {
+                if (!undoStack.contains(placeholderUndoOwners.get(flowId))) {
+                    placeholderUndoOwners.remove(flowId);
+                }
+            }
+        }
     }
 
     /**
@@ -6344,6 +6549,7 @@ public final class NoteCanvasView extends View {
     }
 
     private void restoreSnapshot(DocumentSnapshot replacement) {
+        placeholderUndoOwners.clear();
         strokes.clear();
         strokes.addAll(copyStrokes(replacement.strokes));
         pageCount = Math.max(1, replacement.pageCount);
@@ -6613,20 +6819,27 @@ public final class NoteCanvasView extends View {
             if (Double.compare(flow.fontSizeSp64, nextFont) == 0
                     && Double.compare(flow.lineHeight64, nextLeading) == 0
                     && Double.compare(flow.width64, nextWidth) == 0) {
+                TextEditResult validation = validateCurrentTextFlow(flow);
+                if (!validation.committed) {
+                    throw new TextFlowCapacity.Rejection(validation.failure);
+                }
                 JSONObject unchanged = landingReport(flowId, pagesBefore, anchorsBefore);
                 try { unchanged.put("unchanged", true); }
                 catch (JSONException ignored) { }
                 return unchanged;
             }
-            pushUndoSnapshot();
-            flow.setStyle(nextFont, nextLeading, nextWidth);
+            TextFlow candidate = flow.copy();
+            candidate.setStyle(nextFont, nextLeading, nextWidth);
             if (fontSizeSp != null || lineHeight != null || width != null) {
-                flow.clearRenderHeightFailure();
-                flow.heightCorrection = 1f;
-                flow.heightCorrectionPasses = 0;
-                flow.clearMeasuredMermaidHeights();
+                candidate.clearRenderHeightFailure();
+                candidate.heightCorrection = 1f;
+                candidate.heightCorrectionPasses = 0;
+                candidate.clearMeasuredMermaidHeights();
             }
-            reflowFlow(flow);
+            TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+            if (!result.committed) {
+                throw new TextFlowCapacity.Rejection(result.failure);
+            }
             dispatchTextBoxesChanged();
             dispatchSelectionState();
             notifyDocumentChanged();
@@ -6646,13 +6859,25 @@ public final class NoteCanvasView extends View {
             ensurePageGeometry();
             int pagesBefore = pageCount;
             Map<String, Integer> anchorsBefore = flowAnchorPages();
-            pushUndoSnapshot();
-            flow.anchorPageIndex = clampPageIndex(placement.pageIndex);
-            flow.setAnchor(placement.xInPage, placement.yInPage);
-            if (flow.anchorPageIndex >= pageCount) {
-                pageCount = flow.anchorPageIndex + 1;
+            TextFlow candidate = flow.copy();
+            candidate.anchorPageIndex = clampPageIndex(placement.pageIndex);
+            candidate.setAnchor(placement.xInPage, placement.yInPage);
+            if (candidate.anchorPageIndex == flow.anchorPageIndex
+                    && Math.abs(candidate.anchorXInPage - flow.anchorXInPage) < 0.5f
+                    && Math.abs(candidate.anchorYInPage - flow.anchorYInPage) < 0.5f) {
+                TextEditResult validation = validateCurrentTextFlow(flow);
+                if (!validation.committed) {
+                    throw new TextFlowCapacity.Rejection(validation.failure);
+                }
+                JSONObject unchanged = landingReport(flowId, pagesBefore, anchorsBefore);
+                try { unchanged.put("unchanged", true); }
+                catch (JSONException ignored) { }
+                return unchanged;
             }
-            reflowFlow(flow);
+            TextEditResult result = prepareAndCommitTextFlowEdit(flow, candidate, true);
+            if (!result.committed) {
+                throw new TextFlowCapacity.Rejection(result.failure);
+            }
             dispatchTextBoxesChanged();
             dispatchSelectionState();
             notifyDocumentChanged();
@@ -6668,10 +6893,13 @@ public final class NoteCanvasView extends View {
                     lineHeight, widthDp * densityScale(), 0, dp(16), dp(16));
             int savedPageCount = pageCount;
             float total = 0f;
-            for (TextFragmentLayout layout : layoutFlow(probe)) {
-                total += layout.height;
+            try {
+                for (TextFragmentLayout layout : layoutFlow(probe)) {
+                    total += layout.height;
+                }
+            } finally {
+                pageCount = savedPageCount;
             }
-            pageCount = savedPageCount;
             return total / densityScale();
         }
 

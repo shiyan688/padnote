@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">Tintenblau</string>
     <string name="canvas_stroke_width_preview_desc">Vorschau der Werkzeugstrichbreite</string>
     <string name="canvas_size_preview_desc">Vorschau der aktuellen Strichstärke</string>
+    <string name="canvas_manual_source_limit">Dieser Text überschreitet die Grenze von 100.000 Zeichen und wurde nicht auf dem Blatt eingefügt. Der vollständige Entwurf bleibt geöffnet. Kürzen oder teilen Sie ihn und versuchen Sie es erneut.</string>
+    <string name="canvas_manual_render_limit">Dieser Text überschreitet die lokale Rendergrenze und wurde nicht auf dem Blatt eingefügt. Der vollständige Entwurf bleibt geöffnet. Kürzen oder teilen Sie ihn und versuchen Sie es erneut.</string>
+    <string name="canvas_manual_page_limit">Dieser Text passt nicht vollständig in die Grenze von 500 Seiten und wurde nicht eingefügt. Der vollständige Entwurf bleibt geöffnet. Kürzen oder teilen Sie ihn und versuchen Sie es erneut.</string>
+    <string name="canvas_manual_unplaceable">Einige Inhalte lassen sich nicht sicher auf einer Seite anordnen. Der vollständige Entwurf bleibt geöffnet. Teilen Sie Tabelle oder Text und versuchen Sie es erneut.</string>
+    <string name="canvas_manual_table_unsupported">Diese Tabelle lässt sich mit den aktuellen Regeln nicht sicher teilen. Der vollständige Entwurf bleibt geöffnet. Kürzen oder teilen Sie sie und versuchen Sie es erneut.</string>
+    <string name="canvas_manual_table_expansion_limit">Diese Tabelle überschreitet die sichere Aufteilungsgrenze. Der vollständige Entwurf bleibt geöffnet. Kürzen oder teilen Sie sie und versuchen Sie es erneut.</string>
+    <string name="widget_commit_empty_text">Geben Sie Text ein, bevor Sie auf „Fertig“ tippen. Der Entwurf bleibt geöffnet.</string>
+    <string name="canvas_manual_change_rejected">Diese Änderung lässt sich nicht vollständig anordnen. Originaltext und Layout bleiben erhalten. Verwenden Sie eine kleinere Schrift, teilen Sie den Inhalt oder verschieben Sie ihn.</string>
+    <string name="core_manual_draft_saved">Der unvollständige Textentwurf wurde separat gespeichert.</string>
+    <string name="core_manual_draft_checkpoint_failed">Der unvollständige Textentwurf konnte nicht gespeichert werden. Er bleibt geöffnet; kopieren Sie ihn, bevor Sie die Seite verlassen.</string>
+    <string name="core_manual_draft_recover_title">Unvollständiger Textentwurf</string>
+    <string name="core_manual_draft_recover_message">Ein gespeicherter manueller Entwurf ist verfügbar. Sie können ihn in diesem Textfluss weiterbearbeiten, später ansehen oder verwerfen.</string>
+    <string name="core_manual_draft_restore">Weiterbearbeiten</string>
+    <string name="core_manual_draft_later">Später</string>
+    <string name="core_manual_draft_discard">Entwurf verwerfen</string>
+    <string name="core_manual_draft_mismatch">Dieser Entwurf passt nicht mehr zu seinem ursprünglichen Textfluss und wurde nicht angewendet. Sehen/kopieren Sie ihn, verschieben Sie ihn oder verwerfen Sie ihn.</string>
+    <string name="core_manual_draft_view_copy">Entwurf ansehen/kopieren</string>
+    <string name="core_manual_draft_copy">Entwurf kopieren</string>
+    <string name="core_manual_draft_invalid_title">Gespeicherter Textentwurf nicht lesbar</string>
+    <string name="core_manual_draft_invalid_message">Der Entwurfseintrag ist beschädigt und wurde nicht geändert. Sie können ihn später ansehen oder genau diesen Eintrag verwerfen.</string>
+    <string name="core_manual_draft_already_saved">Die Notiz enthält diesen Text bereits. Der gespeicherte Entwurf wurde nicht angewendet. Sie können ihn ansehen/kopieren, später bearbeiten oder verwerfen.</string>
+    <string name="core_manual_draft_input_limit">Diese Bearbeitung überschreitet das lokale Limit von 1.000.000 Zeichen. Die gesamte Eingabe wurde abgelehnt und der vorhandene Text beibehalten.</string>
+    <string name="core_manual_draft_cleanup_failed">Der Wiederherstellungsentwurf wurde nicht gelöscht und bleibt auf diesem Gerät. Versuchen Sie es erneut über das Menü „Mehr“ der Notiz.</string>
 </resources>

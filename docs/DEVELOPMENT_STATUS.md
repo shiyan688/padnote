@@ -2,6 +2,14 @@
 
 目标：在平板与 AI 在同一张纸上交流学习，方便分享给人，也能把上下文交给自己选择的电脑 Agent。模型、语音和工具由用户或 Agent 选择；当前不建设 PadNote 自有服务器。
 
+## beta.24 手动文字编辑
+
+手动编辑失败时，原文字和纸面布局保持不变，编辑内容留在编辑器中，可修正后重试或明确取消；新文字通过排版检查后才提交，成功后可用一次“撤销”还原。重开笔记时，用户可以选择继续编辑已保存草稿、稍后处理或丢弃；匹配按笔记中的文字流与基线原文进行，不依赖瞬时 fragment ID，也不会自动覆盖笔记。草稿保存有容量上限，不是逐键保存。
+
+Android beta.24 versionCode 60 的构建和产物核验通过：52 suites / 381 JVM tests，0 failures、0 errors、0 skipped；lint 0 errors、161 warnings；4 ABI，app 与 instrumentation APK 使用原测试签名。Instrumentation tests 仅编译，未在设备运行。相较 beta.23 增加的 2 条 lint warning 均为不再使用的旧提示字符串（`UnusedResources`），无功能影响。
+
+每条草稿最多 1,000,000 UTF-16 units、4 MiB UTF-8、8 MiB JSON record。超过上限时应提示无法保存并保留编辑器内容。损坏且超过 8 MiB 的草稿缺少可用于明确丢弃的 bounded raw hash，目前应用内不能按 hash 丢弃。具体检查步骤见 [beta.24 手动文字编辑检查](BETA24_TESTING.md)。Windows 连接助手仍为 beta.20。
+
 ## beta.23 的改动
 
 Android 纸面新增四项保护：文字笔在放置手势完成后才创建文本框，拖动、多指加入或取消不会误插入；长 Markdown 表格可跨页续排并重复表头，同时保留原始文字；导入图片越界的旧 `.padnote` 时提前拒绝，避免书架留下打不开的笔记；PDF 无法准备时先提示，再决定是否打开系统保存器。

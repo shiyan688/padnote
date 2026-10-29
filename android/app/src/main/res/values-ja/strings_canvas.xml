@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">インクネイビー</string>
     <string name="canvas_stroke_width_preview_desc">ツールの線幅プレビュー</string>
     <string name="canvas_size_preview_desc">現在の線幅プレビュー</string>
+    <string name="canvas_manual_source_limit">このテキストは100,000文字の上限を超えているため、紙面に配置されませんでした。全文の下書きは開いたままです。短くするか分割して再試行してください。</string>
+    <string name="canvas_manual_render_limit">このテキストは端末の描画容量を超えているため、紙面に配置されませんでした。全文の下書きは開いたままです。短くするか分割して再試行してください。</string>
+    <string name="canvas_manual_page_limit">このテキストは500ページ以内に完全配置できず、紙面に反映されませんでした。全文の下書きは開いたままです。短くするか分割して再試行してください。</string>
+    <string name="canvas_manual_unplaceable">一部の内容を1ページに安全に配置できません。全文の下書きは開いたままです。表またはテキストを分割して再試行してください。</string>
+    <string name="canvas_manual_table_unsupported">この表は現在のルールでは安全に分割できません。全文の下書きは開いたままです。短くするか分割して再試行してください。</string>
+    <string name="canvas_manual_table_expansion_limit">この表は安全な分割処理の上限を超えています。全文の下書きは開いたままです。短くするか分割して再試行してください。</string>
+    <string name="widget_commit_empty_text">「完了」を押す前にテキストを入力してください。下書きは開いたままです。</string>
+    <string name="canvas_manual_change_rejected">この変更は完全には配置できません。元のテキストとレイアウトを維持しました。文字を小さくする、内容を分割する、または位置を変えてください。</string>
+    <string name="core_manual_draft_saved">未完了のテキスト下書きを別に保存しました。</string>
+    <string name="core_manual_draft_checkpoint_failed">未完了の下書きを保存できませんでした。編集画面に残っています。離れる前にコピーしてください。</string>
+    <string name="core_manual_draft_recover_title">未完了のテキスト下書き</string>
+    <string name="core_manual_draft_recover_message">保存済みの手動編集があります。この文字流で編集を続ける、後で対応する、または破棄できます。</string>
+    <string name="core_manual_draft_restore">編集を続ける</string>
+    <string name="core_manual_draft_later">後で</string>
+    <string name="core_manual_draft_discard">下書きを破棄</string>
+    <string name="core_manual_draft_mismatch">この下書きは元の文字流と一致しなくなったため適用されませんでした。表示/コピー、後で対応、または破棄できます。</string>
+    <string name="core_manual_draft_view_copy">下書きを表示/コピー</string>
+    <string name="core_manual_draft_copy">下書きをコピー</string>
+    <string name="core_manual_draft_invalid_title">保存済み下書きを読み込めません</string>
+    <string name="core_manual_draft_invalid_message">下書き記録が破損しています。変更はしていません。後で対応するか、この記録を破棄できます。</string>
+    <string name="core_manual_draft_already_saved">ノートにはすでにこのテキストがあります。保存済み下書きは適用されていません。表示/コピー、後で対応、または破棄できます。</string>
+    <string name="core_manual_draft_input_limit">この編集はローカル下書きの1,000,000文字上限を超えています。入力全体を拒否し、既存のテキストを保持しました。</string>
+    <string name="core_manual_draft_cleanup_failed">復元用下書きは削除されず、この端末に残っています。ノートの「その他」メニューから再試行できます。</string>
 </resources>

@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">Ink navy</string>
     <string name="canvas_stroke_width_preview_desc">Tool stroke width preview</string>
     <string name="canvas_size_preview_desc">Current stroke size preview</string>
+    <string name="canvas_manual_source_limit">This text exceeds the 100,000-character limit, so it was not placed on the page. The full draft is still open; shorten or split it and try again.</string>
+    <string name="canvas_manual_render_limit">This text exceeds the local rendering limit, so it was not placed on the page. The full draft is still open; shorten or split it and try again.</string>
+    <string name="canvas_manual_page_limit">This text cannot be laid out within the 500-page limit, so it was not placed. The full draft is still open; shorten or split it and try again.</string>
+    <string name="canvas_manual_unplaceable">Some content cannot be laid out safely on one page. The full draft is still open; split the table or text and try again.</string>
+    <string name="canvas_manual_table_unsupported">This table cannot be split safely with the current rules. The full draft is still open; shorten or divide it and try again.</string>
+    <string name="canvas_manual_table_expansion_limit">This table exceeds the safe pagination work limit. The full draft is still open; shorten or divide it and try again.</string>
+    <string name="widget_commit_empty_text">Enter text before Done. Your draft is still open.</string>
+    <string name="canvas_manual_change_rejected">This change cannot be laid out completely. The original text and layout were kept. Try a smaller font, split the content, or move it.</string>
+    <string name="core_manual_draft_saved">Unfinished text draft saved separately.</string>
+    <string name="core_manual_draft_checkpoint_failed">The unfinished text draft could not be saved. It remains open; copy it before leaving.</string>
+    <string name="core_manual_draft_recover_title">Unfinished text draft</string>
+    <string name="core_manual_draft_recover_message">A saved manual edit is available. Restore it to this exact text flow, leave it for later, or discard it.</string>
+    <string name="core_manual_draft_restore">Continue editing</string>
+    <string name="core_manual_draft_later">Later</string>
+    <string name="core_manual_draft_discard">Discard draft</string>
+    <string name="core_manual_draft_mismatch">This draft no longer matches its original text flow. It was not applied. View or copy it, leave it for later, or discard it.</string>
+    <string name="core_manual_draft_view_copy">View / copy draft</string>
+    <string name="core_manual_draft_copy">Copy draft</string>
+    <string name="core_manual_draft_invalid_title">Saved text draft cannot be read</string>
+    <string name="core_manual_draft_invalid_message">The draft record is damaged. It was not changed. You can leave it for later or discard this exact record.</string>
+    <string name="core_manual_draft_already_saved">The note already contains this text. The saved draft was not applied. You can review or copy it, leave it for later, or discard it.</string>
+    <string name="core_manual_draft_input_limit">This edit exceeds the 1,000,000-character local draft limit. The entire change was rejected and the existing text was kept.</string>
+    <string name="core_manual_draft_cleanup_failed">The recovery draft was not cleared and remains on this device. Retry from the note’s More menu.</string>
 </resources>

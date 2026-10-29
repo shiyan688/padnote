@@ -12,7 +12,7 @@ PadNote 把笔记、手写与 AI 辅助学习放在同一张纸面上。你可�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 电脑接收纸面材料并建立任务；在电脑任务列表查看处理进度，并在任务详情查看返回内容 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [使用指南](docs/BETA23_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [使用指南](docs/BETA24_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 ## 演示画面
 
@@ -45,6 +45,12 @@ PadNote 把笔记、手写与 AI 辅助学习放在同一张纸面上。你可�
 ### 一页学习示例
 
 下面展示一份五页的贝叶斯检测示例笔记：先看纸面内容，再放大公式与分支图。文字由人工编写，蓝色笔迹为合成样例，流程图为手工绘制；不含模型或 Agent 返回内容。应用界面截图来自 beta.17 平板实机，不代表 beta.23 的运行画面。截图与裁切信息见[演示素材说明](docs/media/2026-10-28/README.md)。
+
+
+[![30 秒实机截图导览（合成学习笔记）](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
+
+[观看 30 秒实机截图导览](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)。这是已公开合成学习笔记的固定画面导览，使用淡化转场；不是 beta.24 连续操作录屏。素材来源见[说明](docs/media/2026-10-28/README.md)。
+
 
 <p align="center"><img src="docs/media/2026-10-28/paper-learning-app.png" alt="PadNote 合成学习示例的完整应用页面" width="820"></p>
 

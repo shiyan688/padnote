@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">Bleu encre</string>
     <string name="canvas_stroke_width_preview_desc">Aperçu de l’épaisseur du trait</string>
     <string name="canvas_size_preview_desc">Aperçu de l’épaisseur actuelle</string>
+    <string name="canvas_manual_source_limit">Ce texte dépasse la limite de 100 000 caractères et n’a pas été placé sur la page. Le brouillon complet reste ouvert ; raccourcissez-le ou divisez-le, puis réessayez.</string>
+    <string name="canvas_manual_render_limit">Ce texte dépasse la capacité de rendu locale et n’a pas été placé sur la page. Le brouillon complet reste ouvert ; raccourcissez-le ou divisez-le, puis réessayez.</string>
+    <string name="canvas_manual_page_limit">Ce texte ne peut pas être entièrement mis en page dans la limite de 500 pages et n’a pas été placé. Le brouillon complet reste ouvert ; raccourcissez-le ou divisez-le, puis réessayez.</string>
+    <string name="canvas_manual_unplaceable">Certains éléments ne peuvent pas être mis en page de façon sûre sur une seule feuille. Le brouillon complet reste ouvert ; divisez le tableau ou le texte, puis réessayez.</string>
+    <string name="canvas_manual_table_unsupported">Ce tableau ne peut pas être divisé de façon sûre avec les règles actuelles. Le brouillon complet reste ouvert ; raccourcissez-le ou divisez-le, puis réessayez.</string>
+    <string name="canvas_manual_table_expansion_limit">Ce tableau dépasse la limite de découpage sûre. Le brouillon complet reste ouvert ; raccourcissez-le ou divisez-le, puis réessayez.</string>
+    <string name="widget_commit_empty_text">Saisissez du texte avant d’appuyer sur « Terminé ». Le brouillon reste ouvert.</string>
+    <string name="canvas_manual_change_rejected">Cette modification ne peut pas être mise en page entièrement. Le texte et la mise en page d’origine sont conservés. Réduisez la taille, divisez le contenu ou déplacez-le.</string>
+    <string name="core_manual_draft_saved">Le brouillon de texte inachevé a été enregistré séparément.</string>
+    <string name="core_manual_draft_checkpoint_failed">Impossible d’enregistrer le brouillon inachevé. Il reste ouvert ; copiez-le avant de quitter.</string>
+    <string name="core_manual_draft_recover_title">Brouillon de texte inachevé</string>
+    <string name="core_manual_draft_recover_message">Un brouillon manuel enregistré est disponible. Vous pouvez continuer à le modifier dans ce flux, le garder pour plus tard ou le supprimer.</string>
+    <string name="core_manual_draft_restore">Continuer la modification</string>
+    <string name="core_manual_draft_later">Plus tard</string>
+    <string name="core_manual_draft_discard">Supprimer le brouillon</string>
+    <string name="core_manual_draft_mismatch">Ce brouillon ne correspond plus à son flux d’origine et n’a pas été appliqué. Affichez-le ou copiez-le, gardez-le pour plus tard ou supprimez-le.</string>
+    <string name="core_manual_draft_view_copy">Afficher/copier le brouillon</string>
+    <string name="core_manual_draft_copy">Copier le brouillon</string>
+    <string name="core_manual_draft_invalid_title">Impossible de lire le brouillon enregistré</string>
+    <string name="core_manual_draft_invalid_message">L’enregistrement du brouillon est endommagé et n’a pas été modifié. Vous pouvez le garder pour plus tard ou supprimer cet enregistrement.</string>
+    <string name="core_manual_draft_already_saved">Cette note contient déjà ce texte. Le brouillon enregistré n’a pas été appliqué. Vous pouvez le consulter ou le copier, le traiter plus tard ou le supprimer.</string>
+    <string name="core_manual_draft_input_limit">Cette modification dépasse la limite locale de 1 000 000 caractères. Elle a été entièrement refusée et le texte existant a été conservé.</string>
+    <string name="core_manual_draft_cleanup_failed">Le brouillon de récupération n’a pas été supprimé et reste sur cet appareil. Réessayez depuis le menu Plus de la note.</string>
 </resources>

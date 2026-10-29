@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">잉크 네이비</string>
     <string name="canvas_stroke_width_preview_desc">도구 획 굵기 미리보기</string>
     <string name="canvas_size_preview_desc">현재 획 굵기 미리보기</string>
+    <string name="canvas_manual_source_limit">텍스트가 100,000자 제한을 초과해 페이지에 배치되지 않았습니다. 전체 초안은 편집기에 남아 있습니다. 줄이거나 나눠서 다시 시도하세요.</string>
+    <string name="canvas_manual_render_limit">텍스트가 기기 렌더링 한도를 초과해 페이지에 배치되지 않았습니다. 전체 초안은 편집기에 남아 있습니다. 줄이거나 나눠서 다시 시도하세요.</string>
+    <string name="canvas_manual_page_limit">텍스트를 500페이지 안에 모두 배치할 수 없어 페이지에 반영되지 않았습니다. 전체 초안은 편집기에 남아 있습니다. 줄이거나 나눠서 다시 시도하세요.</string>
+    <string name="canvas_manual_unplaceable">일부 내용을 한 페이지에 안전하게 배치할 수 없습니다. 전체 초안은 편집기에 남아 있습니다. 표나 텍스트를 나눠 다시 시도하세요.</string>
+    <string name="canvas_manual_table_unsupported">현재 규칙으로는 이 표를 안전하게 나눌 수 없습니다. 전체 초안은 편집기에 남아 있습니다. 줄이거나 나눠서 다시 시도하세요.</string>
+    <string name="canvas_manual_table_expansion_limit">이 표가 안전한 분할 한도를 초과했습니다. 전체 초안은 편집기에 남아 있습니다. 줄이거나 나눠서 다시 시도하세요.</string>
+    <string name="widget_commit_empty_text">완료를 누르기 전에 텍스트를 입력하세요. 초안은 편집기에 남아 있습니다.</string>
+    <string name="canvas_manual_change_rejected">변경 내용을 완전히 배치할 수 없어 원래 텍스트와 레이아웃을 유지했습니다. 글꼴을 줄이거나 내용을 나누거나 위치를 바꿔 보세요.</string>
+    <string name="core_manual_draft_saved">완료되지 않은 텍스트 초안을 별도로 저장했습니다.</string>
+    <string name="core_manual_draft_checkpoint_failed">완료되지 않은 초안을 저장하지 못했습니다. 편집기에 남아 있으니 떠나기 전에 복사하세요.</string>
+    <string name="core_manual_draft_recover_title">완료되지 않은 텍스트 초안</string>
+    <string name="core_manual_draft_recover_message">저장된 수동 편집 초안이 있습니다. 이 텍스트 흐름에서 계속 편집하거나 나중에 처리하거나 버릴 수 있습니다.</string>
+    <string name="core_manual_draft_restore">계속 편집</string>
+    <string name="core_manual_draft_later">나중에</string>
+    <string name="core_manual_draft_discard">초안 버리기</string>
+    <string name="core_manual_draft_mismatch">이 초안은 원래 텍스트 흐름과 더 이상 일치하지 않아 적용하지 않았습니다. 보기/복사, 나중에 처리 또는 버리기를 선택하세요.</string>
+    <string name="core_manual_draft_view_copy">초안 보기/복사</string>
+    <string name="core_manual_draft_copy">초안 복사</string>
+    <string name="core_manual_draft_invalid_title">저장된 텍스트 초안을 읽을 수 없음</string>
+    <string name="core_manual_draft_invalid_message">초안 기록이 손상되었으며 변경하지 않았습니다. 나중에 처리하거나 이 기록을 버릴 수 있습니다.</string>
+    <string name="core_manual_draft_already_saved">노트에 이미 이 텍스트가 있습니다. 저장된 초안은 적용되지 않았습니다. 보기/복사, 나중에 처리 또는 버리기를 선택할 수 있습니다.</string>
+    <string name="core_manual_draft_input_limit">편집 내용이 로컬 초안 한도인 1,000,000자를 초과했습니다. 전체 입력을 거부하고 기존 텍스트를 유지했습니다.</string>
+    <string name="core_manual_draft_cleanup_failed">복구 초안이 삭제되지 않았으며 이 기기에 남아 있습니다. 노트의 더보기 메뉴에서 다시 시도하세요.</string>
 </resources>

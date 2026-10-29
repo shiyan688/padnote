@@ -71,6 +71,7 @@ import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -519,8 +520,37 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private String pendingNewNoteCoverLabel = "";
     private TextView newNoteCoverStatus;
     private final Set<String> newlyInsertedTextBoxIds = new HashSet<>();
+    private final Set<String> manualCommitInProgressIds = new HashSet<>();
     private String selectedTextBoxId;
     private String selectedTextFlowId;
+    private ManualTextDraftStore manualTextDraftStore;
+    private final Map<String, ManualTextDraftStore.DraftToken> manualTextDraftTokens = new HashMap<>();
+    private final Set<String> unresolvedManualDraftNoteIds = new HashSet<>();
+    private final List<PendingManualDraftClear> pendingManualDraftClears = new ArrayList<>();
+    private String pendingManualDraftRecoveryNoteId;
+    private int manualDraftCheckpointStatusId;
+    private EditText activeManualDialogSource;
+    private NoteTextBox activeManualDialogTarget;
+    private NoteTextBox.Format activeManualDialogFormat;
+    private boolean activeManualDialogNewlyInserted;
+    private String activeManualDialogSessionId;
+    private long activeManualDialogGeneration;
+    private String activeManualDialogBaseFingerprint;
+
+    private static final class PendingManualDraftClear {
+        final String noteId;
+        final ManualTextDraftStore.DraftToken token;
+        final long documentRevision;
+        final long editorSessionGeneration;
+
+        PendingManualDraftClear(String noteId, ManualTextDraftStore.DraftToken token,
+                                long documentRevision, long editorSessionGeneration) {
+            this.noteId = noteId;
+            this.token = token;
+            this.documentRevision = documentRevision;
+            this.editorSessionGeneration = editorSessionGeneration;
+        }
+    }
 
     private final Runnable delayedSave = () -> saveDocument(false);
 
@@ -538,6 +568,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             pendingRestoredMaterialRequestNonce=savedInstanceState.getString("library_material_export_nonce");
         }
         preferences = getSharedPreferences("padnote-tools", MODE_PRIVATE);
+        manualTextDraftStore = new ManualTextDraftStore(this);
         aiConfigStore = new AiConfigStore(this);
         aiConversationStore = new AiConversationStore(this);
         vaultStore = new VaultStore(this);
@@ -597,13 +628,23 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         super.onPause();
         if (digitizationController != null) digitizationController.pause();
         if (editorVisible) {
-            commitInlineTextEditorExcept(null);
+            if (!commitActiveManualEditor()) {
+                checkpointActiveManualEditor();
+            }
         }
         flushPendingAiInputDraft();
         handler.removeCallbacks(delayedSave);
         if (editorVisible) {
             saveDocument(false);
             persistAiConversation();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (manualDraftCheckpointStatusId != 0 && pressureView != null) {
+            pressureView.setText(manualDraftCheckpointStatusId);
         }
     }
 
@@ -721,7 +762,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     public void onTextInsertRequested(float worldX, float worldY) {
-        commitInlineTextEditorExcept(null);
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
+            return;
+        }
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            Toast.makeText(this, R.string.tail_saving, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!commitInlineTextEditorExcept(null)) return;
         NoteTextBox inserted = canvasView.addTextBoxAt(
                 NoteTextBox.Format.MARKDOWN, "", worldX, worldY);
         if (inserted == null) {
@@ -742,6 +791,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void showBookshelf() {
+        if (editorVisible && !commitOrCheckpointBeforeLeaving()) return;
         flushPendingAiInputDraft();
         bookshelfCatalogRenderedForTest=false;
         pendingVideoHubAfterSave=false;
@@ -1438,7 +1488,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void showVideoHubForCurrentNote() {
         if(!editorVisible||currentNoteId==null){Toast.makeText(this,R.string.core_video_current_note_missing,Toast.LENGTH_SHORT).show();return;}
-        commitInlineTextEditorExcept(null);
+        if (blockForUnresolvedManualDraft()) return;
+        if (!commitInlineTextEditorExcept(null)) return;
         // This entry synchronously requests a save when the canvas is dirty. A
         // previously queued debounce must not write a second revision after the
         // hub opens and make an unchanged frozen source appear to have raced.
@@ -1456,7 +1507,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(!editorVisible||currentNoteId==null||!restoreCompleted||canvasView==null){
             Toast.makeText(this,R.string.core_paper_current_note_not_restored,Toast.LENGTH_LONG).show();return;
         }
-        commitInlineTextEditorExcept(null);
+        if (blockForUnresolvedManualDraft()) return;
+        if (!commitInlineTextEditorExcept(null)) return;
         handler.removeCallbacks(delayedSave);
         if(saveInFlight||documentRevision!=lastSavedRevision){
             pendingPaperHandoffAfterSave=true;
@@ -2794,6 +2846,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
      *                        opening an existing one, whose style comes from storage
      */
     private void openNote(NoteStore.Entry entry, PageStyle styleForNewNote) {
+        if (editorVisible && currentNoteId != null && !entry.id.equals(currentNoteId)
+                && !commitOrCheckpointBeforeLeaving()) return;
         if (!entry.id.equals(currentNoteId)) cancelAiSelectionRender();
         flushPendingAiInputDraft();
         pendingPaperHandoffAfterRestore = false;
@@ -2864,6 +2918,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (CoverStore.has(this, entry.id)) {
             actions.add(2, R.string.core_remove_cover);
         }
+        ManualTextDraftStore.LoadResult manualDraft = manualTextDraftStore == null
+                ? null : manualTextDraftStore.load(entry.id);
+        boolean hasManualDraft = manualDraft != null
+                && manualDraft.status != ManualTextDraftStore.LoadStatus.NONE;
+        if (hasManualDraft) actions.add(R.string.core_manual_draft_recover_title);
         String[] labels = new String[actions.size()];
         for (int index = 0; index < actions.size(); index++) labels[index] = getString(actions.get(index));
         ChoiceRows.builder(this)
@@ -2885,6 +2944,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         openNoteThenDigitize(entry);
                     } else if (action == R.string.core_video_tasks) {
                         showNoteVideoHub(entry);
+                    } else if (action == R.string.core_manual_draft_recover_title) {
+                        openNote(entry);
+                        handler.postDelayed(() -> offerManualDraftRecovery(entry.id), 250);
                     } else {
                         confirmDeleteNote(entry);
                     }
@@ -3206,7 +3268,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         row.addView(iconButton(ToolIconButton.Icon.PAGE_MENU, getString(R.string.core_page_manager), view -> showPageActions()));
         row.addView(iconButton(ToolIconButton.Icon.IMAGE, getString(R.string.core_insert_image), view -> launchImportImage()));
         row.addView(iconButton(ToolIconButton.Icon.SAVE, getString(R.string.core_save_now), view -> {
-            commitInlineTextEditorExcept(null);
+            if (!commitInlineTextEditorExcept(null)) return;
             handler.removeCallbacks(delayedSave);
             saveDocument(true);
         }));
@@ -3398,11 +3460,22 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             Toast.makeText(this, R.string.core_outline_loading, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
+            return;
+        }
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            Toast.makeText(this, R.string.tail_saving, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!commitInlineTextEditorExcept(null)) return;
         NoteTextBox.Format initialFormat = existing == null
                 ? NoteTextBox.Format.LATEX : existing.format;
         NoteTextBox.Format[] selectedFormat = new NoteTextBox.Format[]{initialFormat};
         CompiledTextWebView[] previewView = new CompiledTextWebView[1];
         boolean[] insertionCompleted = new boolean[]{false};
+        boolean[] dialogCommitted = new boolean[]{false};
+        boolean[] explicitCancel = new boolean[]{false};
 
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -3439,7 +3512,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         sourceInput.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        sourceInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(100_000)});
+        sourceInput.setFilters(new InputFilter[]{new ManualDraftInputFilter(this)});
         sourceInput.setPadding(dp(14), dp(12), dp(14), dp(12));
         sourceInput.setBackground(roundedBackground(Color.rgb(253, 252, 248),
                 Color.rgb(188, 199, 207), 10));
@@ -3495,11 +3568,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         };
         latexButton.setOnClickListener(view -> {
             selectedFormat[0] = NoteTextBox.Format.LATEX;
+            activeManualDialogFormat = selectedFormat[0];
             updateFormatButtons.run();
             renderPreview.run();
         });
         markdownButton.setOnClickListener(view -> {
             selectedFormat[0] = NoteTextBox.Format.MARKDOWN;
+            activeManualDialogFormat = selectedFormat[0];
             updateFormatButtons.run();
             renderPreview.run();
         });
@@ -3538,27 +3613,59 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             dialogBuilder.setNeutralButton(R.string.core_text_delete_action, null);
         }
         AlertDialog dialog = dialogBuilder.create();
+        dialog.setCancelable(false);
+        dialog.setCanceledOnTouchOutside(false);
         dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
+                explicitCancel[0] = true;
+                dialog.dismiss();
+            });
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-                    String source = sourceInput.getText().toString().trim();
+                    String source = sourceInput.getText().toString();
                     if (source.isEmpty()) {
-                        Toast.makeText(this, R.string.core_text_compile_empty, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, R.string.widget_commit_empty_text, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    NoteCanvasView.TextEditResult result;
+                    try {
+                        if (newlyInserted && existing != null) {
+                            result = canvasView.commitNewTextBox(existing.id, selectedFormat[0], source);
+                        } else if (existing == null) {
+                            NoteTextBox created = canvasView.addTextBox(selectedFormat[0], source);
+                            if (created == null) {
+                                Toast.makeText(this, R.string.widget_render_failed, Toast.LENGTH_LONG).show();
+                                return;
+                            }
+                            selectedTextBoxId = created.id;
+                            result = NoteCanvasView.TextEditResult.committed();
+                            updateTextBoxOverlays(canvasView.getTextBoxes());
+                        } else {
+                            result = canvasView.updateTextBox(existing.id, selectedFormat[0], source);
+                        }
+                    } catch (TextFlowCapacity.Rejection rejected) {
+                        Toast.makeText(this, manualFailureString(rejected.failure), Toast.LENGTH_LONG).show();
+                        return;
+                    } catch (IllegalArgumentException rejected) {
+                        Toast.makeText(this, R.string.widget_render_failed, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (result == null || !result.committed) {
+                        Toast.makeText(this, manualFailureString(result == null ? null : result.failure),
+                                Toast.LENGTH_LONG).show();
                         return;
                     }
                     if (newlyInserted && existing != null) {
-                        canvasView.commitNewTextBox(existing.id, selectedFormat[0], source);
                         insertionCompleted[0] = true;
                         selectedTextBoxId = existing.id;
-                    } else if (existing == null) {
-                        NoteTextBox created = canvasView.addTextBox(selectedFormat[0], source);
-                        if (created != null) {
-                            selectedTextBoxId = created.id;
-                            updateTextBoxOverlays(canvasView.getTextBoxes());
-                        }
-                    } else {
-                        canvasView.updateTextBox(existing.id, selectedFormat[0], source);
+                        newlyInsertedTextBoxIds.remove(existing.id);
+                        queueManualDraftClear(currentNoteId);
+                    } else if (existing != null) {
                         selectedTextBoxId = existing.id;
+                        queueManualDraftClear(currentNoteId);
+                    } else {
+                        queueManualDraftClear(currentNoteId);
                     }
+                    dialogCommitted[0] = true;
                     dialog.dismiss();
                 });
             if (existing != null && !newlyInserted) {
@@ -3568,6 +3675,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 });
             }
             sourceInput.requestFocus();
+            activeManualDialogSource = sourceInput;
+            activeManualDialogTarget = existing == null ? null : existing.copy();
+            activeManualDialogFormat = selectedFormat[0];
+            activeManualDialogNewlyInserted = newlyInserted;
+            activeManualDialogSessionId = java.util.UUID.randomUUID().toString();
+            activeManualDialogGeneration = 0L;
+            activeManualDialogBaseFingerprint = existing == null ? null
+                    : ManualTextDraftStore.sourceFingerprint(existing.source);
             if (dialog.getWindow() != null) {
                 dialog.getWindow().setSoftInputMode(
                         android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE |
@@ -3575,6 +3690,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
         });
         dialog.setOnDismissListener(ignored -> {
+            if (activeManualDialogSource == sourceInput) {
+                activeManualDialogSource = null;
+                activeManualDialogTarget = null;
+                activeManualDialogFormat = null;
+                activeManualDialogSessionId = null;
+                activeManualDialogBaseFingerprint = null;
+            }
             if (scheduledPreview[0] != null) {
                 handler.removeCallbacks(scheduledPreview[0]);
                 scheduledPreview[0] = null;
@@ -3583,17 +3705,35 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 previewView[0].destroy();
                 previewView[0] = null;
             }
-            if (newlyInserted && existing != null && !insertionCompleted[0]) {
+            if (newlyInserted && existing != null && !insertionCompleted[0]
+                    && explicitCancel[0] && !dialogCommitted[0]) {
                 if (existing.id.equals(selectedTextBoxId)) {
                     selectedTextBoxId = null;
                 }
+                if (existing.flowId.equals(selectedTextFlowId)) selectedTextFlowId = null;
                 canvasView.discardNewTextBox(existing.id);
             }
+            if (explicitCancel[0] && !dialogCommitted[0])
+                clearManualDraftAfterExplicitDiscard(currentNoteId);
             if (canvasView != null) {
                 updateTextBoxOverlays(canvasView.getTextBoxes());
             }
         });
         dialog.show();
+    }
+
+    private int manualFailureString(TextFlowCapacity.Failure failure) {
+        if (failure == null) return R.string.widget_render_failed;
+        switch (failure) {
+            case SOURCE_TOO_LONG: return R.string.canvas_manual_source_limit;
+            case RENDER_SOURCE_TOO_LARGE: return R.string.canvas_manual_render_limit;
+            case PAGE_LIMIT: return R.string.canvas_manual_page_limit;
+            case UNPLACEABLE_BLOCK: return R.string.canvas_manual_unplaceable;
+            case UNSUPPORTED_TABLE: return R.string.canvas_manual_table_unsupported;
+            case TABLE_EXPANSION_LIMIT: return R.string.canvas_manual_table_expansion_limit;
+            case NONE:
+            default: return R.string.widget_render_failed;
+        }
     }
 
     private void updateTextBoxOverlays(List<NoteTextBox> textBoxes) {
@@ -3625,7 +3765,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 view = new NoteTextBoxView(this, new NoteTextBoxView.Listener() {
                     @Override
                     public void onSelect(NoteTextBox selected) {
-                        commitInlineTextEditorExcept(selected.id);
+                    }
+
+                    @Override
+                    public boolean onSelectAllowed(NoteTextBox selected) {
+                        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+                            offerManualDraftRecovery(currentNoteId);
+                            return false;
+                        }
+                        if (!commitInlineTextEditorExcept(selected.id)) return false;
                         selectedTextBoxId = selected.id;
                         selectedTextFlowId = selected.flowId;
                         canvasView.selectAiTextFragment(selected.id);
@@ -3633,18 +3781,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         if (pressureView != null) {
                             pressureView.setText(R.string.core_textbox_selected_hint);
                         }
+                        return true;
                     }
 
                     @Override
                     public void onEditRequested(NoteTextBox selected) {
-                        selectedTextBoxId = selected.id;
-                        selectedTextFlowId = selected.flowId;
-                        beginInlineTextEditing(selected.id);
+                    }
+
+                    @Override
+                    public boolean onEditRequestedAllowed(NoteTextBox selected) {
+                        return beginInlineTextEditing(selected.id);
                     }
 
                     @Override
                     public void onMove(NoteTextBox selected, float worldX, float worldY) {
-                        canvasView.moveTextBox(selected.id, worldX, worldY);
+                        showManualChangeRejected(canvasView.moveTextBox(selected.id, worldX, worldY));
                     }
 
                     @Override
@@ -3657,8 +3808,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     @Override
                     public void onScaleToArea(NoteTextBox selected, float worldWidth,
                                               float worldHeight) {
-                        canvasView.scaleTextFlowToArea(selected.id, worldWidth,
-                                worldHeight);
+                        showManualChangeRejected(canvasView.scaleTextFlowToArea(
+                                selected.id, worldWidth, worldHeight));
                     }
 
                     @Override
@@ -3669,7 +3820,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
                     @Override
                     public void onFontSizeChanged(NoteTextBox selected, float fontSizeSp) {
-                        canvasView.setTextFlowFontSize(selected.id, fontSizeSp);
+                        showManualChangeRejected(canvasView.setTextFlowFontSize(selected.id, fontSizeSp));
                     }
 
                     @Override
@@ -3680,20 +3831,47 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     @Override
                     public void onResize(NoteTextBox selected, float worldWidth,
                                          float worldHeight) {
-                        canvasView.resizeTextBox(selected.id, worldWidth, worldHeight);
+                        showManualChangeRejected(canvasView.resizeTextBox(
+                                selected.id, worldWidth, worldHeight));
                     }
 
                     @Override
                     public void onCommit(NoteTextBox selected, NoteTextBox.Format format,
                                          String source, float fontSizeSp,
                                          float lineHeight) {
-                        if (newlyInsertedTextBoxIds.remove(selected.id)) {
-                            canvasView.commitNewTextBox(selected.id, format, source,
-                                    fontSizeSp, lineHeight);
-                        } else {
-                            canvasView.updateTextBox(selected.id, format, source,
-                                    fontSizeSp, lineHeight);
+                    }
+
+                    @Override
+                    public NoteCanvasView.TextEditResult onCommitResult(
+                            NoteTextBox selected, NoteTextBox.Format format, String source,
+                            float fontSizeSp, float lineHeight) {
+                        manualCommitInProgressIds.add(selected.id);
+                        NoteCanvasView.TextEditResult result;
+                        try {
+                            if (newlyInsertedTextBoxIds.contains(selected.id)) {
+                                result = canvasView.commitNewTextBox(selected.id, format, source,
+                                        fontSizeSp, lineHeight);
+                            } else {
+                                result = canvasView.updateTextBox(selected.id, format, source,
+                                        fontSizeSp, lineHeight);
+                            }
+                        } catch (RuntimeException error) {
+                            manualCommitInProgressIds.remove(selected.id);
+                            updateTextBoxOverlays(canvasView.getTextBoxes());
+                            throw error;
                         }
+                        if (result == null || !result.committed) {
+                            manualCommitInProgressIds.remove(selected.id);
+                            updateTextBoxOverlays(canvasView.getTextBoxes());
+                        }
+                        return result;
+                    }
+
+                    @Override
+                    public void onCommitSucceeded(NoteTextBox selected) {
+                        manualCommitInProgressIds.remove(selected.id);
+                        queueManualDraftClear(currentNoteId);
+                        newlyInsertedTextBoxIds.remove(selected.id);
                         selectedTextBoxId = null;
                         selectedTextFlowId = null;
                         updateTextBoxOverlays(canvasView.getTextBoxes());
@@ -3703,7 +3881,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     }
 
                     @Override
+                    public void onCommitRejected(NoteTextBox selected) {
+                        checkpointActiveManualEditor();
+                    }
+
+                    @Override
                     public void onCancel(NoteTextBox selected) {
+                        manualCommitInProgressIds.remove(selected.id);
+                        clearManualDraftAfterExplicitDiscard(currentNoteId);
                         if (newlyInsertedTextBoxIds.remove(selected.id)) {
                             selectedTextBoxId = null;
                             selectedTextFlowId = null;
@@ -3718,6 +3903,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     @Override
                     public void onDelete(NoteTextBox selected) {
                         if (newlyInsertedTextBoxIds.remove(selected.id)) {
+                            clearManualDraftAfterExplicitDiscard(currentNoteId);
                             selectedTextBoxId = null;
                             selectedTextFlowId = null;
                             canvasView.discardNewTextBox(selected.id);
@@ -3741,6 +3927,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
         }
         for (String id : removedIds) {
+            if (manualCommitInProgressIds.contains(id)) continue;
             NoteTextBoxView removed = textBoxViews.remove(id);
             if (removed != null) {
                 canvasFrame.removeView(removed);
@@ -3765,8 +3952,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         newlyInsertedTextBoxIds.retainAll(desiredIds);
     }
 
-    private void beginInlineTextEditing(String textBoxId) {
-        commitInlineTextEditorExcept(textBoxId);
+    private boolean beginInlineTextEditing(String textBoxId) {
+        if (unresolvedManualDraftNoteIds.contains(currentNoteId)) {
+            offerManualDraftRecovery(currentNoteId);
+            return false;
+        }
+        if (hasPendingManualDraftClear(currentNoteId)) {
+            if (pressureView != null) pressureView.setText(R.string.tail_saving);
+            return false;
+        }
+        if (!commitInlineTextEditorExcept(textBoxId)) return false;
         canvasView.clearTextBoxSelection();
         selectedTextBoxId = textBoxId;
         NoteTextBoxView boundView = textBoxViews.get(textBoxId);
@@ -3774,23 +3969,280 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         selectedTextFlowId = bound == null ? null : bound.flowId;
         updateTextBoxOverlays(canvasView.getTextBoxes());
         NoteTextBoxView view = textBoxViews.get(textBoxId);
-        if (view != null) {
-            view.beginInlineEditing();
-            if (pressureView != null) {
-                pressureView.setText(R.string.core_inline_edit_hint);
-            }
+        if (view == null) return false;
+        view.beginInlineEditing();
+        if (pressureView != null) pressureView.setText(R.string.core_inline_edit_hint);
+        return true;
+    }
+
+    private boolean hasPendingManualDraftClear(String noteId) {
+        for (PendingManualDraftClear pending : pendingManualDraftClears) {
+            if (pending.noteId.equals(noteId)) return true;
+        }
+        return false;
+    }
+
+    private boolean blockForUnresolvedManualDraft() {
+        if (!unresolvedManualDraftNoteIds.contains(currentNoteId)) return false;
+        offerManualDraftRecovery(currentNoteId);
+        return true;
+    }
+
+    private void showManualChangeRejected(NoteCanvasView.TextEditResult result) {
+        if (result != null && !result.committed) {
+            Toast.makeText(this, R.string.canvas_manual_change_rejected, Toast.LENGTH_LONG).show();
         }
     }
 
-    private void commitInlineTextEditorExcept(String excludedId) {
+    private boolean commitInlineTextEditorExcept(String excludedId) {
         List<NoteTextBoxView> views = new ArrayList<>(textBoxViews.values());
         for (NoteTextBoxView view : views) {
             NoteTextBox bound = view.getBoundTextBox();
             if (view.isInlineEditing() &&
                     (excludedId == null || bound == null || !excludedId.equals(bound.id))) {
-                view.commitInlineEditing();
+                if (!view.commitInlineEditing()) return false;
             }
         }
+        return true;
+    }
+
+    private boolean commitActiveManualEditor() {
+        if (activeManualDialogSource != null) return false;
+        return commitInlineTextEditorExcept(null);
+    }
+
+    private boolean checkpointActiveManualEditor() {
+        if (manualTextDraftStore == null || currentNoteId == null) return false;
+        if (activeManualDialogSource != null && activeManualDialogSessionId != null) {
+            String source = activeManualDialogSource.getText().toString();
+            NoteTextBox target = activeManualDialogTarget;
+            String flowId = target == null ? "draft-new-" + activeManualDialogSessionId
+                    : target.flowId;
+            String fragmentId = target == null ? "draft-new-" + activeManualDialogSessionId
+                    : target.id;
+            String base = activeManualDialogBaseFingerprint == null
+                    ? ManualTextDraftStore.sourceFingerprint("") : activeManualDialogBaseFingerprint;
+            ManualTextDraftStore.Draft record = new ManualTextDraftStore.Draft(currentNoteId,
+                    flowId, fragmentId, source, activeManualDialogFormat.name(),
+                    target == null ? 18f : target.fontSizeSp,
+                    target == null ? 1.28f : target.lineHeight,
+                    activeManualDialogNewlyInserted, base, activeManualDialogSessionId,
+                    ++activeManualDialogGeneration);
+            return saveManualDraftCheckpoint(record);
+        }
+        for (NoteTextBoxView view : new ArrayList<>(textBoxViews.values())) {
+            if (!view.isInlineEditing()) continue;
+            NoteTextBox bound = view.getBoundTextBox();
+            NoteTextBoxView.DraftSnapshot draft = view.snapshotInlineDraft(
+                    bound != null && newlyInsertedTextBoxIds.contains(bound.id));
+            if (draft == null || bound == null) return false;
+            ManualTextDraftStore.Draft record = new ManualTextDraftStore.Draft(
+                    currentNoteId, draft.flowId, draft.fragmentId, draft.source, draft.format,
+                    draft.fontSizeSp, draft.lineHeight, draft.newlyInserted,
+                    draft.baseSourceFingerprint, draft.sessionId, draft.generation);
+            return saveManualDraftCheckpoint(record);
+        }
+        return false;
+    }
+
+    private boolean saveManualDraftCheckpoint(ManualTextDraftStore.Draft record) {
+        ManualTextDraftStore.DraftToken previous = manualTextDraftTokens.get(record.noteId);
+        ManualTextDraftStore.SaveResult saved = manualTextDraftStore.save(record, previous);
+        boolean success = saved.status == ManualTextDraftStore.SaveStatus.SAVED;
+        if (success) {
+            manualTextDraftTokens.put(record.noteId, saved.token);
+            unresolvedManualDraftNoteIds.remove(record.noteId);
+            manualDraftCheckpointStatusId = R.string.core_manual_draft_saved;
+        } else {
+            manualDraftCheckpointStatusId = R.string.core_manual_draft_checkpoint_failed;
+        }
+        if (pressureView != null) pressureView.setText(manualDraftCheckpointStatusId);
+        return success;
+    }
+
+    private boolean commitOrCheckpointBeforeLeaving() {
+        if (activeManualDialogSource != null) {
+            if (!checkpointActiveManualEditor()) return false;
+            unresolvedManualDraftNoteIds.add(currentNoteId);
+            Toast.makeText(this, R.string.core_manual_draft_saved, Toast.LENGTH_LONG).show();
+            return true;
+        }
+        if (commitInlineTextEditorExcept(null)) return true;
+        if (!checkpointActiveManualEditor()) return false;
+        unresolvedManualDraftNoteIds.add(currentNoteId);
+        Toast.makeText(this, R.string.core_manual_draft_saved, Toast.LENGTH_LONG).show();
+        return true;
+    }
+
+    private void queueManualDraftClear(String noteId) {
+        ManualTextDraftStore.DraftToken token = manualTextDraftTokens.get(noteId);
+        if (token == null) return;
+        pendingManualDraftClears.removeIf(item -> item.noteId.equals(noteId));
+        pendingManualDraftClears.add(new PendingManualDraftClear(noteId, token,
+                documentRevision, editorSessionGeneration));
+        if (!saveInFlight && lastSavedRevision >= documentRevision) {
+            clearManualDraftsSavedThrough(noteId, lastSavedRevision, editorSessionGeneration);
+        } else if (noteId.equals(currentNoteId) && editorVisible && restoreCompleted) {
+            handler.removeCallbacks(delayedSave);
+            saveDocument(false);
+        }
+    }
+
+    private void clearManualDraftsSavedThrough(String noteId, long savedRevision,
+                                               long saveGeneration) {
+        if (manualTextDraftStore == null) return;
+        for (int index = pendingManualDraftClears.size() - 1; index >= 0; index--) {
+            PendingManualDraftClear item = pendingManualDraftClears.get(index);
+            if (!item.noteId.equals(noteId) || item.editorSessionGeneration != saveGeneration
+                    || item.documentRevision > savedRevision) continue;
+            ManualTextDraftStore.ClearStatus status = manualTextDraftStore.clearIfMatches(
+                    item.noteId, item.token);
+            if (status == ManualTextDraftStore.ClearStatus.CLEARED
+                    || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
+                if (item.token.equals(manualTextDraftTokens.get(item.noteId))) {
+                    manualTextDraftTokens.remove(item.noteId);
+                }
+                unresolvedManualDraftNoteIds.remove(item.noteId);
+                pendingManualDraftClears.remove(index);
+            } else if (pressureView != null) {
+                pressureView.setText(R.string.core_manual_draft_cleanup_failed);
+            }
+        }
+    }
+
+    private void clearManualDraftAfterExplicitDiscard(String noteId) {
+        if (manualTextDraftStore == null || noteId == null) return;
+        ManualTextDraftStore.DraftToken token = manualTextDraftTokens.get(noteId);
+        if (token == null) return;
+        ManualTextDraftStore.ClearStatus status = manualTextDraftStore.clearIfMatches(noteId, token);
+        if (status == ManualTextDraftStore.ClearStatus.CLEARED
+                || status == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
+            manualTextDraftTokens.remove(noteId);
+            pendingManualDraftClears.removeIf(item -> item.noteId.equals(noteId));
+            unresolvedManualDraftNoteIds.remove(noteId);
+        } else {
+            unresolvedManualDraftNoteIds.add(noteId);
+            if (pressureView != null) pressureView.setText(R.string.core_manual_draft_cleanup_failed);
+        }
+    }
+
+    private void offerManualDraftRecovery(String noteId) {
+        if (manualTextDraftStore == null || noteId == null || !noteId.equals(currentNoteId)
+                || !editorVisible || !restoreCompleted
+                || noteId.equals(pendingManualDraftRecoveryNoteId)) return;
+        ManualTextDraftStore.LoadResult loaded = manualTextDraftStore.load(noteId);
+        if (loaded.status == ManualTextDraftStore.LoadStatus.NONE) {
+            unresolvedManualDraftNoteIds.remove(noteId);
+            manualTextDraftTokens.remove(noteId);
+            return;
+        }
+        if (loaded.status == ManualTextDraftStore.LoadStatus.IO_ERROR) {
+            unresolvedManualDraftNoteIds.add(noteId);
+            Toast.makeText(this, R.string.core_manual_draft_checkpoint_failed, Toast.LENGTH_LONG).show();
+            return;
+        }
+        pendingManualDraftRecoveryNoteId = noteId;
+        if (loaded.status == ManualTextDraftStore.LoadStatus.INVALID) {
+            unresolvedManualDraftNoteIds.add(noteId);
+            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_invalid_title)
+                    .setMessage(R.string.core_manual_draft_invalid_message)
+                    .setNegativeButton(R.string.core_manual_draft_later, (d, w) ->
+                            unresolvedManualDraftNoteIds.add(noteId))
+                    .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> {
+                        ManualTextDraftStore.ClearStatus cleared = manualTextDraftStore
+                                .clearInvalidIfMatches(noteId, loaded.rawSha256);
+                        if (cleared == ManualTextDraftStore.ClearStatus.CLEARED
+                                || cleared == ManualTextDraftStore.ClearStatus.NOT_FOUND) {
+                            unresolvedManualDraftNoteIds.remove(noteId);
+                            manualTextDraftTokens.remove(noteId);
+                        } else Toast.makeText(this, R.string.core_manual_draft_cleanup_failed,
+                                Toast.LENGTH_LONG).show();
+                        pendingManualDraftRecoveryNoteId = null;
+                    }).setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+            return;
+        }
+        final ManualTextDraftStore.Draft draft = loaded.draft;
+        manualTextDraftTokens.put(noteId, loaded.token);
+        NoteTextBox found = null;
+        for (NoteTextBox candidate : canvasView.getTextBoxes()) {
+            if (draft.flowId.equals(candidate.flowId)) {
+                if (found == null) found = candidate;
+                if (draft.fragmentId.equals(candidate.id)) {
+                    found = candidate;
+                    break;
+                }
+            }
+        }
+        final NoteTextBox current = found;
+        boolean alreadySaved = current != null && draft.source.equals(current.source)
+                && draft.format.equals(current.format.name())
+                && Math.abs(draft.fontSize - current.fontSizeSp) < 0.001f
+                && Math.abs(draft.lineHeight - current.lineHeight) < 0.001f;
+        boolean baseMatches = current != null && !alreadySaved
+                && draft.baseSourceFingerprint.equals(
+                        ManualTextDraftStore.sourceFingerprint(current.source));
+        unresolvedManualDraftNoteIds.add(noteId);
+        if (alreadySaved) {
+            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+                    .setMessage(R.string.core_manual_draft_already_saved)
+                    .setNegativeButton(R.string.core_manual_draft_later, null)
+                    .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
+                    .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> clearManualDraftAfterExplicitDiscard(noteId))
+                    .setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+        } else if (baseMatches) {
+            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+                    .setMessage(R.string.core_manual_draft_recover_message)
+                    .setNegativeButton(R.string.core_manual_draft_later, null)
+                    .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
+                    .setPositiveButton(R.string.core_manual_draft_restore, (d, w) -> {
+                        selectedTextBoxId = current.id;
+                        selectedTextFlowId = current.flowId;
+                        boolean restorablePlaceholder = draft.newlyInserted && current.source.isEmpty()
+                                && draft.baseSourceFingerprint.equals(
+                                        ManualTextDraftStore.sourceFingerprint(""));
+                        if (restorablePlaceholder) newlyInsertedTextBoxIds.add(current.id);
+                        else newlyInsertedTextBoxIds.remove(current.id);
+                        updateTextBoxOverlays(canvasView.getTextBoxes());
+                        NoteTextBoxView view = textBoxViews.get(current.id);
+                        if (view == null) {
+                            unresolvedManualDraftNoteIds.add(noteId);
+                            Toast.makeText(this, R.string.core_manual_draft_checkpoint_failed,
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        unresolvedManualDraftNoteIds.remove(noteId);
+                        NoteTextBox.Format format;
+                        try { format = NoteTextBox.Format.valueOf(draft.format); }
+                        catch (IllegalArgumentException e) { format = current.format; }
+                        view.beginInlineEditingFromDraft(draft.source, format, draft.fontSize,
+                                draft.lineHeight, draft.baseSourceFingerprint);
+                    }).setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+        } else {
+            new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_recover_title)
+                    .setMessage(R.string.core_manual_draft_mismatch)
+                    .setNegativeButton(R.string.core_manual_draft_later, null)
+                    .setNeutralButton(R.string.core_manual_draft_view_copy, (d, w) -> showManualDraftText(draft.source))
+                    .setPositiveButton(R.string.core_manual_draft_discard, (d, w) -> clearManualDraftAfterExplicitDiscard(noteId))
+                    .setOnDismissListener(d -> pendingManualDraftRecoveryNoteId = null).show();
+        }
+    }
+
+    private void showManualDraftText(String source) {
+        EditText text = new EditText(this);
+        text.setText(source == null ? "" : source);
+        text.setTextIsSelectable(true);
+        text.setFocusableInTouchMode(true);
+        text.setPadding(dp(16), dp(12), dp(16), dp(12));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(text);
+        new AlertDialog.Builder(this).setTitle(R.string.core_manual_draft_view_copy)
+                .setView(scroll).setNegativeButton(R.string.core_close, null)
+                .setPositiveButton(R.string.core_manual_draft_copy, (d, w) -> {
+                    android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                            getSystemService(CLIPBOARD_SERVICE);
+                    if (clipboard != null) clipboard.setPrimaryClip(
+                            android.content.ClipData.newPlainText("PadNote text draft", source));
+                }).show();
     }
 
     private void confirmDeleteTextBox(NoteTextBox textBox) {
@@ -3835,6 +4287,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             }
             textBoxViews.clear();
             newlyInsertedTextBoxIds.clear();
+            manualCommitInProgressIds.clear();
             selectedTextBoxId = null;
             selectedTextFlowId = null;
             canvasFrame = null;
@@ -3906,7 +4359,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void selectTool(NoteCanvasView.Tool tool) {
-        commitInlineTextEditorExcept(null);
+        if (!commitInlineTextEditorExcept(null)) return;
         canvasView.setTool(tool);
         canvasView.setHighlighterStyle(highlighterColor, highlighterWidthDp);
         penButton.setSelected(tool == NoteCanvasView.Tool.PEN);
@@ -7411,7 +7864,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private void startDigitizationForCurrentNote() {
         if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
-        commitInlineTextEditorExcept(null);
+        if (blockForUnresolvedManualDraft()) return;
+        if (!commitInlineTextEditorExcept(null)) return;
         if(documentRevision!=lastSavedRevision){
             pendingDigitizationNoteId=currentNoteId;
             saveDocument(false);
@@ -8148,7 +8602,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!editorVisible) {
             return;
         }
-        commitInlineTextEditorExcept(null);
+        if (!commitInlineTextEditorExcept(null)) return;
         cancelAiSelectionRender();
         handler.removeCallbacks(delayedSave);
         if (!restoreCompleted) {
@@ -8513,7 +8967,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!editorVisible || !restoreCompleted) {
             return;
         }
-        commitInlineTextEditorExcept(null);
+        if (blockForUnresolvedManualDraft()) return;
+        if (!commitInlineTextEditorExcept(null)) return;
         ChoiceRows.builder(this).setTitle(getString(R.string.core_export_note))
                 .setAdapter(ChoiceRows.adapter(this, new String[]{getString(R.string.core_editable_package), getString(R.string.core_merged_pdf)}),
                         (dialog, which) -> {
@@ -9170,6 +9625,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     aiPdfDigestAvailable = !restoredPdfDigest.startsWith("!unavailable:");
                     applyRestoredAiConversation(conversation, conversationLoadError);
                     saveStatusView.setText(getString(R.string.tail_local_note_restored));
+                    handler.post(() -> offerManualDraftRecovery(noteId));
                     // Applied only after a successful load. A failed load never turns
                     // into an editable blank document that could overwrite the source.
                     if (pendingPageStyle != null) {
@@ -9361,6 +9817,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
                     if(saved!=null){currentGroupLineage=saved.lineage;currentGroupRevision=saved.revision;currentGroupDigest=saved.digest;}
                     saveInFlight=false;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
+                    clearManualDraftsSavedThrough(noteId, savingRevision, saveGeneration);
                     if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));pendingSaveToast=false;
                         if(noteId.equals(pendingDigitizationNoteId)){pendingDigitizationNoteId=null;continueDigitizationForCurrentNote();}
                         if(pendingLeaveAfterSave){showBookshelf();return;}}
@@ -9388,6 +9845,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if (!noteId.equals(currentNoteId)) return;
         saveInFlight = false;
         lastSavedRevision = Math.max(lastSavedRevision, savedRevision);
+        clearManualDraftsSavedThrough(noteId, savedRevision, editorSessionGeneration);
         if (savedRevision == documentRevision) {
             pendingUnsavedJson = null;
             saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));
@@ -9447,7 +9905,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             });
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
                 try {
-                    commitInlineTextEditorExcept(null);
+                    if (!commitInlineTextEditorExcept(null)) return;
                     pendingUnsavedJson = captureRecoveryExportJson(canvasView,
                             currentNoteId, currentNoteTitle);
                 } catch (Exception error) {

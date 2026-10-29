@@ -101,4 +101,27 @@
     <string name="canvas_ink_navy_swatch">墨蓝色</string>
     <string name="canvas_stroke_width_preview_desc">工具粗细预览</string>
     <string name="canvas_size_preview_desc">当前粗细预览</string>
+    <string name="canvas_manual_source_limit">文字超过单条 100,000 字符上限，因此没有写入纸面。完整草稿仍在编辑器中；请缩短或拆分后重试。</string>
+    <string name="canvas_manual_render_limit">文字超过本机渲染容量，因此没有写入纸面。完整草稿仍在编辑器中；请缩短或拆分后重试。</string>
+    <string name="canvas_manual_page_limit">文字无法在 500 页上限内完整排版，因此没有写入纸面。完整草稿仍在编辑器中；请缩短或拆分后重试。</string>
+    <string name="canvas_manual_unplaceable">部分内容无法在单页安全排版。完整草稿仍在编辑器中；请拆分表格或文字后重试。</string>
+    <string name="canvas_manual_table_unsupported">此表格无法按当前规则安全分页。完整草稿仍在编辑器中；请缩短或拆分后重试。</string>
+    <string name="canvas_manual_table_expansion_limit">此表格超过安全分页处理上限。完整草稿仍在编辑器中；请缩短或拆分后重试。</string>
+    <string name="widget_commit_empty_text">请先输入文字再点“完成”。草稿仍在编辑器中。</string>
+    <string name="canvas_manual_change_rejected">此调整无法完整排版，原文字和布局已保留。请缩小字号、拆分内容或移动位置。</string>
+    <string name="core_manual_draft_saved">未完成的文字草稿已单独保存。</string>
+    <string name="core_manual_draft_checkpoint_failed">未能保存未完成的文字草稿。草稿仍在编辑器中；离开前请先复制。</string>
+    <string name="core_manual_draft_recover_title">未完成的文字草稿</string>
+    <string name="core_manual_draft_recover_message">发现已保存的手动编辑草稿。可恢复到原文字流继续编辑、稍后处理或丢弃。</string>
+    <string name="core_manual_draft_restore">继续编辑</string>
+    <string name="core_manual_draft_later">稍后</string>
+    <string name="core_manual_draft_discard">丢弃草稿</string>
+    <string name="core_manual_draft_mismatch">此草稿与原文字流不再匹配，尚未应用。可查看或复制、稍后处理，或丢弃。</string>
+    <string name="core_manual_draft_view_copy">查看/复制草稿</string>
+    <string name="core_manual_draft_copy">复制草稿</string>
+    <string name="core_manual_draft_invalid_title">无法读取已保存的文字草稿</string>
+    <string name="core_manual_draft_invalid_message">草稿记录已损坏，尚未更改。可稍后处理，或丢弃这条记录。</string>
+    <string name="core_manual_draft_already_saved">笔记中已包含这段文字，因此未应用草稿。你可以查看或复制、稍后处理，或丢弃草稿。</string>
+    <string name="core_manual_draft_input_limit">此次编辑超过本地草稿 1,000,000 字符上限，整次输入已拒绝，原有文字保持不变。</string>
+    <string name="core_manual_draft_cleanup_failed">恢复草稿尚未清除，仍保留在本机。可从笔记“更多”菜单重试。</string>
 </resources>

@@ -26,3 +26,15 @@ The beta.23 source gallery uses three crops from guarded real-device screenshots
 | Diagram paper crop, 768×1085 | `1f724b4bef4619942a7ebc26c83b3119228e89699ebd9b50f8c8088d66825a7e` | `[1016,392,1784,1477]` | `78c5dcf4f81c4e6da956f11619d5ef2f916373a2bfa864748cd325b49260be48` |
 
 The paper bounds were confirmed from screenshot pixels. Only the three published crops are included in source; the original screenshots, manifests, raw recording, and device identifiers are not included.
+
+
+### Learning tour video
+
+`PadNote-Learning-Tour-20261028.mp4` is a 30-second screenshot tour made from three previously reviewed screenshots of the already published beta.17 synthetic learning note. It uses fixed screenshots and dissolve transitions, not a continuous recording of beta.24 use. It does not show a new Agent roundtrip or AI-generated result. The public preview `paper-learning-tour-preview.png` is the complete first 1920×1080 slide.
+
+| File | Dimensions / duration | SHA-256 |
+| --- | --- | --- |
+| `PadNote-Learning-Tour-20261028.mp4` | 1920×1080, 24 fps, 30.41 s, no audio, 730 frames | `dd723777d5d8e50d5130505ac9da7fc44f6e6e9c0b5294b251fa28e7527913c6` |
+| `paper-learning-tour-preview.png` | 1920×1080 | `5eafc6befe2ba8a08c626236aa38816901ccc7fd951e30778a0cd94607c4dae9` |
+
+The video was fully decoded during review. The three screenshot inputs were independently SHA-verified, and the 12-second frame was visually checked for layout clearance.

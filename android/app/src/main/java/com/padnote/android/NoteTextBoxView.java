@@ -61,6 +61,30 @@ final class NoteTextBoxView extends FrameLayout {
         void onCommit(NoteTextBox textBox, NoteTextBox.Format format, String source,
                       float fontSizeSp, float lineHeight);
 
+        /** Transactional commit path; legacy listeners keep implementing onCommit. */
+        default NoteCanvasView.TextEditResult onCommitResult(
+                NoteTextBox textBox, NoteTextBox.Format format, String source,
+                float fontSizeSp, float lineHeight) {
+            onCommit(textBox, format, source, fontSizeSp, lineHeight);
+            return NoteCanvasView.TextEditResult.committed();
+        }
+
+        /** Called after the accepted editor has closed, before overlay reconciliation. */
+        default void onCommitSucceeded(NoteTextBox textBox) { }
+
+        /** Called after a rejected Done attempt while the complete draft stays editable. */
+        default void onCommitRejected(NoteTextBox textBox) { }
+
+        default boolean onSelectAllowed(NoteTextBox textBox) {
+            onSelect(textBox);
+            return true;
+        }
+
+        default boolean onEditRequestedAllowed(NoteTextBox textBox) {
+            onEditRequested(textBox);
+            return true;
+        }
+
         /**
          * Font size changed from the selected-state controls, without entering the
          * source editor. Kept separate from {@link #onCommit} so restyling does not
@@ -135,6 +159,8 @@ final class NoteTextBoxView extends FrameLayout {
     /** True while a touch is being routed to selection chrome rather than a drag. */
     private boolean controlGesture;
     private boolean errorMarkerGesture;
+    private boolean blockedTouchGesture;
+    private boolean commitInProgress;
     private boolean moved;
     private boolean renderFailed;
     private String renderFailureReason = getContext().getString(R.string.widget_render_failed);
@@ -147,6 +173,32 @@ final class NoteTextBoxView extends FrameLayout {
     private long lastTapTime;
     private float lastTapRawX;
     private float lastTapRawY;
+    private String editSessionId;
+    private long checkpointGeneration;
+    private String baseSourceFingerprint = "";
+    private TextView commitFailureView;
+
+    static final class DraftSnapshot {
+        final String flowId, fragmentId, source, format, sessionId, baseSourceFingerprint;
+        final float fontSizeSp, lineHeight;
+        final boolean newlyInserted;
+        final long generation;
+
+        DraftSnapshot(String flowId, String fragmentId, String source, String format,
+                      float fontSizeSp, float lineHeight, boolean newlyInserted,
+                      String sessionId, long generation, String baseSourceFingerprint) {
+            this.flowId = flowId;
+            this.fragmentId = fragmentId;
+            this.source = source;
+            this.format = format;
+            this.fontSizeSp = fontSizeSp;
+            this.lineHeight = lineHeight;
+            this.newlyInserted = newlyInserted;
+            this.sessionId = sessionId;
+            this.generation = generation;
+            this.baseSourceFingerprint = baseSourceFingerprint;
+        }
+    }
 
     NoteTextBoxView(Context context, Listener listener) {
         super(context);
@@ -201,6 +253,15 @@ final class NoteTextBoxView extends FrameLayout {
         editorToolbar.setPadding(dp(6), dp(4), dp(6), dp(4));
         editorPanel.addView(editorToolbar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(43)));
+
+        commitFailureView = new TextView(context);
+        commitFailureView.setTextSize(11);
+        commitFailureView.setTextColor(Color.rgb(151, 52, 43));
+        commitFailureView.setPadding(dp(8), dp(2), dp(8), dp(2));
+        commitFailureView.setMaxLines(2);
+        commitFailureView.setVisibility(GONE);
+        editorPanel.addView(commitFailureView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         HorizontalScrollView formatScroll = new HorizontalScrollView(context);
         formatScroll.setHorizontalScrollBarEnabled(false);
@@ -273,7 +334,7 @@ final class NoteTextBoxView extends FrameLayout {
         sourceEditor.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        sourceEditor.setFilters(new InputFilter[]{new InputFilter.LengthFilter(100_000)});
+        sourceEditor.setFilters(new InputFilter[]{new ManualDraftInputFilter(context)});
         sourceEditor.setPadding(dp(11), dp(8), dp(11), dp(8));
         sourceEditor.setBackground(roundedBackground(Color.WHITE,
                 Color.rgb(204, 211, 217), 6));
@@ -370,6 +431,7 @@ final class NoteTextBoxView extends FrameLayout {
                     return;
                 }
                 draftSource = text == null ? "" : text.toString();
+                clearCommitFailure();
                 scheduleDraftRender();
             }
 
@@ -484,12 +546,18 @@ final class NoteTextBoxView extends FrameLayout {
             return;
         }
         inlineEditing = true;
+        editSessionId = java.util.UUID.randomUUID().toString();
+        checkpointGeneration = 0L;
+        baseSourceFingerprint = ManualTextDraftStore.sourceFingerprint(model.source);
         selected = true;
         draftFormat = model.format;
         draftSource = model.source;
         draftFontSizeSp = model.fontSizeSp;
         suppressSourceWatcher = true;
+        InputFilter[] existingFilters = sourceEditor.getFilters();
+        sourceEditor.setFilters(new InputFilter[0]);
         sourceEditor.setText(draftSource);
+        sourceEditor.setFilters(existingFilters);
         sourceEditor.setSelection(sourceEditor.length());
         suppressSourceWatcher = false;
         editorPanel.setVisibility(VISIBLE);
@@ -510,6 +578,33 @@ final class NoteTextBoxView extends FrameLayout {
         invalidate();
     }
 
+    void beginInlineEditingFromDraft(String source, NoteTextBox.Format format,
+                                     float fontSizeSp, float lineHeight,
+                                     String expectedBaseSourceFingerprint) {
+        if (model == null || inlineEditing) return;
+        beginInlineEditing();
+        baseSourceFingerprint = expectedBaseSourceFingerprint == null
+                ? ManualTextDraftStore.sourceFingerprint(model.source)
+                : expectedBaseSourceFingerprint;
+        draftFormat = format == null ? model.format : format;
+        draftFontSizeSp = TextFlow.clampFontSize(fontSizeSp);
+        draftLineHeight = TextFlow.clampLineHeight(lineHeight);
+        draftSource = source == null ? "" : source;
+        suppressSourceWatcher = true;
+        sourceEditor.setText(draftSource);
+        sourceEditor.setSelection(sourceEditor.length());
+        suppressSourceWatcher = false;
+        updateFormatButtons();
+        renderDraftNow();
+    }
+
+    DraftSnapshot snapshotInlineDraft(boolean newlyInserted) {
+        if (!inlineEditing || model == null || editSessionId == null) return null;
+        return new DraftSnapshot(model.flowId, model.id, sourceEditor.getText().toString(),
+                draftFormat.name(), draftFontSizeSp, draftLineHeight, newlyInserted,
+                editSessionId, ++checkpointGeneration, baseSourceFingerprint);
+    }
+
     boolean isInlineEditing() {
         return inlineEditing;
     }
@@ -526,23 +621,43 @@ final class NoteTextBoxView extends FrameLayout {
         }
     }
 
-    void commitInlineEditing() {
-        if (!inlineEditing || model == null) {
-            return;
-        }
+    boolean commitInlineEditing() {
+        if (!inlineEditing || model == null) return true;
+        if (commitInProgress) return false;
         String source = sourceEditor.getText().toString();
         if (source.trim().isEmpty()) {
-            Toast.makeText(getContext(), getContext().getString(R.string.widget_cancel_empty_text), Toast.LENGTH_SHORT).show();
-            cancelInlineEditing();
-            return;
+            showCommitFailure(R.string.widget_commit_empty_text);
+            return false;
+        }
+        commitInProgress = true;
+        long editingGeneration = checkpointGeneration;
+        NoteTextBox committedBox = model.copy();
+        NoteCanvasView.TextEditResult result;
+        try {
+            result = listener.onCommitResult(committedBox.copy(), draftFormat, source,
+                    draftFontSizeSp, draftLineHeight);
+        } catch (RuntimeException error) {
+            result = null;
+        }
+        if (!inlineEditing || editingGeneration != checkpointGeneration) {
+            commitInProgress = false;
+            return false;
+        }
+        if (result == null || !result.committed) {
+            showCommitFailure(result == null ? R.string.widget_render_failed
+                    : failureMessage(result.failure));
+            commitInProgress = false;
+            listener.onCommitRejected(committedBox.copy());
+            return false;
         }
         finishInlineUi();
-        listener.onCommit(model.copy(), draftFormat, source, draftFontSizeSp,
-                draftLineHeight);
+        commitInProgress = false;
+        listener.onCommitSucceeded(committedBox);
+        return true;
     }
 
     void cancelInlineEditing() {
-        if (!inlineEditing || model == null) {
+        if (!inlineEditing || model == null || commitInProgress) {
             return;
         }
         NoteTextBox canceled = model.copy();
@@ -550,6 +665,33 @@ final class NoteTextBoxView extends FrameLayout {
         renderIfChanged(canceled.format, canceled.displaySource(), canceled.fontSizeSp,
                 canceled.lineHeight);
         listener.onCancel(canceled);
+    }
+
+    private int failureMessage(TextFlowCapacity.Failure failure) {
+        if (failure == null) return R.string.widget_render_failed;
+        switch (failure) {
+            case SOURCE_TOO_LONG: return R.string.canvas_manual_source_limit;
+            case RENDER_SOURCE_TOO_LARGE: return R.string.canvas_manual_render_limit;
+            case PAGE_LIMIT: return R.string.canvas_manual_page_limit;
+            case UNPLACEABLE_BLOCK: return R.string.canvas_manual_unplaceable;
+            case UNSUPPORTED_TABLE: return R.string.canvas_manual_table_unsupported;
+            case TABLE_EXPANSION_LIMIT: return R.string.canvas_manual_table_expansion_limit;
+            case NONE:
+            default: return R.string.widget_render_failed;
+        }
+    }
+
+    private void showCommitFailure(int messageId) {
+        commitFailureView.setText(messageId);
+        commitFailureView.setVisibility(VISIBLE);
+        requestLayout();
+    }
+
+    private void clearCommitFailure() {
+        if (commitFailureView != null && commitFailureView.getVisibility() != GONE) {
+            commitFailureView.setVisibility(GONE);
+            requestLayout();
+        }
     }
 
     private String failedSource() {
@@ -646,12 +788,22 @@ final class NoteTextBoxView extends FrameLayout {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (blockedTouchGesture) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP ||
+                    event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                blockedTouchGesture = false;
+            }
+            return true;
+        }
         if (model == null || inlineEditing) {
             return inlineEditing || super.onTouchEvent(event);
         }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                listener.onSelect(model.copy());
+                if (!listener.onSelectAllowed(model.copy())) {
+                    blockedTouchGesture = true;
+                    return true;
+                }
                 downRawX = event.getRawX();
                 downRawY = event.getRawY();
                 startScreenX = getX();
@@ -719,7 +871,7 @@ final class NoteTextBoxView extends FrameLayout {
                             event.getRawX() - lastTapRawX, event.getRawY() - lastTapRawY);
                     if (now - lastTapTime <= DOUBLE_TAP_MS && tapDistance <= dp(32)) {
                         lastTapTime = 0L;
-                        listener.onEditRequested(model.copy());
+                        listener.onEditRequestedAllowed(model.copy());
                     } else {
                         lastTapTime = now;
                         lastTapRawX = event.getRawX();
@@ -982,6 +1134,7 @@ final class NoteTextBoxView extends FrameLayout {
         sourceEditor.clearFocus();
         editorPanel.setVisibility(GONE);
         inlineEditing = false;
+        clearCommitFailure();
         selectedDeleteButton.setVisibility(selected ? VISIBLE : GONE);
         selectedStyleBar.setVisibility(
                 selected && model != null && model.isFlowStart() ? VISIBLE : GONE);
