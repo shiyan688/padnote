@@ -623,6 +623,15 @@ public final class NoteCanvasView extends View {
         }
     }
 
+    static final class AgentResultAppendCandidate {
+        final JSONObject document;
+        final String flowId;
+        final boolean alreadyApplied;
+        AgentResultAppendCandidate(JSONObject document, String flowId, boolean alreadyApplied) {
+            this.document=document; this.flowId=flowId; this.alreadyApplied=alreadyApplied;
+        }
+    }
+
     /**
      * Applied to estimated block heights. Reserving slightly more than the
      * measured height keeps content from being clipped when device font metrics
@@ -1249,6 +1258,87 @@ public final class NoteCanvasView extends View {
         List<NoteTextBox> laidOutFlow = findTextFlow(flow.id);
         return laidOutFlow.isEmpty() ? firstFragment
                 : laidOutFlow.get(laidOutFlow.size() - 1).copy();
+    }
+
+    /** Builds and layout-checks a new result flow at the document end without mutating live state. */
+    AgentResultAppendCandidate prepareAgentResultAppend(String noteId, String title,
+                                                        String result, AgentResultProvenance provenance)
+            throws Exception {
+        if (provenance == null || result == null || result.trim().isEmpty()
+                || result.length() > AgentResultProvenance.MAX_UTF16_UNITS
+                || !AgentResultProvenance.wellFormedUtf16(result)
+                || result.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    > AgentResultProvenance.MAX_UTF8_BYTES)
+            throw new TextFlowCapacity.Rejection(TextFlowCapacity.Failure.SOURCE_TOO_LONG,
+                    TextFlowCapacity.message(TextFlowCapacity.Failure.SOURCE_TOO_LONG));
+        String flowId = "flow-agent-" + provenance.applicationId;
+        for (TextFlow existing : textFlows.values()) {
+            if (existing.agentResult != null
+                    && existing.agentResult.applicationId.equals(provenance.applicationId)
+                    && existing.agentResult.sameMetadata(provenance))
+                return new AgentResultAppendCandidate(toJsonDocument(noteId,title),flowId,true);
+            if (flowId.equals(existing.id))
+                throw new java.io.IOException("AGENT_RESULT_IDENTITY_COLLISION");
+        }
+        ensurePageGeometry();
+        int originalPageCount=pageCount;
+        int anchorPage=Math.max(pageCount,pdfPageCount);
+        if(anchorPage>=500)throw new TextFlowCapacity.Rejection(TextFlowCapacity.Failure.PAGE_LIMIT,
+                localizedLayoutFailureMessage(TextFlowCapacity.Failure.PAGE_LIMIT));
+        float margin=dp(16);
+        float width=Math.max(dp(180),pageWidth-margin*2f);
+        TextFlow flow=new TextFlow(flowId,NoteTextBox.Format.MARKDOWN,result,16f,
+                TextFlow.DEFAULT_LINE_HEIGHT,width,anchorPage,margin,margin,provenance);
+        List<TextFragmentLayout> layouts;
+        try {
+            layouts=layoutFlow(flow);
+        } finally {
+            pageCount=originalPageCount;
+        }
+        TextFlowCapacity.Failure failure=TextFlowCapacity.checkLayout(flow.source,
+                flow.lastLayoutPageCount,flow.lastLayoutComplete,flow.lastLayoutFailureReason);
+        if(failure!=TextFlowCapacity.Failure.NONE)
+            throw new TextFlowCapacity.Rejection(failure,localizedLayoutFailureMessage(failure));
+        if(layouts.isEmpty()||flow.lastLayoutPageCount>500)
+            throw new TextFlowCapacity.Rejection(TextFlowCapacity.Failure.PAGE_LIMIT,
+                    localizedLayoutFailureMessage(TextFlowCapacity.Failure.PAGE_LIMIT));
+        JSONObject document=toJsonDocument(noteId,title);
+        JSONArray flows=document.optJSONArray("textFlows");
+        if(flows==null)flows=new JSONArray();
+        flows.put(flow.toJson());
+        document.put("textFlows",flows).put("schemaVersion",9)
+                .put("pageCount",Math.max(originalPageCount,flow.lastLayoutPageCount));
+        NoteStore.validateDocument(document);
+        return new AgentResultAppendCandidate(document,flowId,false);
+    }
+
+    /** Applies a candidate only after its durable note write has been verified. */
+    NoteTextBox commitAgentResultAppend(AgentResultAppendCandidate candidate) {
+        if(candidate==null||candidate.alreadyApplied)return null;
+        JSONObject document=candidate.document;
+        JSONArray flows=document.optJSONArray("textFlows");
+        if(flows==null)return null;
+        try {
+            TextFlow incoming=null;
+            for(int i=0;i<flows.length();i++){
+                TextFlow parsed=TextFlow.fromJson(flows.getJSONObject(i));
+                if(candidate.flowId.equals(parsed.id)){incoming=parsed;break;}
+            }
+            if(incoming==null||textFlows.containsKey(incoming.id))return null;
+            int oldPageCount=pageCount;
+            List<TextFragmentLayout> layouts=layoutFlow(incoming);
+            TextFlowCapacity.Failure failure=TextFlowCapacity.checkLayout(incoming.source,
+                    incoming.lastLayoutPageCount,incoming.lastLayoutComplete,incoming.lastLayoutFailureReason);
+            if(failure!=TextFlowCapacity.Failure.NONE){pageCount=oldPageCount;return null;}
+            pageCount=oldPageCount;
+            pushUndoSnapshot();
+            textFlows.put(incoming.id,incoming);
+            NoteTextBox result=reflowFlow(incoming,layouts);
+            pageCount=Math.max(pageCount,incoming.lastLayoutPageCount);
+            dispatchTextBoxesChanged();dispatchSelectionState();
+            notifyDocumentChanged();
+            return result;
+        } catch(Exception failure) { return null; }
     }
 
     TextEditResult commitNewTextBox(String id, NoteTextBox.Format format, String source) {
@@ -3497,7 +3587,9 @@ public final class NoteCanvasView extends View {
                 && Double.compare(left.width64, right.width64) == 0
                 && left.anchorPageIndex == right.anchorPageIndex
                 && Double.compare(left.anchorXInPage64, right.anchorXInPage64) == 0
-                && Double.compare(left.anchorYInPage64, right.anchorYInPage64) == 0;
+                && Double.compare(left.anchorYInPage64, right.anchorYInPage64) == 0
+                && (left.agentResult == null ? right.agentResult == null
+                    : left.agentResult.sameMetadata(right.agentResult));
     }
 
     private boolean hasNewObstacleInAiTarget(AiEditRecord record) {
@@ -3790,7 +3882,9 @@ public final class NoteCanvasView extends View {
     JSONObject toJsonDocument(String noteId, String title) throws JSONException {
         ensurePageGeometry();
         JSONObject document = new JSONObject();
-        document.put("schemaVersion", 8);
+        boolean hasAgentResult = false;
+        for (TextFlow flow : textFlows.values()) if (flow.agentResult != null) { hasAgentResult = true; break; }
+        document.put("schemaVersion", hasAgentResult ? 9 : 8);
         if (pdfPageCount > 0) document.put("pdfPageCount", pdfPageCount);
         document.put("id", noteId);
         document.put("title", title);
@@ -4127,7 +4221,7 @@ public final class NoteCanvasView extends View {
     void loadJsonDocument(JSONObject document) throws JSONException {
         ParsedDocument parsed = new ParsedDocument();
         parsed.schemaVersion = document.optInt("schemaVersion", 0);
-        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 8) {
+        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 9) {
             throw new JSONException("Unsupported PadNote schema version");
         }
         parsed.pdfPageCount = document.optInt("pdfPageCount", 0);
@@ -4207,13 +4301,20 @@ public final class NoteCanvasView extends View {
             if (parsed.schemaVersion >= 5) {
                 JSONArray flowArray = document.optJSONArray("textFlows");
                 if (flowArray != null) {
+                    boolean hasAgentResult = false;
                     for (int index = 0; index < flowArray.length(); index++) {
                         TextFlow flow = TextFlow.fromJson(flowArray.getJSONObject(index));
+                        hasAgentResult |= flow.agentResult != null;
                         if (flow.anchorPageIndex >= parsed.pageCount ||
                                 parsed.flows.put(flow.id, flow) != null) {
                             throw new JSONException("文字流页码或 ID 无效");
                         }
                     }
+                    if (hasAgentResult && parsed.schemaVersion != 9) {
+                        throw new JSONException("Agent provenance schema mismatch");
+                    }
+                } else if (parsed.schemaVersion == 9) {
+                    throw new JSONException("Agent provenance schema mismatch");
                 }
             } else {
                 migrateLegacyTextBoxes(document.optJSONArray("textBoxes"), parsed.flows,
@@ -5869,7 +5970,7 @@ public final class NoteCanvasView extends View {
         for (TextFlow copy : flowCopies) {
             TextFlow unique = new TextFlow(UUID.randomUUID().toString(), copy.format, copy.source,
                     copy.fontSizeSp64, copy.lineHeight64, copy.width64, copy.anchorPageIndex,
-                    copy.anchorXInPage64, copy.anchorYInPage64);
+                    copy.anchorXInPage64, copy.anchorYInPage64, copy.agentResult);
             textFlows.put(unique.id, unique);
         }
         pageCount += 1;

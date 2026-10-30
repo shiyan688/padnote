@@ -1,4 +1,12 @@
 import Foundation
+import CryptoKit
+
+private struct NoteJSONKey: CodingKey, Hashable {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
 
 public enum NoteDocumentError: Error, LocalizedError, Equatable {
     case unsupportedSchema(Int)
@@ -67,6 +75,116 @@ public struct InkStroke: Codable, Identifiable, Equatable {
     }
 }
 
+public struct AgentResultReceipt: Codable, Equatable {
+    public let schemaVersion: Int
+    public let applicationId: String
+    public let taskId: String
+    public let connectionId: String
+    public let instanceId: String?
+    public let agentKind: String
+    public let transport: String
+    public let sourceNoteId: String?
+    public let sourceNoteRevision: Int64
+    public let resultSha256: String
+    public let addedAt: Int64
+
+    public init(applicationId: String, taskId: String, connectionId: String, instanceId: String?,
+                agentKind: String, transport: String, sourceNoteId: String?, sourceNoteRevision: Int64,
+                resultSha256: String, addedAt: Int64) {
+        self.schemaVersion = 1
+        self.applicationId = applicationId
+        self.taskId = taskId
+        self.connectionId = connectionId
+        self.instanceId = instanceId
+        self.agentKind = agentKind
+        self.transport = transport
+        self.sourceNoteId = sourceNoteId
+        self.sourceNoteRevision = sourceNoteRevision
+        self.resultSha256 = resultSha256
+        self.addedAt = addedAt
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, applicationId, taskId, connectionId, instanceId, agentKind, transport
+        case sourceNoteId, sourceNoteRevision, resultSha256, addedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.container(keyedBy: NoteJSONKey.self)
+        guard Set(raw.allKeys.map(\.stringValue)) == Set(CodingKeys.allCases.map(\.rawValue)) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid agent result receipt fields"))
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(applicationId: try c.decode(String.self, forKey: .applicationId),
+                  taskId: try c.decode(String.self, forKey: .taskId),
+                  connectionId: try c.decode(String.self, forKey: .connectionId),
+                  instanceId: try c.decodeIfPresent(String.self, forKey: .instanceId),
+                  agentKind: try c.decode(String.self, forKey: .agentKind),
+                  transport: try c.decode(String.self, forKey: .transport),
+                  sourceNoteId: try c.decodeIfPresent(String.self, forKey: .sourceNoteId),
+                  sourceNoteRevision: try c.decode(Int64.self, forKey: .sourceNoteRevision),
+                  resultSha256: try c.decode(String.self, forKey: .resultSha256),
+                  addedAt: try c.decode(Int64.self, forKey: .addedAt))
+        guard try c.decode(Int.self, forKey: .schemaVersion) == 1 else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: c, debugDescription: "Unsupported agent result receipt version")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(applicationId, forKey: .applicationId)
+        try c.encode(taskId, forKey: .taskId)
+        try c.encode(connectionId, forKey: .connectionId)
+        try c.encode(instanceId, forKey: .instanceId)
+        try c.encode(agentKind, forKey: .agentKind)
+        try c.encode(transport, forKey: .transport)
+        try c.encode(sourceNoteId, forKey: .sourceNoteId)
+        try c.encode(sourceNoteRevision, forKey: .sourceNoteRevision)
+        try c.encode(resultSha256, forKey: .resultSha256)
+        try c.encode(addedAt, forKey: .addedAt)
+    }
+
+    public func validate() throws {
+        guard schemaVersion == 1,
+              applicationId.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              resultSha256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              Self.validTaskID(taskId),
+              sourceNoteRevision >= 0, addedAt >= 0,
+              Self.validIdentifier(connectionId), Self.validIdentifier(instanceId), Self.validIdentifier(sourceNoteId),
+              Self.validToken(agentKind), Self.validToken(transport) else {
+            throw NoteDocumentError.malformed("Invalid agent result provenance")
+        }
+        let material = ["padnote.agent-result.v1", taskId, connectionId, instanceId ?? "", agentKind, transport, resultSha256].joined(separator: "\n")
+        let expected = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard expected == applicationId else { throw NoteDocumentError.malformed("Agent result application identity mismatch") }
+    }
+
+    public func hasSameStableMetadata(as other: AgentResultReceipt) -> Bool {
+        schemaVersion == other.schemaVersion && applicationId == other.applicationId && taskId == other.taskId &&
+            connectionId == other.connectionId && instanceId == other.instanceId && agentKind == other.agentKind &&
+            transport == other.transport && sourceNoteId == other.sourceNoteId &&
+            sourceNoteRevision == other.sourceNoteRevision && resultSha256 == other.resultSha256
+    }
+
+    private static func validTaskID(_ value: String) -> Bool {
+        if value.range(of: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", options: .regularExpression) != nil {
+            return UUID(uuidString: value)?.uuidString.lowercased() == value
+        }
+        return value.range(of: "^padnote-[0-9a-f]{32}$", options: .regularExpression) != nil
+    }
+
+    private static func validIdentifier(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return !value.isEmpty && value.utf8.count <= 256 && !value.unicodeScalars.contains { $0.value <= 0x1f || (0x7f...0x9f).contains($0.value) }
+    }
+
+    private static func validToken(_ value: String) -> Bool {
+        !value.isEmpty && value == value.lowercased() && value.utf8.count <= 64 &&
+            value.range(of: "^[a-z0-9._-]+$", options: .regularExpression) != nil
+    }
+}
+
 public struct NoteTextFlow: Codable, Identifiable, Equatable {
     public var id: String
     public var format: String
@@ -77,11 +195,12 @@ public struct NoteTextFlow: Codable, Identifiable, Equatable {
     public var anchorPageIndex: Int
     public var anchorXInPage: Double
     public var anchorYInPage: Double
+    public var agentResult: AgentResultReceipt?
 
     public init(id: String = UUID().uuidString, format: String = "latex", source: String = "",
                 fontSizeSp: Double = 16, lineHeight: Double = 1.35, width: Double = 360,
                 anchorPageIndex: Int = 0, anchorXInPage: Double = 0,
-                anchorYInPage: Double = 0) {
+                anchorYInPage: Double = 0, agentResult: AgentResultReceipt? = nil) {
         self.id = id
         self.format = format
         self.source = source
@@ -91,17 +210,25 @@ public struct NoteTextFlow: Codable, Identifiable, Equatable {
         self.anchorPageIndex = anchorPageIndex
         self.anchorXInPage = anchorXInPage
         self.anchorYInPage = anchorYInPage
+        self.agentResult = agentResult
     }
 
-    private enum CodingKeys: String, CodingKey { case id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex, anchorXInPage, anchorYInPage }
+    private enum CodingKeys: String, CodingKey, CaseIterable { case id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex, anchorXInPage, anchorYInPage, agentResult }
     public init(from decoder: Decoder) throws {
+        let raw = try decoder.container(keyedBy: NoteJSONKey.self)
+        let allKeys = Set(CodingKeys.allCases.map(\.rawValue))
+        let found = Set(raw.allKeys.map(\.stringValue))
+        guard found.isSubset(of: allKeys) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown or incomplete text flow fields"))
+        }
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(id: try c.decode(String.self, forKey: .id), format: try c.decodeIfPresent(String.self, forKey: .format) ?? "latex",
                   source: try c.decodeIfPresent(String.self, forKey: .source) ?? "", fontSizeSp: try c.decodeIfPresent(Double.self, forKey: .fontSizeSp) ?? 16,
                   lineHeight: try c.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.35, width: try c.decodeIfPresent(Double.self, forKey: .width) ?? 360,
                   anchorPageIndex: try c.decodeIfPresent(Int.self, forKey: .anchorPageIndex) ?? 0,
                   anchorXInPage: try c.decodeIfPresent(Double.self, forKey: .anchorXInPage) ?? 0,
-                  anchorYInPage: try c.decodeIfPresent(Double.self, forKey: .anchorYInPage) ?? 0)
+                  anchorYInPage: try c.decodeIfPresent(Double.self, forKey: .anchorYInPage) ?? 0,
+                  agentResult: c.contains(.agentResult) ? try c.decode(AgentResultReceipt.self, forKey: .agentResult) : nil)
     }
 }
 
@@ -233,7 +360,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     }
 
     public func validated() throws -> NoteDocument {
-        guard (1...8).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...9).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard !id.isEmpty, id.count <= 120, safeIdentifier(id) else { throw NoteDocumentError.malformed("Invalid note id") }
         guard title.count <= 200 else { throw NoteDocumentError.malformed("Note title is too long") }
         try checkFinite(updatedAt, "updatedAt")
@@ -292,11 +419,25 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         }
         guard textFlows.count <= 2_000 else { throw NoteDocumentError.tooLarge("Too many text flows") }
         var flowIDs = Set<String>()
+        let hasAgentResults = textFlows.contains { $0.agentResult != nil }
+        guard !hasAgentResults || schemaVersion == 9 else {
+            throw NoteDocumentError.malformed("Agent result provenance requires schema version 9")
+        }
         for flow in textFlows {
             guard !flow.id.isEmpty && flow.id.count <= 120 && safeIdentifier(flow.id) else { throw NoteDocumentError.malformed("Invalid text flow id") }
             guard flowIDs.insert(flow.id).inserted else { throw NoteDocumentError.malformed("Duplicate text flow id") }
             guard flow.source.count <= 100_000 else { throw NoteDocumentError.tooLarge("Text flow source is too large") }
             guard ["latex", "markdown"].contains(flow.format.lowercased()) else { throw NoteDocumentError.malformed("Invalid text flow format") }
+            if let receipt = flow.agentResult {
+                guard flow.source.utf16.count <= 100_000,
+                      Data(flow.source.utf8).count <= 400_000 else {
+                    throw NoteDocumentError.tooLarge("Agent result text exceeds the shared size limit")
+                }
+                try receipt.validate()
+                guard schemaVersion == 9 else {
+                    throw NoteDocumentError.malformed("Agent result provenance requires schema version 9")
+                }
+            }
             try checkFinite(flow.fontSizeSp, "font size"); try checkFinite(flow.lineHeight, "line height"); try checkFinite(flow.width, "text width")
             guard flow.fontSizeSp >= 1 && flow.fontSizeSp <= 200, flow.lineHeight > 0 && flow.lineHeight <= 10,
                   flow.width > 0 && flow.width <= pageWidth * 4 else { throw NoteDocumentError.malformed("Invalid text flow geometry") }
@@ -391,7 +532,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
-        guard (1...8).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...9).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard c.contains(.strokes) else { throw NoteDocumentError.malformed("Note is missing strokes data") }
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? "未命名笔记"

@@ -656,6 +656,17 @@ enum LibraryBackupUITestPaths {
                 .appendingPathComponent("UITestLibrary/ContentOutline", isDirectory: true)
                 .appendingPathComponent(id.uuidString.lowercased(), isDirectory: true)
         }
+        if arguments.contains("--uitesting-agent-result-paper") {
+            guard let index = arguments.firstIndex(of: "--agent-result-paper-fixture-id"),
+                  arguments.indices.contains(index + 1),
+                  let id = UUID(uuidString: arguments[index + 1]),
+                  id.uuidString.lowercased() == arguments[index + 1].lowercased() else {
+                preconditionFailure("Agent result-to-paper UI tests require an explicit valid fixture UUID")
+            }
+            return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("UITestLibrary/AgentResultPaper", isDirectory: true)
+                .appendingPathComponent(id.uuidString.lowercased(), isDirectory: true)
+        }
         guard arguments.contains("--uitesting-library-backup"),
               let index = arguments.firstIndex(of: "--library-backup-fixture-id"),
               arguments.indices.contains(index + 1),

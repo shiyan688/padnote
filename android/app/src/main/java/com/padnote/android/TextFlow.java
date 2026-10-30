@@ -41,6 +41,8 @@ final class TextFlow {
     static final float MAX_LINE_HEIGHT = 2.0f;
 
     final String id;
+    /** Optional, strictly typed provenance. Never passed to renderer inputs. */
+    final AgentResultProvenance agentResult;
     NoteTextBox.Format format;
     String source;
     /** Canonical persisted values; float members below are Android layout projections. */
@@ -82,7 +84,15 @@ final class TextFlow {
     TextFlow(String id, NoteTextBox.Format format, String source, double fontSizeSp,
              double lineHeight, double width, int anchorPageIndex, double anchorXInPage,
              double anchorYInPage) {
+        this(id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex,
+                anchorXInPage, anchorYInPage, null);
+    }
+
+    TextFlow(String id, NoteTextBox.Format format, String source, double fontSizeSp,
+             double lineHeight, double width, int anchorPageIndex, double anchorXInPage,
+             double anchorYInPage, AgentResultProvenance agentResult) {
         this.id = id;
+        this.agentResult = agentResult;
         this.format = format == null ? NoteTextBox.Format.LATEX : format;
         this.source = source == null ? "" : source;
         this.fontSizeSp64 = clampFontSize64(fontSizeSp);
@@ -148,7 +158,7 @@ final class TextFlow {
 
     TextFlow copy() {
         TextFlow duplicate = new TextFlow(id, format, source, fontSizeSp64, lineHeight64,
-                width64, anchorPageIndex, anchorXInPage64, anchorYInPage64);
+                width64, anchorPageIndex, anchorXInPage64, anchorYInPage64, agentResult);
         duplicate.heightCorrection = heightCorrection;
         duplicate.heightCorrectionPasses = heightCorrectionPasses;
         duplicate.lastLayoutComplete = lastLayoutComplete;
@@ -222,6 +232,7 @@ final class TextFlow {
         json.put("anchorPageIndex", anchorPageIndex);
         json.put("anchorXInPage", anchorXInPage64);
         json.put("anchorYInPage", anchorYInPage64);
+        if (agentResult != null) json.put("agentResult", agentResult.toJson());
         return json;
     }
 
@@ -234,6 +245,8 @@ final class TextFlow {
         if (source.length() > MAX_SOURCE_LENGTH) {
             throw new JSONException("Text flow source is too large");
         }
+        AgentResultProvenance provenance = json.has("agentResult")
+                ? AgentResultProvenance.fromJson(json.getJSONObject("agentResult")) : null;
         return new TextFlow(
                 id,
                 NoteTextBox.Format.fromStorage(json.optString("format", "latex")),
@@ -243,7 +256,7 @@ final class TextFlow {
                 Math.max(80d, finite(json.optDouble("width", 360), "width")),
                 Math.max(0, json.optInt("anchorPageIndex", 0)),
                 finite(json.optDouble("anchorXInPage", 0), "anchorXInPage"),
-                finite(json.optDouble("anchorYInPage", 0), "anchorYInPage")
+                finite(json.optDouble("anchorYInPage", 0), "anchorYInPage"), provenance
         );
     }
 

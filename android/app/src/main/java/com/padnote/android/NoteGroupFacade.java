@@ -703,7 +703,7 @@ public final class NoteGroupFacade {
         if(entry==null)throw new IOException("LEGACY_NOTE_NOT_FOUND");
         File bodyFile=NoteStore.noteFileForBackup(context,id);LegacyFileCapture.Result bodySnapshot=LegacyFileCapture.read(context,bodyFile,StreamingGroupStore.BODY_MAX);byte[] body=bodySnapshot.bytes;
         JSONObject parsed=NotePrecisionJsonParser.parseObject(strictUtf8(body));NativeManualUpdatePlan.validateActualNote(parsed,id);
-        int schema=parsed.optInt("schemaVersion",0);if(schema!=8)throw new IOException("LEGACY_SCHEMA_REQUIRES_EXPLICIT_MIGRATION:"+schema);
+        int schema=parsed.optInt("schemaVersion",0);if(schema!=8&&schema!=9)throw new IOException("LEGACY_SCHEMA_REQUIRES_EXPLICIT_MIGRATION:"+schema);
         int pages=NoteStore.pdfPageCountOrZero(parsed);long updated=parsed.optLong("updatedAt",entry.updatedAt);
         StringBuilder fp=new StringBuilder();append(fp,"body",bodySnapshot.sha256,bodySnapshot.size);
         File pdfFile=NoteStore.pdfFile(context,id);boolean pdfPresent=exists(pdfFile);if((pages>0)!=pdfPresent)throw new IOException("LEGACY_PDF_STATE_MISMATCH");

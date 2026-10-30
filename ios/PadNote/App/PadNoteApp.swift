@@ -10,6 +10,8 @@ struct PadNoteApp: App {
     private let agentSettingsLayoutMaintenanceResult: String?
     private let agentTaskHistoryFixture: AgentTaskHistoryUITestFixture?
     private let agentTaskHistoryMaintenanceResult: String?
+    private let agentResultPaperFixture: AgentResultPaperUITestFixture?
+    private let agentResultPaperMaintenanceResult: String?
 #endif
 
     init() {
@@ -21,7 +23,15 @@ struct PadNoteApp: App {
         var settingsLayoutMaintenance: String?
         var taskHistoryFixture: AgentTaskHistoryUITestFixture?
         var taskHistoryMaintenance: String?
-        if arguments.contains("--uitesting-agent-task-history") {
+        var resultPaperFixture: AgentResultPaperUITestFixture?
+        var resultPaperMaintenance: String?
+        if arguments.contains("--uitesting-agent-result-paper") {
+            if arguments.contains("--agent-result-paper-cleanup") {
+                resultPaperMaintenance = "pending"
+            } else {
+                resultPaperFixture = AgentResultPaperUITestFixture.make()
+            }
+        } else if arguments.contains("--uitesting-agent-task-history") {
             if arguments.contains("--agent-task-history-cleanup") {
                 taskHistoryMaintenance = "pending"
             } else {
@@ -51,12 +61,14 @@ struct PadNoteApp: App {
         agentSettingsLayoutMaintenanceResult = settingsLayoutMaintenance
         agentTaskHistoryFixture = taskHistoryFixture
         agentTaskHistoryMaintenanceResult = taskHistoryMaintenance
+        agentResultPaperFixture = resultPaperFixture
+        agentResultPaperMaintenanceResult = resultPaperMaintenance
 #else
         _ = CredentialLifecycleRuntime.shared.bootstrapBeforeStores()
 #endif
         let testing: Bool
 #if DEBUG
-        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history")
+        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history") || arguments.contains("--uitesting-agent-result-paper")
 #else
         testing = false
 #endif
@@ -72,8 +84,16 @@ struct PadNoteApp: App {
             agentTaskHistoryDirectory = AgentTaskHistoryUITestPaths.root.appendingPathComponent("notes", isDirectory: true)
         }
 #endif
+        var agentResultPaperDirectory: URL?
+#if DEBUG
+        if arguments.contains("--uitesting-agent-result-paper") {
+            agentResultPaperDirectory = AgentResultPaperUITestPaths.root.appendingPathComponent("notes", isDirectory: true)
+        }
+#endif
         let directory: URL?
-        if let agentTaskHistoryDirectory {
+        if let agentResultPaperDirectory {
+            directory = agentResultPaperDirectory
+        } else if let agentTaskHistoryDirectory {
             directory = agentTaskHistoryDirectory
         } else if let agentSettingsLayoutDirectory {
             directory = agentSettingsLayoutDirectory
@@ -125,14 +145,30 @@ struct PadNoteApp: App {
             }
         }
 #endif
-        _library = StateObject(wrappedValue: NoteLibrary(directory: directory))
+        let initialLibrary: NoteLibrary
+#if DEBUG
+        if let fixture = resultPaperFixture {
+            initialLibrary = fixture.library
+        } else {
+            initialLibrary = NoteLibrary(directory: directory)
+        }
+#else
+        initialLibrary = NoteLibrary(directory: directory)
+#endif
+        _library = StateObject(wrappedValue: initialLibrary)
     }
 
     var body: some Scene {
         WindowGroup {
             Group {
 #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-settings-layout") {
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper") {
+                    if let agentResultPaperFixture {
+                        AgentResultPaperUITestHost(fixture: agentResultPaperFixture).environmentObject(library)
+                    } else {
+                        AgentResultPaperCleanupHost(initialResult: agentResultPaperMaintenanceResult ?? "pending")
+                    }
+                } else if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-settings-layout") {
                     if let agentSettingsLayoutFixture {
                         AgentSettingsLayoutUITestHost(store: agentSettingsLayoutFixture.store)
                     } else if ProcessInfo.processInfo.arguments.contains("--agent-settings-layout-cleanup") {
@@ -681,6 +717,147 @@ private struct AgentTaskHistoryUITestFixture {
             }
         }
         return AgentTaskHistoryUITestFixture(taskStore: taskStore, service: service)
+    }
+}
+
+private enum AgentResultPaperUITestPaths {
+    static var fixtureID: String {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--agent-result-paper-fixture-id"),
+              arguments.indices.contains(index + 1),
+              let id = UUID(uuidString: arguments[index + 1]) else {
+            preconditionFailure("Agent result-to-paper UI tests require an explicit fixture UUID")
+        }
+        return id.uuidString.lowercased()
+    }
+
+    static var root: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("UITestLibrary/AgentResultPaper", isDirectory: true)
+            .appendingPathComponent(fixtureID, isDirectory: true)
+    }
+
+    static func cleanup() -> String {
+        let ownRoot = root
+        let parent = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("UITestLibrary/AgentResultPaper", isDirectory: true).standardizedFileURL
+        guard ownRoot.deletingLastPathComponent().standardizedFileURL == parent,
+              UUID(uuidString: ownRoot.lastPathComponent)?.uuidString.lowercased() == fixtureID else {
+            return "result-paper-fixture-cleanup-refused"
+        }
+        try? FileManager.default.removeItem(at: ownRoot)
+        let suite = "PadNote.AgentResultPaper.UITest.\(fixtureID)"
+        UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        let keys = UserDefaults(suiteName: suite)?.persistentDomain(forName: suite)?.count ?? 0
+        return "result-paper-fixture-cleaned; root-exists=\(FileManager.default.fileExists(atPath: ownRoot.path)); suite-keys=\(keys)"
+    }
+}
+
+@MainActor
+private struct AgentResultPaperUITestFixture {
+    let library: NoteLibrary
+    let taskStore: AgentTaskStore
+    let service: AgentTaskService
+    let taskID: UUID
+    let noteID: String
+
+    static func make() -> AgentResultPaperUITestFixture {
+        let root = AgentResultPaperUITestPaths.root
+        let noteID = AgentResultPaperUITestPaths.fixtureID
+        let noteDirectory = root.appendingPathComponent("notes", isDirectory: true)
+        let library = NoteLibrary(directory: noteDirectory)
+        if !library.notes.contains(where: { $0.id == noteID }) {
+            let note = NoteDocument(id: noteID, title: "Synthetic result-to-paper note",
+                                    updatedAt: NoteDocument.nowMillis(), pageCount: 1)
+            do { try library.save(note) }
+            catch { preconditionFailure("Could not seed isolated result-to-paper note: \(error)") }
+        }
+        guard let note = library.notes.first(where: { $0.id == noteID }) else {
+            preconditionFailure("Isolated result-to-paper note did not load")
+        }
+
+        let taskStore = AgentTaskStore(fileURL: root.appendingPathComponent("tasks", isDirectory: true))
+        let profile = AgentConnectionProfile(
+            id: UUID(uuidString: "f3333333-3333-4333-8333-333333333333")!,
+            name: "Synthetic desktop fixture", kind: .hermes,
+            endpoint: "https://result-paper.fixture.invalid:443", transport: .bridge,
+            bridgeID: "fixture-bridge", instanceID: "fixture-instance")
+        let clientTaskID = "e2222222-2222-4222-8222-222222222222"
+        let task: AgentTaskRecord
+        do {
+            if let existing = try taskStore.tasks().first(where: { $0.payload.clientTaskID == clientTaskID }) {
+                guard existing.connection.stillMatches(profile),
+                      existing.payload.title == "Synthetic completed task",
+                      existing.payload.input == "Synthetic request; no Agent is contacted.",
+                      existing.payload.source.noteID == noteID,
+                      existing.payload.parentTaskID == nil,
+                      existing.payload.bundleBase64 == nil,
+                      existing.payload.requiredCapability == nil else {
+                    preconditionFailure("Existing isolated result-to-paper task did not match its fixture identity")
+                }
+                task = existing
+            } else {
+                let payload = try AgentTaskPayload(
+                    clientTaskID: clientTaskID, title: "Synthetic completed task",
+                    input: "Synthetic request; no Agent is contacted.",
+                    source: AgentTaskSource(noteID: noteID, noteRevision: Int(note.updatedAt / 1000)))
+                task = try taskStore.create(profile: profile, payload: payload)
+            }
+        } catch {
+            preconditionFailure("Could not seed isolated result-to-paper task: \(error)")
+        }
+        if task.status != .completed {
+            do {
+                _ = try taskStore.mutate(id: task.id, expectedRevision: task.recordRevision) { value in
+                    value.status = .completed
+                    value.output = "Synthetic result for the isolated result-to-paper UI test."
+                }
+            } catch { preconditionFailure("Could not complete isolated result-to-paper task: \(error)") }
+        } else if task.output != "Synthetic result for the isolated result-to-paper UI test." {
+            preconditionFailure("Existing isolated result-to-paper task had unexpected fixture output")
+        }
+        let suite = "PadNote.AgentResultPaper.UITest.\(AgentResultPaperUITestPaths.fixtureID)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let connections = AgentConnectionStore(defaults: defaults, keychain: AgentTaskHistoryUITestTokenStore())
+        let service = AgentTaskService(connectionStore: connections, taskStore: taskStore)
+        return AgentResultPaperUITestFixture(library: library, taskStore: taskStore, service: service,
+                                             taskID: task.id, noteID: noteID)
+    }
+}
+
+private struct AgentResultPaperUITestHost: View {
+    @EnvironmentObject private var library: NoteLibrary
+    let fixture: AgentResultPaperUITestFixture
+
+    private var stateLabel: String {
+        guard let note = library.notes.first(where: { $0.id == fixture.noteID }) else {
+            return "synthetic=true; note=missing"
+        }
+        let receiptCount = note.textFlows.filter { $0.agentResult != nil }.count
+        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount)"
+    }
+
+    var body: some View {
+        AgentTaskDetailView(taskID: fixture.taskID, store: fixture.taskStore, service: fixture.service)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Text(stateLabel).font(.caption2).accessibilityIdentifier("agentResultPaperFixtureState")
+                    .frame(maxWidth: .infinity).padding(4).background(.thinMaterial)
+            }
+    }
+}
+
+private struct AgentResultPaperCleanupHost: View {
+    let initialResult: String
+    @State private var result: String
+
+    init(initialResult: String) {
+        self.initialResult = initialResult
+        _result = State(initialValue: initialResult)
+    }
+
+    var body: some View {
+        Text(result).accessibilityIdentifier("agentResultPaperCleanupResult")
+            .onAppear { result = AgentResultPaperUITestPaths.cleanup() }
     }
 }
 

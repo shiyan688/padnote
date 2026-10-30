@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">Envoyer la tâche enregistrée</string>
     <string name="flow_send_saved_task_warning">Cette tâche n’a pas encore été envoyée. Elle sera envoyée une fois avec son ID et son contenu enregistrés.</string>
     <string name="flow_send_saved_task_confirm">Envoyer maintenant</string>
+    <string name="flow_append_result_to_note">Ajouter le résultat à la note</string>
+    <string name="flow_agent_result_preview_title">Vérifier le résultat avant de l’ajouter</string>
+    <string name="flow_agent_result_append_confirm">Ajouter à cette note</string>
+    <string name="flow_agent_result_older_snapshot">Ce résultat utilise une version antérieure de la note. Il sera ajouté à la version actuelle.</string>
+    <string name="flow_agent_result_new_target_notice">La note d’origine est indisponible. Le résultat sera ajouté à la nouvelle note choisie.</string>
+    <string name="flow_agent_result_source_missing_title">Choisir où enregistrer le résultat</string>
+    <string name="flow_agent_result_source_missing_body">La note d’origine est indisponible. Vous pouvez créer une note et y enregistrer le résultat.</string>
+    <string name="flow_agent_result_create_note">Créer une nouvelle note</string>
+    <string name="flow_agent_result_create_note_body">La note d’origine ne sera ni recréée ni modifiée.</string>
+    <string name="flow_agent_result_create_failed">Impossible de créer la nouvelle note.</string>
+    <string name="flow_agent_result_unavailable">Cette tâche ne contient aucun résultat textuel terminé à ajouter.</string>
+    <string name="flow_agent_result_wait_for_save">Enregistrez la note actuelle avant d’ajouter le résultat.</string>
+    <string name="flow_agent_result_prepare_failed">Impossible de préparer le résultat. La note n’a pas été modifiée.</string>
+    <string name="flow_agent_result_target_changed">La tâche ou la note a changé. Vérifiez de nouveau le résultat.</string>
+    <string name="flow_agent_result_already_added">Ce résultat figure déjà dans la note.</string>
+    <string name="flow_agent_result_saving">Enregistrement du résultat dans la note…</string>
+    <string name="flow_agent_result_saved">Résultat ajouté à la note.</string>
+    <string name="flow_agent_result_saved_reopen">Résultat enregistré. Rouvrez la note pour le voir.</string>
+    <string name="flow_agent_result_save_uncertain">L’état de l’enregistrement est incertain. Rouvrez la note et vérifiez avant de réessayer.</string>
+    <string name="flow_agent_result_save_failed">Impossible d’enregistrer le résultat. La note n’a pas été modifiée.</string>
 </resources>

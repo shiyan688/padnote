@@ -41,6 +41,8 @@ struct NoteEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var document: NoteDocument
     @State private var groupSession: NoteGroupEditorSession?
+    @State private var initialPage: Int?
+    @State private var missingSaveFence = false
     @StateObject private var canvas = CanvasController()
     @StateObject private var vault = VaultLibrary()
     @ObservedObject private var compiledRenderer = CompiledTextRenderer.shared
@@ -78,10 +80,12 @@ struct NoteEditorView: View {
     private let videoTaskStore: AgentTaskStore
     private let videoTaskService: AgentTaskService?
 
-    init(note: NoteDocument, session: NoteGroupEditorSession? = nil, videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
+    init(note: NoteDocument, session: NoteGroupEditorSession? = nil, initialPage: Int? = nil,
+         videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
          videoTaskStore: AgentTaskStore = AgentTaskStore(), videoTaskService: AgentTaskService? = nil) {
         _document = State(initialValue: session?.document ?? note)
         _groupSession = State(initialValue: session)
+        _initialPage = State(initialValue: initialPage)
         self.videoConnectionStore = videoConnectionStore
         self.videoTaskStore = videoTaskStore
         self.videoTaskService = videoTaskService
@@ -593,10 +597,32 @@ struct NoteEditorView: View {
         if let canonical = library.notes.first(where: { $0.id == document.id }) {
             lastSavedAt = Date(timeIntervalSince1970: canonical.updatedAt / 1000)
         }
+        if groupSession == nil, library.notes.contains(where: { $0.id == document.id }) {
+            do {
+                if let draft = library.pendingDraft(noteID: document.id), draft.document == document {
+                    let captured = try library.openEditorSession(for: draft)
+                    if captured.document == document { groupSession = captured }
+                    else { missingSaveFence = true }
+                } else {
+                    let captured = try library.openEditorSession(noteID: document.id)
+                    if captured.document == document { groupSession = captured }
+                    else { missingSaveFence = true }
+                }
+            } catch { missingSaveFence = true; saveFailure = "无法确认笔记的当前版本；请重新打开笔记后再保存。" }
+        }
+        if groupSession == nil, !missingSaveFence {
+            // A genuinely new note starts with an expected-absence fence. Once its first
+            // write succeeds, the returned session carries the canonical body digest.
+            groupSession = NoteGroupEditorSession(document: document, groupToken: nil, members: [],
+                                                   legacyBodySHA256: nil)
+        }
         if let draft = library.pendingDraft(noteID: document.id), draft.document == document {
             editRevision = draft.revision
             persistedDraftRevision = draft.revision
             savePhase = .dirty
+        }
+        if let initialPage {
+            DispatchQueue.main.async { canvas.goToPage(min(max(0, initialPage), max(0, document.pageCount - 1))) }
         }
     }
 
@@ -682,6 +708,7 @@ struct NoteEditorView: View {
             return false
         }
         do {
+            guard !missingSaveFence else { throw NoteGroupStoreError.compareAndSwapConflict }
             if let session = groupSession {
                 groupSession = try library.save(snapshot, basedOn: session)
             } else {

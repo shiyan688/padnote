@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">Send saved task</string>
     <string name="flow_send_saved_task_warning">This task has not been sent. It will be sent once using its existing task ID and saved payload.</string>
     <string name="flow_send_saved_task_confirm">Send now</string>
+    <string name="flow_append_result_to_note">Add result to note</string>
+    <string name="flow_agent_result_preview_title">Review result before adding</string>
+    <string name="flow_agent_result_append_confirm">Add to this note</string>
+    <string name="flow_agent_result_older_snapshot">This result used an earlier version of the note. It will be added to the current version.</string>
+    <string name="flow_agent_result_new_target_notice">The original note is unavailable. This result will be added to the new note you chose.</string>
+    <string name="flow_agent_result_source_missing_title">Choose where to save the result</string>
+    <string name="flow_agent_result_source_missing_body">The original note is unavailable. You can create a new note and add the result there.</string>
+    <string name="flow_agent_result_create_note">Create a new note</string>
+    <string name="flow_agent_result_create_note_body">The original note will not be recreated or changed.</string>
+    <string name="flow_agent_result_create_failed">Could not create a new note.</string>
+    <string name="flow_agent_result_unavailable">This task has no completed text result to add.</string>
+    <string name="flow_agent_result_wait_for_save">Save the current note before adding the result.</string>
+    <string name="flow_agent_result_prepare_failed">The result could not be prepared. The note was not changed.</string>
+    <string name="flow_agent_result_target_changed">The task or note changed. Review the result again before adding it.</string>
+    <string name="flow_agent_result_already_added">This result is already in the note.</string>
+    <string name="flow_agent_result_saving">Saving the result to the note…</string>
+    <string name="flow_agent_result_saved">Result added to the note.</string>
+    <string name="flow_agent_result_saved_reopen">The result was saved. Reopen the note to see it.</string>
+    <string name="flow_agent_result_save_uncertain">The save result is uncertain. Reopen the note and check before trying again.</string>
+    <string name="flow_agent_result_save_failed">Could not save the result. The note was not changed.</string>
 </resources>

@@ -88,8 +88,15 @@ public final class ArchiveManualUpdateInstrumentedTest {
             try(LibraryBackupArchive.StagedArchive legacy=LibraryBackupArchive.stage(input,stageParent,null,null)){
                 NoteGroupFacade facade=new NoteGroupFacade(context);
                 LibraryBackupManifest.Note note=legacy.manifest().notes.get(0);
+                String existingTarget=ids.get(note.itemId);
+                assertNotNull("legacy archive note has a restored existing target",existingTarget);
+                StreamingGroupStore.Snapshot adopted=facade.adoptLegacyNote(existingTarget,
+                        (before,proposed)->true);
+                assertEquals("fixture explicitly adopts the restored target before update checks",
+                        existingTarget,adopted.localId);
+                assertNotNull("the adopted target is now a managed group",facade.openGroup(existingTarget));
                 try {
-                    facade.updateFromArchive(legacy,note.itemId,"note-never-selected",Collections.emptyMap(),(a,b)->true);
+                    facade.updateFromArchive(legacy,note.itemId,existingTarget,Collections.emptyMap(),(a,b)->true);
                     fail("archive v1 has no update authority and must remain copy-only");
                 } catch(java.io.IOException expected) { assertEquals("UPDATE_PROFILE_REQUIRED_COPY_ONLY",expected.getMessage()); }
             }
@@ -110,6 +117,13 @@ public final class ArchiveManualUpdateInstrumentedTest {
             assertFalse("virtual Vault locator rejects malformed Base64URL",GroupAuthorityBridge.isVirtualVaultName("group-vault-%%%-9f6c2f11-428e-4a88-9d44-6d8ac77fd220.md"));
             assertFalse("virtual Vault locator rejects a missing separator",GroupAuthorityBridge.isVirtualVaultName("group-vault-bm90ZS0x9f6c2f11-428e-4a88-9d44-6d8ac77fd220.md"));
             JSONObject body=NoteStore.load(context,entry.id);body.put("title","incoming full group");body.put("pageCount",2);body.put("pdfPageCount",1);
+            String resultText="Completed Agent result preserved by archive update";
+            AgentResultProvenance resultReceipt=new AgentResultProvenance(UUID.randomUUID().toString(),
+                    "fixture-connection",null,"hermes","bridge",entry.id,body.optLong("updatedAt"),
+                    AgentResultProvenance.sha256(resultText.getBytes(StandardCharsets.UTF_8)),123L);
+            body.getJSONArray("textFlows").put(new TextFlow("flow-agent-"+resultReceipt.applicationId,
+                    NoteTextBox.Format.MARKDOWN,resultText,16,1.35,600,0,16,40,resultReceipt).toJson());
+            body.put("schemaVersion",9);
             JSONArray strokes=body.getJSONArray("strokes");strokes.put(new JSONObject().put("id",UUID.randomUUID().toString()).put("color","#FF123456")
                     .put("baseWidth",2.25).put("createdAt",1700000000001L).put("highlighter",false)
                     .put("points",new JSONArray().put(new JSONObject().put("x",12.5).put("y",33.25).put("pressure",0.5).put("timestamp",1700000000002L))));
@@ -150,6 +164,7 @@ public final class ArchiveManualUpdateInstrumentedTest {
 
             try(LibraryBackupArchive.StagedArchive source=LibraryBackupArchive.stage(incoming,archiveStage,null,null)){
                 LibraryBackupManifest.Note note=onlyNote(source.manifest());Map<String,String> map=explicitMap(note,source.manifest(),entry.id);
+                assertEquals("the archive update source retains the provenance schema",9,note.noteSchemaVersion);
                 LibraryBackupManifest.VaultEntry linkedVault=source.manifest().vaultEntries.get(0);
                 Map<String,String> invalidVaultDestination=new LinkedHashMap<>(map);
                 invalidVaultDestination.put(linkedVault.itemId,"note-"+UUID.randomUUID().toString().replace("-","")+UUID.randomUUID().toString().replace("-","")+".md");
@@ -351,6 +366,12 @@ public final class ArchiveManualUpdateInstrumentedTest {
                 StreamingGroupStore.Snapshot updated=facade.updateFromArchive(source,note.itemId,entry.id,
                         updateMapping,(current,staged)->{assertFullMemberSet(staged);return true;});
                 assertStoredNoteBody(updated,incomingBody,entry.id);assertFullMemberSet(updated);
+                JSONObject updatedBody=new JSONObject(new String(updated.readSmall("body.bin",
+                        (int)StreamingGroupStore.BODY_MAX),StandardCharsets.UTF_8));
+                assertEquals(9,updatedBody.getInt("schemaVersion"));
+                assertEquals("manual update preserves typed Agent result provenance",resultReceipt.applicationId,
+                        updatedBody.getJSONArray("textFlows").getJSONObject(0).getJSONObject("agentResult")
+                                .getString("applicationId"));
                 assertMemberBytes(updated,"pdf.bin",incomingPdf);assertMemberBytes(updated,"cover.bin",incomingCover);
                 assertRoleBytes(updated,"video/",incomingVideo);assertRoleBytes(updated,"vault/",destinationVault);
                 // Legacy UI reads must resolve the committed group revision, while

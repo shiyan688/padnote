@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import CryptoKit
 
 enum AgentTaskDestinationLabel {
     static func make(_ profile: AgentConnectionProfile) -> String {
@@ -252,6 +253,7 @@ public struct AgentTaskDetailView: View {
     @State private var unavailableVideoAttachmentCount = 0
     @State private var history: [AgentTaskRecord] = []
     @State private var error: String?
+    @State private var showingResultToPaper = false
     @State private var working = false
     @State private var artifactPresentation: AgentTaskArtifactPresentation?
 #if DEBUG
@@ -309,7 +311,15 @@ public struct AgentTaskDetailView: View {
                     }
                     Section("本轮输入") { Text(task.payload.input).textSelection(.enabled) }
                     if let output = task.output, !output.isEmpty {
-                        Section("结果") { Text(output).textSelection(.enabled) }
+                        Section("结果") {
+                            Text(output).textSelection(.enabled)
+                            if task.status == .completed {
+                                Button("预览并添加到笔记", systemImage: "doc.text.image") {
+                                    showingResultToPaper = true
+                                }
+                                .accessibilityIdentifier("agentResultPreviewToPaper")
+                            }
+                        }
                     }
                     if task.connection.transport == .bridge,
                        task.payload.requiredCapability != "note_context_bundle",
@@ -470,6 +480,12 @@ public struct AgentTaskDetailView: View {
                 switch presentation {
                 case .share(let url): ShareSheet(url: url)
                 case .video(let url): VerifiedLocalVideoPlayer(url: url)
+                }
+            }
+            .sheet(isPresented: $showingResultToPaper) {
+                if let task {
+                    AgentResultToPaperView(task: task, store: store)
+                        .environmentObject(noteLibrary)
                 }
             }
             .sheet(isPresented: $composingFollowup, onDismiss: {
@@ -645,6 +661,250 @@ public struct AgentTaskDetailView: View {
 
     private func reloadHistory() {
         history = (try? store.history(for: taskID)) ?? []
+    }
+}
+
+private struct AgentResultToPaperView: View {
+    @EnvironmentObject private var noteLibrary: NoteLibrary
+    @Environment(\.dismiss) private var dismiss
+    let task: AgentTaskRecord
+    let store: AgentTaskStore
+
+    @State private var targetNoteID: String?
+    @State private var previewSession: NoteGroupEditorSession?
+    @State private var newNoteTitle = "Agent 任务结果"
+    @State private var working = false
+    @State private var error: String?
+    @State private var saved: (document: NoteDocument, session: NoteGroupEditorSession, page: Int, already: Bool)?
+
+    private let newNoteTag = "__padnote_new_agent_result_note__"
+
+    private var output: String { task.output ?? "" }
+    private var resultIsWithinLimits: Bool {
+        output.utf16.count <= 100_000 && Data(output.utf8).count <= 400_000 &&
+            !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { statusProxy in
+                Form {
+                if let error {
+                    Section("未添加") {
+                        Text(error).foregroundStyle(.red).textSelection(.enabled)
+                            .accessibilityIdentifier("agentResultAppendError")
+                    }
+                    .id("agentResultStatus")
+                }
+                if let saved {
+                    Section(saved.already ? "结果已在笔记中" : "已添加到笔记") {
+                        Text("《\(saved.document.title)》· 第 \(saved.page + 1) 页")
+                        NavigationLink("打开并定位到结果") {
+                            NoteEditorView(note: saved.document, session: saved.session, initialPage: saved.page)
+                                .environmentObject(noteLibrary)
+                        }
+                        .accessibilityIdentifier("agentResultOpenSavedNote")
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .id("agentResultStatus")
+                }
+                Section("结果预览") {
+                    Text(output)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("agentResultPlainTextPreview")
+                    Text("预览按原文显示。添加后会使用笔记已有的安全排版，不执行返回内容中的代码或链接。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("任务来源") {
+                    LabeledContent("连接", value: task.connection.connectionName)
+                    DisclosureGroup("任务与连接详情") {
+                        LabeledContent("任务 ID", value: task.id.uuidString.lowercased())
+                        Text(AgentTaskHistoryDestinationLabel.make(task.connection))
+                            .font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            .accessibilityIdentifier("agentResultTechnicalIdentity")
+                    }
+                    .accessibilityIdentifier("agentResultTechnicalDetails")
+                    if task.payload.source.noteRevision >= 0,
+                       let source = previewSession?.document,
+                       source.id == task.payload.source.noteID,
+                       Int(source.updatedAt / 1000) != task.payload.source.noteRevision {
+                        Text("原笔记在任务提交后有更新；确认后会追加到你当前预览的版本。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
+                Section("保存到") {
+                    Picker("目标笔记", selection: $targetNoteID) {
+                        Text("另存为新笔记…").tag(Optional<String>.none)
+                        ForEach(noteLibrary.notes) { note in
+                            Text(note.title.isEmpty ? "未命名笔记" : note.title).tag(Optional(note.id))
+                        }
+                    }
+                    .accessibilityIdentifier("agentResultDestinationPicker")
+                    .disabled(working)
+                    if targetNoteID == nil {
+                        TextField("新笔记名称", text: $newNoteTitle)
+                            .accessibilityIdentifier("agentResultNewNoteTitle")
+                            .disabled(working)
+                        Text("将创建新的笔记 ID，不会恢复已删除的原笔记。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if !resultIsWithinLimits {
+                    Section {
+                        Text("结果为空或超出笔记支持的长度，无法添加。原始结果仍可选择和复制。")
+                            .foregroundStyle(.orange)
+                    }
+                }
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper-stale") {
+                    Section("隔离回归") {
+                        Button("测试：更改预览中的合成笔记") { mutateSyntheticPreviewTarget() }
+                            .accessibilityIdentifier("agentResultUITestChangeTarget")
+                    }
+                }
+#endif
+                }
+                .onChange(of: error) { _, newError in
+                    if newError != nil { statusProxy.scrollTo("agentResultStatus", anchor: .top) }
+                }
+                .onChange(of: saved != nil) { _, isSaved in
+                    if isSaved { statusProxy.scrollTo("agentResultStatus", anchor: .top) }
+                }
+            }
+            .navigationTitle("预览并添加")
+            .interactiveDismissDisabled(working)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(working) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(working ? "正在保存…" : "确认添加") { confirmAppend() }
+                        .disabled(working || !resultIsWithinLimits || saved != nil)
+                        .accessibilityIdentifier("agentResultConfirmAppend")
+                }
+            }
+            .onAppear {
+                if targetNoteID == nil,
+                   noteLibrary.notes.contains(where: { $0.id == task.payload.source.noteID }) {
+                    targetNoteID = task.payload.source.noteID
+                }
+                capturePreviewTarget(targetNoteID)
+            }
+            .onChange(of: targetNoteID) { _, selection in capturePreviewTarget(selection) }
+        }
+    }
+
+    private func confirmAppend() {
+        guard !working, resultIsWithinLimits, saved == nil else { return }
+        working = true
+        error = nil
+        Task { @MainActor in
+            defer { working = false }
+            do {
+                guard let current = try store.task(id: task.id), current.id == task.id,
+                      current.status == .completed, current.connection == task.connection,
+                      current.payload == task.payload, current.output == task.output,
+                      UUID(uuidString: current.payload.clientTaskID)?.uuidString.lowercased() == current.id.uuidString.lowercased(),
+                      let exactOutput = current.output else {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                let flow = try makeFlow(for: current, exactOutput: exactOutput)
+                if let targetNoteID {
+                    guard noteLibrary.notes.contains(where: { $0.id == targetNoteID }),
+                          let session = previewSession, session.document.id == targetNoteID else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                    if session.document.textFlows.contains(where: {
+                        $0.agentResult?.applicationId == flow.agentResult?.applicationId
+                    }) {
+                        let outcome = try noteLibrary.appendAgentResult(flow, basedOn: session)
+                        saved = (outcome.document, outcome.session, outcome.pageIndex, outcome.alreadyApplied)
+                        return
+                    }
+                    if session.document.textFlows.contains(where: { $0.id == flow.id }) {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document, addFinalPage: true)
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: candidate.document)
+                    try verifyUnchangedTaskSnapshot(current)
+                    let outcome = try noteLibrary.appendAgentResult(flow, basedOn: session)
+                    saved = (outcome.document, outcome.session, outcome.pageIndex, outcome.alreadyApplied)
+                } else {
+                    let title = newNoteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { throw NoteDocumentError.malformed("请填写新笔记名称。") }
+                    let base = NoteDocument(title: String(title.prefix(200)))
+                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: base, addFinalPage: false)
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: candidate.document)
+                    try verifyUnchangedTaskSnapshot(current)
+                    let outcome = try noteLibrary.createNoteWithAgentResult(candidate, flow: flow)
+                    saved = (outcome.document, outcome.session, outcome.pageIndex, outcome.alreadyApplied)
+                }
+            } catch is CancellationError {
+                self.error = "排版预检已取消；笔记没有更改，你可以再次确认。"
+            } catch let failure {
+                self.error = (failure as? LocalizedError)?.errorDescription ?? "无法安全添加。笔记没有更改，请重新预览后再试。"
+            }
+        }
+    }
+
+    private func verifyUnchangedTaskSnapshot(_ expected: AgentTaskRecord) throws {
+        guard let latest = try store.task(id: expected.id), latest.id == expected.id,
+              latest.status == .completed, latest.connection == expected.connection,
+              latest.payload == expected.payload, latest.output == expected.output else {
+            throw NoteGroupStoreError.compareAndSwapConflict
+        }
+    }
+
+    private func capturePreviewTarget(_ noteID: String?) {
+        guard let noteID else { previewSession = nil; return }
+        do {
+            previewSession = try noteLibrary.captureAgentResultTarget(noteID: noteID)
+            error = nil
+        } catch {
+            previewSession = nil
+            self.error = "无法读取所选笔记的当前版本。请返回笔记列表后重新打开预览。"
+        }
+    }
+
+#if DEBUG
+    private func mutateSyntheticPreviewTarget() {
+        guard let targetNoteID else { return }
+        do {
+            let session = try noteLibrary.captureAgentResultTarget(noteID: targetNoteID)
+            var changed = session.document
+            changed.title += " · synthetic concurrent edit"
+            _ = try noteLibrary.save(changed, basedOn: session)
+        } catch {
+            self.error = "隔离测试无法更改合成目标版本。"
+        }
+    }
+#endif
+
+    private func makeFlow(for task: AgentTaskRecord, exactOutput: String) throws -> NoteTextFlow {
+        guard exactOutput.utf16.count <= 100_000, Data(exactOutput.utf8).count <= 400_000,
+              !exactOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              task.payload.source.noteRevision >= 0 else {
+            throw NoteDocumentError.tooLarge("结果为空或超出笔记支持的长度。")
+        }
+        let resultDigest = SHA256.hash(data: Data(exactOutput.utf8)).map { String(format: "%02x", $0) }.joined()
+        let taskID = task.payload.clientTaskID.lowercased()
+        let connectionID = task.connection.connectionID.uuidString
+        let instanceID = task.connection.instanceID.flatMap { $0.isEmpty ? nil : $0 }
+        let kind = task.connection.kind.rawValue.lowercased()
+        let transport = task.connection.transport.rawValue.lowercased()
+        let material = ["padnote.agent-result.v1", taskID, connectionID, instanceID ?? "", kind, transport, resultDigest]
+            .joined(separator: "\n")
+        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        let receipt = AgentResultReceipt(applicationId: applicationID, taskId: taskID,
+            connectionId: connectionID, instanceId: instanceID, agentKind: kind, transport: transport,
+            sourceNoteId: task.payload.source.noteID.isEmpty ? nil : task.payload.source.noteID,
+            sourceNoteRevision: Int64(task.payload.source.noteRevision),
+            resultSha256: resultDigest, addedAt: Int64(Date().timeIntervalSince1970 * 1000))
+        let flow = NoteTextFlow(id: "flow-agent-\(applicationID)", format: "markdown", source: exactOutput,
+                                fontSizeSp: 18, lineHeight: 1.35, width: 736,
+                                anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40,
+                                agentResult: receipt)
+        try receipt.validate()
+        return flow
     }
 }
 

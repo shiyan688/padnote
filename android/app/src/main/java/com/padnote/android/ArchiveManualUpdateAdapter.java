@@ -88,7 +88,8 @@ public final class ArchiveManualUpdateAdapter {
         if(manifest.formatVersion!=2)throw new IOException("UPDATE_PROFILE_REQUIRED_COPY_ONLY");
         if(!"android".equals(manifest.producer.platform))throw new IOException("UPDATE_SOURCE_PLATFORM_UNSUPPORTED_COPY_ONLY");
         LibraryBackupManifest.Note sourceNote=findNote(manifest,sourceNoteItemId);
-        if(sourceNote==null||sourceNote.noteSchemaVersion!=8)throw new IOException("UPDATE_SOURCE_PROFILE_UNSUPPORTED");
+        if(sourceNote==null)throw new IOException("UPDATE_SOURCE_PROFILE_UNSUPPORTED");
+        if(sourceNote.noteSchemaVersion!=8&&sourceNote.noteSchemaVersion!=9)throw new IOException("UPDATE_SOURCE_PROFILE_UNSUPPORTED");
         ArchiveUpdateProfile profile=findProfile(manifest,sourceNoteItemId);
         if(profile==null||!profile.sourceNoteId.equals(sourceNote.sourceNoteId))throw new IOException("UPDATE_PROFILE_REQUIRED_COPY_ONLY");
         Map<String,String> mapping=validateMapping(sourceNote,manifest,profile,targetLocalNoteId,explicitSourceToDestination);

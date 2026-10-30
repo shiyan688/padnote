@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">Gespeicherte Aufgabe senden</string>
     <string name="flow_send_saved_task_warning">Diese Aufgabe wurde noch nicht gesendet. Sie wird einmal mit ihrer vorhandenen Aufgaben-ID und dem gespeicherten Inhalt gesendet.</string>
     <string name="flow_send_saved_task_confirm">Jetzt senden</string>
+    <string name="flow_append_result_to_note">Ergebnis zur Notiz hinzufügen</string>
+    <string name="flow_agent_result_preview_title">Ergebnis vor dem Hinzufügen prüfen</string>
+    <string name="flow_agent_result_append_confirm">Zu dieser Notiz hinzufügen</string>
+    <string name="flow_agent_result_older_snapshot">Dieses Ergebnis verwendet eine ältere Notizversion. Es wird zur aktuellen Version hinzugefügt.</string>
+    <string name="flow_agent_result_new_target_notice">Die ursprüngliche Notiz ist nicht verfügbar. Das Ergebnis wird der gewählten neuen Notiz hinzugefügt.</string>
+    <string name="flow_agent_result_source_missing_title">Speicherort für das Ergebnis wählen</string>
+    <string name="flow_agent_result_source_missing_body">Die ursprüngliche Notiz ist nicht verfügbar. Du kannst eine neue Notiz erstellen und das Ergebnis dort speichern.</string>
+    <string name="flow_agent_result_create_note">Neue Notiz erstellen</string>
+    <string name="flow_agent_result_create_note_body">Die ursprüngliche Notiz wird nicht wiederhergestellt oder geändert.</string>
+    <string name="flow_agent_result_create_failed">Die neue Notiz konnte nicht erstellt werden.</string>
+    <string name="flow_agent_result_unavailable">Diese Aufgabe enthält kein abgeschlossenes Textergebnis zum Hinzufügen.</string>
+    <string name="flow_agent_result_wait_for_save">Speichere die aktuelle Notiz, bevor du das Ergebnis hinzufügst.</string>
+    <string name="flow_agent_result_prepare_failed">Das Ergebnis konnte nicht vorbereitet werden. Die Notiz blieb unverändert.</string>
+    <string name="flow_agent_result_target_changed">Aufgabe oder Notiz wurde geändert. Prüfe das Ergebnis erneut.</string>
+    <string name="flow_agent_result_already_added">Dieses Ergebnis ist bereits in der Notiz.</string>
+    <string name="flow_agent_result_saving">Ergebnis wird in der Notiz gespeichert…</string>
+    <string name="flow_agent_result_saved">Ergebnis wurde zur Notiz hinzugefügt.</string>
+    <string name="flow_agent_result_saved_reopen">Ergebnis gespeichert. Öffne die Notiz erneut, um es zu sehen.</string>
+    <string name="flow_agent_result_save_uncertain">Der Speicherstatus ist unklar. Öffne die Notiz erneut und prüfe sie, bevor du es noch einmal versuchst.</string>
+    <string name="flow_agent_result_save_failed">Ergebnis konnte nicht gespeichert werden. Die Notiz blieb unverändert.</string>
 </resources>

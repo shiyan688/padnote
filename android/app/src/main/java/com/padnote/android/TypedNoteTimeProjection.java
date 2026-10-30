@@ -12,7 +12,7 @@ import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.util.*;
 
-/** Source-authoritative timestamp projection for schema-8 update prototypes.
+/** Source-authoritative timestamp projection for schema-8/9 update prototypes.
  * Provenance is input-only here; this is not a durable storage adapter. */
 final class TypedNoteTimeProjection {
     enum Kind { I64, F64 }
@@ -30,7 +30,7 @@ final class TypedNoteTimeProjection {
     private TypedNoteTimeProjection(){}
     static Projection nativeAndroid(String raw)throws Exception {
         rejectDuplicateKeys(raw);
-        JSONObject doc=NotePrecisionJsonParser.parseObject(raw); if(doc.optInt("schemaVersion",0)!=8)throw new IllegalArgumentException("update_requires_schema8");
+        JSONObject doc=NotePrecisionJsonParser.parseObject(raw); int schema=doc.optInt("schemaVersion",0); if(schema!=8&&schema!=9)throw new IllegalArgumentException("update_requires_schema8_or_9");
         requireExactTimestampFields(doc);
         NoteStore.validateDocument(doc); return project(doc,"native-android",null,raw);
     }
@@ -40,7 +40,7 @@ final class TypedNoteTimeProjection {
         if(!sha(raw.getBytes(StandardCharsets.UTF_8)).equals(sidecar.sha256))throw new IllegalArgumentException("provenance_document_hash_mismatch");
         Set<String> f64NegativeZeroTimes=new HashSet<>();
         for(Map.Entry<String,ProvenanceValue> entry:sidecar.values.entrySet())if(entry.getValue().kind==Kind.F64&&entry.getValue().doubleBits==Long.MIN_VALUE)f64NegativeZeroTimes.add(entry.getKey());
-        JSONObject doc=NotePrecisionJsonParser.parseObject(raw,f64NegativeZeroTimes); if(doc.optInt("schemaVersion",0)!=8)throw new IllegalArgumentException("update_requires_schema8");
+        JSONObject doc=NotePrecisionJsonParser.parseObject(raw,f64NegativeZeroTimes); int schema=doc.optInt("schemaVersion",0); if(schema!=8&&schema!=9)throw new IllegalArgumentException("update_requires_schema8_or_9");
         requireExactTimestampFields(doc);
         NoteStore.validateDocument(doc); if(!doc.getString("id").equals(sidecar.noteId))throw new IllegalArgumentException("provenance_note_id_mismatch");
         Projection p=project(doc,sidecar.source,sidecar.values,raw);
@@ -116,7 +116,7 @@ final class TypedNoteTimeProjection {
             putF64(out,s.getDouble("baseWidth"));putTime(out,requiredTime(map,"/strokes/"+si+"/createdAt"));out.writeByte(s.optBoolean("highlighter",false)?1:0);
             JSONArray pts=s.getJSONArray("points");putCount(out,pts.length());for(int pi=0;pi<pts.length();pi++){JSONObject p=pts.getJSONObject(pi);requireKeys(p,keySet("x","y","pressure","timestamp"));putF64(out,p.getDouble("x"));putF64(out,p.getDouble("y"));putF64(out,p.has("pressure")?p.getDouble("pressure"):0.5);putTime(out,requiredTime(map,"/strokes/"+si+"/points/"+pi+"/timestamp"));}
         }
-        JSONArray flows=doc.optJSONArray("textFlows");if(flows==null)flows=new JSONArray();putCount(out,flows.length());for(int i=0;i<flows.length();i++){JSONObject f=flows.getJSONObject(i);requireKeys(f,keySet("id","format","source","fontSizeSp","lineHeight","width","anchorPageIndex","anchorXInPage","anchorYInPage"));double font=f.getDouble("fontSizeSp"),line=f.getDouble("lineHeight"),width=f.getDouble("width");if(font<10||font>32||line<1.1||line>2||width<80)throw new IllegalArgumentException("text_flow_outside_android_exact_storage_range");for(String k:new String[]{"id","format","source"})putBytes(out,f.getString(k).getBytes(StandardCharsets.UTF_8));for(double d:new double[]{font,line,width})putF64(out,d);putI64(out,strictInteger(f,"anchorPageIndex"));putF64(out,f.getDouble("anchorXInPage"));putF64(out,f.getDouble("anchorYInPage"));}
+        JSONArray flows=doc.optJSONArray("textFlows");if(flows==null)flows=new JSONArray();putCount(out,flows.length());boolean hasAgentResult=false;for(int i=0;i<flows.length();i++){JSONObject f=flows.getJSONObject(i);Set<String> flowKeys=keySet("id","format","source","fontSizeSp","lineHeight","width","anchorPageIndex","anchorXInPage","anchorYInPage");if(doc.optInt("schemaVersion",0)==9&&f.has("agentResult"))flowKeys.add("agentResult");requireKeys(f,flowKeys);double font=f.getDouble("fontSizeSp"),line=f.getDouble("lineHeight"),width=f.getDouble("width");if(font<10||font>32||line<1.1||line>2||width<80)throw new IllegalArgumentException("text_flow_outside_android_exact_storage_range");for(String k:new String[]{"id","format","source"})putBytes(out,f.getString(k).getBytes(StandardCharsets.UTF_8));for(double d:new double[]{font,line,width})putF64(out,d);putI64(out,strictInteger(f,"anchorPageIndex"));putF64(out,f.getDouble("anchorXInPage"));putF64(out,f.getDouble("anchorYInPage"));if(f.has("agentResult")){if(doc.optInt("schemaVersion",0)!=9)throw new IllegalArgumentException("agent_result_requires_schema9");AgentResultProvenance receipt=AgentResultProvenance.fromJson(f.getJSONObject("agentResult"));String source=f.getString("source");if(source.length()>AgentResultProvenance.MAX_UTF16_UNITS||!AgentResultProvenance.wellFormedUtf16(source))throw new IllegalArgumentException("agent_result_source_invalid");hasAgentResult=true;out.writeByte(1);putBytes(out,receipt.canonicalBytes());}else if(doc.optInt("schemaVersion",0)==9)out.writeByte(0);}if(hasAgentResult&&doc.optInt("schemaVersion",0)!=9)throw new IllegalArgumentException("agent_result_schema_mismatch");
         JSONArray images=doc.optJSONArray("images");if(images==null)images=new JSONArray();putCount(out,images.length());for(int i=0;i<images.length();i++){JSONObject im=images.getJSONObject(i);requireKeys(im,keySet("id","png","page","x","y","width","height"));putBytes(out,im.getString("id").getBytes(StandardCharsets.UTF_8));String encoded=im.getString("png");byte[] png=decodeCanonicalBase64(encoded);if(!encodeCanonicalBase64(png).equals(encoded))throw new IllegalArgumentException("image_base64");putBytes(out,png);putI64(out,strictInteger(im,"page"));for(String k:new String[]{"x","y","width","height"})putF64(out,im.getDouble(k));}
         out.flush();return bytes.toByteArray();
     }

@@ -1,6 +1,7 @@
 import XCTest
 import PDFKit
 import zlib
+import CryptoKit
 @testable import PadNote
 
 @MainActor
@@ -29,6 +30,239 @@ final class NoteDocumentTests: XCTestCase {
 
         note.strokes[0].points[0].pressure = 2.5
         XCTAssertEqual(try NoteDocument.decode(try note.encoded()).strokes[0].points[0].pressure, 2.5)
+    }
+
+    func testAgentResultReceiptUsesSchemaNineAndSurvivesLaterSourceEdits() throws {
+        var note = NoteDocument(id: "agent-result-note", title: "Result")
+        let flow = try makeAgentResultFlow(output: "First line\n**safe markdown**")
+        note.textFlows = [flow]
+        note.schemaVersion = 9
+        let encoded = try note.encoded()
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(json["schemaVersion"] as? Int, 9)
+        let rows = try XCTUnwrap(json["textFlows"] as? [[String: Any]])
+        let receiptJSON = try XCTUnwrap(rows.first?["agentResult"] as? [String: Any])
+        XCTAssertTrue(receiptJSON["instanceId"] is NSNull)
+        XCTAssertEqual(receiptJSON["sourceNoteId"] as? String, "source-note")
+        XCTAssertEqual(try NoteDocument.decode(encoded), note)
+
+        var edited = note
+        edited.textFlows[0].source += "\nUser edit after insertion."
+        XCTAssertEqual(try NoteDocument.decode(try edited.encoded()), edited,
+                       "The receipt identifies the original task output; later user edits do not invalidate provenance")
+        var legacy = note
+        legacy.schemaVersion = 8
+        XCTAssertThrowsError(try legacy.encoded(), "A schema-8 writer must not carry schema-9 provenance")
+
+        let receipt = try XCTUnwrap(flow.agentResult)
+        let differentTimestamp = AgentResultReceipt(applicationId: receipt.applicationId,
+            taskId: receipt.taskId, connectionId: receipt.connectionId, instanceId: receipt.instanceId,
+            agentKind: receipt.agentKind, transport: receipt.transport, sourceNoteId: receipt.sourceNoteId,
+            sourceNoteRevision: receipt.sourceNoteRevision, resultSha256: receipt.resultSha256,
+            addedAt: receipt.addedAt + 1)
+        XCTAssertTrue(receipt.hasSameStableMetadata(as: differentTimestamp),
+                      "Retry timestamps do not affect idempotent identity")
+        XCTAssertEqual(differentTimestamp.addedAt, receipt.addedAt + 1)
+    }
+
+    func testAgentResultReceiptRejectsUnknownKeysAndBadApplicationIdentity() throws {
+        var note = NoteDocument(id: "agent-result-invalid", title: "Result")
+        note.textFlows = [try makeAgentResultFlow(output: "Exact output")]
+        note.schemaVersion = 9
+        let original = try JSONSerialization.jsonObject(with: note.encoded()) as! [String: Any]
+        let flowRows = original["textFlows"] as! [[String: Any]]
+        let originalFlow = flowRows[0]
+        let originalReceipt = originalFlow["agentResult"] as! [String: Any]
+
+        var unknownReceipt = originalReceipt
+        unknownReceipt["unexpected"] = true
+        var changedFlow = originalFlow; changedFlow["agentResult"] = unknownReceipt
+        var changed = original; changed["textFlows"] = [changedFlow]
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: changed)))
+
+        var wrongApplication = originalReceipt
+        wrongApplication["applicationId"] = String(repeating: "0", count: 64)
+        changedFlow = originalFlow; changedFlow["agentResult"] = wrongApplication
+        changed = original; changed["textFlows"] = [changedFlow]
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: changed)))
+    }
+
+    func testAndroidPadnoteClientTaskIDKeepsExactApplicationIdentity() throws {
+        let taskID = "padnote-0123456789abcdef0123456789abcdef"
+        let connectionID = "conn-android"
+        let instanceID = "instance-android"
+        let output = "Android agent result ✓"
+        let resultSHA = SHA256.hash(data: Data(output.utf8)).map { String(format: "%02x", $0) }.joined()
+        let material = ["padnote.agent-result.v1", taskID, connectionID, instanceID, "hermes", "wsl", resultSHA]
+            .joined(separator: "\n")
+        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        let receipt = AgentResultReceipt(applicationId: applicationID, taskId: taskID,
+            connectionId: connectionID, instanceId: instanceID, agentKind: "hermes", transport: "wsl",
+            sourceNoteId: nil, sourceNoteRevision: 3, resultSha256: resultSHA, addedAt: 1_793_300_001_234)
+        XCTAssertNoThrow(try receipt.validate(), "Android's canonical padnote clientTaskId must remain unchanged in the identity hash")
+
+        var note = NoteDocument(id: "android-task-result-fixture", title: "Android result")
+        note.schemaVersion = 9
+        note.textFlows = [NoteTextFlow(id: "flow-agent-\(applicationID)", format: "markdown", source: output,
+            fontSizeSp: 18, width: 736, agentResult: receipt)]
+        let encoded = try note.encoded()
+        XCTAssertEqual(try NoteDocument.decode(encoded), note)
+        let decodedReceipt = try XCTUnwrap((try NoteDocument.decode(encoded)).textFlows.first?.agentResult)
+        XCTAssertEqual(decodedReceipt.taskId, taskID)
+        XCTAssertEqual(decodedReceipt.applicationId, applicationID)
+
+        for invalidID in ["PADNOTE-0123456789abcdef0123456789abcdef", "padnote-0123456789abcdef"] {
+            let invalid = AgentResultReceipt(applicationId: applicationID, taskId: invalidID,
+                connectionId: connectionID, instanceId: instanceID, agentKind: "hermes", transport: "wsl",
+                sourceNoteId: nil, sourceNoteRevision: 3, resultSha256: resultSHA, addedAt: 1_793_300_001_234)
+            XCTAssertThrowsError(try invalid.validate())
+        }
+    }
+
+    func testSharedAgentResultApplicationIdentityFixtureWithUnicodeAndNullIDs() throws {
+        let receipt = AgentResultReceipt(
+            applicationId: "7cf2425fe83d63ae1e7ed661fab1d036f5eaa3d6588eb458b9d819190e160dbf",
+            taskId: "6e89e32f-6861-4598-80f8-2f5dfe2fb080", connectionId: "连接-电脑-二",
+            instanceId: nil, agentKind: "hermes", transport: "direct", sourceNoteId: nil,
+            sourceNoteRevision: 0,
+            resultSha256: "8bb7a561ae2237876d70a82b5d3efb08ea8f2575f9bc4e60ba37a724d3e6e753",
+            addedAt: 1_793_300_000_123)
+        XCTAssertNoThrow(try receipt.validate(), "This is the shared UTF-8/null applicationId fixture")
+        var note = NoteDocument(id: "shared-result-vector", title: "Fixture")
+        note.schemaVersion = 9
+        note.textFlows = [NoteTextFlow(id: "flow-agent-\(receipt.applicationId)", format: "markdown",
+            source: "  推导完成：\n面积 = πr² ✅🧪  ", fontSizeSp: 18, width: 736,
+            agentResult: receipt)]
+        XCTAssertEqual(try NoteDocument.decode(try note.encoded()), note)
+    }
+
+    func testLegacyAgentAppendUsesRawBodyCASAndKeepsReceiptAcrossEditorSave() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-result-cas-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let original = NoteDocument(title: "Synthetic target")
+        try library.save(original)
+        let firstPreview = try library.captureAgentResultTarget(noteID: original.id)
+        let stalePreview = try library.captureAgentResultTarget(noteID: original.id)
+        let flow = try makeAgentResultFlow(output: "Task output")
+        let committed = try library.appendAgentResult(flow, basedOn: firstPreview)
+        XCTAssertFalse(committed.alreadyApplied)
+        XCTAssertEqual(committed.document.schemaVersion, 9)
+        XCTAssertEqual(committed.document.textFlows.last?.id, flow.id)
+
+        XCTAssertThrowsError(try library.appendAgentResult(flow, basedOn: stalePreview),
+                             "An editor holding old legacy bytes cannot overwrite the newly appended flow")
+
+        let currentSession = try library.captureAgentResultTarget(noteID: original.id)
+        var userEdited = currentSession.document
+        userEdited.textFlows[0].source += " edited"
+        userEdited.textFlows[0].format = "latex"
+        var copiedFlow = userEdited.textFlows[0]
+        copiedFlow.id = "copied-result-flow"
+        copiedFlow.source = "A user-edited copy of the original result"
+        userEdited.textFlows.append(copiedFlow)
+        let savedSession = try library.save(userEdited, basedOn: currentSession)
+        XCTAssertEqual(savedSession.document.schemaVersion, 9)
+        XCTAssertEqual(savedSession.document.textFlows[0].source, "Task output edited")
+        XCTAssertEqual(savedSession.document.textFlows[0].format, "latex",
+                       "Receipt records origin and must not lock later user format edits")
+        XCTAssertEqual(savedSession.document.textFlows[0].agentResult?.resultSha256, flow.agentResult?.resultSha256)
+        XCTAssertEqual(savedSession.document.textFlows[1].id, "copied-result-flow")
+        let repeated = try library.appendAgentResult(flow, basedOn: savedSession)
+        XCTAssertTrue(repeated.alreadyApplied, "Same stable origin under a user-copied flow ID must not append again")
+        XCTAssertEqual(repeated.document.textFlows.count, 2)
+        let reopened = try NoteLibrary(directory: root).captureAgentResultTarget(noteID: original.id)
+        XCTAssertEqual(reopened.document, repeated.document)
+        var receiptRemoved = reopened.document
+        receiptRemoved.textFlows.removeAll()
+        XCTAssertEqual(try NoteDocument.decode(try receiptRemoved.encoded()).schemaVersion, 9,
+                       "Schema 9 without receipts remains readable after undo/removing the last result flow")
+    }
+
+    func testSavingEditedAgentResultRejectsGraphemeCountThatExceedsSharedUTF16Limit() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-result-utf16-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let original = NoteDocument(title: "Synthetic result")
+        try library.save(original)
+        let target = try library.captureAgentResultTarget(noteID: original.id)
+        let receiptFlow = try makeAgentResultFlow(output: "Short result")
+        _ = try library.appendAgentResult(receiptFlow, basedOn: target)
+
+        let session = try library.captureAgentResultTarget(noteID: original.id)
+        var edited = session.document
+        let oversized = String(repeating: "😀", count: 50_001)
+        XCTAssertLessThanOrEqual(oversized.count, 100_000,
+                                 "Swift Character count stays under the general flow limit")
+        XCTAssertGreaterThan(oversized.utf16.count, 100_000,
+                             "The supplementary-plane characters exceed Android's UTF-16 limit")
+        XCTAssertLessThanOrEqual(oversized.utf8.count, 400_000)
+        edited.textFlows[0].source = oversized
+
+        let noteURL = root.appendingPathComponent("\(original.id).json")
+        let before = try Data(contentsOf: noteURL)
+        XCTAssertThrowsError(try library.save(edited, basedOn: session)) { error in
+            guard case NoteDocumentError.tooLarge = error else {
+                return XCTFail("Expected explicit size rejection, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: noteURL), before,
+                       "A rejected later edit must leave the canonical file unchanged")
+        XCTAssertEqual(library.notes.first(where: { $0.id == original.id })?.textFlows[0].source,
+                       "Short result", "Rejected edits must not replace the in-memory canonical note")
+    }
+
+    func testAgentResultSaveAsNewUsesFreshNoteIdentityAndIsIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-result-new-note-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let flow = try makeAgentResultFlow(output: "A completed cached result")
+        let firstCandidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: NoteDocument(title: "Task result"), addFinalPage: false)
+        let first = try library.createNoteWithAgentResult(firstCandidate, flow: flow)
+        XCTAssertFalse(first.alreadyApplied)
+        XCTAssertNotEqual(first.document.id, flow.agentResult?.sourceNoteId,
+                          "Save as new creates a fresh note identity instead of restoring the original source ID")
+        XCTAssertEqual(first.document.textFlows.count, 1)
+
+        let secondCandidate = try NoteLibrary.candidateAppendingAgentResult(flow,
+            to: NoteDocument(title: "A second click"), addFinalPage: false)
+        let repeated = try library.createNoteWithAgentResult(secondCandidate, flow: flow)
+        XCTAssertTrue(repeated.alreadyApplied)
+        XCTAssertEqual(repeated.document.id, first.document.id)
+        XCTAssertEqual(NoteLibrary(directory: root).notes.count, 1)
+    }
+
+    func testAgentResultFlowIDCollisionDoesNotOverwriteExistingFlow() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-result-id-collision-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let existing = NoteDocument(title: "Existing")
+        var collision = existing
+        let requested = try makeAgentResultFlow(output: "New result")
+        collision.textFlows = [NoteTextFlow(id: requested.id, format: "markdown", source: "unrelated existing flow")]
+        try library.save(collision)
+        let target = try library.captureAgentResultTarget(noteID: collision.id)
+        let before = try Data(contentsOf: root.appendingPathComponent("\(collision.id).json"))
+        XCTAssertThrowsError(try library.appendAgentResult(requested, basedOn: target))
+        let after = try Data(contentsOf: root.appendingPathComponent("\(collision.id).json"))
+        XCTAssertEqual(after, before, "An identity collision must leave the original bytes unchanged")
+    }
+
+    private func makeAgentResultFlow(output: String) throws -> NoteTextFlow {
+        let taskID = "12345678-1234-4234-8234-123456789abc"
+        let connectionID = "A1B2C3D4-1111-4222-8333-ABCDEF123456"
+        let resultSHA = SHA256.hash(data: Data(output.utf8)).map { String(format: "%02x", $0) }.joined()
+        let material = ["padnote.agent-result.v1", taskID, connectionID, "", "hermes", "bridge", resultSHA]
+            .joined(separator: "\n")
+        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        let receipt = AgentResultReceipt(applicationId: applicationID, taskId: taskID,
+            connectionId: connectionID, instanceId: nil, agentKind: "hermes", transport: "bridge",
+            sourceNoteId: "source-note", sourceNoteRevision: 17, resultSha256: resultSHA, addedAt: 1_793_300_000_000)
+        try receipt.validate()
+        return NoteTextFlow(id: "flow-agent-\(applicationID)", format: "markdown", source: output,
+                            fontSizeSp: 18, lineHeight: 1.35, width: 736, anchorPageIndex: 0,
+                            anchorXInPage: 16, anchorYInPage: 40, agentResult: receipt)
     }
 
     func testAndroidAuthorPageSerialsSurviveCanonicalRoundTripWithoutBecomingAuthority() throws {
@@ -239,9 +473,9 @@ final class NoteDocumentTests: XCTestCase {
     }
 
     func testRejectsUnknownSchemaCorruptionAndLimits() throws {
-        let unknown = #"{"schemaVersion":9,"strokes":[]}"#.data(using: .utf8)!
+        let unknown = #"{"schemaVersion":10,"strokes":[]}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(unknown)) { error in
-            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(9))
+            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(10))
         }
         let missingStrokes = #"{"schemaVersion":8,"id":"x"}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(missingStrokes))

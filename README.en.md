@@ -4,7 +4,7 @@
 
 **Put your thinking on the page. Work through it with AI. Hand the next task to your computer.**
 
-PadNote is an open-source AI notebook for tablets. Read a document, write out a derivation, draw the connections, and discuss them on the same page. Share your work as a PDF, or send the note and its context to a paired computer Agent on your network to continue the task. You choose the model and service.
+PadNote is an open-source AI notebook for tablets. Read a document, write out a derivation, draw the connections, and discuss them on the same page. Share your work as a PDF, or send the note and its context to a paired computer Agent on your network to continue the task. Review the completed text result before adding it back to a note. You choose the model and service.
 
 [![A learning note in 30 seconds](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
 
@@ -16,9 +16,9 @@ The demos use synthetic learning content and real-device screenshots to show the
 | --- | --- | --- |
 | 1. Learn and organize | Read, handwrite, draw, and discuss with your chosen model on the tablet page | Notes and ideas stay together on the page |
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
-| 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | The computer receives the page material and creates a task; track progress in the computer task list and view returned content in the task details |
+| 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | Track progress in the computer task list; review the result and add it back to a note when complete |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 
 ## Computer connection guide
@@ -30,6 +30,14 @@ Keep writing after you send. Use “View progress” at the top to return to thi
 [![Computer assistant walkthrough with synthetic data](docs/media/2026-10-29/connection-guide-poster.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm)
 
 Synthetic interface and example state. See the [media provenance and scope](docs/media/2026-10-29/README.md).
+
+## Bring a task result back to the page
+
+Preview completed text, then add it to the original note or save it as a new note.
+
+<a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="Synthetic iPad example: task result saved to a note" width="480"></a>
+
+[Watch the 10-second example](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [Steps and limits](BETA34_TESTING.md). The demo uses synthetic task and note content. [Media notes](docs/media/2026-10-30/README.md).
 
 ## Demo frames
 
@@ -103,9 +111,9 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 ## Platforms and connections
 
-- **Android tablets:** GitHub Releases currently provides the beta.33 APK (versionCode 66; release review pending).
-- **Windows:** The beta.33 connection assistant has a Setup installer and a portable package (release review pending). It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
-- **iPad:** Source is available; there is no installable signed IPA.
+- **Android tablets:** beta.34 APK (versionCode 67).
+- **Windows:** The beta.33 connection assistant has a Setup installer and a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
+- **iPad:** Source includes this round of changes; there is no installable signed IPA.
 
 Computer tasks use the Agent you explicitly choose and pair, when it supports PadNote note tasks. Multiple Hermes configurations keep separate Agent identities, credentials, and task ownership. The assistant uses your own configuration and keeps keys in process memory; reopening it requires an explicit reconnect. When gateway mode is unknown, the flow starts with the default configuration and then lets you choose a named configuration. It does not change the provider automatically or restart a gateway managed by another tool. OpenClaw has discovery and setup guidance, but PadNote note tasks are not integrated with OpenClaw; Codex note tasks are not connected.
 
@@ -113,7 +121,7 @@ See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android and Windows builds are complete; publication of beta.33 is still pending review. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android is beta.34 and the Windows assistant remains beta.33. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

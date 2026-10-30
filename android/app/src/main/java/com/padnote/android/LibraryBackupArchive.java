@@ -638,7 +638,7 @@ public final class LibraryBackupArchive {
             Map<String, Object> document = LibraryBackupJson.parseCheckedObject(readBounded(files,
                     staged.get(note.noteResourceId), resource.byteLength), (int) LibraryBackupManifest.MAX_NOTE_BYTES);
             String sourceId = LibraryBackupJson.string(document.get("id"), "NOTE_PAYLOAD_ID");
-            long schema = LibraryBackupJson.integer(document.get("schemaVersion"), 1, 8, "NOTE_PAYLOAD_SCHEMA");
+            long schema = LibraryBackupJson.integer(document.get("schemaVersion"), 1, 9, "NOTE_PAYLOAD_SCHEMA");
             Object updatedAt = document.get("updatedAt");
             if (!(updatedAt instanceof LibraryBackupJson.NumberToken)) throw new IOException("NOTE_PAYLOAD_REVISION");
             double rawRevision;

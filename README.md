@@ -4,7 +4,7 @@
 
 **把想法写在纸上，让 AI 看懂，再把工作交给电脑。**
 
-PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推导，画出关系，围绕同一张纸面交流。整理好的内容可以直接导出 PDF 分享，也可以连同上下文发送给同网络中已配对的电脑 Agent，接着执行任务。模型与服务由你选择。
+PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推导，画出关系，围绕同一张纸面交流。整理好的内容可以直接导出 PDF 分享，也可以连同上下文发送给同网络中已配对的电脑 Agent，接着执行任务；完成的文字结果可先预览，再添加回笔记。模型与服务由你选择。
 
 [![30 秒看一份学习笔记](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
 
@@ -16,9 +16,9 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | --- | --- | --- |
 | 1. 学习与整理 | 在平板纸面上阅读、手写、绘图，并与所选模型交流 | 笔记与想法留在同一张纸面上 |
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
-| 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 电脑接收纸面材料并建立任务；在电脑任务列表查看处理进度，并在任务详情查看返回内容 |
+| 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 在电脑任务列表查看进度；完成后预览结果并可添加回笔记 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
 ## 电脑连接引导
@@ -30,6 +30,14 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 [![电脑连接助手操作示意（合成数据）](docs/media/2026-10-29/connection-guide-poster.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.33/PadNote-Connection-Guide.webm)
 
 合成界面与示例状态。[素材来源与范围](docs/media/2026-10-29/README.md)。
+
+## 任务结果回到纸面
+
+完成的文字结果可先预览，再添加到原笔记或另存为新笔记。
+
+<a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="合成 iPad 示例：任务结果已保存到笔记" width="480"></a>
+
+[观看 10 秒示例](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [使用步骤与边界](BETA34_TESTING.md)。演示使用合成任务和笔记内容。[素材说明](docs/media/2026-10-30/README.md)。
 
 ## 演示画面
 
@@ -103,9 +111,9 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 平台与连接
 
-- **Android 平板：**GitHub Releases 当前提供beta.33 APK（versionCode 66；发布待审核）。
-- **Windows：**beta.33 连接助手提供 Setup 安装包和便携包（发布待审核），不附带 Hermes、模型或 API 密钥。WSL 向导支持从启动器进入、查看不确定操作状态并返回选择。
-- **iPad：**提供源码，暂无可安装的签名 IPA。
+- **Android 平板：**beta.34 APK（versionCode 67）。
+- **Windows：**beta.33 连接助手提供 Setup 安装包和便携包，不附带 Hermes、模型或 API 密钥。WSL 向导支持从启动器进入、查看不确定操作状态并返回选择。
+- **iPad：**提供包含本轮改动的源码，暂无可安装的签名 IPA。
 
 电脑任务面向你明确选择并配对、且支持 PadNote 笔记任务的 Agent。多个 Hermes 配置各自对应不同 Agent 身份、凭据和任务归属；连接助手使用你自己的配置，密钥仅在其进程内存中使用，重开后需明确重连。未知网关模式先用默认配置，再由你选择命名配置；不会自动修改 provider 或重启外部管理的网关。OpenClaw 提供发现与设置引导，但这不代表 PadNote 笔记任务已接入 OpenClaw；Codex 纸面任务尚未接入。
 
@@ -113,7 +121,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 下载与校验
 
-Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：本轮Android 与 Windows 构建均已完成，beta.33 发布仍待审核。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
+Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：Android 为 beta.34，Windows 助手继续为 beta.33。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
 
 ## 从源码构建
 

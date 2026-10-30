@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">保存済みタスクを送信</string>
     <string name="flow_send_saved_task_warning">このタスクはまだ送信されていません。既存のタスクIDと保存済みの内容で一度だけ送信します。</string>
     <string name="flow_send_saved_task_confirm">今すぐ送信</string>
+    <string name="flow_append_result_to_note">結果をノートに追加</string>
+    <string name="flow_agent_result_preview_title">追加する結果を確認</string>
+    <string name="flow_agent_result_append_confirm">このノートに追加</string>
+    <string name="flow_agent_result_older_snapshot">この結果は以前のノート内容を使っています。現在のノートに追加します。</string>
+    <string name="flow_agent_result_new_target_notice">元のノートは利用できません。選択した新しいノートに結果を追加します。</string>
+    <string name="flow_agent_result_source_missing_title">結果の保存先を選択</string>
+    <string name="flow_agent_result_source_missing_body">元のノートは利用できません。新しいノートを作成して結果を保存できます。</string>
+    <string name="flow_agent_result_create_note">新しいノートを作成</string>
+    <string name="flow_agent_result_create_note_body">元のノートは再作成も変更もされません。</string>
+    <string name="flow_agent_result_create_failed">新しいノートを作成できませんでした。</string>
+    <string name="flow_agent_result_unavailable">このタスクに追加できる完了済みテキスト結果がありません。</string>
+    <string name="flow_agent_result_wait_for_save">結果を追加する前に現在のノートを保存してください。</string>
+    <string name="flow_agent_result_prepare_failed">結果を準備できませんでした。ノートは変更されていません。</string>
+    <string name="flow_agent_result_target_changed">タスクまたはノートが変更されました。再確認してください。</string>
+    <string name="flow_agent_result_already_added">この結果はすでにノートにあります。</string>
+    <string name="flow_agent_result_saving">結果をノートに保存しています…</string>
+    <string name="flow_agent_result_saved">結果をノートに追加しました。</string>
+    <string name="flow_agent_result_saved_reopen">結果を保存しました。ノートを開き直すと表示されます。</string>
+    <string name="flow_agent_result_save_uncertain">保存状態を確認できません。再試行する前にノートを開き直して確認してください。</string>
+    <string name="flow_agent_result_save_failed">結果を保存できませんでした。ノートは変更されていません。</string>
 </resources>

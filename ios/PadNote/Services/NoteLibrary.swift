@@ -18,10 +18,26 @@ public struct NoteGroupEditorSession {
     public let document: NoteDocument
     public let groupToken: NoteGroupVersionToken?
     public let members: [NoteGroupReadMember]
+    public let legacyBodySHA256: String?
 
-    public init(document: NoteDocument, groupToken: NoteGroupVersionToken?, members: [NoteGroupReadMember]) {
+    public init(document: NoteDocument, groupToken: NoteGroupVersionToken?, members: [NoteGroupReadMember],
+                legacyBodySHA256: String? = nil) {
         self.document = document; self.groupToken = groupToken; self.members = members
+        self.legacyBodySHA256 = legacyBodySHA256
     }
+}
+
+public struct NoteAgentResultAppendOutcome {
+    public let document: NoteDocument
+    public let session: NoteGroupEditorSession
+    public let pageIndex: Int
+    public let alreadyApplied: Bool
+}
+
+public struct NoteAgentResultCandidate {
+    public let document: NoteDocument
+    public let flowID: String
+    public let pageIndex: Int
 }
 
 public struct NoteGroupRestoredVideoMember {
@@ -161,7 +177,7 @@ public final class NoteLibrary: ObservableObject {
 
     private func saveLegacy(_ note: NoteDocument) throws {
         var value = note
-        value.schemaVersion = 8
+        value.schemaVersion = value.textFlows.contains(where: { $0.agentResult != nil }) ? 9 : 8
         if let existing = notes.first(where: { $0.id == value.id }) {
             var comparable = value
             comparable.updatedAt = existing.updatedAt
@@ -192,17 +208,21 @@ public final class NoteLibrary: ObservableObject {
             groupSessions[localID] = session
             return session
         }
-        guard let legacy = notes.first(where: {
+        guard let cachedLegacy = notes.first(where: {
             $0.id == noteID || (normalizedID != nil && (try? NoteGroupFacade.foundationUUID($0.id)) == normalizedID)
         }) else { throw CocoaError(.fileNoSuchFile) }
-        return NoteGroupEditorSession(document: legacy, groupToken: nil, members: [])
+        let bytes = try readLimited(noteURL(for: cachedLegacy), limit: NoteDocument.maximumEncodedBytes)
+        let legacy = try NoteDocument.decode(bytes)
+        guard legacy.id == cachedLegacy.id else { throw NoteGroupStoreError.compareAndSwapConflict }
+        return NoteGroupEditorSession(document: legacy, groupToken: nil, members: [], legacyBodySHA256: Self.sha256(bytes))
     }
 
     public func openEditorSession(for draft: NotePendingDraft) throws -> NoteGroupEditorSession {
         guard groupStoreInitializationFailure == nil, let groupStore else { throw NoteGroupOrdinaryAccessError.groupStoreUnavailable }
         guard let baseToken = draft.baseGroupToken else {
             // A legacy draft has no authority over a group marker that appeared after it was saved.
-            return NoteGroupEditorSession(document: draft.document, groupToken: nil, members: [])
+            let bodySHA = try legacyBodySHA256IfPresent(noteID: draft.document.id)
+            return NoteGroupEditorSession(document: draft.document, groupToken: nil, members: [], legacyBodySHA256: bodySHA)
         }
         let revision = try groupStore.readRevision(baseToken)
         let base = try makeEditorSession(token: revision.token, manifest: revision.manifest, store: groupStore)
@@ -215,8 +235,23 @@ public final class NoteLibrary: ObservableObject {
     public func save(_ note: NoteDocument, basedOn session: NoteGroupEditorSession) throws -> NoteGroupEditorSession {
         guard let expected = session.groupToken else {
             guard note.id == session.document.id else { throw NoteGroupStoreError.invalidIdentifier }
-            try save(note)
-            return try openEditorSession(noteID: note.id)
+            return try NoteGroupCatalogFence.withWriter {
+                try requireLegacyMutationAllowed(noteID: note.id)
+                let url = noteURL(for: session.document)
+                if let expectedSHA = session.legacyBodySHA256 {
+                    let currentBytes = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+                    guard Self.sha256(currentBytes) == expectedSHA else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                } else if fileManager.fileExists(atPath: url.path) {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                try saveLegacy(note)
+                let savedBytes = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+                let saved = try NoteDocument.decode(savedBytes)
+                return NoteGroupEditorSession(document: saved, groupToken: nil, members: [],
+                                              legacyBodySHA256: Self.sha256(savedBytes))
+            }
         }
         let localID = try NoteGroupFacade.foundationUUID(note.id)
         guard localID == (try NoteGroupFacade.foundationUUID(session.document.id)) else {
@@ -268,6 +303,159 @@ public final class NoteLibrary: ObservableObject {
             notes.sort { $0.updatedAt > $1.updatedAt }
             return updated
         }
+    }
+
+    /// Captures the canonical body revision for an explicit Agent-result preview.
+    /// Group-backed notes use their immutable group token; legacy notes use the exact
+    /// bytes digest captured from the canonical note file.
+    public func captureAgentResultTarget(noteID: String) throws -> NoteGroupEditorSession {
+        try openEditorSession(noteID: noteID)
+    }
+
+    /// Appends one independent result flow to a newly added final page and commits it
+    /// against the revision captured by the preview. The caller must finish renderer
+    /// preflight before calling this durable mutation.
+    public func appendAgentResult(_ flow: NoteTextFlow, basedOn session: NoteGroupEditorSession) throws -> NoteAgentResultAppendOutcome {
+        guard let receipt = flow.agentResult else { throw NoteDocumentError.malformed("Agent result receipt is required") }
+        if let existing = session.document.textFlows.first(where: {
+            $0.agentResult?.applicationId == receipt.applicationId
+        }) {
+            guard let existingReceipt = existing.agentResult,
+                  existingReceipt.hasSameStableMetadata(as: receipt) else {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            return NoteAgentResultAppendOutcome(document: session.document, session: session,
+                                                pageIndex: existing.anchorPageIndex, alreadyApplied: true)
+        }
+        if let collision = session.document.textFlows.first(where: { $0.id == flow.id }),
+           collision.agentResult?.hasSameStableMetadata(as: receipt) != true {
+            throw NoteGroupStoreError.compareAndSwapConflict
+        }
+        let prepared = try Self.candidateAppendingAgentResult(flow, to: session.document, addFinalPage: true)
+        let candidate = prepared.document
+
+        let savedSession: NoteGroupEditorSession
+        if session.groupToken != nil {
+            savedSession = try save(candidate, basedOn: session)
+        } else {
+            savedSession = try NoteGroupCatalogFence.withWriter {
+                try requireLegacyMutationAllowed(noteID: candidate.id)
+                let url = noteURL(for: session.document)
+                if let expectedSHA = session.legacyBodySHA256 {
+                    let current = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+                    guard Self.sha256(current) == expectedSHA else { throw NoteGroupStoreError.compareAndSwapConflict }
+                } else if fileManager.fileExists(atPath: url.path) {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                try saveLegacy(candidate)
+                let savedBytes = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+                let saved = try NoteDocument.decode(savedBytes)
+                return NoteGroupEditorSession(document: saved, groupToken: nil, members: [],
+                                              legacyBodySHA256: Self.sha256(savedBytes))
+            }
+        }
+        return NoteAgentResultAppendOutcome(document: savedSession.document, session: savedSession,
+                                            pageIndex: prepared.pageIndex, alreadyApplied: false)
+    }
+
+    /// Commits the exact new-note candidate that the user previewed and the renderer preflighted.
+    /// The generated note identity is fixed before preflight so the committed render owner matches.
+    public func createNoteWithAgentResult(_ candidate: NoteAgentResultCandidate,
+                                          flow: NoteTextFlow) throws -> NoteAgentResultAppendOutcome {
+        return try NoteGroupCatalogFence.withWriter {
+            guard let receipt = flow.agentResult else { throw NoteDocumentError.malformed("Agent result receipt is required") }
+            try receipt.validate()
+            guard flow.id == "flow-agent-\(receipt.applicationId)", flow.format == "markdown",
+                  flow.source.utf16.count <= 100_000, Data(flow.source.utf8).count <= 400_000,
+                  !flow.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  Self.sha256(Data(flow.source.utf8)) == receipt.resultSha256 else {
+                throw NoteDocumentError.malformed("New agent result does not match its confirmed receipt")
+            }
+            guard candidate.flowID == flow.id,
+                  let candidateFlow = candidate.document.textFlows.first(where: { $0.id == flow.id }),
+                  candidateFlow.source == flow.source, candidateFlow.format == flow.format,
+                  candidateFlow.agentResult?.hasSameStableMetadata(as: receipt) == true,
+                  !notes.contains(where: { $0.id == candidate.document.id }) else {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            if let existingNote = notes.first(where: { note in note.textFlows.contains(where: {
+                $0.agentResult?.applicationId == receipt.applicationId
+            }) }) {
+                guard let existingFlow = existingNote.textFlows.first(where: {
+                    $0.agentResult?.applicationId == receipt.applicationId
+                }), let existingReceipt = existingFlow.agentResult,
+                      existingReceipt.hasSameStableMetadata(as: receipt) else {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                let existingSession = try openEditorSession(noteID: existingNote.id)
+                return NoteAgentResultAppendOutcome(document: existingSession.document, session: existingSession,
+                                                    pageIndex: existingFlow.anchorPageIndex, alreadyApplied: true)
+            }
+            let checked = try candidate.document.validated()
+            guard checked.id == candidate.document.id,
+                  !FileManager.default.fileExists(atPath: noteURL(for: checked).path) else {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            try requireLegacyMutationAllowed(noteID: checked.id)
+            try saveLegacy(checked)
+            let bytes = try readLimited(noteURL(for: checked), limit: NoteDocument.maximumEncodedBytes)
+            let saved = try NoteDocument.decode(bytes)
+            let session = NoteGroupEditorSession(document: saved, groupToken: nil, members: [],
+                                                 legacyBodySHA256: Self.sha256(bytes))
+            return NoteAgentResultAppendOutcome(document: saved, session: session,
+                                                pageIndex: candidate.pageIndex, alreadyApplied: false)
+        }
+    }
+
+    public static func candidateAppendingAgentResult(_ flow: NoteTextFlow, to original: NoteDocument,
+                                                      addFinalPage: Bool) throws -> NoteAgentResultCandidate {
+        guard let receipt = flow.agentResult else { throw NoteDocumentError.malformed("Agent result receipt is required") }
+        try receipt.validate()
+        guard flow.id == "flow-agent-\(receipt.applicationId)", flow.format == "markdown",
+              flow.source.utf16.count <= 100_000, Data(flow.source.utf8).count <= 400_000,
+              !flow.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NoteDocumentError.tooLarge("Agent result is empty or exceeds supported text limits")
+        }
+        guard Self.sha256(Data(flow.source.utf8)) == receipt.resultSha256 else {
+            throw NoteDocumentError.malformed("Agent result digest does not match the exact source")
+        }
+        guard !original.textFlows.contains(where: { $0.id == flow.id }) else {
+            throw NoteGroupStoreError.compareAndSwapConflict
+        }
+        guard original.textFlows.count < 2_000 else { throw NoteDocumentError.tooLarge("Note has too many text flows") }
+        var candidate = original
+        let page: Int
+        if addFinalPage {
+            guard NotePageOperations.appendBlankPage(in: &candidate) else {
+                throw NoteDocumentError.tooLarge("Note has reached its page limit")
+            }
+            page = original.pageCount
+        } else { page = 0 }
+        var appended = flow
+        appended.anchorPageIndex = page
+        appended.anchorXInPage = 16
+        appended.anchorYInPage = 40
+        appended.width = max(120, candidate.pageWidth - 32)
+        candidate.textFlows.append(appended)
+        candidate.schemaVersion = 9
+        candidate.updatedAt = NoteDocument.nowMillis()
+        let requiredPages = NoteTextLayout.requiredPageCount(candidate)
+        guard requiredPages <= NotePageOperations.maximumPageCount,
+              NoteTextLayout.canFullyLayout(appended, pageHeight: candidate.pageHeight) else {
+            throw NoteDocumentError.tooLarge("Agent result cannot be fully laid out within the note page limit")
+        }
+        candidate.pageCount = max(candidate.pageCount, requiredPages)
+        _ = try candidate.validated()
+        return NoteAgentResultCandidate(document: candidate, flowID: appended.id, pageIndex: page)
+    }
+
+    private func legacyBodySHA256IfPresent(noteID: String) throws -> String? {
+        guard safeID(noteID) else { throw NoteGroupStoreError.invalidIdentifier }
+        let url = directory.appendingPathComponent("\(noteID).json")
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let bytes = try readLimited(url, limit: NoteDocument.maximumEncodedBytes)
+        guard try NoteDocument.decode(bytes).id == noteID else { throw NoteGroupStoreError.compareAndSwapConflict }
+        return Self.sha256(bytes)
     }
 
     /// Replaces or removes the cover in a complete immutable group revision. The editor

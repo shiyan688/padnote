@@ -18,6 +18,8 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -74,6 +76,12 @@ final class NoteStore {
                     json.optString("title", "未命名笔记"), json.optLong("updatedAt", 0),
                     json.optInt("strokeCount", 0), Math.max(1, json.optInt("pageCount", 1)));
         }
+    }
+
+    static final class VersionedSaveResult {
+        final Entry entry;
+        final String bodySha256;
+        VersionedSaveResult(Entry entry, String bodySha256) { this.entry=entry; this.bodySha256=bodySha256; }
     }
 
     enum DeleteCommitStatus { NOT_COMMITTED, COMMITTED, UNCERTAIN }
@@ -351,6 +359,106 @@ final class NoteStore {
                 return loadLegacyDocumentAfterCatalogAbsence(context,noteId);
             }
         }
+    }
+
+    /** Exact raw-body pin captured when a legacy editor loads its note. */
+    static String legacyBodySha256(Context context,String noteId)throws Exception {
+        try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+            synchronized(NoteStore.class){
+                requireNotLegacyDeleted(context,noteId);
+                if(Build.VERSION.SDK_INT>=27&&GroupAuthorityBridge.bodyIfManaged(context,noteId)!=null)
+                    throw new IOException("GROUP_NOTE_REQUIRES_GROUP_CAS");
+                File file=noteFile(context,noteId);recoverAtomicFile(file,NOTE_VALIDATOR);
+                if(!file.isFile())throw new IOException("LEGACY_NOTE_NOT_FOUND");
+                return sha256FileBounded(file);
+            }
+        }
+    }
+
+    /**
+     * Legacy editor/result save with a compare-and-swap on the exact note bytes. The
+     * comparison and all promotion/readback steps share the legacy mutation lease
+     * and NoteStore monitor so an old open editor cannot erase a newer append.
+     */
+    static VersionedSaveResult saveLegacyIfBodyMatches(Context context,String noteId,String requestedTitle,
+                                                        String documentJson,String expectedBodySha256)throws Exception {
+        try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+            synchronized(NoteStore.class){
+                requireNotPendingRestore(context,noteId);
+                requireNotLegacyDeleted(context,noteId);
+                if(Build.VERSION.SDK_INT>=27&&GroupAuthorityBridge.bodyIfManaged(context,noteId)!=null)
+                    throw new IOException("GROUP_NOTE_REQUIRES_GROUP_CAS");
+                if(expectedBodySha256==null||!expectedBodySha256.matches("[0-9a-f]{64}"))
+                    throw new IOException("LEGACY_NOTE_BASELINE_REQUIRED");
+                requireNoteMaterialAccess(context,noteId);
+                File file=noteFile(context,noteId);recoverAtomicFile(file,NOTE_VALIDATOR);
+                if(!file.isFile()||!expectedBodySha256.equals(sha256FileBounded(file)))
+                    throw new IOException("BASE_CAS_CONFLICT");
+                byte[] originalBody=readRawNoteBytes(file);
+                final String originalBodyText;
+                try {
+                    originalBodyText=StandardCharsets.UTF_8.newDecoder()
+                            .onMalformedInput(CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(CodingErrorAction.REPORT)
+                            .decode(ByteBuffer.wrap(originalBody)).toString();
+                    NOTE_VALIDATOR.validate(originalBodyText);
+                } catch (java.nio.charset.CharacterCodingException malformed) {
+                    throw new IOException("LEGACY_NOTE_ENCODING_INVALID",malformed);
+                }
+                JSONObject loadedIndex=loadIndex(context);
+                JSONObject originalIndex=new JSONObject(loadedIndex.toString());
+                requireWithinLimit(documentJson);
+                JSONObject document=new JSONObject(documentJson);validateDocument(document);
+                String title=normalizeTitle(requestedTitle,normalizeTitle(document.optString("title"),"未命名笔记"));
+                long now=System.currentTimeMillis();
+                document.put("id",noteId).put("title",title).put("updatedAt",now);
+                String storedValue=NoteJsonCodec.stringify(document);requireWithinLimit(storedValue);
+                JSONArray strokes=document.getJSONArray("strokes");
+                boolean notePromoted=false;
+                try{
+                    writeAtomic(file,storedValue,NOTE_VALIDATOR);notePromoted=true;
+                    JSONObject index=new JSONObject(originalIndex.toString());
+                    Entry entry=new Entry(noteId,title,now,strokes.length(),Math.max(1,document.optInt("pageCount",1)));
+                    upsertEntry(index,entry);saveIndex(context,index);
+                    JSONObject reopened=loadLegacyDocumentAfterCatalogAbsence(context,noteId);
+                    if(reopened.optLong("updatedAt",-1)!=now||!noteId.equals(reopened.optString("id")))
+                        throw new IOException("保存后的笔记修订无法重新读取");
+                    return new VersionedSaveResult(entry,sha256FileBounded(file));
+                }catch(Exception failure){
+                    if(notePromoted){
+                        try{
+                            restorePreviousAtomicRevision(file,NOTE_VALIDATOR);
+                            saveIndex(context,originalIndex);
+                        }catch(Exception rollbackFailure){
+                            IOException uncertain=new IOException("LEGACY_SAVE_ROLLBACK_UNCERTAIN");
+                            uncertain.addSuppressed(failure);uncertain.addSuppressed(rollbackFailure);throw uncertain;
+                        }
+                    }
+                    throw failure;
+                }
+            }
+        }
+    }
+
+    private static byte[] readRawNoteBytes(File file)throws Exception {
+        if(file.length()<0||file.length()>MAX_NOTE_BYTES)throw new IOException("NOTE_FILE_SIZE_INVALID");
+        try(FileInputStream input=new FileInputStream(file);java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream()){
+            byte[] buffer=new byte[65536];int count;long total=0;
+            while((count=input.read(buffer))!=-1){total+=count;if(total>MAX_NOTE_BYTES)throw new IOException("NOTE_FILE_SIZE_INVALID");output.write(buffer,0,count);}
+            return output.toByteArray();
+        }
+    }
+    private static String sha256FileBounded(File file)throws Exception {
+        if(file.length()<0||file.length()>MAX_NOTE_BYTES)throw new IOException("NOTE_FILE_SIZE_INVALID");
+        java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
+        long total=0;byte[] buffer=new byte[64*1024];
+        try(FileInputStream input=new FileInputStream(file)){
+            int count;while((count=input.read(buffer))!=-1){total+=count;
+                if(total>MAX_NOTE_BYTES)throw new IOException("NOTE_FILE_SIZE_INVALID");
+                digest.update(buffer,0,count);
+            }
+        }
+        return hex(digest.digest());
     }
     /** Called only after the same locked full-catalog inventory proved no group marker exists. */
     private static JSONObject loadLegacyDocumentAfterCatalogAbsence(Context context,String noteId)throws Exception {
@@ -1495,8 +1603,8 @@ final class NoteStore {
 
     static void validateDocument(JSONObject document) throws Exception {
         int version = document.optInt("schemaVersion", 0);
-        if (version < 1 || version > 8) {
-            throw new IllegalArgumentException("只支持 PadNote schemaVersion 1 至 8");
+        if (version < 1 || version > 9) {
+            throw new IllegalArgumentException("只支持 PadNote schemaVersion 1 至 9");
         }
         JSONArray strokes = document.optJSONArray("strokes");
         if (strokes == null) throw new IllegalArgumentException("笔记缺少 strokes 数据");
@@ -1520,11 +1628,30 @@ final class NoteStore {
             InkStroke.fromJson(strokes.getJSONObject(index));
         }
         Set<String> flowIds = new HashSet<>();
+        boolean hasAgentResult = false;
         if (flows != null) {
             for (int index = 0; index < flows.length(); index++) {
-                TextFlow flow = TextFlow.fromJson(flows.getJSONObject(index));
+                JSONObject flowJson = flows.getJSONObject(index);
+                Set<String> flowKeys = new HashSet<>();
+                java.util.Iterator<String> flowKeyIterator = flowJson.keys();
+                while (flowKeyIterator.hasNext()) flowKeys.add(flowKeyIterator.next());
+                Set<String> ordinaryFlowKeys = new HashSet<>(java.util.Arrays.asList("id", "format", "source",
+                        "fontSizeSp", "lineHeight", "width", "anchorPageIndex", "anchorXInPage", "anchorYInPage"));
+                Set<String> resultFlowKeys = new HashSet<>(ordinaryFlowKeys);
+                resultFlowKeys.add("agentResult");
+                if ((version == 9 && !flowKeys.equals(ordinaryFlowKeys)
+                        && !flowKeys.equals(resultFlowKeys))
+                        || (version != 9 && flowJson.has("agentResult")))
+                    throw new IllegalArgumentException("文字流字段不受支持");
+                TextFlow flow = TextFlow.fromJson(flowJson);
                 if (!flowIds.add(flow.id)) throw new IllegalArgumentException("文字流 ID 重复");
                 if (flow.anchorPageIndex >= pages) throw new IllegalArgumentException("文字流页码超出范围");
+                if (flow.agentResult != null) {
+                    hasAgentResult = true;
+                    if (flow.source.length() > AgentResultProvenance.MAX_UTF16_UNITS
+                            || !AgentResultProvenance.wellFormedUtf16(flow.source))
+                        throw new IllegalArgumentException("Agent来源文字流或身份无效");
+                }
             }
         } else if (boxes != null) {
             for (int index = 0; index < boxes.length(); index++) {
@@ -1535,6 +1662,12 @@ final class NoteStore {
                 requireFinite(box.optDouble("x", 0), "文字位置无效");
                 requireFinite(box.optDouble("y", 0), "文字位置无效");
             }
+        }
+        if (version == 9 && flows == null) {
+            throw new IllegalArgumentException("schemaVersion 9 缺少来源文字流");
+        }
+        if (hasAgentResult && version != 9) {
+            throw new IllegalArgumentException("Agent 来源文字流需要 schemaVersion 9");
         }
         JSONArray imageArray = document.optJSONArray("images");
         long imagePixels = 0;
@@ -1689,6 +1822,31 @@ final class NoteStore {
             throw new IOException("提交后的文件校验失败", invalidCommit);
         }
         // Keep .bak as the last validated revision until a later successful save.
+    }
+
+    /** Restores the exact previous bytes retained by a completed writeAtomic promotion. */
+    private static void restorePreviousAtomicRevision(File target, StoredFileValidator validator)
+            throws Exception {
+        File parent=target.getParentFile();
+        if(parent==null)throw new IOException("LEGACY_ROLLBACK_PARENT_MISSING");
+        File backup=new File(parent,target.getName()+".bak");
+        if(!backup.isFile())throw new IOException("LEGACY_ROLLBACK_BACKUP_MISSING");
+        validator.validate(readFile(backup));
+        File displaced=new File(parent,target.getName()+".rollback-"+UUID.randomUUID());
+        if(target.exists()&&!target.renameTo(displaced))throw new IOException("LEGACY_ROLLBACK_STAGE_FAILED");
+        if(!backup.renameTo(target)){
+            if(displaced.exists()&&!target.exists()&&!displaced.renameTo(target))
+                throw new IOException("LEGACY_ROLLBACK_RESTORE_FAILED");
+            throw new IOException("LEGACY_ROLLBACK_PROMOTION_FAILED");
+        }
+        try{
+            validator.validate(readFile(target));
+            if(displaced.exists()&&!displaced.delete())throw new IOException("LEGACY_ROLLBACK_CLEANUP_FAILED");
+        }catch(Exception invalid){
+            if(target.exists())target.renameTo(backup);
+            if(displaced.exists()&&!target.exists())displaced.renameTo(target);
+            throw invalid;
+        }
     }
 
     static void recoverAtomicFile(File target, StoredFileValidator validator) throws Exception {

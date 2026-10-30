@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">发送已保存任务</string>
     <string name="flow_send_saved_task_warning">此任务尚未发送，将使用现有任务 ID 和已保存内容发送一次。</string>
     <string name="flow_send_saved_task_confirm">现在发送</string>
+    <string name="flow_append_result_to_note">追加到笔记</string>
+    <string name="flow_agent_result_preview_title">确认要追加的结果</string>
+    <string name="flow_agent_result_append_confirm">追加到此笔记</string>
+    <string name="flow_agent_result_older_snapshot">此结果使用的是较早版本的笔记内容，将追加到当前版本。</string>
+    <string name="flow_agent_result_new_target_notice">原笔记已不可用，此结果将追加到你选择的新笔记。</string>
+    <string name="flow_agent_result_source_missing_title">选择结果的保存位置</string>
+    <string name="flow_agent_result_source_missing_body">原笔记已不可用。你可以新建笔记并将结果保存到那里。</string>
+    <string name="flow_agent_result_create_note">新建笔记</string>
+    <string name="flow_agent_result_create_note_body">不会重新创建或修改原笔记。</string>
+    <string name="flow_agent_result_create_failed">无法新建笔记。</string>
+    <string name="flow_agent_result_unavailable">此任务没有可追加的已完成文字结果。</string>
+    <string name="flow_agent_result_wait_for_save">请先保存当前笔记，再追加结果。</string>
+    <string name="flow_agent_result_prepare_failed">无法准备此结果，笔记未更改。</string>
+    <string name="flow_agent_result_target_changed">任务或笔记已变化，请重新检查结果后再追加。</string>
+    <string name="flow_agent_result_already_added">此结果已在笔记中。</string>
+    <string name="flow_agent_result_saving">正在将结果保存到笔记…</string>
+    <string name="flow_agent_result_saved">结果已追加到笔记。</string>
+    <string name="flow_agent_result_saved_reopen">结果已保存，重新打开笔记即可查看。</string>
+    <string name="flow_agent_result_save_uncertain">保存结果状态不确定。请重新打开笔记检查，再决定是否重试。</string>
+    <string name="flow_agent_result_save_failed">无法保存结果，笔记未更改。</string>
 </resources>

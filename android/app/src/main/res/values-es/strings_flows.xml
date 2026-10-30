@@ -435,4 +435,24 @@
     <string name="flow_send_saved_task">Enviar tarea guardada</string>
     <string name="flow_send_saved_task_warning">Esta tarea aún no se ha enviado. Se enviará una vez con su ID y el contenido guardado.</string>
     <string name="flow_send_saved_task_confirm">Enviar ahora</string>
+    <string name="flow_append_result_to_note">Añadir resultado a la nota</string>
+    <string name="flow_agent_result_preview_title">Revisa el resultado antes de añadirlo</string>
+    <string name="flow_agent_result_append_confirm">Añadir a esta nota</string>
+    <string name="flow_agent_result_older_snapshot">Este resultado usó una versión anterior de la nota. Se añadirá a la versión actual.</string>
+    <string name="flow_agent_result_new_target_notice">La nota original no está disponible. El resultado se añadirá a la nota nueva elegida.</string>
+    <string name="flow_agent_result_source_missing_title">Elige dónde guardar el resultado</string>
+    <string name="flow_agent_result_source_missing_body">La nota original no está disponible. Puedes crear una nota nueva y guardar allí el resultado.</string>
+    <string name="flow_agent_result_create_note">Crear una nota nueva</string>
+    <string name="flow_agent_result_create_note_body">La nota original no se recreará ni modificará.</string>
+    <string name="flow_agent_result_create_failed">No se pudo crear la nota nueva.</string>
+    <string name="flow_agent_result_unavailable">Esta tarea no tiene un resultado de texto completado para añadir.</string>
+    <string name="flow_agent_result_wait_for_save">Guarda la nota actual antes de añadir el resultado.</string>
+    <string name="flow_agent_result_prepare_failed">No se pudo preparar el resultado. La nota no cambió.</string>
+    <string name="flow_agent_result_target_changed">La tarea o la nota cambió. Revisa el resultado de nuevo.</string>
+    <string name="flow_agent_result_already_added">Este resultado ya está en la nota.</string>
+    <string name="flow_agent_result_saving">Guardando el resultado en la nota…</string>
+    <string name="flow_agent_result_saved">Resultado añadido a la nota.</string>
+    <string name="flow_agent_result_saved_reopen">El resultado se guardó. Vuelve a abrir la nota para verlo.</string>
+    <string name="flow_agent_result_save_uncertain">No se pudo confirmar el guardado. Vuelve a abrir la nota y compruébalo antes de intentarlo otra vez.</string>
+    <string name="flow_agent_result_save_failed">No se pudo guardar el resultado. La nota no cambió.</string>
 </resources>

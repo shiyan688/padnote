@@ -89,7 +89,7 @@ public struct AgentTaskClient {
                 let identityKeys: Set<String> = ["kind", "prompt_id", "request_id", "execution_generation", "session_id", "admission_id", "approval_id", "run_id", "title", "tool_name", "tool"]
                 let readable = source.filter { !identityKeys.contains($0.key) && meaningful($0.value) }
                 if !readable.isEmpty,
-                   let data = try? JSONSerialization.data(withJSONObject: readable, options: [.sortedKeys, .fragmentsAllowed]),
+                   let data = try? JSONSerialization.data(withJSONObject: readable, options: [.sortedKeys, .fragmentsAllowed, .withoutEscapingSlashes]),
                    let json = String(data: data, encoding: .utf8), !json.isEmpty {
                     details = [json]
                 }

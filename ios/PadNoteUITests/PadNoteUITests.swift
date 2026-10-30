@@ -2045,3 +2045,119 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
         add(attachment)
     }
 }
+
+final class AgentResultToPaperUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private let fixtureID = UUID().uuidString.lowercased()
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+    }
+
+    override func tearDownWithError() throws {
+        app?.terminate()
+        app = makeApp(cleanup: true)
+        app.launch()
+        let receipt = app.staticTexts["agentResultPaperCleanupResult"]
+        XCTAssertTrue(receipt.waitForExistence(timeout: 8))
+        XCTAssertEqual(receipt.label, "result-paper-fixture-cleaned; root-exists=false; suite-keys=0")
+        app.terminate()
+        app = nil
+    }
+
+    func testCompletedTaskPreviewAppendOpenAndReopenHasExactlyOneOriginFlow() throws {
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        app.buttons["agentResultPreviewToPaper"].tap()
+
+        let confirm = app.buttons["agentResultConfirmAppend"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Synthetic result for the isolated result-to-paper UI test."].exists)
+        confirm.tap()
+        let open = app.buttons["agentResultOpenSavedNote"]
+        if !open.waitForExistence(timeout: 30) {
+            attachResultPaperFailureDiagnostics("saved-note-link-missing")
+            XCTFail("the result must be durably appended before the paper link appears")
+            return
+        }
+        XCTAssertTrue(open.isHittable, "saved-note action should be surfaced in the visible result status")
+        open.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let openedPaperState = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(openedPaperState.label.contains("schema=9; flows=1; receipts=1"), openedPaperState.label)
+
+        // Reopen the app against the same isolated files and retry the same completed task.
+        // The origin receipt must be found and must not append another flow.
+        app.terminate()
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        let beforeRetry = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(beforeRetry.waitForExistence(timeout: 10))
+        XCTAssertTrue(beforeRetry.label.contains("schema=9; flows=1; receipts=1"), beforeRetry.label)
+        app.buttons["agentResultPreviewToPaper"].tap()
+        let retryConfirm = app.buttons["agentResultConfirmAppend"]
+        XCTAssertTrue(retryConfirm.waitForExistence(timeout: 8))
+        retryConfirm.tap()
+        XCTAssertTrue(app.staticTexts["结果已在笔记中"].waitForExistence(timeout: 20))
+        let reopen = app.buttons["agentResultOpenSavedNote"]
+        XCTAssertTrue(reopen.waitForExistence(timeout: 8))
+        XCTAssertTrue(reopen.isHittable, "dedupe result should keep the open action visible")
+        reopen.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let afterRetry = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(afterRetry.label.contains("schema=9; flows=1; receipts=1"), afterRetry.label)
+    }
+
+    func testStalePreviewCannotAppendAfterSyntheticTargetChanges() throws {
+        app = makeApp(stale: true)
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["agentResultPreviewToPaper"].waitForExistence(timeout: 10))
+        app.buttons["agentResultPreviewToPaper"].tap()
+
+        let change = app.buttons["agentResultUITestChangeTarget"]
+        for _ in 0..<6 where !change.isHittable { app.swipeUp() }
+        XCTAssertTrue(change.waitForExistence(timeout: 8))
+        XCTAssertTrue(change.isHittable)
+        change.tap()
+        let confirm = app.buttons["agentResultConfirmAppend"]
+        XCTAssertTrue(confirm.exists)
+        confirm.tap()
+
+        let error = app.staticTexts["agentResultAppendError"]
+        if !error.waitForExistence(timeout: 20) {
+            attachResultPaperFailureDiagnostics("stale-preview-error-missing")
+            XCTFail("stale preview must return an error instead of overwriting the newer target")
+            return
+        }
+        XCTAssertTrue(error.isHittable, "stale-preview feedback should be visible without scrolling past the form")
+        XCTAssertFalse(app.buttons["agentResultOpenSavedNote"].exists)
+        app.buttons["关闭"].tap()
+        let state = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(state.label.contains("schema=8; flows=0; receipts=0"), state.label)
+    }
+
+    private func attachResultPaperFailureDiagnostics(_ name: String) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "\(name)-screenshot"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "\(name)-accessibility-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+    }
+
+    private func makeApp(cleanup: Bool = false, stale: Bool = false) -> XCUIApplication {
+        let result = XCUIApplication()
+        result.launchArguments = ["--uitesting", "--uitesting-agent-result-paper",
+                                 "--agent-result-paper-fixture-id", fixtureID]
+        if cleanup { result.launchArguments.append("--agent-result-paper-cleanup") }
+        if stale { result.launchArguments.append("--uitesting-agent-result-paper-stale") }
+        return result
+    }
+}

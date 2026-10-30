@@ -254,6 +254,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private VaultStore vaultStore;
     private VideoAttachmentStore videoAttachmentStore;
     private AgentConnectionStore agentConnectionStore;
+    /** Isolated task-store override used only by instrumentation exercising the real result UI. */
+    private AgentTaskStore agentResultTaskStoreForTest;
     private AgentTaskClient.Factory videoTaskClientFactory = AgentTaskClient::new;
     private AgentArtifactDownloader videoAttachmentDownloader;
     private java.util.function.Consumer<Exception> videoAttachmentFailureForTest;
@@ -524,6 +526,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private volatile String shelfRenameFailure = "NONE", shelfDeleteFailure = "NONE";
     private volatile String coverMutationResult = "IDLE", coverMutationFailure = "NONE";
     private String currentGroupLineage, currentGroupRevision, currentGroupDigest;
+    private String currentLegacyBodySha256;
+    private String pendingAgentResultTaskId="";
+    private String pendingAgentResultTargetNoteId="";
+    private boolean agentResultTargetCreationInFlight;
+    private boolean agentResultAppendInFlight;
+    private long agentResultAppendSerial;
     private String groupEditorSessionId = java.util.UUID.randomUUID().toString();
     private long editorSessionGeneration;
     private long groupDraftCaptureSequence;
@@ -2301,9 +2309,275 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private AgentTaskDialogs newVideoTaskDialogs() {
-        return new AgentTaskDialogs(this, agentConnectionStore, aiExecutor,
-                this::launchCreateAgentArtifactDocument, new AgentTaskStore(this),
+        AgentTaskDialogs dialogs=new AgentTaskDialogs(this, agentConnectionStore, aiExecutor,
+                this::launchCreateAgentArtifactDocument, agentResultTaskStore(),
                 VideoTaskDialogs::new, this::openTaskSourceNote, videoTaskClientFactory);
+        dialogs.setResultAppender(this::beginAgentResultAppend);
+        return dialogs;
+    }
+
+    private AgentTaskStore agentResultTaskStore() {
+        return agentResultTaskStoreForTest == null ? new AgentTaskStore(this) : agentResultTaskStoreForTest;
+    }
+
+    /** Opens a real cached task detail for isolated ActivityScenario result-flow tests. */
+    void showCachedAgentTaskForTest(String clientTaskId, AgentTaskStore isolatedStore) {
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0
+                || isolatedStore == null || isolatedStore.get(clientTaskId) == null)
+            throw new SecurityException("test task must already exist in an isolated store");
+        agentResultTaskStoreForTest = isolatedStore;
+        newVideoTaskDialogs().showDetail(clientTaskId);
+    }
+
+    boolean agentResultAppendIdleForTest() {
+        return (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                && !agentResultAppendInFlight && !saveInFlight;
+    }
+
+    private void beginAgentResultAppend(String taskId) {
+        AgentTaskStore.Task task=agentResultTaskStore().get(taskId);
+        if(!validAgentResultTask(task)){
+            Toast.makeText(this,getString(R.string.flow_agent_result_unavailable),Toast.LENGTH_LONG).show();
+            return;
+        }
+        NoteStore.Entry source=task.noteId.isEmpty()?null:findNoteEntry(task.noteId);
+        if(source==null){
+            showAgentResultCreateTarget(task);
+            return;
+        }
+        pendingAgentResultTaskId=task.clientTaskId;
+        pendingAgentResultTargetNoteId=source.id;
+        if(source.id.equals(currentNoteId)&&restoreCompleted){
+            showAgentResultPreview(task.clientTaskId,source.id);
+            return;
+        }
+        openNote(source);
+    }
+
+    private void showAgentResultCreateTarget(AgentTaskStore.Task task) {
+        new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_source_missing_title))
+                .setMessage(getString(R.string.flow_agent_result_source_missing_body))
+                .setNegativeButton(getString(R.string.core_cancel),null)
+                .setPositiveButton(getString(R.string.flow_agent_result_create_note),(dialog,which)->{
+                    EditText title=createNoteTitleInput(task.title,getString(R.string.core_note_title_hint));
+                    new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_create_note))
+                            .setMessage(getString(R.string.flow_agent_result_create_note_body)).setView(title)
+                            .setNegativeButton(getString(R.string.core_cancel),null)
+                            .setPositiveButton(getString(R.string.core_create),(d,w)->createAgentResultTarget(task,
+                                    title.getText().toString())).show();
+                }).show();
+    }
+
+    private void createAgentResultTarget(AgentTaskStore.Task task,String requestedTitle) {
+        if(agentResultTargetCreationInFlight)return;
+        String title=requestedTitle==null?"":requestedTitle.trim();
+        if(title.isEmpty())title=getString(R.string.core_unnamed_note);
+        if(title.length()>80)title=title.substring(0,80);
+        final String finalTitle=title;
+        agentResultTargetCreationInFlight=true;
+        storageExecutor.execute(()->{
+            try{
+                NoteStore.Entry created=NoteStore.create(this,finalTitle);
+                runOnUiThread(()->{
+                    agentResultTargetCreationInFlight=false;
+                    pendingAgentResultTaskId=task.clientTaskId;
+                    pendingAgentResultTargetNoteId=created.id;
+                    openNote(created);
+                });
+            }catch(Exception error){runOnUiThread(()->{
+                agentResultTargetCreationInFlight=false;
+                Toast.makeText(this,getString(R.string.flow_agent_result_create_failed),Toast.LENGTH_LONG).show();
+            });}
+        });
+    }
+
+    private boolean validAgentResultTask(AgentTaskStore.Task task) {
+        if(task==null||task.status!=AgentTaskStore.Status.COMPLETED||task.output==null
+                ||task.output.trim().isEmpty())return false;
+        try{AgentResultProvenance.create(task,task.noteId,task.noteRevision,task.output);return true;}
+        catch(RuntimeException invalid){return false;}
+    }
+
+    private void showAgentResultPreview(String taskId,String targetNoteId) {
+        if(!editorVisible||!restoreCompleted||canvasView==null||!targetNoteId.equals(currentNoteId)
+                ||saveInFlight||agentResultAppendInFlight||documentRevision!=lastSavedRevision){
+            Toast.makeText(this,getString(R.string.flow_agent_result_wait_for_save),Toast.LENGTH_LONG).show();return;
+        }
+        AgentTaskStore tasks=agentResultTaskStore();
+        AgentTaskStore.Task task=tasks.get(taskId);
+        if(!validAgentResultTask(task)){
+            Toast.makeText(this,getString(R.string.flow_agent_result_unavailable),Toast.LENGTH_LONG).show();return;
+        }
+        final AgentResultProvenance provenance;
+        final NoteCanvasView.AgentResultAppendCandidate candidate;
+        try{
+            provenance=AgentResultProvenance.create(task,task.noteId,task.noteRevision,task.output);
+            candidate=canvasView.prepareAgentResultAppend(targetNoteId,currentNoteTitle,task.output,provenance);
+            if(candidate.alreadyApplied){
+                Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;
+            }
+        }catch(Exception error){
+            Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
+        }
+        final long capturedDocumentRevision=documentRevision;
+        final long capturedSession=editorSessionGeneration;
+        final String capturedLineage=currentGroupLineage,capturedGroupRevision=currentGroupRevision,
+                capturedGroupDigest=currentGroupDigest,capturedLegacySha=currentLegacyBodySha256;
+        StringBuilder preview=new StringBuilder();
+        if(!task.noteId.isEmpty()){
+            NoteStore.Entry source=findNoteEntry(task.noteId);
+            if(source!=null&&source.updatedAt>task.noteRevision)
+                preview.append(getString(R.string.flow_agent_result_older_snapshot)).append("\n\n");
+            else if(source==null)preview.append(getString(R.string.flow_agent_result_new_target_notice)).append("\n\n");
+        }
+        preview.append(task.output);
+        TextView output=new TextView(this);output.setText(preview.toString());output.setTextIsSelectable(true);
+        output.setTextSize(15);output.setTextColor(INK_COLOR);output.setPadding(dp(20),dp(16),dp(20),dp(16));
+        ScrollView scroll=new ScrollView(this);scroll.addView(output);
+        new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_preview_title))
+                .setView(scroll).setNegativeButton(getString(R.string.core_cancel),null)
+                .setPositiveButton(getString(R.string.flow_agent_result_append_confirm),(dialog,which)->{
+                    AgentTaskStore.Task latest=tasks.get(taskId);
+                    if(!sameAgentResultTask(task,latest)||!editorVisible||!restoreCompleted||canvasView==null
+                            ||!targetNoteId.equals(currentNoteId)||capturedSession!=editorSessionGeneration
+                            ||capturedDocumentRevision!=documentRevision||saveInFlight
+                            ||!same(capturedLineage,currentGroupLineage)
+                            ||!same(capturedGroupRevision,currentGroupRevision)
+                            ||!same(capturedGroupDigest,currentGroupDigest)
+                            ||!same(capturedLegacySha,currentLegacyBodySha256)){
+                        Toast.makeText(this,getString(R.string.flow_agent_result_target_changed),Toast.LENGTH_LONG).show();return;
+                    }
+                    // addedAt is the first confirmed append attempt, not the time the
+                    // preview was opened. Rebuild the candidate from the still-pinned
+                    // live canvas after the confirmation gate.
+                    final AgentResultProvenance confirmedProvenance;
+                    final NoteCanvasView.AgentResultAppendCandidate confirmedCandidate;
+                    try {
+                        confirmedProvenance=AgentResultProvenance.create(latest,latest.noteId,
+                                latest.noteRevision,latest.output);
+                        confirmedCandidate=canvasView.prepareAgentResultAppend(targetNoteId,
+                                currentNoteTitle,latest.output,confirmedProvenance);
+                        if(confirmedCandidate.alreadyApplied){
+                            Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;
+                        }
+                    } catch(Exception invalidated){
+                        Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
+                    }
+                    startAgentResultAppend(latest,confirmedCandidate,targetNoteId,
+                            capturedDocumentRevision,capturedSession,capturedLineage,capturedGroupRevision,
+                            capturedGroupDigest,capturedLegacySha);
+                }).show();
+    }
+
+    private static boolean sameAgentResultTask(AgentTaskStore.Task expected,AgentTaskStore.Task actual) {
+        return expected!=null&&actual!=null&&actual.status==AgentTaskStore.Status.COMPLETED
+                &&same(expected.clientTaskId,actual.clientTaskId)&&same(expected.connectionId,actual.connectionId)
+                &&expected.connectionRevision==actual.connectionRevision&&same(expected.origin,actual.origin)
+                &&same(expected.credentialRef,actual.credentialRef)&&expected.transport==actual.transport
+                &&expected.kind==actual.kind&&same(expected.noteId,actual.noteId)
+                &&expected.noteRevision==actual.noteRevision&&same(expected.output,actual.output)
+                &&same(expected.submissionSha256,actual.submissionSha256)
+                &&same(expected.remoteTaskId,actual.remoteTaskId)
+                &&same(expected.instanceId,actual.instanceId)&&same(expected.bridgeId,actual.bridgeId);
+    }
+
+    private void startAgentResultAppend(AgentTaskStore.Task task,
+            NoteCanvasView.AgentResultAppendCandidate candidate,String noteId,
+            long expectedDocumentRevision,long expectedSession,String lineage,String groupRevision,
+            String groupDigest,String legacySha) {
+        if(agentResultAppendInFlight)return;
+        agentResultAppendInFlight=true;saveInFlight=true;inFlightDocumentRevision=expectedDocumentRevision;
+        long operation=++agentResultAppendSerial;canvasView.setEnabled(false);
+        ProgressDialog progress=new ProgressDialog(this);progress.setMessage(getString(R.string.flow_agent_result_saving));
+        progress.setCancelable(false);progress.setCanceledOnTouchOutside(false);progress.show();
+        final String json;
+        final String noteTitle=currentNoteTitle;
+        try{json=NoteJsonCodec.stringify(candidate.document);}
+        catch(Exception error){progress.dismiss();finishAgentResultAppendUi(operation,noteId,expectedSession,false,
+                null,null,null,null,null);return;}
+        storageExecutor.execute(()->{
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot savedGroup=null;
+            NoteStore.VersionedSaveResult savedLegacy=null;
+            Exception failure=null;
+            try{
+                AgentTaskStore.Task latest=agentResultTaskStore().get(task.clientTaskId);
+                if(!sameAgentResultTask(task,latest))throw new java.io.IOException("AGENT_RESULT_TASK_CHANGED");
+                if(lineage!=null){
+                    if(groupRevision==null||groupDigest==null)throw new java.io.IOException("GROUP_SAVE_BASELINE_REQUIRED");
+                    savedGroup=new NoteGroupFacade(this).saveEditorRevision(noteId,groupRevision,groupDigest,noteTitle,json);
+                }else{
+                    if(legacySha==null)throw new java.io.IOException("LEGACY_NOTE_BASELINE_REQUIRED");
+                    savedLegacy=NoteStore.saveLegacyIfBodyMatches(this,noteId,noteTitle,json,legacySha);
+                }
+            }catch(Exception error){failure=error;}
+            final com.padnote.android.streaming.StreamingGroupStore.Snapshot groupResult=savedGroup;
+            final NoteStore.VersionedSaveResult legacyResult=savedLegacy;
+            final Exception resultFailure=failure;
+            runOnUiThread(()->{
+                if(!progress.isShowing())return;
+                progress.dismiss();
+                boolean current=noteId.equals(currentNoteId)&&expectedSession==editorSessionGeneration
+                        &&operation==agentResultAppendSerial;
+                if(resultFailure!=null){
+                    boolean uncertainLegacyRollback="LEGACY_SAVE_ROLLBACK_UNCERTAIN".equals(resultFailure.getMessage());
+                    if(current)finishAgentResultAppendUi(operation,noteId,expectedSession,false,null,null,null,null,null);
+                    else if(operation==agentResultAppendSerial){agentResultAppendInFlight=false;saveInFlight=false;}
+                    if(current){
+                        if(uncertainLegacyRollback)saveStatusView.setText(getString(R.string.flow_agent_result_save_uncertain));
+                        Toast.makeText(this,getString(uncertainLegacyRollback
+                                ? R.string.flow_agent_result_save_uncertain
+                                : R.string.flow_agent_result_save_failed),Toast.LENGTH_LONG).show();
+                    }
+                    return;
+                }
+                if(!current){
+                    if(operation==agentResultAppendSerial){agentResultAppendInFlight=false;saveInFlight=false;}
+                    if(editorVisible)Toast.makeText(this,getString(R.string.flow_agent_result_saved_reopen),Toast.LENGTH_LONG).show();return;
+                }
+                if(groupResult!=null){currentGroupLineage=groupResult.lineage;currentGroupRevision=groupResult.revision;currentGroupDigest=groupResult.digest;}
+                if(legacyResult!=null)currentLegacyBodySha256=legacyResult.bodySha256;
+                NoteTextBox appended=canvasView.commitAgentResultAppend(candidate);
+                if(appended==null){
+                    try{canvasView.loadJsonDocument(candidate.document);}catch(Exception reloadFailure){
+                        finishAgentResultAppendUi(operation,noteId,expectedSession,false,null,null,null,null,null);
+                        restoreCompleted=false;
+                        if(canvasView!=null)canvasView.setEnabled(false);
+                        saveStatusView.setText(getString(R.string.flow_agent_result_saved_reopen));
+                        Toast.makeText(this,getString(R.string.flow_agent_result_saved_reopen),Toast.LENGTH_LONG).show();return;
+                    }
+                }
+                lastSavedRevision=documentRevision;pendingUnsavedJson=null;saveQueued=false;
+                finishAgentResultAppendUi(operation,noteId,expectedSession,true,groupResult,legacyResult,
+                        groupResult==null?lineage:groupResult.lineage,
+                        groupResult==null?groupRevision:groupResult.revision,
+                        groupResult==null?groupDigest:groupResult.digest);
+                canvasView.goToPage(Math.max(0,candidate.document.optInt("pageCount",1)-1));
+                Toast.makeText(this,getString(R.string.flow_agent_result_saved),Toast.LENGTH_LONG).show();
+            });
+        });
+    }
+
+    private void finishAgentResultAppendUi(long operation,String noteId,long expectedSession,boolean success,
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot group,
+            NoteStore.VersionedSaveResult legacy,String lineage,String revision,String digest) {
+        if(operation!=agentResultAppendSerial)return;
+        agentResultAppendInFlight=false;saveInFlight=false;inFlightDocumentRevision=-1L;
+        if(noteId.equals(currentNoteId)&&expectedSession==editorSessionGeneration&&canvasView!=null){
+            canvasView.setEnabled(true);
+            if(!success){saveStatusView.setText(getString(R.string.tail_save_failed_unsaved_changes_retried_exported));return;}
+            if(group!=null){currentGroupLineage=group.lineage;currentGroupRevision=group.revision;currentGroupDigest=group.digest;}
+            if(legacy!=null)currentLegacyBodySha256=legacy.bodySha256;
+            lastSavedRevision=documentRevision;pendingUnsavedJson=null;
+            saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));
+        }
+    }
+
+    private static boolean same(Object left,Object right){return left==null?right==null:left.equals(right);}
+
+    private void showPendingAgentResultAfterRestore(String noteId) {
+        if(pendingAgentResultTaskId.isEmpty()||!noteId.equals(pendingAgentResultTargetNoteId))return;
+        String taskId=pendingAgentResultTaskId;pendingAgentResultTaskId="";pendingAgentResultTargetNoteId="";
+        handler.post(()->showAgentResultPreview(taskId,noteId));
     }
 
     // Package-private, per-Activity hooks used only by instrumentation tests. They are
@@ -3338,6 +3612,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         currentNoteId = entry.id;
         currentNoteTitle = entry.title;
         currentGroupLineage=null;currentGroupRevision=null;currentGroupDigest=null;
+        currentLegacyBodySha256=null;
         groupEditorSessionId=java.util.UUID.randomUUID().toString();groupDraftCaptureSequence=0;
         editorSessionGeneration++;
         editorVisible = true;
@@ -10700,13 +10975,21 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             JSONObject restoredDocument = null;
             String restoreError = null;
             String restoredLineage=null,restoredRevision=null,restoredDigest=null;
+            String restoredLegacyBodySha256=null;
             AiConversationStore.Snapshot restoredConversation = null;
             String conversationError = null;
             String pdfDigest = "";
             NoteViewportStore.State restoredViewport = null;
             try {
                 com.padnote.android.streaming.StreamingGroupStore.Snapshot managed=GroupAuthorityBridge.open(this,noteId);
-                if(managed==null)restoredDocument=NoteStore.load(this,noteId);
+                if(managed==null){
+                    JSONObject beforeHash=NoteStore.load(this,noteId);
+                    restoredLegacyBodySha256=NoteStore.legacyBodySha256(this,noteId);
+                    JSONObject afterHash=NoteStore.load(this,noteId);
+                    if(!NoteJsonCodec.stringify(beforeHash).equals(NoteJsonCodec.stringify(afterHash)))
+                        throw new java.io.IOException("LEGACY_NOTE_CHANGED_DURING_OPEN");
+                    restoredDocument=afterHash;
+                }
                 else{
                     byte[] body=managed.readSmall("body.bin",(int)com.padnote.android.streaming.StreamingGroupStore.BODY_MAX);
                     String json=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
@@ -10739,6 +11022,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             JSONObject document = restoredDocument;
             String errorMessage = restoreError;
             String groupLineage=restoredLineage,groupRevision=restoredRevision,groupDigest=restoredDigest;
+            String legacyBodySha256=restoredLegacyBodySha256;
             AiConversationStore.Snapshot conversation = restoredConversation;
             String conversationLoadError = conversationError;
             String restoredPdfDigest = pdfDigest;
@@ -10766,12 +11050,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         scheduleViewportSave();
                     }
                     currentGroupLineage=groupLineage;currentGroupRevision=groupRevision;currentGroupDigest=groupDigest;
+                    currentLegacyBodySha256=legacyBodySha256;
                     currentNoteTitle=document.optString("title",currentNoteTitle);
                     aiPdfDigest = restoredPdfDigest;
                     aiPdfDigestAvailable = !restoredPdfDigest.startsWith("!unavailable:");
                     applyRestoredAiConversation(conversation, conversationLoadError);
                     saveStatusView.setText(getString(R.string.tail_local_note_restored));
                     handler.post(() -> offerManualDraftRecovery(noteId));
+                    showPendingAgentResultAfterRestore(noteId);
                     // Applied only after a successful load. A failed load never turns
                     // into an editable blank document that could overwrite the source.
                     if (pendingPageStyle != null) {
@@ -10932,6 +11218,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void saveDocument(boolean showToast) {
+        if(agentResultAppendInFlight)return;
         if (!editorVisible || !restoreCompleted || currentNoteId == null) return;
         pendingSaveToast |= showToast;
         if (saveInFlight) {
@@ -10950,8 +11237,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         final String json,noteId=currentNoteId,noteTitle=currentNoteTitle;
         final long savingRevision=documentRevision,saveGeneration=editorSessionGeneration;
         final String lineage=currentGroupLineage,baseRevision=currentGroupRevision,baseDigest=currentGroupDigest;
+        final String legacyBodySha=currentLegacyBodySha256;
         final boolean managed=lineage!=null||baseRevision!=null||baseDigest!=null;
         if(managed&&(lineage==null||baseRevision==null||baseDigest==null)){
+            saveStatusView.setText(getString(R.string.tail_save_baseline_invalid_changes_remain_note));pendingLeaveAfterSave=false;return;
+        }
+        if(!managed&&(legacyBodySha==null||!legacyBodySha.matches("[0-9a-f]{64}"))){
             saveStatusView.setText(getString(R.string.tail_save_baseline_invalid_changes_remain_note));pendingLeaveAfterSave=false;return;
         }
         try{json=NoteJsonCodec.stringify(canvasView.toJsonDocument(noteId,noteTitle));pendingUnsavedJson=json;}
@@ -10963,17 +11254,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             GroupEditorDraftStore.Draft draft=null;
             try{
                 com.padnote.android.streaming.StreamingGroupStore.Snapshot committed=null;
+                NoteStore.VersionedSaveResult legacyCommitted=null;
                 if(managed){
                     draft=GroupEditorDraftStore.create(noteId,lineage,baseRevision,baseDigest,
                             savingRevision,editorSession,capture,null,json);
                     GroupEditorDraftStore.write(this,draft);
                     committed=new NoteGroupFacade(this).saveEditorRevision(noteId,baseRevision,baseDigest,noteTitle,json);
                     GroupEditorDraftStore.clearIfMatches(this,draft);
-                }else NoteStore.save(this,noteId,noteTitle,json);
+                }else legacyCommitted=NoteStore.saveLegacyIfBodyMatches(this,noteId,noteTitle,json,legacyBodySha);
                 final com.padnote.android.streaming.StreamingGroupStore.Snapshot saved=committed;
+                final NoteStore.VersionedSaveResult legacySaved=legacyCommitted;
                 runOnUiThread(()->{
                     if(!noteId.equals(currentNoteId)||saveGeneration!=editorSessionGeneration)return;
                     if(saved!=null){currentGroupLineage=saved.lineage;currentGroupRevision=saved.revision;currentGroupDigest=saved.digest;}
+                    if(legacySaved!=null)currentLegacyBodySha256=legacySaved.bodySha256;
                     saveInFlight=false;inFlightDocumentRevision=-1L;lastSavedRevision=Math.max(lastSavedRevision,savingRevision);
                     clearManualDraftsSavedThrough(noteId, savingRevision, saveGeneration);
                     if(savingRevision==documentRevision){pendingUnsavedJson=null;saveStatusView.setText(getString(R.string.tail_saved_device_ready_reopen));pendingSaveToast=false;

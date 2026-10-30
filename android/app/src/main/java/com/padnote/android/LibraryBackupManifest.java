@@ -102,7 +102,7 @@ public final class LibraryBackupManifest {
             notes.add(new Note(text(row.get("item_id"), 64, "ITEM_ID_INVALID"),
                     text(row.get("source_note_id"), 4096, "SOURCE_NOTE_ID"),
                     integer(row, "source_revision_ms", 0, Long.MAX_VALUE),
-                    (int) integer(row, "note_schema_version", 1, 8),
+                    (int) integer(row, "note_schema_version", 1, 9),
                     text(row.get("note_resource_id"), 64, "RESOURCE_ID_INVALID"),
                     nullableText(row.get("pdf_resource_id"), 64, "RESOURCE_ID_INVALID"),
                     nullableText(row.get("cover_resource_id"), 64, "RESOURCE_ID_INVALID"),
@@ -215,7 +215,7 @@ public final class LibraryBackupManifest {
             if (note.coverResourceId != null) requireId(note.coverResourceId, "RESOURCE_ID_INVALID");
             if (!allItemIds.add(note.itemId)) throw new IOException("ITEM_ID_DUPLICATE");
             requireText(note.sourceNoteId, 4096, "SOURCE_NOTE_ID");
-            if (note.sourceRevisionMs < 0 || note.noteSchemaVersion < 1 || note.noteSchemaVersion > 8) throw new IOException("NOTE_FIELDS");
+            if (note.sourceRevisionMs < 0 || note.noteSchemaVersion < 1 || note.noteSchemaVersion > 9) throw new IOException("NOTE_FIELDS");
             uniqueIds(note.vaultEntryIds, 'v', "NOTE_REFERENCE_LIST");
             uniqueIds(note.videoAttachmentIds, 'a', "NOTE_REFERENCE_LIST");
             notesById.put(note.itemId, note);

@@ -49,6 +49,7 @@ final class AgentTaskDialogs {
     interface ArtifactSaveLauncher {
         void choose(AgentTaskStore.Task task, AgentTaskStore.Artifact artifact);
     }
+    interface ResultAppender { void append(String clientTaskId); }
     private final Activity activity;
     private final AgentConnectionStore connections;
     private final AgentTaskStore tasks;
@@ -59,6 +60,9 @@ final class AgentTaskDialogs {
     private final AgentTaskClient.Factory taskClientFactory;
     private final TaskConnectionSource taskConnectionSource;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private ResultAppender resultAppender;
+
+    void setResultAppender(ResultAppender appender) { resultAppender = appender; }
 
     AgentTaskDialogs(Activity activity, AgentConnectionStore connections, ExecutorService worker) {
         this(activity, connections, worker, null);
@@ -299,6 +303,8 @@ final class AgentTaskDialogs {
         addAction(actions,openSource);
         Button openTaskList=button(activity.getString(R.string.flow_open_task_list));addAction(actions,openTaskList);
         Button copyDiagnostic=button(activity.getString(R.string.flow_copy_diagnostic));addAction(actions,copyDiagnostic);
+        Button appendResult=primaryButton(activity.getString(R.string.flow_append_result_to_note));
+        appendResult.setVisibility(View.GONE);addAction(actions,appendResult);
         Button refresh=button(activity.getString(R.string.flow_refresh)),retry=button(activity.getString(R.string.flow_retry_submit)),stop=button(activity.getString(R.string.flow_stop)),once=button(activity.getString(R.string.flow_closed_approval)),deny=button(activity.getString(R.string.flow_deny));
         addAction(actions,refresh);addAction(actions,retry);addAction(actions,stop);addAction(actions,once);addAction(actions,deny);body.addView(actions);
         Button continueTask=button(activity.getString(R.string.flow_continue_chat)),previous=button(activity.getString(R.string.flow_previous_round)),video=button(activity.getString(R.string.flow_video_storyboard));
@@ -327,6 +333,9 @@ final class AgentTaskDialogs {
             if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));observedVersion[0]=version;}}
             AgentTaskStore.Task task=latestTask[0];if(task==null||!dialog.isShowing())return;
             statusText.setText(statusCardText(task));
+            appendResult.setVisibility(task.status==AgentTaskStore.Status.COMPLETED
+                    &&task.output!=null&&!task.output.trim().isEmpty()&&resultAppender!=null
+                    ?View.VISIBLE:View.GONE);
             boolean inFlight=AgentTaskSubmissionExecutor.isInFlight(task.clientTaskId);
             boolean bridgeRecovery=canOfferSameTaskRecovery(task,
                     tasks.submissionAttemptState(task.clientTaskId),inFlight);
@@ -392,6 +401,10 @@ final class AgentTaskDialogs {
         });
         openSource.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t!=null&&sourceNoteOpener.open(t.noteId))dialog.dismiss();else toast(activity.getString(R.string.flow_no_source_note));});
         openTaskList.setOnClickListener(v->{dialog.dismiss();showList();});
+        appendResult.setOnClickListener(v->{AgentTaskStore.Task task=latestTask[0];
+            ResultAppender appender=resultAppender;
+            if(task!=null&&appender!=null&&task.status==AgentTaskStore.Status.COMPLETED
+                    &&task.output!=null&&!task.output.trim().isEmpty())appender.append(task.clientTaskId);});
         retry.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];if(t==null)return;
             int attempt=tasks.submissionAttemptState(t.clientTaskId);
             boolean bridgeRecovery=canOfferSameTaskRecovery(t,attempt,
@@ -548,6 +561,14 @@ final class AgentTaskDialogs {
     private static String size(long bytes){if(bytes>=1024L*1024L)return String.format(java.util.Locale.getDefault(),"%.1f MiB",bytes/(1024f*1024f));if(bytes>=1024L)return String.format(java.util.Locale.getDefault(),"%.1f KiB",bytes/1024f);return bytes+" B";}
     private String status(AgentTaskStore.Status s){switch(s){case SUBMITTING:return activity.getString(R.string.flow_status_submitting);case RUNNING:return activity.getString(R.string.flow_status_running);case WAITING_FOR_APPROVAL:return activity.getString(R.string.flow_status_waiting);case STOPPING:return activity.getString(R.string.flow_status_stopping);case COMPLETED:return activity.getString(R.string.flow_status_completed);case FAILED:return activity.getString(R.string.flow_status_failed);case CANCELLED:return activity.getString(R.string.flow_status_cancelled);default:return activity.getString(R.string.flow_status_interrupted);}}
     private Button button(String text){Button b=new Button(activity);b.setText(text);return b;}
+    private Button primaryButton(String text){
+        Button button=new Button(activity);button.setText(text);button.setAllCaps(false);
+        button.setTextColor(android.graphics.Color.WHITE);button.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+        button.setTextSize(14);button.setMinHeight(dp(48));button.setStateListAnimator(null);
+        android.graphics.drawable.GradientDrawable background=new android.graphics.drawable.GradientDrawable();
+        background.setColor(PadNoteUi.ACCENT);background.setCornerRadius(dp(19));button.setBackground(background);
+        return button;
+    }
     private void addAction(LinearLayout parent,Button button){parent.addView(button,new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));}
     private ScrollView scroll(View v){ScrollView s=new ScrollView(activity);s.addView(v);return s;}
