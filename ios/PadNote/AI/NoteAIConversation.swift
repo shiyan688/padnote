@@ -28,6 +28,8 @@ enum NoteAIConversation {
                     page: Int, selection: CGRect?, vault: [NoteToolVaultEntry],
                     permission: NoteToolPermission) async throws -> Outcome {
         let engine = NoteToolEngine(note: note, currentPage: page, selectionBounds: selection, vault: vault)
+        try await engine.prepareCurrentLayouts()
+        try Task.checkCancellation()
         guard let allTools = try JSONSerialization.jsonObject(with: Data(engine.describeToolsJSON().utf8)) as? [[String: Any]] else {
             throw NoteAIConversationError.invalidTools
         }
@@ -80,8 +82,7 @@ enum NoteAIConversation {
                    (try? JSONSerialization.jsonObject(with: Data(call.function.arguments.utf8))) is [String: Any] {
                     validToolCallCount += 1
                 }
-                try await prepareContent(call, note: engine.proposedNote, permission: permission)
-                let result = engine.invoke(name: call.function.name, callID: call.id,
+                let result = try await engine.invokePreparingLayout(name: call.function.name, callID: call.id,
                     argumentsJSON: call.function.arguments, authorization: permission)
                 conversation.append(.init(role: "tool", content: result.jsonString, toolCallID: call.id))
             }
@@ -89,26 +90,4 @@ enum NoteAIConversation {
         throw NoteAIConversationError.tooManyCalls
     }
 
-    private static func prepareContent(_ call: AIToolCall, note: NoteDocument, permission: NoteToolPermission) async throws {
-        guard permission >= .createInFreeSpace,
-              let args = try? JSONSerialization.jsonObject(with: Data(call.function.arguments.utf8)) as? [String: Any] else { return }
-        let placement = args["placement"] as? [String: Any]
-        var flow: NoteTextFlow?
-        if call.function.name == "write_text", let source = args["content"] as? String, source.count <= 100_000 {
-            flow = NoteTextFlow(format: args["format"] as? String ?? "markdown", source: source)
-        } else if call.function.name == "draw_diagram", let code = args["code"] as? String, code.count <= 8000 {
-            flow = NoteTextFlow(format: "markdown", source: "```mermaid\n\(code.trimmingCharacters(in: .whitespacesAndNewlines))\n```")
-        } else if permission == .modifyExisting, let id = args["flowId"] as? String,
-                  let existing = note.textFlows.first(where: { $0.id == id }) {
-            flow = existing
-            if let font = args["fontSizeSp"] as? Double, (10...32).contains(font) { flow?.fontSizeSp = font }
-            if let spacing = args["lineHeight"] as? Double, (1.1...2).contains(spacing) { flow?.lineHeight = spacing }
-        }
-        guard var flow else { return }
-        let requestedWidth = (placement?["widthDp"] as? Double) ?? (args["widthDp"] as? Double) ?? (note.pageWidth - 32)
-        guard requestedWidth.isFinite else { return }
-        flow.width = min(max(120, requestedWidth), note.pageWidth - 32)
-        var temporary = note; temporary.textFlows = [flow]
-        try await CompiledTextRenderer.shared.prepareAndWait(document: temporary)
-    }
 }

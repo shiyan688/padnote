@@ -34,6 +34,12 @@ public struct NoteAgentResultAppendOutcome {
     public let alreadyApplied: Bool
 }
 
+struct NoteSavedAgentResult {
+    let document: NoteDocument
+    let session: NoteGroupEditorSession
+    let pageIndex: Int
+}
+
 public struct NoteAgentResultCandidate {
     public let document: NoteDocument
     public let flowID: String
@@ -177,7 +183,9 @@ public final class NoteLibrary: ObservableObject {
 
     private func saveLegacy(_ note: NoteDocument) throws {
         var value = note
-        value.schemaVersion = value.textFlows.contains(where: { $0.agentResult != nil }) ? 9 : 8
+        if value.schemaVersion != 10 {
+            value.schemaVersion = value.textFlows.contains(where: { $0.agentResult != nil }) ? 9 : 8
+        }
         if let existing = notes.first(where: { $0.id == value.id }) {
             var comparable = value
             comparable.updatedAt = existing.updatedAt
@@ -215,6 +223,43 @@ public final class NoteLibrary: ObservableObject {
         let legacy = try NoteDocument.decode(bytes)
         guard legacy.id == cachedLegacy.id else { throw NoteGroupStoreError.compareAndSwapConflict }
         return NoteGroupEditorSession(document: legacy, groupToken: nil, members: [], legacyBodySHA256: Self.sha256(bytes))
+    }
+
+    /// Resolves an already-persisted result without mutating the note or retrying the task.
+    /// The result receipt identifies the exact task output even if the user later edits the
+    /// flow's displayed source. Ambiguous, stale, deleted, or unreadable matches fail closed.
+    func savedAgentResult(matching expectedFlow: NoteTextFlow) -> NoteSavedAgentResult? {
+        guard let expectedReceipt = expectedFlow.agentResult else { return nil }
+        func isValid(_ receipt: AgentResultReceipt) -> Bool {
+            do { try receipt.validate(); return true } catch { return false }
+        }
+        let expectedSHA = Self.sha256(Data(expectedFlow.source.utf8))
+        guard expectedReceipt.resultSha256 == expectedSHA,
+              isValid(expectedReceipt) else { return nil }
+
+        var matches: [(noteID: String, flowID: String)] = []
+        for note in notes {
+            for flow in note.textFlows {
+                guard let receipt = flow.agentResult,
+                      receipt.applicationId == expectedReceipt.applicationId else { continue }
+                guard receipt.hasSameStableMetadata(as: expectedReceipt),
+                      isValid(receipt) else { return nil }
+                matches.append((note.id, flow.id))
+            }
+        }
+        guard matches.count == 1, let match = matches.first,
+              let session = try? openEditorSession(noteID: match.noteID) else { return nil }
+
+        let currentMatches = session.document.textFlows.filter { flow in
+            guard let receipt = flow.agentResult else { return false }
+            return receipt.applicationId == expectedReceipt.applicationId &&
+                receipt.hasSameStableMetadata(as: expectedReceipt) &&
+                isValid(receipt)
+        }
+        guard currentMatches.count == 1, let currentFlow = currentMatches.first,
+              currentFlow.id == match.flowID else { return nil }
+        return NoteSavedAgentResult(document: session.document, session: session,
+                                    pageIndex: currentFlow.anchorPageIndex)
     }
 
     public func openEditorSession(for draft: NotePendingDraft) throws -> NoteGroupEditorSession {
@@ -445,6 +490,15 @@ public final class NoteLibrary: ObservableObject {
         appended.anchorXInPage = selected.xInPage
         appended.anchorYInPage = selected.yInPage
         appended.width = selected.width
+        if candidate.schemaVersion == 10 {
+            if appended.format.lowercased() == "markdown" && appended.markdownProfileVersion == nil {
+                appended.markdownProfileVersion = 2
+            }
+        } else {
+            // New Agent flows on an unupgraded note retain the old renderer
+            // profile and do not silently promote that note to schema 10.
+            appended.markdownProfileVersion = nil
+        }
         if selected.mode == .point {
             let right = candidate.pageWidth - 16
             guard right - appended.anchorXInPage >= 80 else {
@@ -453,7 +507,7 @@ public final class NoteLibrary: ObservableObject {
             appended.width = min(appended.width, right - appended.anchorXInPage)
         }
         candidate.textFlows.append(appended)
-        candidate.schemaVersion = 9
+        candidate.schemaVersion = original.schemaVersion == 10 ? 10 : 9
         candidate.updatedAt = NoteDocument.nowMillis()
         if !preparingRenderer {
             let requiredPages = NoteTextLayout.requiredPageCount(candidate)
@@ -474,6 +528,24 @@ public final class NoteLibrary: ObservableObject {
         }
         _ = try candidate.validated()
         return NoteAgentResultCandidate(document: candidate, flowID: appended.id, pageIndex: page)
+    }
+
+    /// Builds a disposable candidate, compiles its final source/style/width,
+    /// then reruns the authoritative pagination and collision checks against
+    /// that exact compiled cache entry. No library state is mutated here.
+    public static func preparedCandidateAppendingAgentResult(_ flow: NoteTextFlow, to original: NoteDocument,
+                                                               addFinalPage: Bool,
+                                                               placement: AgentResultPlacement? = nil,
+                                                               pdfURL: URL? = nil,
+                                                               checkPointConflicts: Bool = true) async throws -> NoteAgentResultCandidate {
+        let provisional = try candidateAppendingAgentResult(flow, to: original,
+            addFinalPage: addFinalPage, placement: placement, pdfURL: pdfURL,
+            checkPointConflicts: false, preparingRenderer: true)
+        try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
+        try Task.checkCancellation()
+        return try candidateAppendingAgentResult(flow, to: original,
+            addFinalPage: addFinalPage, placement: placement, pdfURL: pdfURL,
+            checkPointConflicts: checkPointConflicts)
     }
 
     private func legacyBodySHA256IfPresent(noteID: String) throws -> String? {

@@ -64,6 +64,181 @@ final class CompiledTextTests: XCTestCase {
         }
     }
 
+    func testMarkdownProfileIsPartOfCompiledCacheIdentity() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { _ in UIColor.black.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 20, height: 20)) }
+        let legacy = NoteTextFlow(id: "same-profile-cache-id", format: "markdown", source: "**x $y$**")
+        var corrected = legacy
+        corrected.markdownProfileVersion = 2
+        XCTAssertNotEqual(CompiledTextCache.digest(legacy), CompiledTextCache.digest(corrected))
+        CompiledTextCache.put([CompiledTextCache.Unit(image: image, size: image.size)], for: legacy)
+        XCTAssertNotNil(CompiledTextCache.entry(legacy))
+        XCTAssertNil(CompiledTextCache.entry(corrected), "profile 1 output cannot satisfy a profile 2 layout request")
+        CompiledTextCache.remove(legacy)
+    }
+
+    func testSharedTypographyGoldenCasesCompileUnderTheirDeclaredProfiles() async throws {
+        struct Corpus: Decodable {
+            struct Case: Decodable { let id: String; let profile: Int; let markdown: String }
+            let cases: [Case]
+        }
+        let url = try XCTUnwrap(Bundle(for: CompiledTextTests.self).url(forResource: "TYPOGRAPHY_CASES_R1", withExtension: "json"))
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: url))
+        XCTAssertGreaterThanOrEqual(corpus.cases.count, 14)
+        for item in corpus.cases {
+            let flow = NoteTextFlow(id: "golden-\(item.id)", format: "markdown", source: item.markdown,
+                width: 680, markdownProfileVersion: item.profile == 2 ? 2 : nil)
+            var note = NoteDocument(title: "Typography \(item.id)")
+            note.textFlows = [flow]
+            try await prepare(note)
+            let entry = try XCTUnwrap(CompiledTextCache.entry(flow), item.id)
+            XCTAssertFalse(entry.units.isEmpty, item.id)
+            XCTAssertTrue(NoteTextLayout.canFullyLayout(flow, pageHeight: note.pageHeight), item.id)
+            XCTAssertEqual(NoteTextLayout.fragments(flow, pageHeight: note.pageHeight).map(\.text.string).joined(), item.markdown, item.id)
+            if ["strong-crosses-inline-math", "thematic-break-hyphens"].contains(item.id) {
+                attachPages(note, name: "C38 typography golden \(item.id)")
+            }
+            CompiledTextCache.remove(flow)
+        }
+    }
+
+    func testStandaloneThematicBreaksProduceMeasuredPaperChunks() async throws {
+        for rule in ["***", "___"] {
+            let flow = NoteTextFlow(id: "standalone-rule-\(rule)", format: "markdown", source: rule,
+                width: 680, markdownProfileVersion: 2)
+            var note = NoteDocument(title: "Standalone rule \(rule)")
+            note.textFlows = [flow]
+            try await prepare(note)
+            let entry = try XCTUnwrap(CompiledTextCache.entry(flow), "standalone rule \(rule)")
+            XCTAssertFalse(entry.units.isEmpty, "standalone rule \(rule) must create a measured paper chunk")
+            XCTAssertTrue(NoteTextLayout.canFullyLayout(flow, pageHeight: note.pageHeight), rule)
+            XCTAssertEqual(NoteTextLayout.fragments(flow, pageHeight: note.pageHeight).map(\.text.string).joined(), rule)
+            attachPages(note, name: "C38 standalone HR \(rule)")
+            CompiledTextCache.remove(flow)
+        }
+    }
+
+    func testProfile2ChangesActualPaperPixelsForStrongMathAndThematicBreak() async throws {
+        func compiledNote(id: String, source: String, profile: Int?) async throws -> NoteDocument {
+            var note = NoteDocument(title: id)
+            let flow = NoteTextFlow(id: "\(id)-flow", format: "markdown", source: source,
+                width: 680, markdownProfileVersion: profile)
+            note.textFlows = [flow]
+            try await prepare(note)
+            return note
+        }
+        let strongSource = "**before $x^2$ after**"
+        let oldStrong = try await compiledNote(id: "legacy-strong", source: strongSource, profile: nil)
+        let newStrong = try await compiledNote(id: "corrected-strong", source: strongSource, profile: 2)
+        XCTAssertNotEqual(NoteRenderer.renderPage(document: oldStrong, page: 0, pdfURL: nil).pngData(),
+                          NoteRenderer.renderPage(document: newStrong, page: 0, pdfURL: nil).pngData())
+        let mathOnlySource = "**$x^2$**"
+        let oldMathOnly = try await compiledNote(id: "legacy-math-only", source: mathOnlySource, profile: nil)
+        let newMathOnly = try await compiledNote(id: "corrected-math-only", source: mathOnlySource, profile: 2)
+        XCTAssertNotEqual(NoteRenderer.renderPage(document: oldMathOnly, page: 0, pdfURL: nil).pngData(),
+                          NoteRenderer.renderPage(document: newMathOnly, page: 0, pdfURL: nil).pngData(),
+                          "the formula glyph itself must change when strong scope contains only math")
+        let ruleSource = "above\n\n---\n\nbelow"
+        let oldRule = try await compiledNote(id: "legacy-rule", source: ruleSource, profile: nil)
+        let newRule = try await compiledNote(id: "corrected-rule", source: ruleSource, profile: 2)
+        XCTAssertNotEqual(NoteRenderer.renderPage(document: oldRule, page: 0, pdfURL: nil).pngData(),
+                          NoteRenderer.renderPage(document: newRule, page: 0, pdfURL: nil).pngData())
+        func exportedFirstPage(_ note: NoteDocument) async throws -> UIImage {
+            let snapshot = try await CompiledTextRenderer.shared.prepareExportSnapshot(document: note)
+            let bytes = try NoteRenderer.exportVerifiedPDF(document: note, pdfURL: nil, compiledText: snapshot)
+            let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "com.adobe.pdf")
+            attachment.name = "C38 PDF paper typography — \(note.title)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let pdf = try XCTUnwrap(PDFDocument(data: bytes))
+            return try XCTUnwrap(pdf.page(at: 0)).thumbnail(of: CGSize(width: 768, height: 1086), for: .mediaBox)
+        }
+        let oldStrongPDF = try await exportedFirstPage(oldStrong)
+        let newStrongPDF = try await exportedFirstPage(newStrong)
+        XCTAssertNotEqual(oldStrongPDF.pngData(), newStrongPDF.pngData(),
+                          "profile-specific glyph weight must survive final PDF export")
+        let oldMathOnlyPDF = try await exportedFirstPage(oldMathOnly)
+        let newMathOnlyPDF = try await exportedFirstPage(newMathOnly)
+        XCTAssertNotEqual(oldMathOnlyPDF.pngData(), newMathOnlyPDF.pngData(),
+                          "the isolated bold formula glyph must remain different in the exported PDF")
+        let oldRulePDF = try await exportedFirstPage(oldRule)
+        let newRulePDF = try await exportedFirstPage(newRule)
+        XCTAssertNotEqual(oldRulePDF.pngData(), newRulePDF.pngData(),
+                          "the semantic rule and its measured spacing must survive final PDF export")
+        attachPages(newStrong, name: "C38 strong inline math on paper")
+        attachPages(newRule, name: "C38 thematic break on paper")
+    }
+
+    func testProfile2RecognizesBackslashMathBeforeEscapesAndKeepsEscapedDollarLiteral() async throws {
+        func paper(_ source: String, id: String) async throws -> UIImage {
+            let flow = NoteTextFlow(id: id, format: "markdown", source: source,
+                width: 680, markdownProfileVersion: 2)
+            var note = NoteDocument(title: id)
+            note.textFlows = [flow]
+            try await prepare(note)
+            return NoteRenderer.renderPage(document: note, page: 0, pdfURL: nil)
+        }
+
+        let texDelimiter = try await paper(#"**before \(x^2\) after**"#, id: "paren-math-strong")
+        let dollarDelimiter = try await paper("**before $x^2$ after**", id: "dollar-math-strong")
+        XCTAssertEqual(texDelimiter.pngData(), dollarDelimiter.pngData(),
+                       "\\(...\\) must become the same math node inside strong scope as $...$")
+
+        let escapedDollar = try await paper(#"\$x\$"#, id: "escaped-dollar-literal")
+        let actualMath = try await paper("$x$", id: "dollar-math-node")
+        XCTAssertNotEqual(escapedDollar.pngData(), actualMath.pngData(),
+                          "escaped dollar markers must remain literal instead of opening a math node")
+
+        let emOuter = try await paper("*outer **inner $x$** outer*", id: "em-outer-strong-inner")
+        let emOuterEquivalent = try await paper("_outer __inner $x$__ outer_", id: "em-outer-strong-inner-alt")
+        XCTAssertEqual(emOuter.pngData(), emOuterEquivalent.pngData(),
+                       "a single-star closer must not consume either star of nested strong runs")
+        let strongOuter = try await paper("**outer *inner $x$* outer**", id: "strong-outer-em-inner")
+        let strongOuterEquivalent = try await paper("__outer _inner $x$_ outer__", id: "strong-outer-em-inner-alt")
+        XCTAssertEqual(strongOuter.pngData(), strongOuterEquivalent.pngData(),
+                       "strong scopes must contain nested emphasis without losing their closing run")
+        let triple = try await paper("***$x$***", id: "triple-strong-emphasis")
+        let explicitTriple = try await paper("**_$x$_**", id: "triple-strong-emphasis-explicit")
+        XCTAssertEqual(triple.pngData(), explicitTriple.pngData(),
+                       "an exact triple run represents strong containing emphasis")
+        let multiTickCode = try await paper(#"before `` `**opaque** $x$` `` after"#,
+            id: "multitick-opaque-code")
+        let tripleTickEquivalent = try await paper(#"before ``` `**opaque** $x$` ``` after"#,
+            id: "tripletick-opaque-code")
+        XCTAssertEqual(multiTickCode.pngData(), tripleTickEquivalent.pngData(),
+                       "the exact backtick run must delimit opaque code while inner ticks stay literal")
+    }
+
+    func testTypographyCandidateDerivesContinuationPagesAndNeverShrinksExistingPages() throws {
+        let glyph = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { _ in
+            UIColor.black.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        var base = NoteDocument(schemaVersion: 9, title: "Derived typography pages", pageCount: 3)
+        let oldFlow = NoteTextFlow(id: "derived-pages-flow", format: "markdown", source: "long answer")
+        base.textFlows = [oldFlow]
+        let candidateFlow = NoteTextFlow(id: oldFlow.id, format: oldFlow.format,
+            source: oldFlow.source, markdownProfileVersion: 2)
+        var candidate = base
+        candidate.schemaVersion = 10
+        candidate.textFlows = [candidateFlow]
+        let units = (0..<6).map { _ in CompiledTextCache.Unit(image: glyph, size: CGSize(width: 320, height: 1000)) }
+        CompiledTextCache.put(units, for: candidateFlow)
+        defer { CompiledTextCache.remove(candidateFlow) }
+
+        let required = NoteTextLayout.requiredPageCount(candidate)
+        XCTAssertGreaterThan(required, base.pageCount,
+                             "the compiled candidate can require continuation pages")
+        candidate.pageCount = max(base.pageCount, required)
+        XCTAssertEqual(candidate.pageCount, required)
+        XCTAssertNoThrow(try candidate.validated())
+
+        var switchedBack = candidate
+        switchedBack.textFlows[0].markdownProfileVersion = nil
+        let backStyleRequired = NoteTextLayout.requiredPageCount(switchedBack)
+        switchedBack.pageCount = max(candidate.pageCount, backStyleRequired)
+        XCTAssertEqual(switchedBack.pageCount, candidate.pageCount,
+                       "switching to v1 retains existing user pages")
+    }
+
     func testOfflineCompiledPaperContainsMathAndDiagramPixels() async throws {
         var note = NoteDocument()
         let terms = (1...36).map { "x_{\($0)}" }.joined(separator: "+")

@@ -35,7 +35,7 @@ struct CompiledTextRenderState: Equatable {
 /// Disposable display data only. The portable TextFlow source remains the
 /// authoritative document; cached images are never written into note JSON.
 enum CompiledTextCache {
-    static let rendererVersion = "paper-v3-recovery"
+    static let rendererVersion = "paper-v4-typography-profile"
     struct Unit { let image: UIImage; let size: CGSize }
     final class Entry {
         let units: [Unit]
@@ -48,9 +48,12 @@ enum CompiledTextCache {
     }()
     private struct Signature: Equatable {
         let format: String, source: String
+        let markdownProfileVersion: Int
         let fontSize, lineHeight, width: Double
         init(_ flow: NoteTextFlow) {
-            format = flow.format; source = flow.source; fontSize = flow.fontSizeSp
+            format = flow.format; source = flow.source
+            markdownProfileVersion = flow.effectiveMarkdownProfileVersion
+            fontSize = flow.fontSizeSp
             lineHeight = flow.lineHeight; width = flow.width
         }
     }
@@ -62,7 +65,7 @@ enum CompiledTextCache {
         if let memo = digestMemo[flow.id], memo.0 == signature { memoLock.unlock(); return memo.1 }
         memoLock.unlock()
         var hash = SHA256()
-        hash.update(data: Data("\(rendererVersion)|\(flow.format)|\(flow.fontSizeSp)|\(flow.lineHeight)|\(flow.width)|".utf8))
+        hash.update(data: Data("\(rendererVersion)|\(flow.format)|markdown-profile:\(flow.effectiveMarkdownProfileVersion)|\(flow.fontSizeSp)|\(flow.lineHeight)|\(flow.width)|".utf8))
         hash.update(data: Data(flow.source.utf8))
         let value = hash.finalize().map { String(format: "%02x", $0) }.joined()
         memoLock.lock()
@@ -154,9 +157,12 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
     private struct ActiveStage { let id: UUID; let abort: (Error) -> Void }
     private struct RenderInput: Equatable {
         let format: String, source: String
+        let markdownProfileVersion: Int
         let fontSize, lineHeight, width: Double
         init(_ flow: NoteTextFlow) {
-            format = flow.format; source = flow.source; fontSize = flow.fontSizeSp
+            format = flow.format; source = flow.source
+            markdownProfileVersion = flow.effectiveMarkdownProfileVersion
+            fontSize = flow.fontSizeSp
             lineHeight = flow.lineHeight; width = flow.width
         }
     }
@@ -527,8 +533,9 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
         let web = try await readyWeb(width: flow.width)
         let width = Double(web.bounds.width)
         let raw = try await callJavaScript(web,
-            script: "return await window.preparePaper(source, size, spacing, format);",
-            arguments: ["source": flow.source, "size": flow.fontSizeSp, "spacing": flow.lineHeight, "format": flow.format])
+            script: "return await window.preparePaper(source, size, spacing, format, profileVersion);",
+            arguments: ["source": flow.source, "size": flow.fontSizeSp, "spacing": flow.lineHeight,
+                        "format": flow.format, "profileVersion": flow.effectiveMarkdownProfileVersion])
         guard let metrics = raw as? [String: Any] else {
             throw CompiledTextRenderFailure(kind: .invalidResponse, stage: "javascript")
         }

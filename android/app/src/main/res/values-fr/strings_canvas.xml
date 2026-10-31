@@ -125,4 +125,21 @@
     <string name="core_manual_draft_input_limit">Cette modification dépasse la limite locale de 1 000 000 caractères. Elle a été entièrement refusée et le texte existant a été conservé.</string>
     <string name="core_manual_draft_cleanup_failed">Le brouillon de récupération n’a pas été supprimé et reste sur cet appareil. Réessayez depuis le menu Plus de la note.</string>
     <string name="canvas_pdf_page_size_invalid">Le format de page PDF est invalide ou dépasse la limite d’exportation. Conservez la note d’origine et réessayez avec un format plus petit.</string>
+    <string name="canvas_typography_switch">Changer la mise en page</string>
+    <string name="canvas_typography_title">Aperçu de la nouvelle mise en page de ce contenu</string>
+    <string name="canvas_typography_old">Mise en page précédente</string>
+    <string name="canvas_typography_new">Nouvelle mise en page</string>
+    <string name="canvas_typography_apply_new">Appliquer la nouvelle mise en page</string>
+    <string name="canvas_typography_apply_old">Appliquer la mise en page précédente</string>
+    <string name="canvas_typography_keep">Garder la mise en page actuelle</string>
+    <string name="canvas_typography_compat_warning">Un changement de mise en page peut rendre cette note incompatible avec les anciennes versions de l’application. Revenir à la mise en page précédente ne change que son apparence et ne rétablit pas la compatibilité avec les anciennes versions.</string>
+    <string name="canvas_typography_style_only">Change uniquement l’apparence du contenu actuel ; ne restaure pas les modifications précédentes.</string>
+    <string name="canvas_typography_page">Page %1$d / %2$d</string>
+    <string name="canvas_typography_preview_failed">Impossible de terminer l’aperçu de la nouvelle mise en page. La note n’a pas été modifiée : %s</string>
+    <string name="canvas_typography_stale">La note a changé pendant l’aperçu. Rouvrez l’aperçu ; le document original reste intact.</string>
+    <string name="canvas_typography_previous_page">Page précédente de l’aperçu</string>
+    <string name="canvas_typography_next_page">Page suivante de l’aperçu</string>
+    <string name="canvas_typography_preparing">Préparation de l’aperçu de toutes les pages…</string>
+    <string name="canvas_typography_measurement_failed">La nouvelle mise en page est tronquée ou sa mesure est incomplète.</string>
+    <string name="canvas_typography_save_first">Terminez et enregistrez la modification en cours avant de changer la mise en page.</string>
 </resources>

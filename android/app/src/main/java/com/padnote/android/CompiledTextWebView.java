@@ -38,6 +38,7 @@ final class CompiledTextWebView extends WebView {
     private String lastSource = "";
     private float lastFontSizeSp = 16f;
     private float lastLineHeight = TextFlow.DEFAULT_LINE_HEIGHT;
+    private int lastMarkdownProfileVersion = 1;
     private boolean lastDocumentMode;
     private int settledGeneration = -1;
     private boolean processGone;
@@ -175,17 +176,28 @@ final class CompiledTextWebView extends WebView {
 
     void render(NoteTextBox.Format format, String source, float fontSizeSp,
                 float lineHeight) {
+        render(format, source, fontSizeSp, lineHeight, 1);
+    }
+
+    void render(NoteTextBox.Format format, String source, float fontSizeSp,
+                float lineHeight, int markdownProfileVersion) {
         renderingCancelled = false;
         if (processGone || destroyed) throw new IllegalStateException("失效的显示组件不能重新使用");
+        if ((markdownProfileVersion != 1 && markdownProfileVersion != 2)
+                || ((format == null ? NoteTextBox.Format.LATEX : format) != NoteTextBox.Format.MARKDOWN
+                    && markdownProfileVersion != 1)) {
+            throw new IllegalArgumentException("Invalid Markdown profile for render");
+        }
         renderGeneration += 1;
         settledGeneration = -1;
         lastFormat = format == null ? NoteTextBox.Format.LATEX : format;
         lastSource = source == null ? "" : source;
         lastFontSizeSp = fontSizeSp;
         lastLineHeight = lineHeight;
+        lastMarkdownProfileVersion = markdownProfileVersion;
         lastDocumentMode = false;
         activeInputDigest = inputDigest(lastFormat, lastSource, fontSizeSp, lineHeight,
-                Math.max(0, getWidth()), false);
+                Math.max(0, getWidth()), false, markdownProfileVersion);
         int generation = renderGeneration;
         String digest = activeInputDigest;
         if (lastSource.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
@@ -194,7 +206,8 @@ final class CompiledTextWebView extends WebView {
             return;
         }
         loadDataWithBaseURL(ASSET_BASE,
-                buildHtml(lastFormat, lastSource, fontSizeSp, lineHeight, renderToken(generation, digest)),
+                buildHtml(lastFormat, lastSource, fontSizeSp, lineHeight, markdownProfileVersion,
+                        renderToken(generation, digest)),
                 "text/html", "UTF-8", "about:blank#padnote-" + generation);
         scheduleRenderTimeout(generation, digest);
     }
@@ -202,8 +215,14 @@ final class CompiledTextWebView extends WebView {
     /** Renders an attached offscreen export view and reports a compositor-ready frame. */
     void renderForExport(NoteTextBox.Format format, String source, float fontSizeSp,
                          float lineHeight, ExportReadyListener listener) {
+        renderForExport(format, source, fontSizeSp, lineHeight, 1, listener);
+    }
+
+    void renderForExport(NoteTextBox.Format format, String source, float fontSizeSp,
+                         float lineHeight, int markdownProfileVersion,
+                         ExportReadyListener listener) {
         exportReadyListener = listener;
-        render(format, source, fontSizeSp, lineHeight);
+        render(format, source, fontSizeSp, lineHeight, markdownProfileVersion);
         exportReadyGeneration = renderGeneration;
     }
 
@@ -222,7 +241,7 @@ final class CompiledTextWebView extends WebView {
         lastDocumentMode = true;
         lastSource = markdown == null ? "" : markdown;
         activeInputDigest = inputDigest(NoteTextBox.Format.MARKDOWN, lastSource,
-                16f, 1.55f, Math.max(0, getWidth()), true);
+                16f, 1.55f, Math.max(0, getWidth()), true, 1);
         int generation = renderGeneration;
         String digest = activeInputDigest;
         if (lastSource.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
@@ -239,7 +258,7 @@ final class CompiledTextWebView extends WebView {
     void retryCurrentRender() {
         if (processGone) return;
         if (lastDocumentMode) renderDocument(lastSource);
-        else render(lastFormat, lastSource, lastFontSizeSp, lastLineHeight);
+        else render(lastFormat, lastSource, lastFontSizeSp, lastLineHeight, lastMarkdownProfileVersion);
     }
 
     /**
@@ -494,9 +513,19 @@ final class CompiledTextWebView extends WebView {
     static String inputDigest(NoteTextBox.Format format, String source,
                               float fontSizeSp, float lineHeight,
                               int widthPx, boolean documentMode) {
+        return inputDigest(format, source, fontSizeSp, lineHeight, widthPx, documentMode, 1);
+    }
+
+    static String inputDigest(NoteTextBox.Format format, String source,
+                              float fontSizeSp, float lineHeight,
+                              int widthPx, boolean documentMode, int markdownProfileVersion) {
+        if (markdownProfileVersion != 1 && markdownProfileVersion != 2) {
+            throw new IllegalArgumentException("Invalid Markdown profile for digest");
+        }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            String value = "renderer-v2\n" + documentMode + '\n' + format + '\n'
+            String value = "renderer-v3\n" + documentMode + '\n' + format + '\n'
+                    + markdownProfileVersion + '\n'
                     + fontSizeSp + '\n' + lineHeight + '\n' + widthPx + '\n' + source;
             byte[] hashed = digest.digest(value.getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(32);
@@ -518,12 +547,26 @@ final class CompiledTextWebView extends WebView {
      */
     static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
                             float lineHeight) {
-        return buildHtml(format, source, fontSizeSp, lineHeight, "static");
+        return buildHtml(format, source, fontSizeSp, lineHeight, 1, "static");
+    }
+
+    static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
+                            float lineHeight, int markdownProfileVersion) {
+        return buildHtml(format, source, fontSizeSp, lineHeight, markdownProfileVersion, "static");
     }
 
     private static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
                                     float lineHeight, String token) {
+        return buildHtml(format, source, fontSizeSp, lineHeight, 1, token);
+    }
+
+    private static String buildHtml(NoteTextBox.Format format, String source, float fontSizeSp,
+                                    float lineHeight, int markdownProfileVersion, String token) {
         NoteTextBox.Format safeFormat = format == null ? NoteTextBox.Format.LATEX : format;
+        if ((markdownProfileVersion != 1 && markdownProfileVersion != 2)
+                || (safeFormat != NoteTextBox.Format.MARKDOWN && markdownProfileVersion != 1)) {
+            throw new IllegalArgumentException("Invalid Markdown profile for HTML");
+        }
         String safeSource = source == null ? "" : source;
         // 10-32sp is the range a user may *author* in, but the rendered size also
         // carries the canvas zoom, so a magnified box legitimately asks for more.
@@ -538,7 +581,7 @@ final class CompiledTextWebView extends WebView {
         int mathGap = blockGap + 2;
         int listIndent = Math.round(safeFontSize * 1.5f);
         String body = safeFormat == NoteTextBox.Format.MARKDOWN
-                ? markdownToHtml(safeSource, true)
+                ? markdownToHtml(safeSource, true, markdownProfileVersion)
                 : "<div class=\"latex-root\" data-display=\"1\" data-tex=\"" +
                 escapeHtml(normalizeLatexSource(safeSource)) + "\"></div>";
         return "<!doctype html><html><head><meta charset=\"utf-8\">" +
@@ -561,6 +604,9 @@ final class CompiledTextWebView extends WebView {
                 "px;line-height:1.2;color:#1f2933}h1{font-size:1.55em}h2{font-size:1.32em}" +
                 "h3{font-size:1.16em}h4{font-size:1em}h5,h6{font-size:.92em}" +
                 "p{margin:" + blockGap + "px 0}" +
+                (markdownProfileVersion == 2
+                        ? ".thematic-break{display:block;height:0;border:0;border-top:1px solid #9aa8b5;" +
+                            "margin:" + blockGap + "px 0;box-sizing:content-box}" : "") +
                 "ul,ol{margin:" + blockGap + "px 0;padding-left:" + listIndent + "px}" +
                 "li{margin:0 0 " + Math.max(1, blockGap / 2) + "px}blockquote{margin:" + mathGap + "px 0;padding:" +
                 blockGap + "px 10px;" +
@@ -579,7 +625,8 @@ final class CompiledTextWebView extends WebView {
                 body + "</div><script src=\"katex.min.js\"></script><script>" +
                 "window.__padnoteDiagramExtra=0;window.__padnoteUnclippedExtra=0;" +
                 "document.querySelectorAll('[data-tex]').forEach(function(el){try{" +
-                "katex.render(el.getAttribute('data-tex'),el,{displayMode:el.getAttribute('data-display')==='1'," +
+                "var tex=el.getAttribute('data-tex');if(el.getAttribute('data-bold')==='1')tex='\\\\boldsymbol{'+tex+'}';" +
+                "katex.render(tex,el,{displayMode:el.getAttribute('data-display')==='1'," +
                 "throwOnError:true,strict:'ignore',trust:false,output:'htmlAndMathml'});" +
                 "}catch(error){window.__padnoteError='syntax';el.classList.add('math-error');" +
                 "el.textContent='公式语法有误，可查看源码后编辑并重新显示。';}});" +
@@ -661,6 +708,14 @@ final class CompiledTextWebView extends WebView {
      *                      that output exactly.
      */
     private static String markdownToHtml(String source, boolean mermaidFences) {
+        return markdownToHtml(source, mermaidFences, 1);
+    }
+
+    private static String markdownToHtml(String source, boolean mermaidFences,
+                                         int markdownProfileVersion) {
+        if (markdownProfileVersion != 1 && markdownProfileVersion != 2) {
+            throw new IllegalArgumentException("Invalid Markdown profile");
+        }
         StringBuilder html = new StringBuilder();
         StringBuilder code = new StringBuilder();
         boolean fencedCode = false;
@@ -717,12 +772,16 @@ final class CompiledTextWebView extends WebView {
                 html.append("</ol>");
                 orderedList = false;
             }
+            if (markdownProfileVersion == 2 && isThematicBreak(line)) {
+                html.append("<hr class=\"thematic-break\">");
+                continue;
+            }
             if (isUnordered) {
                 if (!unorderedList) {
                     html.append("<ul>");
                     unorderedList = true;
                 }
-                html.append("<li>").append(markdownInline(unordered.group(1))).append("</li>");
+                html.append("<li>").append(markdownInline(unordered.group(1), markdownProfileVersion)).append("</li>");
                 continue;
             }
             if (isOrdered) {
@@ -734,7 +793,7 @@ final class CompiledTextWebView extends WebView {
                     html.append("<ol start=\"").append(ordered.group(1)).append("\">");
                     orderedList = true;
                 }
-                html.append("<li>").append(markdownInline(ordered.group(2))).append("</li>");
+                html.append("<li>").append(markdownInline(ordered.group(2), markdownProfileVersion)).append("</li>");
                 continue;
             }
             if (line.trim().isEmpty()) {
@@ -744,14 +803,14 @@ final class CompiledTextWebView extends WebView {
             if (heading.matches()) {
                 int level = heading.group(1).length();
                 html.append("<h").append(level).append('>')
-                        .append(markdownInline(heading.group(2)))
+                        .append(markdownInline(heading.group(2), markdownProfileVersion))
                         .append("</h").append(level).append('>');
             } else if (line.startsWith(">")) {
                 html.append("<blockquote>")
-                        .append(markdownInline(line.substring(1).trim()))
+                        .append(markdownInline(line.substring(1).trim(), markdownProfileVersion))
                         .append("</blockquote>");
             } else {
-                html.append("<p>").append(markdownInline(line)).append("</p>");
+                html.append("<p>").append(markdownInline(line, markdownProfileVersion)).append("</p>");
             }
         }
         if (fencedCode) {
@@ -772,6 +831,16 @@ final class CompiledTextWebView extends WebView {
             return "<p></p>";
         }
         return html.toString();
+    }
+
+    static boolean isThematicBreak(String line) {
+        if (line == null) return false;
+        String trimmed = line.trim();
+        if (trimmed.length() < 3) return false;
+        char marker = trimmed.charAt(0);
+        if (marker != '-' && marker != '*' && marker != '_') return false;
+        for (int i = 1; i < trimmed.length(); i++) if (trimmed.charAt(i) != marker) return false;
+        return true;
     }
 
     private static String flattenDisplayMathBlocks(String source) {
@@ -829,6 +898,11 @@ final class CompiledTextWebView extends WebView {
             cursor = formulaEnd + delimiter.close.length();
         }
         return html.toString();
+    }
+
+    private static String markdownInline(String value, int markdownProfileVersion) {
+        return markdownProfileVersion == 1 ? markdownInline(value)
+                : MarkdownV2Parser.inlineToHtml(value);
     }
 
     private static String markdownPlain(String value) {

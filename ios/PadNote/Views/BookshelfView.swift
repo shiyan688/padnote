@@ -316,7 +316,7 @@ struct BookshelfView: View {
             return
         }
         var note = NoteDocument(title: "PadNote 示例：从纸面到电脑")
-        note.textFlows = [NoteTextFlow(format: "markdown", source: "# 人工本地示例\n\n这是一份可编辑的示例笔记，不会自动请求模型或 Agent。\n\n## 手写与提问\n\n用 Apple Pencil 写下思路，再圈选一段内容并提出问题。\n\n## PDF 与分享\n\n导入 PDF 后可以在纸面查看，也可以分享完整笔记。\n\n## 交给电脑 Agent\n\n先明确配对并检查连接，再由你确认要发送的内容；发送后可回到任务页查看。", fontSizeSp: 16, width: 640)]
+        note.textFlows = [NoteTextFlow(format: "markdown", source: "# 人工本地示例\n\n这是一份可编辑的示例笔记，不会自动请求模型或 Agent。\n\n## 手写与提问\n\n用 Apple Pencil 写下思路，再圈选一段内容并提出问题。\n\n## PDF 与分享\n\n导入 PDF 后可以在纸面查看，也可以分享完整笔记。\n\n## 交给电脑 Agent\n\n先明确配对并检查连接，再由你确认要发送的内容；发送后可回到任务页查看。", fontSizeSp: 16, width: 640, markdownProfileVersion: 2)]
         note.pageCount = max(note.pageCount, NoteTextLayout.requiredPageCount(note))
         do {
             try note.validated()

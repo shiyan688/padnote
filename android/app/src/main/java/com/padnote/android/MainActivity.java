@@ -907,6 +907,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     public void onTextBoxesChanged(List<NoteTextBox> textBoxes) {
+        if (canvasView != null && canvasView.consumeDeferredTypographyRemeasureRequired()) {
+            for (NoteTextBoxView view : textBoxViews.values()) {
+                view.invalidateRenderedMeasurements();
+            }
+        }
         updateTextBoxOverlays(textBoxes);
         if (canvasView != null) {
             for (AiEditCardBinding binding : aiEditCards) {
@@ -5294,6 +5299,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                             confirmDeleteTextBox(selected);
                         }
                     }
+
+                    @Override
+                    public void onTypographySwitchRequested(NoteTextBox selected) {
+                        showTypographySwitchPreview(selected);
+                    }
+
+                    @Override
+                    public int defaultMarkdownProfileVersion() {
+                        return canvasView == null ? 1 : canvasView.defaultMarkdownProfileVersion();
+                    }
                 });
                 textBoxViews.put(textBox.id, view);
                 canvasFrame.addView(view, new FrameLayout.LayoutParams(dp(360), dp(180)));
@@ -5356,6 +5371,349 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         view.beginInlineEditing();
         if (pressureView != null) pressureView.setText(R.string.core_inline_edit_hint);
         return true;
+    }
+
+    private void showTypographySwitchPreview(NoteTextBox selected) {
+        if (selected == null || canvasView == null || selected.format != NoteTextBox.Format.MARKDOWN ||
+                selected.flowId == null || selected.flowId.isEmpty()) return;
+        if (saveInFlight || documentRevision != lastSavedRevision ||
+                agentResultAppendInFlight || hasPendingManualDraftClear(currentNoteId)) {
+            Toast.makeText(this, R.string.canvas_typography_save_first, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!commitInlineTextEditorExcept(null) || saveInFlight ||
+                documentRevision != lastSavedRevision) {
+            Toast.makeText(this, R.string.canvas_typography_save_first, Toast.LENGTH_LONG).show();
+            return;
+        }
+        final int targetProfile = selected.effectiveMarkdownProfileVersion() == 2 ? 1 : 2;
+        final NoteCanvasView.TypographySwitchCandidate candidate;
+        try { candidate = canvasView.prepareTypographySwitch(selected.flowId, targetProfile); }
+        catch (Exception failure) {
+            Toast.makeText(this, getString(R.string.canvas_typography_preview_failed,
+                    safeError(failure)), Toast.LENGTH_LONG).show();
+            return;
+        }
+        final int[] previewPageCount = {Math.max(candidate.before.getPageCount(),
+                candidate.after.getPageCount())};
+        final long capturedGeneration = candidate.baseDocumentGeneration;
+        final long capturedEditorRevision = documentRevision;
+        final long capturedEditorSession = editorSessionGeneration;
+        final String capturedNoteId = currentNoteId;
+        final String capturedLineage = currentGroupLineage;
+        final String capturedGroupRevision = currentGroupRevision;
+        final String capturedGroupDigest = currentGroupDigest;
+        final String capturedLegacyDigest = currentLegacyBodySha256;
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int side = dp(20);
+        content.setPadding(side, dp(8), side, dp(8));
+        TextView explanation = text(getString(R.string.canvas_typography_style_only) + "\n" +
+                getString(R.string.canvas_typography_compat_warning),
+                14, SECONDARY_TEXT);
+        content.addView(explanation, matchWrap());
+        TextView pageLabel = text(getString(R.string.canvas_typography_preparing), 13, SECONDARY_TEXT);
+        pageLabel.setTag("padnote.typography-preview.page-label");
+        pageLabel.setGravity(Gravity.CENTER);
+        content.addView(pageLabel, matchWrap());
+        LinearLayout pages = new LinearLayout(this);
+        pages.setOrientation(LinearLayout.VERTICAL);
+        ImageView beforeImage = new ImageView(this);
+        ImageView afterImage = new ImageView(this);
+        beforeImage.setAdjustViewBounds(true);
+        afterImage.setAdjustViewBounds(true);
+        beforeImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        afterImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        pages.addView(beforeImage, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+        pages.addView(afterImage, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+        content.addView(pages, matchWrap());
+        FrameLayout renderHost = new FrameLayout(this);
+        content.addView(renderHost, new LinearLayout.LayoutParams(1, 1));
+        LinearLayout nav = new LinearLayout(this);
+        nav.setGravity(Gravity.CENTER);
+        Button previous = pillButton("‹", BUTTON_PRIMARY);
+        Button next = pillButton("›", BUTTON_PRIMARY);
+        previous.setContentDescription(getString(R.string.canvas_typography_previous_page));
+        next.setContentDescription(getString(R.string.canvas_typography_next_page));
+        nav.addView(previous, new LinearLayout.LayoutParams(dp(56), dp(44)));
+        nav.addView(next, new LinearLayout.LayoutParams(dp(56), dp(44)));
+        content.addView(nav, matchWrap());
+
+        final int[] displayedPage = {0};
+        final int[] imageGeneration = {0};
+        final Bitmap[] beforeBitmap = {null};
+        final Bitmap[] afterBitmap = {null};
+        final boolean[] released = {false};
+        final boolean[] saving = {false};
+        final NoteCanvasView.TypographyPreviewHandle[] previewHandle = {null};
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(targetProfile == 2 ? getString(R.string.canvas_typography_title)
+                        : getString(R.string.canvas_typography_apply_old))
+                .setView(content)
+                .setNegativeButton(R.string.canvas_typography_keep, null)
+                .setPositiveButton(targetProfile == 2 ? R.string.canvas_typography_apply_new
+                        : R.string.canvas_typography_apply_old, null)
+                .create();
+        Runnable cleanup = () -> {
+            released[0] = true;
+            imageGeneration[0]++;
+            if (previewHandle[0] != null) previewHandle[0].cancel();
+            // These bitmaps may still be referenced by the hardware-backed ImageViews.
+            // Detach the views and release our bounded references; stale, never-displayed
+            // callback bitmaps are recycled by renderPageForTypography instead.
+            beforeBitmap[0] = null; afterBitmap[0] = null;
+            beforeImage.setImageDrawable(null); afterImage.setImageDrawable(null);
+            candidate.before.close(); candidate.after.close();
+        };
+        dialog.setOnCancelListener(ignored -> { if (!saving[0]) cleanup.run(); });
+        dialog.setOnDismissListener(ignored -> { if (!released[0]) cleanup.run(); });
+        dialog.show();
+        Button accept = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        accept.setEnabled(false);
+        accept.setOnClickListener(view -> {
+            if (saving[0]) return;
+            if (released[0] || documentRevision != capturedEditorRevision ||
+                    editorSessionGeneration != capturedEditorSession ||
+                    !java.util.Objects.equals(currentNoteId, capturedNoteId) ||
+                    !java.util.Objects.equals(currentGroupLineage, capturedLineage) ||
+                    !java.util.Objects.equals(currentGroupRevision, capturedGroupRevision) ||
+                    !java.util.Objects.equals(currentGroupDigest, capturedGroupDigest) ||
+                !java.util.Objects.equals(currentLegacyBodySha256, capturedLegacyDigest) ||
+                    canvasView.documentGeneration() != capturedGeneration) {
+                Toast.makeText(this, R.string.canvas_typography_stale, Toast.LENGTH_LONG).show();
+                dialog.dismiss();
+                return;
+            }
+            saving[0] = true;
+            accept.setEnabled(false);
+            dialog.setCancelable(false);
+            dialog.setCanceledOnTouchOutside(false);
+            saveTypographyCandidate(candidate, capturedEditorRevision, capturedEditorSession,
+                    capturedNoteId, capturedLineage, capturedGroupRevision, capturedGroupDigest,
+                    capturedLegacyDigest, dialog, cleanup, () -> saving[0] = false);
+        });
+
+        java.util.function.IntConsumer showPage = page -> {
+            if (released[0] || page < 0 || page >= previewPageCount[0]) return;
+            displayedPage[0] = page;
+            int generation = ++imageGeneration[0];
+            previous.setEnabled(false);
+            next.setEnabled(false);
+            accept.setEnabled(false);
+            pageLabel.setText(getString(R.string.canvas_typography_page,
+                    page + 1, previewPageCount[0]) + "\n" +
+                    getString(R.string.canvas_typography_old) + " / " +
+                    getString(R.string.canvas_typography_new));
+            beforeBitmap[0] = null; afterBitmap[0] = null;
+            beforeImage.setImageDrawable(null); afterImage.setImageDrawable(null);
+            boolean hasBefore = page < candidate.before.getPageCount();
+            boolean hasAfter = page < candidate.after.getPageCount();
+            beforeImage.setBackgroundColor(Color.WHITE);
+            afterImage.setBackgroundColor(Color.WHITE);
+            TypographyErrorCallback pageFailure = error -> {
+                if (released[0] || imageGeneration[0] != generation) return;
+                pageLabel.setText(getString(R.string.canvas_typography_preview_failed,
+                        safeError(error)));
+                previous.setEnabled(page > 0);
+                next.setEnabled(page + 1 < previewPageCount[0]);
+                // Keep confirmation disabled after any render error.
+                accept.setEnabled(false);
+            };
+            Runnable pageReady = () -> {
+                if (released[0] || imageGeneration[0] != generation) return;
+                previous.setEnabled(page > 0);
+                next.setEnabled(page + 1 < previewPageCount[0]);
+                accept.setEnabled(true);
+            };
+            if (hasBefore && hasAfter) {
+                renderPageForTypography(candidate.before, page, renderHost, generation,
+                        imageGeneration, released, bitmap -> {
+                            beforeBitmap[0] = bitmap; beforeImage.setImageBitmap(bitmap);
+                            renderPageForTypography(candidate.after, page, renderHost, generation,
+                                    imageGeneration, released, newer -> {
+                                        afterBitmap[0] = newer; afterImage.setImageBitmap(newer);
+                                        pageReady.run();
+                                    }, pageFailure);
+                        }, pageFailure);
+            } else if (hasBefore) {
+                renderPageForTypography(candidate.before, page, renderHost, generation,
+                        imageGeneration, released, bitmap -> {
+                            beforeBitmap[0] = bitmap; beforeImage.setImageBitmap(bitmap);
+                            pageReady.run();
+                        }, pageFailure);
+            } else if (hasAfter) {
+                renderPageForTypography(candidate.after, page, renderHost, generation,
+                        imageGeneration, released, bitmap -> {
+                            afterBitmap[0] = bitmap; afterImage.setImageBitmap(bitmap);
+                            pageReady.run();
+                        }, pageFailure);
+            }
+        };
+        previous.setOnClickListener(view -> showPage.accept(Math.max(0, displayedPage[0] - 1)));
+        next.setOnClickListener(view -> showPage.accept(Math.min(
+                previewPageCount[0] - 1, displayedPage[0] + 1)));
+        previous.setEnabled(false);
+        next.setEnabled(false);
+        previewHandle[0] = canvasView.prepareTypographySwitchPreviewAsync(candidate,
+                renderHost, new NoteCanvasView.TypographyPreparationCallback() {
+                    @Override public void onReady(NoteCanvasView.TypographySwitchCandidate ready) {
+                        if (released[0]) return;
+                        // The preparation handle has already rendered and refined both detached
+                        // full-paper snapshots. Keep the live-document generation and after
+                        // measurement gates here, then render only the page the user opens.
+                        if (canvasView.documentGeneration() != ready.baseDocumentGeneration) {
+                            pageLabel.setText(R.string.canvas_typography_stale);
+                            return;
+                        }
+                        if (!canvasView.validateTypographyMeasurements(ready, ready.after)) {
+                            pageLabel.setText(R.string.canvas_typography_measurement_failed);
+                            return;
+                        }
+                        previewPageCount[0] = Math.max(ready.before.getPageCount(),
+                                ready.after.getPageCount());
+                        showPage.accept(ready.layouts.get(0).pageIndex);
+                    }
+
+                    @Override public void onFailure(Exception error) {
+                        if (!released[0]) pageLabel.setText(getString(
+                                R.string.canvas_typography_preview_failed, safeError(error)));
+                    }
+                });
+    }
+
+    private interface TypographyBitmapCallback { void onBitmap(Bitmap bitmap); }
+    private interface TypographyErrorCallback { void onFailure(Exception error); }
+
+    private void renderPageForTypography(NoteCanvasView.PdfExportSnapshot snapshot, int page,
+            FrameLayout host, int generation, int[] currentGeneration, boolean[] released,
+            TypographyBitmapCallback ready, TypographyErrorCallback failure) {
+        snapshot.renderPageWithTextAsync(page, 1000, host,
+                new NoteCanvasView.PdfExportSnapshot.PageCallback() {
+                    @Override public void onRendered(Bitmap bitmap) {
+                        if (released[0] || currentGeneration[0] != generation) {
+                            if (!bitmap.isRecycled()) bitmap.recycle();
+                            return;
+                        }
+                        try { ready.onBitmap(bitmap); }
+                        catch (RuntimeException error) {
+                            // Ownership transfers before the consumer runs; it may have
+                            // attached the bitmap to an ImageView before throwing.
+                            failure.onFailure(error);
+                        }
+                    }
+                    @Override public void onFailure(Exception error) {
+                        if (!released[0] && currentGeneration[0] == generation) failure.onFailure(error);
+                    }
+                });
+    }
+
+    private void saveTypographyCandidate(NoteCanvasView.TypographySwitchCandidate candidate,
+            long expectedEditorRevision, long expectedEditorSession, String noteId,
+            String lineage, String revision, String digest, String legacyDigest,
+            AlertDialog dialog, Runnable cleanup, Runnable finishSaving) {
+        final NoteCanvasView targetCanvas = canvasView;
+        final String noteTitle = currentNoteTitle;
+        if (saveInFlight || documentRevision != expectedEditorRevision ||
+                editorSessionGeneration != expectedEditorSession ||
+                !java.util.Objects.equals(noteId, currentNoteId) ||
+                !java.util.Objects.equals(lineage, currentGroupLineage) ||
+                !java.util.Objects.equals(revision, currentGroupRevision) ||
+                !java.util.Objects.equals(digest, currentGroupDigest) ||
+                !java.util.Objects.equals(legacyDigest, currentLegacyBodySha256) ||
+                targetCanvas == null || targetCanvas.documentGeneration() != candidate.baseDocumentGeneration) {
+            Toast.makeText(this, R.string.canvas_typography_stale, Toast.LENGTH_LONG).show();
+            if (finishSaving != null) finishSaving.run();
+            dialog.dismiss();
+            return;
+        }
+        final String json;
+        try { json = targetCanvas.typographyCandidateJson(candidate, noteId, noteTitle); }
+        catch (Exception error) {
+            Toast.makeText(this, getString(R.string.canvas_typography_preview_failed,
+                    safeError(error)), Toast.LENGTH_LONG).show();
+            if (finishSaving != null) finishSaving.run();
+            dialog.dismiss();
+            return;
+        }
+        if ((lineage == null || revision == null || digest == null) &&
+                (legacyDigest == null || !legacyDigest.matches("[0-9a-f]{64}"))) {
+            Toast.makeText(this, R.string.tail_save_baseline_invalid_changes_remain_note,
+                    Toast.LENGTH_LONG).show();
+            if (finishSaving != null) finishSaving.run();
+            dialog.dismiss();
+            return;
+        }
+        saveInFlight = true;
+        targetCanvas.setTypographyCasInFlight(true);
+        inFlightDocumentRevision = expectedEditorRevision;
+        handler.removeCallbacks(delayedSave);
+        saveStatusView.setText(R.string.tail_saving);
+        storageExecutor.execute(() -> {
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot grouped = null;
+            NoteStore.VersionedSaveResult legacy = null;
+            Exception failure = null;
+            try {
+                if (lineage != null) {
+                    if (revision == null || digest == null) throw new java.io.IOException("GROUP_BASE_INVALID");
+                    grouped = new NoteGroupFacade(this).saveEditorRevision(noteId, revision,
+                            digest, noteTitle, json);
+                } else {
+                    legacy = NoteStore.saveLegacyIfBodyMatches(this, noteId, noteTitle, json,
+                            legacyDigest);
+                }
+            } catch (Exception error) { failure = error; }
+            final com.padnote.android.streaming.StreamingGroupStore.Snapshot savedGroup = grouped;
+            final NoteStore.VersionedSaveResult savedLegacy = legacy;
+            final Exception saveFailure = failure;
+            runOnUiThread(() -> {
+                if (canvasView != targetCanvas || !java.util.Objects.equals(noteId, currentNoteId) ||
+                        expectedEditorSession != editorSessionGeneration) {
+                    targetCanvas.setTypographyCasInFlight(false);
+                    if (finishSaving != null) finishSaving.run();
+                    return;
+                }
+                if (saveFailure != null || targetCanvas.documentGeneration() !=
+                        candidate.baseDocumentGeneration) {
+                    saveInFlight = false;
+                    inFlightDocumentRevision = -1L;
+                    targetCanvas.setTypographyCasInFlight(false);
+                    saveStatusView.setText(R.string.tail_save_failed_unsaved_changes_retried_exported);
+                    Toast.makeText(this, R.string.canvas_typography_stale, Toast.LENGTH_LONG).show();
+                    if (finishSaving != null) finishSaving.run();
+                    dialog.dismiss();
+                    return;
+                }
+                NoteCanvasView.TextEditResult committed = targetCanvas.commitTypographySwitch(candidate);
+                if (!committed.committed) {
+                    // The durable CAS already succeeded. A generation mismatch here would
+                    // indicate a local mutation escaped the preview guard; do not retry.
+                    saveInFlight = false;
+                    inFlightDocumentRevision = -1L;
+                    targetCanvas.setTypographyCasInFlight(false);
+                    saveStatusView.setText(R.string.tail_save_failed_unsaved_changes_retried_exported);
+                    if (finishSaving != null) finishSaving.run();
+                    dialog.dismiss();
+                    return;
+                }
+                if (savedGroup != null) {
+                    currentGroupLineage = savedGroup.lineage;
+                    currentGroupRevision = savedGroup.revision;
+                    currentGroupDigest = savedGroup.digest;
+                }
+                if (savedLegacy != null) currentLegacyBodySha256 = savedLegacy.bodySha256;
+                saveInFlight = false;
+                inFlightDocumentRevision = -1L;
+                lastSavedRevision = documentRevision;
+                pendingUnsavedJson = null;
+                saveStatusView.setText(R.string.tail_saved_device_ready_reopen);
+                if (cleanup != null) cleanup.run();
+                if (finishSaving != null) finishSaving.run();
+                dialog.dismiss();
+            });
+        });
     }
 
     private boolean hasPendingManualDraftClear(String noteId) {
@@ -9436,8 +9794,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(8), dp(22), 0);
 
-        Spinner presetSpinner = new Spinner(this);
-        ChoiceRows.styleSpinner(presetSpinner);
+        HandoffChoiceSpinner presetSpinner = new HandoffChoiceSpinner(this);
+        presetSpinner.setChoiceTitle(getString(R.string.core_vendor_preset));
         AiConfigStore.VendorPreset[] presets = AiConfigStore.vendorPresets();
         String[] presetLabels = new String[presets.length];
         for (int index = 0; index < presets.length; index++) {
@@ -9456,8 +9814,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         nameInput.setText(current.name);
         content.addView(labeledField(getString(R.string.core_profile_name), nameInput), matchWrap());
 
-        Spinner modeSpinner = new Spinner(this);
-        ChoiceRows.styleSpinner(modeSpinner);
+        HandoffChoiceSpinner modeSpinner = new HandoffChoiceSpinner(this);
+        modeSpinner.setChoiceTitle(getString(R.string.core_route));
         ArrayAdapter<String> modeAdapter = ChoiceRows.spinnerAdapter(modeSpinner,
                 new String[]{getString(R.string.core_direct_multimodal),
                         getString(R.string.core_two_step)});

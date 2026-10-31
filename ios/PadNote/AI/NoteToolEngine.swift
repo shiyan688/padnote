@@ -71,6 +71,16 @@ public final class NoteToolEngine {
 
     public var proposedNote: NoteDocument { proposed }
 
+    public func prepareCurrentLayouts() async throws {
+        var layoutSnapshot = proposed
+        layoutSnapshot.textFlows = proposed.textFlows.filter {
+            $0.format.lowercased() == "markdown" && $0.effectiveMarkdownProfileVersion == 2
+        }
+        guard !layoutSnapshot.textFlows.isEmpty else { return }
+        try await CompiledTextRenderer.shared.prepareAndWait(document: layoutSnapshot)
+        try Task.checkCancellation()
+    }
+
     public func invoke(name: String, callID: String, argumentsJSON: String = "{}",
                        authorization: NoteToolPermission = .readOnly) -> NoteToolResult {
         guard !name.isEmpty, !callID.isEmpty else { return failure("工具名和 callID 不能为空") }
@@ -93,6 +103,88 @@ public final class NoteToolEngine {
         }
         if outcome.mutated { completedCalls.insert(callID) }
         return outcome
+    }
+
+    /// Prepares the exact v2 Markdown input before invoking the synchronous,
+    /// snapshot-only tool implementation. Placement anchors do not affect the
+    /// compiled digest; width, source, font, line height, and profile do.
+    /// Callers must still commit the returned proposal against their live edit
+    /// generation/revision after this async boundary.
+    public func invokePreparingLayout(name: String, callID: String, argumentsJSON: String = "{}",
+                                     authorization: NoteToolPermission = .readOnly) async throws -> NoteToolResult {
+        guard !name.isEmpty, !callID.isEmpty,
+              let data = argumentsJSON.data(using: .utf8),
+              let args = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return invoke(name: name, callID: callID, argumentsJSON: argumentsJSON, authorization: authorization)
+        }
+        guard !completedCalls.contains(callID), authorization >= .createInFreeSpace else {
+            return invoke(name: name, callID: callID, argumentsJSON: argumentsJSON, authorization: authorization)
+        }
+        guard ["write_text", "draw_diagram", "set_text_flow_style", "move_text_flow"].contains(name) else {
+            return invoke(name: name, callID: callID, argumentsJSON: argumentsJSON, authorization: authorization)
+        }
+        try await prepareCurrentLayouts()
+        guard let flow = layoutCandidate(name: name, args: args, authorization: authorization),
+              flow.format.lowercased() == "markdown", flow.effectiveMarkdownProfileVersion == 2 else {
+            return invoke(name: name, callID: callID, argumentsJSON: argumentsJSON, authorization: authorization)
+        }
+        var compilationNote = proposed
+        compilationNote.textFlows = proposed.textFlows.filter {
+            $0.format.lowercased() == "markdown" && $0.effectiveMarkdownProfileVersion == 2 && $0.id != flow.id
+        } + [flow]
+        try await CompiledTextRenderer.shared.prepareAndWait(document: compilationNote)
+        try Task.checkCancellation()
+        return invoke(name: name, callID: callID, argumentsJSON: argumentsJSON, authorization: authorization)
+    }
+
+    private func layoutCandidate(name: String, args: [String: Any],
+                                 authorization: NoteToolPermission) -> NoteTextFlow? {
+        switch name {
+        case "write_text":
+            guard authorization >= .createInFreeSpace,
+                  let source = args["content"] as? String,
+                  !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  source.count <= 100_000 else { return nil }
+            let format = (args["format"] as? String)?.lowercased() ?? "markdown"
+            guard ["markdown", "latex"].contains(format),
+                  let seed = placementSeed(args["placement"] as? [String: Any], content: source, format: format) else { return nil }
+            return NoteTextFlow(format: format, source: source, fontSizeSp: 16, lineHeight: 1.35,
+                width: seed.width, anchorPageIndex: seed.page, anchorXInPage: seed.x, anchorYInPage: seed.y,
+                markdownProfileVersion: format == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
+        case "draw_diagram":
+            guard authorization >= .createInFreeSpace,
+                  let code = args["code"] as? String, validMermaid(code) else { return nil }
+            let source = "```mermaid\n\(code.trimmingCharacters(in: .whitespacesAndNewlines))\n```"
+            guard let seed = placementSeed(args["placement"] as? [String: Any], content: source) else { return nil }
+            return NoteTextFlow(format: "markdown", source: source, fontSizeSp: 16, lineHeight: 1.35,
+                width: seed.width, anchorPageIndex: seed.page, anchorXInPage: seed.x, anchorYInPage: seed.y,
+                markdownProfileVersion: proposed.schemaVersion == 10 ? 2 : nil)
+        case "set_text_flow_style":
+            guard authorization >= .modifyExisting,
+                  let id = args["flowId"] as? String,
+                  let index = proposed.textFlows.firstIndex(where: { $0.id == id }) else { return nil }
+            var flow = proposed.textFlows[index]
+            if let value = args["fontSizeSp"] as? Double, (10...32).contains(value) { flow.fontSizeSp = value }
+            if let value = args["lineHeight"] as? Double, (1.1...2).contains(value) { flow.lineHeight = value }
+            if let value = args["widthDp"] as? Double, value.isFinite, (120...proposed.pageWidth).contains(value) {
+                flow.width = min(value, proposed.pageWidth - flow.anchorXInPage - 16)
+            }
+            return flow
+        case "move_text_flow":
+            guard authorization >= .modifyExisting,
+                  let id = args["flowId"] as? String,
+                  let flow = proposed.textFlows.first(where: { $0.id == id }),
+                  let seed = placementSeed(args["placement"] as? [String: Any], content: flow.source,
+                                           excluding: id, format: flow.format) else { return nil }
+            var moved = flow
+            moved.width = seed.width
+            moved.anchorPageIndex = seed.page
+            moved.anchorXInPage = seed.x
+            moved.anchorYInPage = seed.y
+            return moved
+        default:
+            return nil
+        }
     }
 
     public func describeToolsJSON() -> String {
@@ -165,7 +257,8 @@ public final class NoteToolEngine {
         let snapshot = proposed
         proposed.pageCount = max(proposed.pageCount, resolved.page + 1)
         let flow = NoteTextFlow(format: format, source: content, fontSizeSp: 16, lineHeight: 1.35,
-                                width: resolved.width, anchorPageIndex: resolved.page, anchorXInPage: resolved.x, anchorYInPage: resolved.y)
+                                width: resolved.width, anchorPageIndex: resolved.page, anchorXInPage: resolved.x, anchorYInPage: resolved.y,
+                                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
         proposed.textFlows.append(flow)
         let required = NoteTextLayout.requiredPageCount(proposed)
         guard required <= 500, NoteTextLayout.canFullyLayout(flow, pageHeight: proposed.pageHeight) else { proposed = snapshot; return failure("文字分页超过 500 页") }
@@ -219,7 +312,8 @@ public final class NoteToolEngine {
     }
 
     private struct Resolved { let page: Int; let x: Double; let y: Double; let width: Double; let note: String }
-    private func resolve(_ placement: [String: Any]?, content: String, excluding: String? = nil, format: String = "markdown") -> Resolved? {
+    private func placementSeed(_ placement: [String: Any]?, content: String, excluding: String? = nil,
+                               format: String = "markdown") -> Resolved? {
         guard let placement, Set(placement.keys).isSubset(of: ["relativeTo", "position", "page", "bands", "slot", "widthDp"]) else { return nil }
         if let value = placement["widthDp"], !(value is NSNumber) { return nil }
         let explicitWidth = placement["widthDp"] as? Double
@@ -265,11 +359,24 @@ public final class NoteToolEngine {
         guard resolvedWidth >= 120 else { return nil }
         x = min(max(16, x), proposed.pageWidth - resolvedWidth - 16)
         y = max(40, y)
+        return Resolved(page: page, x: x, y: y, width: resolvedWidth, note: interpretation)
+    }
+
+    private func resolve(_ placement: [String: Any]?, content: String, excluding: String? = nil,
+                         format: String = "markdown") -> Resolved? {
+        guard proposed.textFlows.filter({
+            $0.format.lowercased() == "markdown" && $0.effectiveMarkdownProfileVersion == 2
+        }).allSatisfy({ CompiledTextCache.entry($0) != nil }) else { return nil }
+        guard let seed = placementSeed(placement, content: content, excluding: excluding, format: format) else { return nil }
+        var page = seed.page, y = seed.y
         for _ in 0..<2000 {
             if y >= proposed.pageHeight - 40 { page += 1; y = 40 }
             guard page < 500 else { return nil }
-            var candidate = proposed.textFlows.first(where: { $0.id == excluding }) ?? NoteTextFlow(format: format, source: content)
-            candidate.width = resolvedWidth; candidate.anchorPageIndex = page; candidate.anchorXInPage = x; candidate.anchorYInPage = y
+            var candidate = proposed.textFlows.first(where: { $0.id == excluding }) ?? NoteTextFlow(
+                format: format, source: content,
+                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
+            candidate.width = seed.width; candidate.anchorPageIndex = page
+            candidate.anchorXInPage = seed.x; candidate.anchorYInPage = y
             guard NoteTextLayout.canFullyLayout(candidate, pageHeight: proposed.pageHeight) else { return nil }
             let fragments = NoteTextLayout.fragments(candidate, pageHeight: proposed.pageHeight)
             guard !fragments.isEmpty else { return nil }
@@ -278,7 +385,7 @@ public final class NoteToolEngine {
                 else { page = collision.page + 1; y = 40 }
                 continue
             }
-            return Resolved(page: page, x: x, y: y, width: resolvedWidth, note: interpretation)
+            return Resolved(page: page, x: seed.x, y: y, width: seed.width, note: seed.note)
         }
         return nil
     }

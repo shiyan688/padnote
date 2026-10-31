@@ -7,36 +7,46 @@ final class NoteToolTests: XCTestCase {
         NoteToolEngine(note: note, currentPage: 0, selectionBounds: selection)
     }
 
-    func testReadOnlyDefaultAndCreatePermission() throws {
+    private func invokePrepared(_ engine: NoteToolEngine, name: String, callID: String,
+                                argumentsJSON: String, authorization: NoteToolPermission) async throws -> NoteToolResult {
+        try await engine.invokePreparingLayout(name: name, callID: callID,
+            argumentsJSON: argumentsJSON, authorization: authorization)
+    }
+
+    func testReadOnlyDefaultAndCreatePermission() async throws {
         let e = engine()
         let denied = e.invoke(name: "write_text", callID: "a", argumentsJSON: #"{"content":"hello","placement":{"page":1}}"#)
         XCTAssertFalse(denied.mutated)
         XCTAssertTrue(denied.jsonString.contains("更高权限"))
-        let allowed = e.invoke(name: "write_text", callID: "b", argumentsJSON: #"{"content":"hello","placement":{"page":1}}"#, authorization: .createInFreeSpace)
+        let allowed = try await invokePrepared(e, name: "write_text", callID: "b",
+            argumentsJSON: #"{"content":"hello","placement":{"page":1}}"#, authorization: .createInFreeSpace)
         XCTAssertTrue(allowed.mutated)
         XCTAssertEqual(allowed.proposedNote?.textFlows.count, 1)
     }
 
-    func testNewAITextUsesAvailablePaperWidthUnlessWidthIsExplicit() throws {
+    func testNewAITextUsesAvailablePaperWidthUnlessWidthIsExplicit() async throws {
         let note = NoteDocument(pageWidth: 768, pageHeight: 1086)
-        let automatic = engine(note: note).invoke(name: "write_text", callID: "auto",
-            argumentsJSON: #"{"content":"正文","placement":{"page":1}}"#,
-            authorization: .createInFreeSpace)
+        let automatic = try await invokePrepared(engine(note: note), name: "write_text", callID: "auto",
+            argumentsJSON: #"{"content":"正文","placement":{"page":1}}"#, authorization: .createInFreeSpace)
         let automaticFlow = try XCTUnwrap(automatic.proposedNote?.textFlows.first)
         XCTAssertEqual(automaticFlow.anchorXInPage, 16)
         XCTAssertEqual(automaticFlow.width, 736, "Default AI prose should use the available paper column")
+        XCTAssertEqual(automaticFlow.effectiveMarkdownProfileVersion, 2)
+        XCTAssertNotNil(CompiledTextCache.entry(automaticFlow), "The final resolved width must be compiled before synchronous collision/layout validation")
+        XCTAssertTrue(NoteTextLayout.canFullyLayout(automaticFlow, pageHeight: note.pageHeight))
 
-        let explicit = engine(note: note).invoke(name: "write_text", callID: "narrow",
-            argumentsJSON: #"{"content":"窄栏","placement":{"page":1,"widthDp":240}}"#,
-            authorization: .createInFreeSpace)
-        XCTAssertEqual(explicit.proposedNote?.textFlows.first?.width, 240,
+        let explicit = try await invokePrepared(engine(note: note), name: "write_text", callID: "narrow",
+            argumentsJSON: #"{"content":"窄栏","placement":{"page":1,"widthDp":240}}"#, authorization: .createInFreeSpace)
+        let explicitFlow = try XCTUnwrap(explicit.proposedNote?.textFlows.first)
+        XCTAssertEqual(explicitFlow.width, 240,
             "An explicit width remains an author choice")
+        XCTAssertNotNil(CompiledTextCache.entry(explicitFlow), "An explicit final width needs its own compiled cache entry")
     }
 
-    func testFullWidthAITextMovesBelowInkInsteadOfCoveringIt() throws {
+    func testFullWidthAITextMovesBelowInkInsteadOfCoveringIt() async throws {
         var note = NoteDocument(pageWidth: 768, pageHeight: 1086)
         note.strokes = [InkStroke(points: [InkPoint(x: 20, y: 48), InkPoint(x: 740, y: 74)])]
-        let result = engine(note: note).invoke(name: "write_text", callID: "avoid-ink",
+        let result = try await invokePrepared(engine(note: note), name: "write_text", callID: "avoid-ink",
             argumentsJSON: #"{"content":"AI 正文应避开已有笔迹。","placement":{"page":1}}"#,
             authorization: .createInFreeSpace)
         let flow = try XCTUnwrap(result.proposedNote?.textFlows.first)
@@ -56,22 +66,26 @@ final class NoteToolTests: XCTestCase {
         XCTAssertEqual(modified.proposedNote?.textFlows.first?.width, 222, "Editing style must preserve a legacy or explicit width")
     }
 
-    func testRawCoordinatesRejectedAndDuplicateCallIsIdempotent() throws {
+    func testRawCoordinatesRejectedAndDuplicateCallIsIdempotent() async throws {
         let e = engine()
         let raw = e.invoke(name: "write_text", callID: "raw", argumentsJSON: #"{"content":"x","placement":{"page":1,"x":12}}"#, authorization: .createInFreeSpace)
         XCTAssertFalse(raw.mutated)
         let args = #"{"content":"x","placement":{"page":1,"bands":"3"}}"#
-        XCTAssertTrue(e.invoke(name: "write_text", callID: "same", argumentsJSON: args, authorization: .createInFreeSpace).mutated)
+        let first = try await invokePrepared(e, name: "write_text", callID: "same",
+            argumentsJSON: args, authorization: .createInFreeSpace)
+        XCTAssertTrue(first.mutated)
         let duplicate = e.invoke(name: "write_text", callID: "same", argumentsJSON: args, authorization: .createInFreeSpace)
         XCTAssertFalse(duplicate.mutated)
         XCTAssertEqual(e.proposedNote.textFlows.count, 1)
     }
 
-    func testPlacementAvoidsInkAndReportsPDFBackground() throws {
+    func testPlacementAvoidsInkAndReportsPDFBackground() async throws {
         var note = NoteDocument(title: "PDF", pageCount: 1, pdfPageCount: 1)
         note.strokes = [InkStroke(points: [InkPoint(x: 16, y: 16), InkPoint(x: 300, y: 80)])]
         let e = engine(note: note, selection: CGRect(x: 16, y: 16, width: 284, height: 64))
-        let result = e.invoke(name: "write_text", callID: "pdf", argumentsJSON: #"{"content":"answer","placement":{"relativeTo":"selection","position":"below"}}"#, authorization: .createInFreeSpace)
+        let result = try await invokePrepared(e, name: "write_text", callID: "pdf",
+            argumentsJSON: #"{"content":"answer","placement":{"relativeTo":"selection","position":"below"}}"#,
+            authorization: .createInFreeSpace)
         XCTAssertTrue(result.mutated)
         XCTAssertTrue(result.jsonString.contains("pdfBackground"))
         XCTAssertEqual(result.proposedNote?.textFlows.first?.anchorPageIndex, 1)
@@ -135,14 +149,16 @@ final class NoteToolTests: XCTestCase {
         XCTAssertFalse(engine.describeToolsJSON().contains("search_vault"))
     }
 
-    func testFailedPlacementDoesNotMutateAndSecondPageInkIsAvoided() throws {
+    func testFailedPlacementDoesNotMutateAndSecondPageInkIsAvoided() async throws {
         var note = NoteDocument(title: "分页", pageCount: 2)
         let y = note.pageHeight + note.pageGap + 20
         note.strokes = [InkStroke(points: [InkPoint(x: 16, y: y), InkPoint(x: 300, y: y + 30)])]
         let e = engine(note: note)
         let failed = e.invoke(name: "write_text", callID: "bad", argumentsJSON: #"{"content":"x","placement":{"page":1,"x":12}}"#, authorization: .createInFreeSpace)
         XCTAssertFalse(failed.mutated); XCTAssertEqual(e.proposedNote.textFlows.count, 0); XCTAssertEqual(e.proposedNote.pageCount, 2)
-        let placed = e.invoke(name: "write_text", callID: "good", argumentsJSON: #"{"content":"answer","placement":{"page":2,"slot":"free.largest"}}"#, authorization: .createInFreeSpace)
+        let placed = try await invokePrepared(e, name: "write_text", callID: "good",
+            argumentsJSON: #"{"content":"answer","placement":{"page":2,"slot":"free.largest"}}"#,
+            authorization: .createInFreeSpace)
         XCTAssertTrue(placed.mutated); XCTAssertEqual(placed.proposedNote?.textFlows.first?.anchorPageIndex, 1)
     }
 }

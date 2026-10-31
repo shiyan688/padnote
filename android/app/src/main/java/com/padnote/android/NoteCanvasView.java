@@ -487,7 +487,7 @@ public final class NoteCanvasView extends View {
             view.measure(widthSpec, heightSpec);
             view.layout(0, 0, viewWidth, viewHeight);
             view.renderForExport(box.format, box.displaySource(), box.fontSizeSp,
-                    box.lineHeight, new CompiledTextWebView.ExportReadyListener() {
+                    box.lineHeight, box.effectiveMarkdownProfileVersion(), new CompiledTextWebView.ExportReadyListener() {
                         @Override
                         public void onReady(float measuredHeightPx, float visualHeightPx) {
                             if (closed || activeTextView != view) {
@@ -761,6 +761,135 @@ public final class NoteCanvasView extends View {
         }
     }
 
+    /** Detached, rendered-before-commit candidate for a per-flow typography switch. */
+    static final class TypographySwitchCandidate {
+        final String flowId;
+        final String source;
+        final NoteTextBox.Format format;
+        final int baseProfile;
+        final int targetProfile;
+        final long baseDocumentGeneration;
+        final int baseSchemaVersion;
+        int candidatePageCount;
+        final TextFlow baselineFlow;
+        List<TextFragmentLayout> baselineLayouts;
+        int baselinePageCount;
+        final TextFlow candidateFlow;
+        List<TextFragmentLayout> layouts;
+        PdfExportSnapshot before;
+        PdfExportSnapshot after;
+        boolean measured;
+        boolean accepted;
+
+        TypographySwitchCandidate(String flowId, String source, NoteTextBox.Format format,
+                int baseProfile, int targetProfile, long baseDocumentGeneration,
+                int baseSchemaVersion, int candidatePageCount, TextFlow baselineFlow,
+                List<TextFragmentLayout> baselineLayouts, int baselinePageCount,
+                TextFlow candidateFlow, List<TextFragmentLayout> layouts,
+                PdfExportSnapshot before, PdfExportSnapshot after) {
+            this.flowId = flowId; this.source = source; this.format = format;
+            this.baseProfile = baseProfile; this.targetProfile = targetProfile;
+            this.baseDocumentGeneration = baseDocumentGeneration;
+            this.baseSchemaVersion = baseSchemaVersion;
+            this.candidatePageCount = candidatePageCount;
+            this.baselineFlow = baselineFlow;
+            this.baselineLayouts = new ArrayList<>(baselineLayouts);
+            this.baselinePageCount = baselinePageCount;
+            this.candidateFlow = candidateFlow; this.layouts = layouts;
+            this.before = before; this.after = after;
+        }
+    }
+
+    private static final class DeferredTypographyHeight {
+        final String fragmentId;
+        final String flowId;
+        final int renderLayoutEpoch;
+        final String flowSource;
+        final String fragmentSource;
+        final NoteTextBox.Format format;
+        final int markdownProfileVersion;
+        final float flowWidth;
+        final float fragmentWidth;
+        final float fontSizeSp;
+        final float lineHeight;
+        final float measuredHeightDp;
+
+        DeferredTypographyHeight(NoteTextBox fragment, TextFlow flow, float measuredHeightDp) {
+            fragmentId = fragment.id;
+            flowId = flow.id;
+            renderLayoutEpoch = fragment.renderLayoutEpoch;
+            flowSource = flow.source;
+            fragmentSource = fragment.fragmentSource;
+            format = flow.format;
+            markdownProfileVersion = flow.effectiveMarkdownProfileVersion();
+            flowWidth = flow.width;
+            fragmentWidth = fragment.width;
+            fontSizeSp = flow.fontSizeSp;
+            lineHeight = flow.lineHeight;
+            this.measuredHeightDp = measuredHeightDp;
+        }
+    }
+
+    static final class TypographyPreviewHandle {
+        private final TypographySwitchCandidate candidate;
+        private volatile boolean cancelled;
+        private boolean finished;
+        private volatile PdfExportSnapshot activeSnapshot;
+        TypographyPreviewHandle(TypographySwitchCandidate candidate) {
+            this.candidate = candidate;
+        }
+        void cancel() {
+            PdfExportSnapshot active;
+            synchronized (this) {
+                cancelled = true;
+                active = activeSnapshot;
+                activeSnapshot = null;
+            }
+            if (candidate != null) {
+                candidate.measured = false;
+                closeDistinct(candidate.before, candidate.after, active);
+            } else if (active != null) active.close();
+        }
+        boolean isCancelled() { return cancelled; }
+        synchronized boolean owns(PdfExportSnapshot snapshot) {
+            return !cancelled && !finished && activeSnapshot == snapshot;
+        }
+        synchronized boolean setActive(PdfExportSnapshot snapshot) {
+            if (cancelled || finished) return false;
+            activeSnapshot = snapshot;
+            return true;
+        }
+        synchronized boolean finish() {
+            if (cancelled || finished) return false;
+            finished = true;
+            activeSnapshot = null;
+            return true;
+        }
+        synchronized boolean completeReady(TypographySwitchCandidate value,
+                TypographyPreparationCallback callback) {
+            if (cancelled || finished) return false;
+            finished = true;
+            activeSnapshot = null;
+            value.measured = true;
+            callback.onReady(value);
+            return true;
+        }
+        synchronized void deliverFailure(TypographyPreparationCallback callback, Exception error) {
+            if (!cancelled) callback.onFailure(error);
+        }
+        private static void closeDistinct(PdfExportSnapshot first, PdfExportSnapshot second,
+                PdfExportSnapshot third) {
+            if (first != null) first.close();
+            if (second != null && second != first) second.close();
+            if (third != null && third != first && third != second) third.close();
+        }
+    }
+
+    interface TypographyPreparationCallback {
+        void onReady(TypographySwitchCandidate candidate);
+        void onFailure(Exception error);
+    }
+
     /**
      * Applied to estimated block heights. Reserving slightly more than the
      * measured height keeps content from being clipped when device font metrics
@@ -898,6 +1027,15 @@ public final class NoteCanvasView extends View {
     private int activeGesturePageIndex = 0;
     private int pointCount = 0;
     private long strokeSerial = 0;
+    /** Persisted note-level schema remains stable for legacy notes until an explicit upgrade. */
+    private int noteSchemaVersion = 10;
+    private long documentGeneration;
+    private boolean typographyCasInFlight;
+    private final Map<String, DeferredTypographyHeight> deferredTypographyHeights =
+            new LinkedHashMap<>();
+    private int deferredTypographyHeightLimit;
+    private boolean deferredTypographyHeightOverflow;
+    private boolean deferredTypographyRemeasureRequired;
     private float lastGestureX = 0;
     private float lastGestureY = 0;
     private int pageCount = 1;
@@ -1269,7 +1407,7 @@ public final class NoteCanvasView extends View {
         TextFlow flow = new TextFlow(
                 "flow-" + UUID.randomUUID().toString().replace("-", ""),
                 format, source, 16f, TextFlow.DEFAULT_LINE_HEIGHT, width,
-                pageIndex, x, y - top);
+                pageIndex, x, y - top, null, newMarkdownProfileVersion(format));
         TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(flow.source);
         if (sourceFailure != TextFlowCapacity.Failure.NONE) {
             throw new TextFlowCapacity.Rejection(sourceFailure);
@@ -1344,7 +1482,8 @@ public final class NoteCanvasView extends View {
         RectF freeRegion = pageIndex < pdfPageCount ? null : largestFreeRegion(pageIndex);
         float neededHeight = estimateUnfragmentedFlowHeight(
                 format == null ? NoteTextBox.Format.MARKDOWN : format,
-                normalizedSource, width, 16f, TextFlow.DEFAULT_LINE_HEIGHT);
+                normalizedSource, width, 16f, TextFlow.DEFAULT_LINE_HEIGHT,
+                newMarkdownProfileVersion(format));
         if (freeRegion != null && freeRegion.height() >= neededHeight + gap) {
             y = Math.max(freeRegion.top, anchor.bottom + gap);
             if (y + neededHeight > freeRegion.bottom) {
@@ -1360,7 +1499,7 @@ public final class NoteCanvasView extends View {
                 "flow-ai-" + UUID.randomUUID().toString().replace("-", ""),
                 format == null ? NoteTextBox.Format.MARKDOWN : format,
                 normalizedSource, 16f, TextFlow.DEFAULT_LINE_HEIGHT, width,
-                pageIndex, x, y - top);
+                pageIndex, x, y - top, null, newMarkdownProfileVersion(format));
         int pageCountBeforePreview = pageCount;
         List<TextFragmentLayout> preparedLayouts;
         try {
@@ -1450,8 +1589,10 @@ public final class NoteCanvasView extends View {
         if (width < dp(180) || requestedX < margin || requestedY < margin
                 || requestedX + width > pageWidth - margin || requestedY >= pageHeight - margin)
             throw new IllegalArgumentException("落点或文字宽度超出纸面安全边距");
+        int resultProfile = newMarkdownProfileVersion(NoteTextBox.Format.MARKDOWN);
         TextFlow flow=new TextFlow(flowId,NoteTextBox.Format.MARKDOWN,result,16f,
-                TextFlow.DEFAULT_LINE_HEIGHT,width,anchorPage,requestedX,requestedY,provenance);
+                TextFlow.DEFAULT_LINE_HEIGHT,width,anchorPage,requestedX,requestedY,provenance,
+                resultProfile);
         List<TextFragmentLayout> layouts;
         try {
             layouts=layoutFlow(flow);
@@ -1476,7 +1617,8 @@ public final class NoteCanvasView extends View {
         JSONArray flows=document.optJSONArray("textFlows");
         if(flows==null)flows=new JSONArray();
         flows.put(flow.toJson());
-        document.put("textFlows",flows).put("schemaVersion",9)
+        document.put("textFlows",flows).put("schemaVersion",Math.max(noteSchemaVersion,
+                        provenance == null ? 8 : 9))
                 .put("pageCount",Math.max(originalPageCount,flow.lastLayoutPageCount));
         NoteStore.validateDocument(document);
         return new AgentResultAppendCandidate(document,flowId,false,placement,flow,layouts,
@@ -1559,6 +1701,7 @@ public final class NoteCanvasView extends View {
 
     /** Applies a candidate only after its durable note write has been verified. */
     NoteTextBox commitAgentResultAppend(AgentResultAppendCandidate candidate) {
+        if (typographyCasInFlight) return null;
         if(candidate==null||candidate.alreadyApplied)return null;
         JSONObject document=candidate.document;
         JSONArray flows=document.optJSONArray("textFlows");
@@ -1631,6 +1774,9 @@ public final class NoteCanvasView extends View {
         String normalizedSource = source == null ? "" : source;
         TextFlow candidate = flow.copy();
         candidate.format = normalizedFormat;
+        if (flow.format != normalizedFormat) candidate.setMarkdownProfileVersion(
+                normalizedFormat == NoteTextBox.Format.MARKDOWN
+                        ? newMarkdownProfileVersion(normalizedFormat) : 1);
         candidate.source = normalizedSource;
         candidate.setStyle(TextFlow.clampFontSize(fontSizeSp),
                 TextFlow.clampLineHeight(lineHeight), candidate.width64);
@@ -1724,6 +1870,9 @@ public final class NoteCanvasView extends View {
         }
         TextFlow candidate = flow.copy();
         candidate.format = normalizedFormat;
+        if (flow.format != normalizedFormat) candidate.setMarkdownProfileVersion(
+                normalizedFormat == NoteTextBox.Format.MARKDOWN
+                        ? newMarkdownProfileVersion(normalizedFormat) : 1);
         candidate.source = normalizedSource;
         candidate.setStyle(normalizedFont, normalizedLeading, candidate.width64);
         candidate.clearRenderHeightFailure();
@@ -2313,7 +2462,7 @@ public final class NoteCanvasView extends View {
             replacements.add(new NoteTextBox(fragmentId, flow.id, index, count,
                     flow.format, flow.source, layout.source, flow.fontSizeSp,
                     flow.lineHeight, layout.pageIndex, layout.x, layout.y,
-                    layout.width, layout.height));
+                    layout.width, layout.height, flow.effectiveMarkdownProfileVersion()));
             replacements.get(replacements.size() - 1).renderLayoutEpoch = flow.renderLayoutEpoch;
         }
         textBoxes.addAll(Math.max(0, Math.min(insertionIndex, textBoxes.size())),
@@ -2348,12 +2497,14 @@ public final class NoteCanvasView extends View {
         flow.lastLayoutFailureReason = TextFlow.LayoutFailureReason.NONE;
         float margin = dp(16);
         float width = clamp(flow.width, dp(180), Math.max(dp(180), pageWidth - margin * 2f));
-        List<String> rawBlocks = splitTextFlowBlocks(flow.format, flow.source.trim());
+        int markdownProfileVersion = flow.effectiveMarkdownProfileVersion();
+        List<String> rawBlocks = splitTextFlowBlocks(flow.format, flow.source.trim(), markdownProfileVersion);
         List<String> sourceBlocks = rawBlocks.isEmpty()
                 ? Collections.singletonList("") : rawBlocks;
         List<PaginationBlock> blocks = expandOversizedTextBlocks(flow.format, sourceBlocks, width,
                 flow.fontSizeSp, flow.lineHeight,
-                (pageHeight - margin * 2f) / Math.max(1f, flow.heightCorrection));
+                (pageHeight - margin * 2f) / Math.max(1f, flow.heightCorrection),
+                markdownProfileVersion);
         List<TextFragmentLayout> layouts = new ArrayList<>();
 
         int pageIndex = Math.max(0, flow.anchorPageIndex);
@@ -2390,7 +2541,7 @@ public final class NoteCanvasView extends View {
                 boolean mermaid = flow.format == NoteTextBox.Format.MARKDOWN
                         && block.trim().matches("(?is)^```mermaid\\s.*");
                 float blockHeight = estimateTextBlockHeight(flow.format, block, width,
-                        flow.fontSizeSp, flow.lineHeight, previousKind)
+                        flow.fontSizeSp, flow.lineHeight, previousKind, markdownProfileVersion)
                         * flow.heightCorrection;
                 float measuredMermaid = mermaid ? flow.measuredMermaidHeight(block) : 0f;
                 if (measuredMermaid > 0f) {
@@ -2407,11 +2558,11 @@ public final class NoteCanvasView extends View {
                 }
                 // A heading is part of the section it introduces. If the first
                 // paragraph/formula cannot follow it, move both to the next page.
-                if (blockKindOf(flow.format, block) == BlockKind.HEADING
+                if (blockKindOf(flow.format, block, markdownProfileVersion) == BlockKind.HEADING
                         && blockIndex + 1 < blocks.size()) {
                     float followingHeight = estimateTextBlockHeight(flow.format,
                             blocks.get(blockIndex + 1).source, width, flow.fontSizeSp,
-                            flow.lineHeight, BlockKind.HEADING) * flow.heightCorrection;
+                            flow.lineHeight, BlockKind.HEADING, markdownProfileVersion) * flow.heightCorrection;
                     if (isMermaidBlock(flow.format, blocks.get(blockIndex + 1).source)) {
                         float measuredFollowing = flow.measuredMermaidHeight(
                                 blocks.get(blockIndex + 1).source);
@@ -2466,7 +2617,8 @@ public final class NoteCanvasView extends View {
                             nextEndsSourceBlock) {
                         float nextHeight = estimateTextBlockHeight(flow.format,
                                 nextBlock.source, width, flow.fontSizeSp, flow.lineHeight,
-                                blockKindOf(flow.format, block)) * flow.heightCorrection;
+                                blockKindOf(flow.format, block, markdownProfileVersion),
+                                markdownProfileVersion) * flow.heightCorrection;
                         if (shouldMovePenultimateForWidow(true, usedHeight, blockHeight,
                                 nextHeight, capacity)) {
                             // Move the final two readable units together instead
@@ -2488,7 +2640,7 @@ public final class NoteCanvasView extends View {
                 }
                 fragment.append(block);
                 usedHeight += blockHeight;
-                previousKind = blockKindOf(flow.format, block);
+                previousKind = blockKindOf(flow.format, block, markdownProfileVersion);
                 blockIndex += 1;
                 if (mermaid && blockIndex < blocks.size() && !finalAllowedPage) {
                     // End immediately after the diagram so its ready measurement
@@ -2592,6 +2744,11 @@ public final class NoteCanvasView extends View {
     }
 
     static List<String> splitTextFlowBlocks(NoteTextBox.Format format, String source) {
+        return splitTextFlowBlocks(format, source, 1);
+    }
+
+    static List<String> splitTextFlowBlocks(NoteTextBox.Format format, String source,
+                                            int markdownProfileVersion) {
         List<String> blocks = new ArrayList<>();
         String normalized = source == null ? ""
                 : source.replace("\r\n", "\n").replace('\r', '\n').trim();
@@ -2677,7 +2834,8 @@ public final class NoteCanvasView extends View {
                 continue;
             }
             boolean independentLine = trimmed.startsWith("#") || trimmed.startsWith(">") ||
-                    trimmed.matches("[-*+]\\s+.*") || trimmed.matches("\\d+[.)]\\s+.*");
+                    trimmed.matches("[-*+]\\s+.*") || trimmed.matches("\\d+[.)]\\s+.*") ||
+                    markdownProfileVersion == 2 && CompiledTextWebView.isThematicBreak(line);
             if (independentLine) {
                 flushTextFlowBlock(blocks, current);
                 blocks.add(line);
@@ -2696,15 +2854,21 @@ public final class NoteCanvasView extends View {
     private float estimateUnfragmentedFlowHeight(NoteTextBox.Format format, String source,
                                                   float width, float fontSizeSp,
                                                   float lineHeight) {
+        return estimateUnfragmentedFlowHeight(format, source, width, fontSizeSp, lineHeight, 1);
+    }
+
+    private float estimateUnfragmentedFlowHeight(NoteTextBox.Format format, String source,
+                                                  float width, float fontSizeSp,
+                                                  float lineHeight, int markdownProfileVersion) {
         List<PaginationBlock> blocks = expandOversizedTextBlocks(format,
-                splitTextFlowBlocks(format, source), width, fontSizeSp, lineHeight,
-                pageHeight - dp(32));
+                splitTextFlowBlocks(format, source, markdownProfileVersion), width, fontSizeSp,
+                lineHeight, pageHeight - dp(32), markdownProfileVersion);
         float height = dp(20);
         BlockKind previous = null;
         for (PaginationBlock block : blocks) {
             height += estimateTextBlockHeight(format, block.source, width, fontSizeSp,
-                    lineHeight, previous);
-            previous = blockKindOf(format, block.source);
+                    lineHeight, previous, markdownProfileVersion);
+            previous = blockKindOf(format, block.source, markdownProfileVersion);
         }
         return Math.max(dp(72), height);
     }
@@ -2746,10 +2910,15 @@ public final class NoteCanvasView extends View {
      * heights stay in agreement.
      */
     private enum BlockKind {
-        PARAGRAPH, LIST_ITEM, HEADING, QUOTE, CODE, MATH
+        PARAGRAPH, LIST_ITEM, HEADING, QUOTE, CODE, MATH, THEMATIC_BREAK
     }
 
     private static BlockKind blockKindOf(NoteTextBox.Format format, String source) {
+        return blockKindOf(format, source, 1);
+    }
+
+    private static BlockKind blockKindOf(NoteTextBox.Format format, String source,
+                                         int markdownProfileVersion) {
         String trimmed = source == null ? "" : source.trim();
         if (format == NoteTextBox.Format.LATEX) {
             return BlockKind.MATH;
@@ -2768,6 +2937,9 @@ public final class NoteCanvasView extends View {
         }
         if (trimmed.matches("[-*+]\\s+.*") || trimmed.matches("\\d+[.)]\\s+.*")) {
             return BlockKind.LIST_ITEM;
+        }
+        if (markdownProfileVersion == 2 && CompiledTextWebView.isThematicBreak(trimmed)) {
+            return BlockKind.THEMATIC_BREAK;
         }
         return BlockKind.PARAGRAPH;
     }
@@ -2791,14 +2963,26 @@ public final class NoteCanvasView extends View {
     private float estimateTextBlockHeight(NoteTextBox.Format format, String source,
                                           float width, float fontSizeSp,
                                           float flowLineHeight, BlockKind previous) {
+        return estimateTextBlockHeight(format, source, width, fontSizeSp, flowLineHeight, previous, 1);
+    }
+
+    private float estimateTextBlockHeight(NoteTextBox.Format format, String source,
+                                          float width, float fontSizeSp,
+                                          float flowLineHeight, BlockKind previous,
+                                          int markdownProfileVersion) {
         String normalized = source == null ? "" : source;
         String trimmed = normalized.trim();
-        BlockKind kind = blockKindOf(format, normalized);
+        BlockKind kind = blockKindOf(format, normalized, markdownProfileVersion);
         // Mirrors CompiledTextWebView.buildHtml: block gaps scale with leading.
         float blockGap = Math.max(2f, Math.round(fontSizeSp * (flowLineHeight - 1f) * 0.55f));
 
         if (format == NoteTextBox.Format.MARKDOWN && trimmed.matches("(?is)^```mermaid\\s.*")) {
             return estimateMermaidHeight(trimmed, width, blockGap);
+        }
+
+        if (kind == BlockKind.THEMATIC_BREAK) {
+            // Mirrors the v2 <hr>: a one-pixel rule with explicit vertical margins.
+            return collapsedTopMargin(kind, previous, blockGap) + dp(1f);
         }
 
         if (kind == BlockKind.MATH) {
@@ -3117,6 +3301,13 @@ public final class NoteCanvasView extends View {
                                                              List<String> blocks, float width,
                                                              float fontSizeSp, float lineHeight,
                                                              float capacity) {
+        return expandOversizedTextBlocks(format, blocks, width, fontSizeSp, lineHeight, capacity, 1);
+    }
+
+    private List<PaginationBlock> expandOversizedTextBlocks(NoteTextBox.Format format,
+                                                             List<String> blocks, float width,
+                                                             float fontSizeSp, float lineHeight,
+                                                             float capacity, int markdownProfileVersion) {
         List<PaginationBlock> expanded = new ArrayList<>();
         int nextSyntheticSourceBlock = blocks.size();
         for (int sourceBlock = 0; sourceBlock < blocks.size(); sourceBlock++) {
@@ -3130,7 +3321,7 @@ public final class NoteCanvasView extends View {
                 MarkdownTablePagination.Result table = MarkdownTablePagination.paginate(
                         block, tableCapacity,
                         markdown -> estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
-                                markdown, width, fontSizeSp, lineHeight, null));
+                                markdown, width, fontSizeSp, lineHeight, null, markdownProfileVersion));
                 if (table.status == MarkdownTablePagination.Status.FITS) {
                     expanded.add(new PaginationBlock(block, false, sourceBlock));
                     continue;
@@ -3165,7 +3356,7 @@ public final class NoteCanvasView extends View {
                     trimmed.startsWith("\\[") || trimmed.startsWith("$$") ||
                     trimmed.startsWith("```") || trimmed.contains("\n|");
             if (atomic || estimateTextBlockHeight(format, block, width, fontSizeSp,
-                    lineHeight, null) <= capacity) {
+                    lineHeight, null, markdownProfileVersion) <= capacity) {
                 expanded.add(new PaginationBlock(block, false, sourceBlock));
                 continue;
             }
@@ -3178,7 +3369,7 @@ public final class NoteCanvasView extends View {
                 String readable = line.trim();
                 if (readable.isEmpty()) continue;
                 List<String> pieces = splitReadableLineToFit(readable, width, fontSizeSp,
-                        lineHeight, capacity);
+                        lineHeight, capacity, markdownProfileVersion);
                 for (String piece : pieces) {
                     expanded.add(new PaginationBlock(piece, continuation, sourceBlock));
                     continuation = true;
@@ -3196,9 +3387,15 @@ public final class NoteCanvasView extends View {
     /** Splits only when one authored line itself is taller than a printable page. */
     private List<String> splitReadableLineToFit(String line, float width, float fontSizeSp,
                                                 float lineHeight, float capacity) {
+        return splitReadableLineToFit(line, width, fontSizeSp, lineHeight, capacity, 1);
+    }
+
+    private List<String> splitReadableLineToFit(String line, float width, float fontSizeSp,
+                                                float lineHeight, float capacity,
+                                                int markdownProfileVersion) {
         List<String> pieces = new ArrayList<>();
         if (estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN, line, width,
-                fontSizeSp, lineHeight, null) <= capacity) {
+                fontSizeSp, lineHeight, null, markdownProfileVersion) <= capacity) {
             pieces.add(line);
             return pieces;
         }
@@ -3209,7 +3406,7 @@ public final class NoteCanvasView extends View {
         int cursor = 0;
         while (cursor < line.length()) {
             int maximum = largestFittingTextEnd(line, cursor, width, fontSizeSp,
-                    lineHeight, pieceCapacity);
+                    lineHeight, pieceCapacity, markdownProfileVersion);
             int end = preferredReadableBoundary(line, cursor, maximum);
             if (end <= cursor) end = maximum;
             if (end <= cursor) end = cursor + Character.charCount(line.codePointAt(cursor));
@@ -3223,6 +3420,11 @@ public final class NoteCanvasView extends View {
 
     private int largestFittingTextEnd(String source, int start, float width, float fontSizeSp,
                                       float lineHeight, float capacity) {
+        return largestFittingTextEnd(source, start, width, fontSizeSp, lineHeight, capacity, 1);
+    }
+
+    private int largestFittingTextEnd(String source, int start, float width, float fontSizeSp,
+                                      float lineHeight, float capacity, int markdownProfileVersion) {
         int low = start + 1;
         int high = source.length();
         int best = start;
@@ -3233,7 +3435,7 @@ public final class NoteCanvasView extends View {
                     boundary > start) boundary--;
             String candidate = source.substring(start, boundary).trim();
             float height = estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
-                    candidate, width, fontSizeSp, lineHeight, null);
+                    candidate, width, fontSizeSp, lineHeight, null, markdownProfileVersion);
             if (height <= capacity) {
                 best = boundary;
                 low = probed + 1;
@@ -3468,7 +3670,7 @@ public final class NoteCanvasView extends View {
                                     i,candidate.layouts.size(),candidate.candidateFlow.format,
                                     candidate.candidateFlow.source,layout.source,candidate.candidateFlow.fontSizeSp,
                                     candidate.candidateFlow.lineHeight,layout.pageIndex,layout.x,layout.y,
-                                    layout.width,layout.height))) continue;
+                                    layout.width,layout.height,candidate.candidateFlow.effectiveMarkdownProfileVersion()))) continue;
                             boolean skipped=snapshot.wasCandidateFragmentSkipped(
                                     candidate.flowId+"-preview-"+i);
                             if(skipped || actual > layout.height * 1.01f) {
@@ -3575,7 +3777,7 @@ public final class NoteCanvasView extends View {
                 textCopies.add(new NoteTextBox(incoming.id+"-preview-"+i, incoming.id, i,
                         candidate.layouts.size(), incoming.format, incoming.source, layout.source,
                         incoming.fontSizeSp, incoming.lineHeight, layout.pageIndex, layout.x,
-                        layout.y, layout.width, layout.height));
+                        layout.y, layout.width, layout.height, incoming.effectiveMarkdownProfileVersion()));
             }
             snapshotPageCount=Math.max(snapshotPageCount,candidate.lastPageIndex+1);
             if (candidate.lastPageIndex >= 500) throw new IOException("Agent预览超过最大页数");
@@ -4300,6 +4502,13 @@ public final class NoteCanvasView extends View {
         dispatchSelectionState();
     }
 
+    private int newMarkdownProfileVersion(NoteTextBox.Format format) {
+        NoteTextBox.Format effective = format == null ? NoteTextBox.Format.MARKDOWN : format;
+        return effective == NoteTextBox.Format.MARKDOWN && noteSchemaVersion >= 10 ? 2 : 1;
+    }
+
+    int defaultMarkdownProfileVersion() { return noteSchemaVersion >= 10 ? 2 : 1; }
+
     JSONObject toJsonDocument() throws JSONException {
         return toJsonDocument("note-current", "未命名笔记");
     }
@@ -4309,7 +4518,13 @@ public final class NoteCanvasView extends View {
         JSONObject document = new JSONObject();
         boolean hasAgentResult = false;
         for (TextFlow flow : textFlows.values()) if (flow.agentResult != null) { hasAgentResult = true; break; }
-        document.put("schemaVersion", hasAgentResult ? 9 : 8);
+        int schemaVersion = noteSchemaVersion;
+        if (hasAgentResult) schemaVersion = Math.max(schemaVersion, 9);
+        for (TextFlow flow : textFlows.values()) {
+            if (flow.effectiveMarkdownProfileVersion() == 2) schemaVersion = 10;
+        }
+        noteSchemaVersion = schemaVersion;
+        document.put("schemaVersion", schemaVersion);
         if (pdfPageCount > 0) document.put("pdfPageCount", pdfPageCount);
         document.put("id", noteId);
         document.put("title", title);
@@ -4558,7 +4773,7 @@ public final class NoteCanvasView extends View {
             fragments.add(new NoteTextBox("receipt-" + index, flowId, index,
                     fragmentValues.length(), flow.format, flow.source, flow.source,
                     flow.fontSizeSp, flow.lineHeight, receiptPage, receiptX, receiptY,
-                    receiptWidth, receiptHeight));
+                    receiptWidth, receiptHeight, flow.effectiveMarkdownProfileVersion()));
         }
         record.afterSnapshot = new AiEditSnapshot(baselineFlows, fragments,
                 record.afterPageCount, record.pageEditSerialAtCapture,
@@ -4645,8 +4860,8 @@ public final class NoteCanvasView extends View {
 
     void loadJsonDocument(JSONObject document) throws JSONException {
         ParsedDocument parsed = new ParsedDocument();
-        parsed.schemaVersion = document.optInt("schemaVersion", 0);
-        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 9) {
+        parsed.schemaVersion = NoteStore.schemaVersion(document);
+        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 10) {
             throw new JSONException("Unsupported PadNote schema version");
         }
         parsed.pdfPageCount = document.optInt("pdfPageCount", 0);
@@ -4735,10 +4950,16 @@ public final class NoteCanvasView extends View {
                             throw new JSONException("文字流页码或 ID 无效");
                         }
                     }
-                    if (hasAgentResult && parsed.schemaVersion != 9) {
+                    if (hasAgentResult && parsed.schemaVersion != 9 && parsed.schemaVersion != 10) {
                         throw new JSONException("Agent provenance schema mismatch");
                     }
-                } else if (parsed.schemaVersion == 9) {
+                    if (parsed.schemaVersion < 10) {
+                        for (int i = 0; i < flowArray.length(); i++) {
+                            if (flowArray.getJSONObject(i).has("markdownProfileVersion"))
+                                throw new JSONException("Markdown profile requires schema 10");
+                        }
+                    }
+                } else if (parsed.schemaVersion == 9 || parsed.schemaVersion == 10) {
                     throw new JSONException("Agent provenance schema mismatch");
                 }
             } else {
@@ -4767,6 +4988,8 @@ public final class NoteCanvasView extends View {
         pageHeight = parsed.pageHeight;
         pageGap = parsed.pageGap;
         pageCount = parsed.pageCount;
+        documentGeneration++;
+        noteSchemaVersion = parsed.schemaVersion;
         viewportScale = parsed.viewportScale;
         restoredViewportZoom = parsed.viewportZoom;
         restoreViewportCenter = parsed.restoreViewportCenter;
@@ -6395,7 +6618,8 @@ public final class NoteCanvasView extends View {
         for (TextFlow copy : flowCopies) {
             TextFlow unique = new TextFlow(UUID.randomUUID().toString(), copy.format, copy.source,
                     copy.fontSizeSp64, copy.lineHeight64, copy.width64, copy.anchorPageIndex,
-                    copy.anchorXInPage64, copy.anchorYInPage64, copy.agentResult);
+                    copy.anchorXInPage64, copy.anchorYInPage64, copy.agentResult,
+                    copy.markdownProfileVersion);
             textFlows.put(unique.id, unique);
         }
         pageCount += 1;
@@ -7285,9 +7509,679 @@ public final class NoteCanvasView extends View {
     }
 
     private void notifyDocumentChanged() {
+        documentGeneration++;
         if (listener != null) {
             listener.onDocumentChanged();
         }
+    }
+
+    long documentGeneration() { return documentGeneration; }
+    void setTypographyCasInFlight(boolean value) {
+        boolean wasInFlight = typographyCasInFlight;
+        if (value) {
+            if (!wasInFlight) {
+                deferredTypographyHeights.clear();
+                deferredTypographyHeightLimit = Math.max(128, textBoxes.size() + 128);
+                deferredTypographyHeightOverflow = false;
+            }
+            typographyCasInFlight = true;
+            return;
+        }
+        typographyCasInFlight = false;
+        if (!wasInFlight) return;
+        List<DeferredTypographyHeight> deferred =
+                new ArrayList<>(deferredTypographyHeights.values());
+        boolean overflowed = deferredTypographyHeightOverflow;
+        deferredTypographyHeights.clear();
+        deferredTypographyHeightLimit = 0;
+        deferredTypographyHeightOverflow = false;
+        for (DeferredTypographyHeight measurement : deferred) {
+            if (isDeferredTypographyHeightCurrent(measurement)) {
+                applyMeasuredFragmentHeight(measurement.fragmentId,
+                        measurement.renderLayoutEpoch, measurement.measuredHeightDp);
+            }
+        }
+        if (overflowed) {
+            deferredTypographyRemeasureRequired = true;
+            dispatchTextBoxesChanged();
+        }
+    }
+
+    boolean consumeDeferredTypographyRemeasureRequired() {
+        boolean required = deferredTypographyRemeasureRequired;
+        deferredTypographyRemeasureRequired = false;
+        return required;
+    }
+
+    private boolean isDeferredTypographyHeightCurrent(DeferredTypographyHeight measurement) {
+        if (measurement == null) return false;
+        TextFlow flow = textFlows.get(measurement.flowId);
+        NoteTextBox fragment = findTextBox(measurement.fragmentId);
+        return flow != null && fragment != null && flow.id.equals(fragment.flowId) &&
+                flow.renderLayoutEpoch == measurement.renderLayoutEpoch &&
+                fragment.renderLayoutEpoch == measurement.renderLayoutEpoch &&
+                flow.format == measurement.format && fragment.format == measurement.format &&
+                measurement.flowSource.equals(flow.source) &&
+                measurement.fragmentSource.equals(fragment.fragmentSource) &&
+                flow.effectiveMarkdownProfileVersion() == measurement.markdownProfileVersion &&
+                fragment.effectiveMarkdownProfileVersion() == measurement.markdownProfileVersion &&
+                Float.compare(flow.width, measurement.flowWidth) == 0 &&
+                Float.compare(fragment.width, measurement.fragmentWidth) == 0 &&
+                Float.compare(flow.fontSizeSp, measurement.fontSizeSp) == 0 &&
+                Float.compare(flow.lineHeight, measurement.lineHeight) == 0;
+    }
+
+    TypographySwitchCandidate prepareTypographySwitch(String flowId, int targetProfile)
+            throws IOException {
+        if (Looper.myLooper() != Looper.getMainLooper())
+            throw new IllegalStateException("排版预览必须从主线程准备");
+        ensurePageGeometry();
+        if (isUserInteractionActive() || (targetProfile != 1 && targetProfile != 2))
+            throw new IOException("当前纸面正在编辑，请稍后重试");
+        TextFlow current = textFlows.get(flowId);
+        if (current == null || current.format != NoteTextBox.Format.MARKDOWN)
+            throw new IOException("请选择 Markdown 文字流");
+        int baseProfile = current.effectiveMarkdownProfileVersion();
+        if (targetProfile == baseProfile) throw new IOException("当前已是所选排版");
+        TextFlow candidateFlow = current.copy();
+        candidateFlow.setMarkdownProfileVersion(targetProfile);
+        candidateFlow.clearRenderHeightFailure();
+        candidateFlow.heightCorrection = 1f;
+        candidateFlow.heightCorrectionPasses = 0;
+        candidateFlow.clearMeasuredMermaidHeights();
+        int oldPageCount = pageCount;
+        TextFlow baselineFlow = current.copy();
+        List<TextFragmentLayout> baselineLayouts;
+        List<TextFragmentLayout> layouts;
+        try {
+            baselineLayouts = prepareTextFlowLayouts(baselineFlow);
+            layouts = prepareTextFlowLayouts(candidateFlow);
+        } catch (TextFlowCapacity.Rejection failure) {
+            throw new IOException(localizedLayoutFailureMessage(failure.failure), failure);
+        } finally { pageCount = oldPageCount; }
+        int baselinePageCount = Math.max(oldPageCount, baselineFlow.lastLayoutPageCount);
+        int candidatePageCount = Math.max(oldPageCount, candidateFlow.lastLayoutPageCount);
+        if (baselinePageCount > 500 || candidatePageCount > 500 ||
+                baselineLayouts.isEmpty() || layouts.isEmpty())
+            throw new IOException(getContext().getString(R.string.canvas_typography_measurement_failed));
+        // Safety remains based on the original live paper boxes. Refining this
+        // detached before-layout never expands the collision baseline.
+        validateTypographyLayoutDelta(current.id, findTextFlow(current.id), layouts);
+
+        PdfExportSnapshot before = createTypographyCandidateSnapshot(
+                baselineFlow, baselineLayouts, baselinePageCount);
+        final PdfExportSnapshot after;
+        try { after = createTypographyCandidateSnapshot(candidateFlow, layouts, candidatePageCount); }
+        catch (IOException | RuntimeException failure) {
+            before.close();
+            throw failure;
+        }
+        return new TypographySwitchCandidate(flowId, current.source, current.format,
+                baseProfile, targetProfile, documentGeneration, noteSchemaVersion,
+                candidatePageCount, baselineFlow, baselineLayouts, baselinePageCount,
+                candidateFlow, layouts, before, after);
+    }
+
+    /**
+     * Measures and refines a detached typography candidate before the UI may
+     * enable confirmation. Each refinement lays out the candidate copy again,
+     * rechecks the new footprint against live paper, and rebuilds the complete
+     * candidate snapshot. Live source, anchors, page count, and revision remain
+     * untouched until {@link #commitTypographySwitch(TypographySwitchCandidate)}.
+     */
+    TypographyPreviewHandle prepareTypographySwitchPreviewAsync(
+            TypographySwitchCandidate candidate, FrameLayout host,
+            TypographyPreparationCallback callback) {
+        if (Looper.myLooper() != Looper.getMainLooper())
+            throw new IllegalStateException("排版预览准备必须从主线程启动");
+        if (candidate == null || host == null || callback == null) {
+            if (candidate != null) candidate.measured = false;
+            if (callback != null) callback.onFailure(new IOException(
+                    getContext().getString(R.string.canvas_typography_measurement_failed)));
+            return new TypographyPreviewHandle(candidate);
+        }
+        TypographyPreviewHandle handle = new TypographyPreviewHandle(candidate);
+        candidate.measured = false;
+        prepareTypographyBaselinePass(candidate, host, callback, handle,
+                candidate.before, 0);
+        return handle;
+    }
+
+    private void prepareTypographyBaselinePass(
+            TypographySwitchCandidate candidate, FrameLayout host,
+            TypographyPreparationCallback callback, TypographyPreviewHandle handle,
+            PdfExportSnapshot snapshot, int pass) {
+        if (handle.isCancelled()) return;
+        if (!isTypographyCandidateCurrent(candidate)) {
+            finishTypographyPreparationFailure(candidate, handle, callback,
+                    new IOException(getContext().getString(R.string.canvas_typography_stale)));
+            return;
+        }
+        if (snapshot == null || snapshot.isClosed()) {
+            finishTypographyPreparationFailure(candidate, handle, callback,
+                    new IOException(getContext().getString(
+                            R.string.canvas_typography_measurement_failed)));
+            return;
+        }
+        if (!handle.setActive(snapshot)) return;
+        snapshot.renderPagesWithTextAsync(0, snapshot.getPageCount() - 1, 1000, host,
+                new PdfExportSnapshot.PageSequenceCallback() {
+                    @Override public void onPageRendered(int page, Bitmap bitmap) {
+                        if (!bitmap.isRecycled()) bitmap.recycle();
+                    }
+                    @Override public void onFailure(Exception error) {
+                        if (handle.owns(snapshot))
+                            finishTypographyPreparationFailure(candidate, handle, callback, error);
+                    }
+                    @Override public void onComplete() {
+                        if (!handle.owns(snapshot)) return;
+                        if (!isTypographyCandidateCurrent(candidate)) {
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(getContext().getString(
+                                            R.string.canvas_typography_stale)));
+                            return;
+                        }
+                        Map<String, Float> measured = snapshot.candidateMeasuredWorldHeights();
+                        boolean needsRefinement = false;
+                        float requiredMultiplier = 1f;
+                        for (int i = 0; i < candidate.baselineLayouts.size(); i++) {
+                            TextFragmentLayout layout = candidate.baselineLayouts.get(i);
+                            String id = candidate.flowId + "-typography-preview-" + i;
+                            Float actual = measured.get(id);
+                            if (actual == null || !Float.isFinite(actual) || actual <= 0f ||
+                                    layout.height <= 0f) {
+                                finishTypographyPreparationFailure(candidate, handle, callback,
+                                        new IOException(getContext().getString(
+                                                R.string.canvas_typography_measurement_failed)));
+                                return;
+                            }
+                            boolean skipped = snapshot.wasCandidateFragmentSkipped(id);
+                            if (skipped || actual > layout.height * MEASURED_HEIGHT_TOLERANCE) {
+                                needsRefinement = true;
+                                requiredMultiplier = Math.max(requiredMultiplier,
+                                        actual / layout.height * 1.04f);
+                            }
+                        }
+                        if (!needsRefinement) {
+                            if (!isTypographyCandidateCurrent(candidate)) {
+                                finishTypographyPreparationFailure(candidate, handle, callback,
+                                        new IOException(getContext().getString(
+                                                R.string.canvas_typography_stale)));
+                                return;
+                            }
+                            // Keep this final measured baseline snapshot for the
+                            // comparison preview. It is detached and does not alter
+                            // the live collision/source/CAS baseline.
+                            prepareTypographySwitchPreviewPass(candidate, host, callback,
+                                    handle, candidate.after, 0);
+                            return;
+                        }
+                        if (pass >= MAX_HEIGHT_CORRECTION_PASSES) {
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(getContext().getString(
+                                            R.string.canvas_typography_measurement_failed)));
+                            return;
+                        }
+                        TextFlow flow = candidate.baselineFlow;
+                        flow.heightCorrection = Math.min(MAX_HEIGHT_CORRECTION,
+                                flow.heightCorrection * Math.max(1.02f, requiredMultiplier));
+                        flow.heightCorrectionPasses = pass + 1;
+                        flow.clearMeasuredMermaidHeights();
+                        final List<TextFragmentLayout> relaid;
+                        try {
+                            int savedPageCount = pageCount;
+                            try { relaid = layoutFlow(flow); }
+                            finally { pageCount = savedPageCount; }
+                            TextFlowCapacity.Failure failure = TextFlowCapacity.checkLayout(
+                                    flow.source, flow.lastLayoutPageCount,
+                                    flow.lastLayoutComplete, flow.lastLayoutFailureReason);
+                            if (failure != TextFlowCapacity.Failure.NONE || relaid.isEmpty() ||
+                                    flow.lastLayoutPageCount > 500)
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_measurement_failed));
+                            if (!isTypographyCandidateCurrent(candidate))
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_stale));
+                            candidate.baselineLayouts = new ArrayList<>(relaid);
+                            candidate.baselinePageCount = Math.max(pageCount, flow.lastLayoutPageCount);
+                            if (candidate.baselinePageCount > 500)
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_measurement_failed));
+                            PdfExportSnapshot next = createTypographyCandidateSnapshot(flow,
+                                    candidate.baselineLayouts, candidate.baselinePageCount);
+                            PdfExportSnapshot previous = candidate.before;
+                            candidate.before = next;
+                            if (!handle.setActive(next)) {
+                                next.close();
+                                return;
+                            }
+                            previous.close();
+                            prepareTypographyBaselinePass(candidate, host, callback,
+                                    handle, next, pass + 1);
+                        } catch (Exception error) {
+                            String message = isTypographyCandidateCurrent(candidate)
+                                    ? getContext().getString(
+                                            R.string.canvas_typography_measurement_failed)
+                                    : getContext().getString(R.string.canvas_typography_stale);
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(message, error));
+                        }
+                    }
+                });
+    }
+
+    private void prepareTypographySwitchPreviewPass(
+            TypographySwitchCandidate candidate, FrameLayout host,
+            TypographyPreparationCallback callback, TypographyPreviewHandle handle,
+            PdfExportSnapshot snapshot, int pass) {
+        if (handle.isCancelled()) return;
+        if (!isTypographyCandidateCurrent(candidate)) {
+            finishTypographyPreparationFailure(candidate, handle, callback,
+                    new IOException(getContext().getString(R.string.canvas_typography_stale)));
+            return;
+        }
+        if (snapshot == null || snapshot.isClosed()) {
+            finishTypographyPreparationFailure(candidate, handle, callback,
+                    new IOException(getContext().getString(
+                            R.string.canvas_typography_measurement_failed)));
+            return;
+        }
+        if (!handle.setActive(snapshot)) return;
+        snapshot.renderPagesWithTextAsync(0, snapshot.getPageCount() - 1, 1000, host,
+                new PdfExportSnapshot.PageSequenceCallback() {
+                    @Override public void onPageRendered(int page, Bitmap bitmap) {
+                        if (!bitmap.isRecycled()) bitmap.recycle();
+                    }
+
+                    @Override public void onFailure(Exception error) {
+                        if (handle.owns(snapshot))
+                            finishTypographyPreparationFailure(candidate, handle, callback, error);
+                    }
+
+                    @Override public void onComplete() {
+                        if (!handle.owns(snapshot)) return;
+                        if (!isTypographyCandidateCurrent(candidate)) {
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(getContext().getString(
+                                            R.string.canvas_typography_stale)));
+                            return;
+                        }
+                        Map<String, Float> measured = snapshot.candidateMeasuredWorldHeights();
+                        boolean needsRefinement = false;
+                        float requiredMultiplier = 1f;
+                        for (int i = 0; i < candidate.layouts.size(); i++) {
+                            TextFragmentLayout layout = candidate.layouts.get(i);
+                            String id = candidate.flowId + "-typography-preview-" + i;
+                            Float actual = measured.get(id);
+                            if (actual == null || !Float.isFinite(actual) || actual <= 0f ||
+                                    layout.height <= 0f) {
+                                finishTypographyPreparationFailure(candidate, handle, callback,
+                                        new IOException(getContext().getString(
+                                                R.string.canvas_typography_measurement_failed)));
+                                return;
+                            }
+                            boolean skipped = snapshot.wasCandidateFragmentSkipped(id);
+                            if (skipped || actual > layout.height * MEASURED_HEIGHT_TOLERANCE) {
+                                needsRefinement = true;
+                                requiredMultiplier = Math.max(requiredMultiplier,
+                                        actual / layout.height * 1.04f);
+                            }
+                        }
+                        if (!needsRefinement) {
+                            try {
+                                // The final measured pass always repeats all live-paper
+                                // footprint, collision, crop and PDF ROI checks.
+                                validateTypographyLayoutDelta(candidate.flowId,
+                                        findTextFlow(candidate.flowId), candidate.layouts);
+                            } catch (Exception error) {
+                                finishTypographyPreparationFailure(candidate, handle, callback,
+                                        new IOException(getContext().getString(
+                                                R.string.canvas_typography_measurement_failed), error));
+                                return;
+                            }
+                            if (!isTypographyCandidateCurrent(candidate)) {
+                                finishTypographyPreparationFailure(candidate, handle, callback,
+                                        new IOException(getContext().getString(
+                                                R.string.canvas_typography_stale)));
+                                return;
+                            }
+                            handle.completeReady(candidate, callback);
+                            return;
+                        }
+                        candidate.measured = false;
+                        if (pass >= MAX_HEIGHT_CORRECTION_PASSES) {
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(getContext().getString(
+                                            R.string.canvas_typography_measurement_failed)));
+                            return;
+                        }
+
+                        TextFlow flow = candidate.candidateFlow;
+                        flow.heightCorrection = Math.min(MAX_HEIGHT_CORRECTION,
+                                flow.heightCorrection * Math.max(1.02f, requiredMultiplier));
+                        flow.heightCorrectionPasses = pass + 1;
+                        flow.clearMeasuredMermaidHeights();
+                        final List<TextFragmentLayout> relaid;
+                        try {
+                            int savedPageCount = pageCount;
+                            try { relaid = layoutFlow(flow); }
+                            finally { pageCount = savedPageCount; }
+                            TextFlowCapacity.Failure failure = TextFlowCapacity.checkLayout(
+                                    flow.source, flow.lastLayoutPageCount,
+                                    flow.lastLayoutComplete, flow.lastLayoutFailureReason);
+                            if (failure != TextFlowCapacity.Failure.NONE || relaid.isEmpty() ||
+                                    flow.lastLayoutPageCount > 500)
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_measurement_failed));
+                            validateTypographyLayoutDelta(candidate.flowId,
+                                    findTextFlow(candidate.flowId), relaid);
+                            if (!isTypographyCandidateCurrent(candidate))
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_stale));
+                            int relaidPageCount = Math.max(pageCount, flow.lastLayoutPageCount);
+                            if (relaidPageCount > 500)
+                                throw new IOException(getContext().getString(
+                                        R.string.canvas_typography_measurement_failed));
+                            candidate.layouts = new ArrayList<>(relaid);
+                            candidate.candidatePageCount = relaidPageCount;
+                            PdfExportSnapshot next = createTypographyCandidateSnapshot(flow,
+                                    candidate.layouts, candidate.candidatePageCount);
+                            PdfExportSnapshot previous = candidate.after;
+                            candidate.after = next;
+                            if (!handle.setActive(next)) {
+                                next.close();
+                                return;
+                            }
+                            previous.close();
+                            prepareTypographySwitchPreviewPass(candidate, host, callback,
+                                    handle, next, pass + 1);
+                        } catch (Exception error) {
+                            String message = isTypographyCandidateCurrent(candidate)
+                                    ? getContext().getString(
+                                            R.string.canvas_typography_measurement_failed)
+                                    : getContext().getString(R.string.canvas_typography_stale);
+                            finishTypographyPreparationFailure(candidate, handle, callback,
+                                    new IOException(message, error));
+                        }
+                    }
+                });
+    }
+
+    private void finishTypographyPreparationFailure(TypographySwitchCandidate candidate,
+            TypographyPreviewHandle handle, TypographyPreparationCallback callback,
+            Exception error) {
+        if (!handle.finish()) return;
+        candidate.measured = false;
+        candidate.before.close();
+        if (candidate.after != candidate.before) candidate.after.close();
+        handle.deliverFailure(callback, error);
+    }
+
+    private boolean isTypographyCandidateCurrent(TypographySwitchCandidate candidate) {
+        if (candidate == null || documentGeneration != candidate.baseDocumentGeneration) return false;
+        TextFlow current = textFlows.get(candidate.flowId);
+        return current != null && current.format == candidate.format &&
+                candidate.source.equals(current.source) &&
+                current.effectiveMarkdownProfileVersion() == candidate.baseProfile &&
+                candidate.candidateFlow.effectiveMarkdownProfileVersion() == candidate.targetProfile;
+    }
+
+    private PdfExportSnapshot createTypographyCandidateSnapshot(TextFlow replacement,
+            List<TextFragmentLayout> layouts, int replacementPageCount) throws IOException {
+        List<InkStroke> strokeCopies = new ArrayList<>(strokes.size());
+        for (InkStroke stroke : strokes) strokeCopies.add(stroke.copy());
+        List<NoteImage> imageCopies = new ArrayList<>(images.size());
+        for (NoteImage image : images) imageCopies.add(image.copy(false));
+        List<NoteTextBox> textCopies = new ArrayList<>();
+        for (NoteTextBox box : textBoxes) if (!replacement.id.equals(box.flowId)) textCopies.add(box.copy());
+        for (int i = 0; i < layouts.size(); i++) {
+            TextFragmentLayout layout = layouts.get(i);
+            textCopies.add(new NoteTextBox(replacement.id + "-typography-preview-" + i,
+                    replacement.id, i, layouts.size(), replacement.format, replacement.source,
+                    layout.source, replacement.fontSizeSp, replacement.lineHeight,
+                    layout.pageIndex, layout.x, layout.y, layout.width, layout.height,
+                    replacement.effectiveMarkdownProfileVersion()));
+        }
+        PdfBackground backgroundCopy = pdfBackground == null ? null : pdfBackground.copyFor(this);
+        try {
+            PdfPageGeometry geometry = resolvePdfPageGeometry(backgroundCopy);
+            return new PdfExportSnapshot(this, replacementPageCount, pageWidth, pageHeight,
+                    pageGap, getResources().getDisplayMetrics().density, pageStyle, geometry,
+                    strokeCopies, imageCopies, textCopies, backgroundCopy, replacement.id);
+        } catch (IOException | RuntimeException failure) {
+            if (backgroundCopy != null) backgroundCopy.close();
+            throw failure;
+        }
+    }
+
+    private void validateTypographyLayoutDelta(String flowId, List<NoteTextBox> oldBoxes,
+                                              List<TextFragmentLayout> candidateLayouts)
+            throws IOException {
+        final float safety = dp(4f);
+        Map<Integer, List<RectF>> oldByPage = new LinkedHashMap<>();
+        for (NoteTextBox box : oldBoxes) {
+            oldByPage.computeIfAbsent(box.pageIndex, ignored -> new ArrayList<>())
+                    .add(new RectF(box.x, box.y, box.x + box.width, box.y + box.height));
+        }
+        Map<Integer, List<RectF>> candidateByPage = new LinkedHashMap<>();
+        for (TextFragmentLayout layout : candidateLayouts) {
+            candidateByPage.computeIfAbsent(layout.pageIndex, ignored -> new ArrayList<>())
+                    .add(new RectF(layout.x, layout.y, layout.x + layout.width, layout.y + layout.height));
+        }
+        Map<Integer, List<RectF>> newFootprints = new LinkedHashMap<>();
+        for (Map.Entry<Integer, List<RectF>> entry : candidateByPage.entrySet()) {
+            int page = entry.getKey();
+            List<RectF> oldRects = oldByPage.getOrDefault(page, Collections.emptyList());
+            ArrayList<RectF> delta = new ArrayList<>();
+            for (RectF candidate : entry.getValue()) {
+                delta.addAll(newFootprintRegions(candidate, oldRects, safety));
+            }
+            newFootprints.put(page, delta);
+        }
+
+        for (Map.Entry<Integer, List<RectF>> entry : candidateByPage.entrySet()) {
+            int page = entry.getKey();
+            RectF pageBounds = new RectF(0f, pageTop(page), pageWidth, pageTop(page) + pageHeight);
+            List<RectF> oldRects = oldByPage.getOrDefault(page, Collections.emptyList());
+            for (RectF candidate : entry.getValue()) {
+                if (hasNewOutsideArea(candidate, oldRects, pageBounds))
+                    throw new IOException("新版排版会增加纸面裁切，请先调整文字宽度或内容");
+            }
+
+            if (page < pdfPageCount) {
+                if (pdfBackground == null || !pdfBackground.hasPage(page))
+                    throw new IOException("PDF页面资源不可用，无法安全检查排版");
+                // Force a real PDF ROI decode even when the old typography already
+                // occupied all of the candidate footprint; do not reject old ink.
+                RectF probe = new RectF(entry.getValue().get(0));
+                pdfBackground.hasInkInPageRect(page, toPageLocal(probe, page), pageWidth, pageHeight);
+            }
+            List<RectF> newAreas = newFootprints.getOrDefault(page, Collections.emptyList());
+            if (newAreas.isEmpty()) continue;
+            for (NoteTextBox other : textBoxes) {
+                if (flowId.equals(other.flowId) || other.pageIndex != page) continue;
+                RectF obstacle = new RectF(other.x, other.y, other.x + other.width, other.y + other.height);
+                if (anyIntersects(newAreas, obstacle))
+                    throw new IOException("新版排版会与纸面文字重叠，请先调整落点");
+            }
+            RectF pageWorld = new RectF(0f, pageBounds.top, pageWidth, pageBounds.bottom);
+            for (InkStroke stroke : strokes) {
+                if (stroke.points.isEmpty()) continue;
+                RectF bounds = strokeBounds(stroke, true);
+                if (RectF.intersects(bounds, pageWorld) && anyIntersects(newAreas, bounds))
+                    throw new IOException("新版排版会与手写内容重叠，请先调整落点");
+            }
+            for (NoteImage image : images) {
+                if (image.page != page) continue;
+                RectF obstacle = new RectF(image.x, pageTop(page) + image.y,
+                        image.x + image.width, pageTop(page) + image.y + image.height);
+                if (anyIntersects(newAreas, obstacle))
+                    throw new IOException("新版排版会与图片重叠，请先调整落点");
+            }
+            if (page < pdfPageCount) {
+                for (RectF area : newAreas) {
+                    RectF local = toPageLocal(area, page);
+                    if (pdfBackground.hasInkInPageRect(page, local, pageWidth, pageHeight))
+                        throw new IOException("新版排版会与第" + (page + 1) + "页PDF内容重叠");
+                }
+            }
+        }
+    }
+
+    static List<RectF> newFootprintRegions(RectF candidate, List<RectF> before, float safety) {
+        RectF expanded = new RectF(candidate);
+        expanded.inset(-safety, -safety);
+        ArrayList<RectF> covered = new ArrayList<>(before.size());
+        for (RectF rect : before) { RectF copy = new RectF(rect); copy.inset(-safety, -safety); covered.add(copy); }
+        return uncoveredRects(expanded, covered);
+    }
+
+    static boolean hasNewOutsideArea(RectF candidate, List<RectF> before, RectF pageBounds) {
+        for (RectF delta : uncoveredRects(candidate, before)) {
+            if (delta.left < pageBounds.left || delta.top < pageBounds.top ||
+                    delta.right > pageBounds.right || delta.bottom > pageBounds.bottom) return true;
+        }
+        return false;
+    }
+
+    static List<RectF> uncoveredRects(RectF source, List<RectF> covers) {
+        ArrayList<RectF> pieces = new ArrayList<>();
+        if (source == null || source.isEmpty()) return pieces;
+        pieces.add(new RectF(source));
+        for (RectF cover : covers) {
+            ArrayList<RectF> next = new ArrayList<>();
+            for (RectF piece : pieces) {
+                if (!RectF.intersects(piece, cover)) { next.add(piece); continue; }
+                float left = Math.max(piece.left, cover.left), top = Math.max(piece.top, cover.top);
+                float right = Math.min(piece.right, cover.right), bottom = Math.min(piece.bottom, cover.bottom);
+                if (piece.top < top) next.add(new RectF(piece.left, piece.top, piece.right, top));
+                if (bottom < piece.bottom) next.add(new RectF(piece.left, bottom, piece.right, piece.bottom));
+                if (piece.left < left) next.add(new RectF(piece.left, top, left, bottom));
+                if (right < piece.right) next.add(new RectF(right, top, piece.right, bottom));
+            }
+            pieces = next;
+            if (pieces.isEmpty()) break;
+        }
+        return pieces;
+    }
+
+    private static boolean anyIntersects(List<RectF> regions, RectF obstacle) {
+        if (obstacle == null || !finiteRect(obstacle)) throw new IllegalArgumentException("Invalid collision bounds");
+        for (RectF region : regions) if (RectF.intersects(region, obstacle)) return true;
+        return false;
+    }
+
+    private static boolean finiteRect(RectF rect) {
+        return Float.isFinite(rect.left) && Float.isFinite(rect.top) &&
+                Float.isFinite(rect.right) && Float.isFinite(rect.bottom) && !rect.isEmpty();
+    }
+
+    private RectF toPageLocal(RectF world, int page) {
+        return new RectF(world.left, world.top - pageTop(page), world.right, world.bottom - pageTop(page));
+    }
+
+    boolean validateTypographyMeasurements(TypographySwitchCandidate candidate,
+                                           PdfExportSnapshot snapshot) {
+        if (candidate != null) candidate.measured = false;
+        if (candidate == null || snapshot == null || !candidate.flowId.equals(snapshot.candidateFlowId)
+                || !isTypographyCandidateCurrent(candidate))
+            return false;
+        Map<String, Float> measured = snapshot.candidateMeasuredWorldHeights();
+        for (int i = 0; i < candidate.layouts.size(); i++) {
+            TextFragmentLayout layout = candidate.layouts.get(i);
+            String id = candidate.flowId + "-typography-preview-" + i;
+            Float height = measured.get(id);
+            if (height == null || !Float.isFinite(height) || height <= 0f ||
+                    snapshot.wasCandidateFragmentSkipped(id) ||
+                    height > layout.height * MEASURED_HEIGHT_TOLERANCE)
+                return false;
+        }
+        candidate.measured = true;
+        return true;
+    }
+
+    private void ensureTypographyCandidateSafe(TypographySwitchCandidate candidate)
+            throws IOException {
+        if (candidate == null || !candidate.measured || candidate.accepted ||
+                candidate.after == null || candidate.after.isClosed() ||
+                !isTypographyCandidateCurrent(candidate) || candidate.candidatePageCount < pageCount ||
+                candidate.candidatePageCount > 500 ||
+                !validateTypographyMeasurements(candidate, candidate.after)) {
+            throw new IOException(getContext().getString(R.string.canvas_typography_stale));
+        }
+        try {
+            validateTypographyLayoutDelta(candidate.flowId,
+                    findTextFlow(candidate.flowId), candidate.layouts);
+        } catch (IOException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            throw new IOException(getContext().getString(
+                    R.string.canvas_typography_measurement_failed), error);
+        }
+        if (!isTypographyCandidateCurrent(candidate))
+            throw new IOException(getContext().getString(R.string.canvas_typography_stale));
+    }
+
+    String typographyCandidateJson(TypographySwitchCandidate candidate, String noteId, String title)
+            throws IOException {
+        ensureTypographyCandidateSafe(candidate);
+        try {
+            JSONObject document = new JSONObject(toJsonDocument(noteId, title).toString());
+            JSONArray flows = document.optJSONArray("textFlows");
+            boolean found = false;
+            for (int i = 0; flows != null && i < flows.length(); i++) {
+                JSONObject flow = flows.getJSONObject(i);
+                if (!candidate.flowId.equals(flow.optString("id"))) continue;
+                if (!candidate.source.equals(flow.optString("source")) ||
+                        !"markdown".equals(flow.optString("format")))
+                    throw new IOException(getContext().getString(R.string.canvas_typography_stale));
+                if (candidate.targetProfile == 2) flow.put("markdownProfileVersion", 2);
+                else flow.remove("markdownProfileVersion");
+                found = true;
+                break;
+            }
+            if (!found) throw new IOException(getContext().getString(R.string.canvas_typography_stale));
+            if (candidate.targetProfile == 2) document.put("schemaVersion", 10);
+            document.put("pageCount", candidate.candidatePageCount);
+            NoteStore.validateDocument(document);
+            return NoteJsonCodec.stringify(document);
+        } catch (IOException error) { throw error; }
+        catch (Exception error) {
+            throw new IOException(getContext().getString(
+                    R.string.canvas_typography_measurement_failed), error);
+        }
+    }
+
+    TextEditResult commitTypographySwitch(TypographySwitchCandidate candidate) {
+        if (candidate == null || !candidate.measured || candidate.accepted ||
+                documentGeneration != candidate.baseDocumentGeneration ||
+                isUserInteractionActive()) return TextEditResult.rejected(
+                TextFlowCapacity.Failure.UNPLACEABLE_BLOCK);
+        try { ensureTypographyCandidateSafe(candidate); }
+        catch (IOException | RuntimeException unsafe) {
+            candidate.measured = false;
+            return TextEditResult.rejected(TextFlowCapacity.Failure.UNPLACEABLE_BLOCK);
+        }
+        TextFlow current = textFlows.get(candidate.flowId);
+        if (current == null || current.format != candidate.format ||
+                !current.source.equals(candidate.source) ||
+                current.effectiveMarkdownProfileVersion() != candidate.baseProfile)
+            return TextEditResult.rejected(TextFlowCapacity.Failure.UNPLACEABLE_BLOCK);
+        candidate.accepted = true;
+        typographyCasInFlight = false;
+        deferredTypographyHeights.clear();
+        deferredTypographyHeightLimit = 0;
+        deferredTypographyHeightOverflow = false;
+        deferredTypographyRemeasureRequired = false;
+        pushUndoSnapshot();
+        textFlows.put(candidate.flowId, candidate.candidateFlow);
+        noteSchemaVersion = candidate.targetProfile == 2 ? 10 : candidate.baseSchemaVersion;
+        pageCount = candidate.candidatePageCount;
+        reflowFlow(candidate.candidateFlow, candidate.layouts);
+        dispatchTextBoxesChanged();
+        dispatchSelectionState();
+        notifyDocumentChanged();
+        return TextEditResult.committed();
     }
 
     private float dp(float value) {
@@ -7434,7 +8328,7 @@ public final class NoteCanvasView extends View {
                     "flow-ai-" + UUID.randomUUID().toString().replace("-", ""),
                     format, content, 16f, TextFlow.DEFAULT_LINE_HEIGHT,
                     placement.width, placement.pageIndex, placement.xInPage,
-                    placement.yInPage);
+                    placement.yInPage, null, newMarkdownProfileVersion(format));
             TextFlowCapacity.Failure sourceFailure = TextFlowCapacity.checkSource(content);
             if (sourceFailure != TextFlowCapacity.Failure.NONE) {
                 throw new PlacementResolver.Failure(TextFlowCapacity.message(sourceFailure));
@@ -7563,7 +8457,8 @@ public final class NoteCanvasView extends View {
                                           float lineHeight) {
             ensurePageGeometry();
             TextFlow probe = new TextFlow("probe", format, content, fontSizeSp,
-                    lineHeight, widthDp * densityScale(), 0, dp(16), dp(16));
+                    lineHeight, widthDp * densityScale(), 0, dp(16), dp(16), null,
+                    newMarkdownProfileVersion(format));
             int savedPageCount = pageCount;
             float total = 0f;
             try {
@@ -7619,6 +8514,21 @@ public final class NoteCanvasView extends View {
         TextFlow flow = textFlows.get(fragment.flowId);
         if (flow == null || renderLayoutEpoch != flow.renderLayoutEpoch
                 || renderLayoutEpoch != fragment.renderLayoutEpoch) {
+            return;
+        }
+        if (typographyCasInFlight) {
+            if (!Float.isFinite(measuredHeightDp) || measuredHeightDp <= 0f) return;
+            DeferredTypographyHeight deferred = new DeferredTypographyHeight(
+                    fragment, flow, measuredHeightDp);
+            if (deferredTypographyHeights.containsKey(fragmentId) ||
+                    deferredTypographyHeights.size() < deferredTypographyHeightLimit) {
+                deferredTypographyHeights.put(fragmentId, deferred);
+            } else {
+                // Existing fragments fit within the initial bound. This overflow
+                // can only be newly-created identities during the save; force an
+                // overlay refresh after the failed CAS instead of losing them.
+                deferredTypographyHeightOverflow = true;
+            }
             return;
         }
         float measured = dp(measuredHeightDp);

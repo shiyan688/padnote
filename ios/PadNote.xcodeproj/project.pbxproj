@@ -16,6 +16,10 @@ F00100000000000000000005 /* NoteGroupFacade.swift in Sources */ = { isa = PBXBui
 F00100000000000000000007 /* NoteGroupFacadeTests.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00100000000000000000008; };
 F00300000000000000000001 /* PaperPreviewViewport.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Canvas/PaperPreviewViewport.swift"; sourceTree = "<group>"; };
 F00300000000000000000002 /* PaperPreviewViewport.swift in Sources */ = { isa = PBXBuildFile; fileRef = F00300000000000000000001; };
+F00400000000000000000001 /* TYPOGRAPHY_CASES_R1.json */ = { isa = PBXFileReference; lastKnownFileType = text.json; path = "Fixtures/TYPOGRAPHY_CASES_R1.json"; sourceTree = "<group>"; };
+F00400000000000000000002 /* TYPOGRAPHY_CASES_R1.json in Resources */ = { isa = PBXBuildFile; fileRef = F00400000000000000000001; };
+F00400000000000000000003 /* SHARED_CONTRACT_R1.md */ = { isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "Fixtures/SHARED_CONTRACT_R1.md"; sourceTree = "<group>"; };
+F00400000000000000000004 /* SHARED_CONTRACT_R1.md in Resources */ = { isa = PBXBuildFile; fileRef = F00400000000000000000003; };
 
 00C45FD35CB0F9C5F764F070 /* 00C45FD35CB0F9C5F764F070 */ = {
 		isa = PBXGroup;
@@ -573,6 +577,8 @@ B401D0A1C7E84BA18C11A006 /* LibraryBackupArchiveTests.swift in Sources */ = { is
 			A401D0A1C7E84BA18C11A006 /* LibraryBackupArchiveTests.swift */,
 			F00100000000000000000003 /* NoteGroupStoreTests.swift */,
 			F00100000000000000000008 /* NoteGroupFacadeTests.swift */,
+			F00400000000000000000001 /* TYPOGRAPHY_CASES_R1.json */,
+			F00400000000000000000003 /* SHARED_CONTRACT_R1.md */,
 		);
 		path = PadNoteTests;
 		sourceTree = "<group>";
@@ -1115,6 +1121,8 @@ E01BD5DC60ED8EF476FC92F8 /* E01BD5DC60ED8EF476FC92F8 */ = {
 		buildActionMask = 2147483647;
 		files = (
 			87D78CFC4B3FEF2E53D75CC0 /* 87D78CFC4B3FEF2E53D75CC0 */,
+			F00400000000000000000002 /* TYPOGRAPHY_CASES_R1.json in Resources */,
+			F00400000000000000000004 /* SHARED_CONTRACT_R1.md in Resources */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};

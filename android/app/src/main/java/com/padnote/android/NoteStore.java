@@ -9,6 +9,7 @@ import android.system.OsConstants;
 import android.system.StructStat;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -1317,7 +1318,7 @@ final class NoteStore {
 }
 
     private static JSONObject emptyDocument(String id, String title, long now) throws Exception {
-        return new JSONObject().put("schemaVersion", 8).put("id", id).put("title", title)
+        return new JSONObject().put("schemaVersion", 10).put("id", id).put("title", title)
                 .put("updatedAt", now).put("canvasWidth", 0).put("canvasHeight", 0)
                 .put("pageWidth", 0).put("pageHeight", 0).put("pageGap", 0)
                 .put("pageCount", 1).put("strokes", new JSONArray())
@@ -1602,10 +1603,7 @@ final class NoteStore {
     }
 
     static void validateDocument(JSONObject document) throws Exception {
-        int version = document.optInt("schemaVersion", 0);
-        if (version < 1 || version > 9) {
-            throw new IllegalArgumentException("只支持 PadNote schemaVersion 1 至 9");
-        }
+        int version = schemaVersion(document);
         JSONArray strokes = document.optJSONArray("strokes");
         if (strokes == null) throw new IllegalArgumentException("笔记缺少 strokes 数据");
         int pages = document.optInt("pageCount", 1);
@@ -1637,11 +1635,11 @@ final class NoteStore {
                 while (flowKeyIterator.hasNext()) flowKeys.add(flowKeyIterator.next());
                 Set<String> ordinaryFlowKeys = new HashSet<>(java.util.Arrays.asList("id", "format", "source",
                         "fontSizeSp", "lineHeight", "width", "anchorPageIndex", "anchorXInPage", "anchorYInPage"));
-                Set<String> resultFlowKeys = new HashSet<>(ordinaryFlowKeys);
-                resultFlowKeys.add("agentResult");
-                if ((version == 9 && !flowKeys.equals(ordinaryFlowKeys)
-                        && !flowKeys.equals(resultFlowKeys))
-                        || (version != 9 && flowJson.has("agentResult")))
+                Set<String> allowedFlowKeys = new HashSet<>(ordinaryFlowKeys);
+                if (version >= 9) allowedFlowKeys.add("agentResult");
+                if (version >= 10) allowedFlowKeys.add("markdownProfileVersion");
+                boolean supportedFlowKeys = allowedFlowKeys.containsAll(flowKeys);
+                if (!supportedFlowKeys || (version < 10 && flowJson.has("markdownProfileVersion")))
                     throw new IllegalArgumentException("文字流字段不受支持");
                 TextFlow flow = TextFlow.fromJson(flowJson);
                 if (!flowIds.add(flow.id)) throw new IllegalArgumentException("文字流 ID 重复");
@@ -1663,11 +1661,11 @@ final class NoteStore {
                 requireFinite(box.optDouble("y", 0), "文字位置无效");
             }
         }
-        if (version == 9 && flows == null) {
-            throw new IllegalArgumentException("schemaVersion 9 缺少来源文字流");
+        if ((version == 9 || version == 10) && flows == null) {
+            throw new IllegalArgumentException("schemaVersion 9/10 缺少来源文字流");
         }
-        if (hasAgentResult && version != 9) {
-            throw new IllegalArgumentException("Agent 来源文字流需要 schemaVersion 9");
+        if (hasAgentResult && version != 9 && version != 10) {
+            throw new IllegalArgumentException("Agent 来源文字流需要 schemaVersion 9 或 10");
         }
         JSONArray imageArray = document.optJSONArray("images");
         long imagePixels = 0;
@@ -1691,6 +1689,21 @@ final class NoteStore {
         if (imagePixels > NoteImage.MAX_DOCUMENT_PIXELS ||
                 imageEncoded > NoteImage.MAX_DOCUMENT_ENCODED) {
             throw new IllegalArgumentException("笔记图片超过容量上限");
+        }
+    }
+
+    /** Exact numeric integer schema semantics; booleans, strings and fractions are rejected. */
+    static int schemaVersion(JSONObject document) throws JSONException {
+        Object value = document.opt("schemaVersion");
+        if (!(value instanceof Number)) throw new JSONException("Invalid PadNote schema version");
+        try {
+            int version = new java.math.BigDecimal(value.toString()).intValueExact();
+            if (version < 1 || version > 10) throw new JSONException("Unsupported PadNote schema version");
+            return version;
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            JSONException exception = new JSONException("Invalid PadNote schema version");
+            exception.initCause(invalid);
+            throw exception;
         }
     }
 

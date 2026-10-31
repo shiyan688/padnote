@@ -5,6 +5,23 @@ import { extname, join } from 'node:path';
 const projectRoot = new URL('../', import.meta.url).pathname;
 const jsonFiles = [];
 
+function assertAndroidStringResource(source, key, resourceFiles) {
+  const reference = `R.string.${key}`;
+  if (!source.includes(reference)) {
+    throw new Error(`Android UI must reference localized resource ${reference}`);
+  }
+  for (const [locale, resourceFile] of Object.entries(resourceFiles)) {
+    const path = join(projectRoot, 'android/app/src/main/res', locale, resourceFile);
+    if (!existsSync(path)) {
+      throw new Error(`Missing Android string resource file: ${locale}/${resourceFile}`);
+    }
+    const xml = readFileSync(path, 'utf8');
+    if (!new RegExp(`<string\\s+name="${key}"(?:\\s|>)`).test(xml)) {
+      throw new Error(`Missing localized Android string resource: ${locale}/${key}`);
+    }
+  }
+}
+
 function walk(directory) {
   for (const name of readdirSync(directory)) {
     if (directory === join(projectRoot, 'tools/hermes') && name === '.runtime') continue;
@@ -124,13 +141,13 @@ for (const requiredToken of ['getHistoricalPressure', 'getPressure', 'TOOL_TYPE_
   'viewportScale', 'bottomPullDistance', 'addPageInternal', 'pageCount',
   'nextPageRevealFraction', 'nextPageCommitFraction', 'animateViewportBackToDocument',
   'textBoxes', 'NoteTextBox.Format', 'resizeTextBox',
-  'turningTowardEarlierPages', '向上翻页 · 1:1 跟手',
+  'turningTowardEarlierPages', 'R.string.canvas_turn_earlier',
   'isNewPageCreationPullActive', 'Spring-back is reserved', 'Tool.TEXT',
   'onTextInsertRequested', 'addTextBoxAt', 'commitNewTextBox', 'discardNewTextBox',
-  'addAiResultTextBox', 'AI 回答已自动跨页排版',
+  'addAiResultTextBox', 'R.string.canvas_ai_flow_done',
   'onTextBoxSelectionChanged', 'selectTextBoxInsideLasso', 'textBoxIntersectsLasso',
   'reflowFlow', 'layoutFlow', 'splitTextFlowBlocks', 'expandOversizedTextBlocks',
-  'flowCount', 'fontSizeSp', 'schemaVersion", 8',
+  'flowCount', 'fontSizeSp', 'schemaVersion", 10',
   // schema 5: flows are the fact source, fragments are derived
   'textFlows', 'migrateLegacyTextBoxes', 'rebuildAllFlows',
   'anchorPageIndex', 'anchorForDraggedFragment', 'previewTextBoxDrag',
@@ -147,6 +164,12 @@ for (const requiredToken of ['getHistoricalPressure', 'getPressure', 'TOOL_TYPE_
     throw new Error(`Android ink implementation is missing required token: ${requiredToken}`);
   }
 }
+assertAndroidStringResource(androidCanvasSource, 'canvas_turn_earlier', {
+  values: 'strings_canvas.xml', 'values-zh-rCN': 'strings_canvas.xml'
+});
+assertAndroidStringResource(androidCanvasSource, 'canvas_ai_flow_done', {
+  values: 'strings_canvas.xml', 'values-zh-rCN': 'strings_canvas.xml'
+});
 
 const compiledTextSource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/CompiledTextWebView.java'), 'utf8');
@@ -180,11 +203,14 @@ for (const requiredToken of ['onInterceptTouchEvent', 'onResize', 'dispatchDraw'
   'beginInlineEditing', 'sourceEditor', 'LIVE_PREVIEW_DELAY_MS',
   'listener.onCommit', 'InputMethodManager', 'selectedDeleteButton',
   'fontDecreaseButton', 'fontIncreaseButton', 'draftFontSizeSp',
-  '删除这个文字框', 'listener.onDelete']) {
+  'R.string.widget_delete_this_box', 'listener.onDelete']) {
   if (!textObjectSource.includes(requiredToken)) {
     throw new Error(`PPT-style text object is missing required token: ${requiredToken}`);
   }
 }
+assertAndroidStringResource(textObjectSource, 'widget_delete_this_box', {
+  values: 'strings_widgets.xml', 'values-zh-rCN': 'strings_widgets.xml'
+});
 const textModelSource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/NoteTextBox.java'), 'utf8');
 for (const requiredToken of ['flowId', 'flowIndex', 'flowCount', 'fragmentSource',
@@ -310,11 +336,18 @@ for (const requiredToken of ['HttpsURLConnection', 'image_url', 'chat/completion
   }
 }
 
+const typedProjectionSource = readFileSync(join(projectRoot,
+  'android/app/src/main/java/com/padnote/android/TypedNoteTimeProjection.java'), 'utf8');
+if (!typedProjectionSource.includes('markdownProfileVersion')) {
+  throw new Error('Typed note projection must preserve the Markdown profile field');
+}
+
 const noteStoreSource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/NoteStore.java'), 'utf8');
 for (const requiredToken of ['padnote-index.json', 'legacyMigrated', 'importDocument',
-  'writeAtomic', 'MAX_NOTE_BYTES', 'schemaVersion", 6',
-  'version < 1 || version > 8', 'textFlows']) {
+  'writeAtomic', 'MAX_NOTE_BYTES', 'schemaVersion", 10',
+  'version < 1 || version > 10', 'version >= 10', 'version < 10 && flowJson.has("markdownProfileVersion")',
+  'textFlows']) {
   if (!noteStoreSource.includes(requiredToken)) {
     throw new Error(`Multi-note store is missing required token: ${requiredToken}`);
   }
@@ -324,23 +357,62 @@ const androidActivitySource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/MainActivity.java'), 'utf8');
 for (const requiredToken of ['ACTION_OPEN_DOCUMENT', 'ACTION_CREATE_DOCUMENT',
   'showBookshelf', 'openNote', 'launchExportNote', 'aiOutputInline',
-  'presentAiAnswer', 'handleAiCardResize', 'aiCardWidthDp', '写入页面', '仅卡片',
+  'presentAiAnswer', 'handleAiCardResize', 'aiCardWidthDp', 'R.string.core_ai_write_mode_detail', 'R.string.core_ai_only_card',
   // profile manager + split route session state
   'showAiManagerDialog', 'showProfileEditorDialog', 'aiSessionTranscript',
-  'startTranscriptionLeg', 'startAnswerLeg', '两段式',
+  'startTranscriptionLeg', 'startAnswerLeg', 'R.string.core_two_step_help',
   // the registry is built in onCreate so vault readers get the store
-  'NoteTools.createDefault(vaultStore)',
+  'NoteTools.createDefault()',
   // discoverability: onboarding card, vault guide, shared pill-button system
-  'pillButton', 'addFirstRunGuideCard', 'showVaultGuideDialog', '三步上手',
+  'pillButton', 'addFirstRunGuideCard', 'showVaultGuideDialog', 'R.string.core_guide_title',
   // vault digitization: whole-note Markdown knowledge base
-  'DIGITIZE_SYSTEM_PROMPT', 'renderVaultSection', 'startDigitizationForCurrentNote',
-  'showVaultReader', 'mergePageContent', 'launchExportVaultFile',
+  'renderVaultSection', 'startDigitizationForCurrentNote',
+  'showVaultReader', 'launchExportVaultFile',
   // taste rules live outside the model: design language doc + press feedback
   'applyPressFeedback',
   // covers: preset library + per-note cover file convention
-  'CoverStore', 'showCoverPicker', 'setOnLongClickListener', '加入预设']) {
+  'CoverStore', 'showCoverPicker', 'setOnLongClickListener', 'R.string.cover_preset_add_button',
+  'R.string.core_ai_answer_written_flow_notice']) {
   if (!androidActivitySource.includes(requiredToken)) {
     throw new Error(`Bookshelf activity is missing required token: ${requiredToken}`);
+  }
+}
+assertAndroidStringResource(androidActivitySource, 'core_ai_write_mode_detail', {
+  values: 'strings_core_more.xml', 'values-zh-rCN': 'strings_core_more.xml'
+});
+for (const key of ['core_ai_only_card', 'core_two_step_help', 'core_guide_title']) {
+  assertAndroidStringResource(androidActivitySource, key, {
+    values: 'strings.xml', 'values-zh-rCN': 'strings_core.xml'
+  });
+}
+assertAndroidStringResource(androidActivitySource, 'cover_preset_add_button', {
+  values: 'strings_covers.xml', 'values-zh-rCN': 'strings_covers.xml'
+});
+assertAndroidStringResource(androidActivitySource, 'core_ai_answer_written_flow_notice', {
+  values: 'strings_core_more.xml', 'values-zh-rCN': 'strings_core_more.xml'
+});
+
+const digitizationSource = readFileSync(join(projectRoot,
+  'android/app/src/main/java/com/padnote/android/DigitizationController.java'), 'utf8');
+for (const requiredToken of ['private static final String PROMPT', 'transcriber.transcribe',
+  'mergePageContent', 'vault.publishDigitization']) {
+  if (!digitizationSource.includes(requiredToken)) {
+    throw new Error(`Note digitization controller is missing required token: ${requiredToken}`);
+  }
+}
+
+for (const [source, requiredTokens, label] of [
+  [textFlowSource, ['version != 1 && version != 2', 'version == 2 && format != NoteTextBox.Format.MARKDOWN',
+    'if (markdownProfileVersion == 2) json.put("markdownProfileVersion", 2)',
+    '? parseMarkdownProfileVersion(json.opt("markdownProfileVersion")) : 1',
+    'json.has("markdownProfileVersion") && format != NoteTextBox.Format.MARKDOWN'], 'Markdown profile serialization'],
+  [typedProjectionSource, ['schema==10&&f.has("markdownProfileVersion")',
+    'markdown_profile_requires_schema10'], 'typed projection schema-10 gating']
+]) {
+  for (const requiredToken of requiredTokens) {
+    if (!source.includes(requiredToken)) {
+      throw new Error(`${label} is missing required token: ${requiredToken}`);
+    }
   }
 }
 

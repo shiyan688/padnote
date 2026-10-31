@@ -45,6 +45,8 @@ final class TextFlow {
     final AgentResultProvenance agentResult;
     NoteTextBox.Format format;
     String source;
+    /** Omitted from JSON for the legacy/default profile 1. */
+    int markdownProfileVersion = 1;
     /** Canonical persisted values; float members below are Android layout projections. */
     double fontSizeSp64;
     double lineHeight64;
@@ -91,10 +93,19 @@ final class TextFlow {
     TextFlow(String id, NoteTextBox.Format format, String source, double fontSizeSp,
              double lineHeight, double width, int anchorPageIndex, double anchorXInPage,
              double anchorYInPage, AgentResultProvenance agentResult) {
+        this(id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex,
+                anchorXInPage, anchorYInPage, agentResult, 1);
+    }
+
+    TextFlow(String id, NoteTextBox.Format format, String source, double fontSizeSp,
+             double lineHeight, double width, int anchorPageIndex, double anchorXInPage,
+             double anchorYInPage, AgentResultProvenance agentResult,
+             int markdownProfileVersion) {
         this.id = id;
         this.agentResult = agentResult;
         this.format = format == null ? NoteTextBox.Format.LATEX : format;
         this.source = source == null ? "" : source;
+        setMarkdownProfileVersion(markdownProfileVersion);
         this.fontSizeSp64 = clampFontSize64(fontSizeSp);
         this.lineHeight64 = clampLineHeight64(lineHeight);
         this.width64 = Math.max(80d, finite(width, "width"));
@@ -156,9 +167,21 @@ final class TextFlow {
         projectPersistentValues();
     }
 
+    int effectiveMarkdownProfileVersion() {
+        return format == NoteTextBox.Format.MARKDOWN ? markdownProfileVersion : 1;
+    }
+
+    void setMarkdownProfileVersion(int version) {
+        if ((version != 1 && version != 2) || (version == 2 && format != NoteTextBox.Format.MARKDOWN)) {
+            throw new IllegalArgumentException("Invalid Markdown profile for text flow");
+        }
+        markdownProfileVersion = version;
+    }
+
     TextFlow copy() {
         TextFlow duplicate = new TextFlow(id, format, source, fontSizeSp64, lineHeight64,
-                width64, anchorPageIndex, anchorXInPage64, anchorYInPage64, agentResult);
+                width64, anchorPageIndex, anchorXInPage64, anchorYInPage64, agentResult,
+                markdownProfileVersion);
         duplicate.heightCorrection = heightCorrection;
         duplicate.heightCorrectionPasses = heightCorrectionPasses;
         duplicate.lastLayoutComplete = lastLayoutComplete;
@@ -232,6 +255,7 @@ final class TextFlow {
         json.put("anchorPageIndex", anchorPageIndex);
         json.put("anchorXInPage", anchorXInPage64);
         json.put("anchorYInPage", anchorYInPage64);
+        if (markdownProfileVersion == 2) json.put("markdownProfileVersion", 2);
         if (agentResult != null) json.put("agentResult", agentResult.toJson());
         return json;
     }
@@ -247,17 +271,40 @@ final class TextFlow {
         }
         AgentResultProvenance provenance = json.has("agentResult")
                 ? AgentResultProvenance.fromJson(json.getJSONObject("agentResult")) : null;
+        NoteTextBox.Format format = NoteTextBox.Format.fromStorage(json.optString("format", "latex"));
+        int markdownProfileVersion = json.has("markdownProfileVersion")
+                ? parseMarkdownProfileVersion(json.opt("markdownProfileVersion")) : 1;
+        if (json.has("markdownProfileVersion") && format != NoteTextBox.Format.MARKDOWN) {
+            throw new JSONException("Markdown profile is only valid for Markdown flows");
+        }
         return new TextFlow(
                 id,
-                NoteTextBox.Format.fromStorage(json.optString("format", "latex")),
+                format,
                 source,
                 clampFontSize64(finite(json.optDouble("fontSizeSp", 16), "fontSizeSp")),
                 clampLineHeight64(finite(json.optDouble("lineHeight", DEFAULT_LINE_HEIGHT), "lineHeight")),
                 Math.max(80d, finite(json.optDouble("width", 360), "width")),
                 Math.max(0, json.optInt("anchorPageIndex", 0)),
                 finite(json.optDouble("anchorXInPage", 0), "anchorXInPage"),
-                finite(json.optDouble("anchorYInPage", 0), "anchorYInPage"), provenance
+                finite(json.optDouble("anchorYInPage", 0), "anchorYInPage"), provenance,
+                markdownProfileVersion
         );
+    }
+
+    private static int parseMarkdownProfileVersion(Object value) throws JSONException {
+        if (!(value instanceof Number)) throw new JSONException("Invalid Markdown profile value");
+        try {
+            return new java.math.BigDecimal(value.toString()).intValueExact() == 2 ? 2
+                    : invalidMarkdownProfile();
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            JSONException exception = new JSONException("Invalid Markdown profile value");
+            exception.initCause(invalid);
+            throw exception;
+        }
+    }
+
+    private static int invalidMarkdownProfile() throws JSONException {
+        throw new JSONException("Invalid Markdown profile value");
     }
 
 }

@@ -22,9 +22,9 @@ final class WelcomeNoteFactory {
 
         JSONObject flow = new TextFlow(
                 UUID.randomUUID().toString(), NoteTextBox.Format.MARKDOWN, markdown,
-                16.0, 1.35, 688.0, 0, 16.0, 40.0).toJson();
+                16.0, 1.35, 688.0, 0, 16.0, 40.0, null, 2).toJson();
         JSONObject document = new JSONObject()
-                .put("schemaVersion", 8)
+                .put("schemaVersion", 10)
                 .put("id", "welcome-template")
                 .put("title", title.trim())
                 .put("updatedAt", now)

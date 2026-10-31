@@ -61,7 +61,10 @@ final class LibraryBackupArchiveTests: XCTestCase {
                     NoteCoverStore(directory: base.appendingPathComponent("covers", isDirectory: true)), journals)
         }
         let (library, vault, taskVideos, restored, presets, covers, journals) = makeStores("first")
-        let note = NoteDocument(title: "grouped video backup")
+        var note = NoteDocument(title: "grouped video backup")
+        let typographyFlow = NoteTextFlow(id: "archived-profile-2", format: "markdown",
+            source: "**before $x^2$ after**\n\n---", markdownProfileVersion: 2)
+        note.textFlows = [typographyFlow]
         try library.save(note)
         let localID = try NoteGroupFacade.foundationUUID(note.id)
         let associationURL = root.appendingPathComponent("association.json")
@@ -117,6 +120,8 @@ final class LibraryBackupArchiveTests: XCTestCase {
         XCTAssertEqual(restoredVideo.sourceNoteID, note.id)
         let restoredMetadataBefore = try Data(contentsOf: restored2.metadataURL(for: restoredVideo))
         let copiedNote = try XCTUnwrap(library2.notes.first)
+        XCTAssertEqual(copiedNote.schemaVersion, 10)
+        XCTAssertEqual(copiedNote.textFlows, [typographyFlow], "archive restore must keep sparse profile 2 and exact source bytes")
         let secondMedia = Data([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 9, 8, 7, 6])
         let secondSource = root.appendingPathComponent("verified-original-after-restore.mp4")
         try secondMedia.write(to: secondSource)
@@ -189,6 +194,9 @@ final class LibraryBackupArchiveTests: XCTestCase {
             presetStore: presets3, coverStore: covers3, journalRoot: journals3)
         let preview3 = try await restore3.inspect(archiveTwo, stagingRoot: root.appendingPathComponent("stage-three", isDirectory: true))
         try await restore3.restore(preview3)
+        let copiedNoteAgain = try XCTUnwrap(library3.notes.first)
+        XCTAssertEqual(copiedNoteAgain.schemaVersion, 10)
+        XCTAssertEqual(copiedNoteAgain.textFlows, [typographyFlow], "rebackup/restore must not normalize or drop profile metadata")
         let thirdVideos = try restored3.listing()
         XCTAssertEqual(thirdVideos.count, 2)
         XCTAssertEqual(Set(try thirdVideos.map { try LibraryBackupArchive.hashFile(restored3.fileURL(for: $0)).sha256 }),
@@ -548,7 +556,28 @@ final class LibraryBackupArchiveTests: XCTestCase {
             groupSHA256: String(repeating: "a", count: 64), bodySHA256: resource.sha256, timestamps: [])]
         let encoded = try JSONEncoder().encode(manifest)
         XCTAssertNoThrow(try LibraryBackupArchive.validateManifestJSON(encoded))
+        let manifestText = String(decoding: encoded, as: UTF8.self)
+        let schemaAsDecimal = Data(manifestText.replacingOccurrences(of: "\"note_schema_version\":10",
+            with: "\"note_schema_version\":10.0").utf8)
+        XCTAssertNotEqual(schemaAsDecimal, encoded, "fixture must exercise the numeric-equivalent wire spelling")
+        XCTAssertNoThrow(try LibraryBackupArchive.validateManifestJSON(schemaAsDecimal),
+                         "note schema accepts integral JSON number values independent of lexical spelling")
+        let schemaAsExponent = Data(manifestText.replacingOccurrences(of: "\"note_schema_version\":10",
+            with: "\"note_schema_version\":1e1").utf8)
+        XCTAssertNoThrow(try LibraryBackupArchive.validateManifestJSON(schemaAsExponent))
+        let fractionalNoteSchema = Data(manifestText.replacingOccurrences(of: "\"note_schema_version\":10",
+            with: "\"note_schema_version\":10.5").utf8)
+        XCTAssertThrowsError(try LibraryBackupArchive.validateManifestJSON(fractionalNoteSchema))
+        let unknownNoteSchema = Data(manifestText.replacingOccurrences(of: "\"note_schema_version\":10",
+            with: "\"note_schema_version\":11").utf8)
+        XCTAssertThrowsError(try LibraryBackupArchive.validateManifestJSON(unknownNoteSchema))
         XCTAssertNoThrow(try LibraryBackupArchive.validate(manifest: manifest), "v2 remains a read/copy format without update authority")
+        var badSchemaManifest = manifest
+        badSchemaManifest.notes = [LibraryBackupManifest.Note(itemID: item.itemID, sourceNoteID: item.sourceNoteID,
+            sourceRevisionMS: item.sourceRevisionMS, schemaVersion: 11, noteResourceID: item.noteResourceID,
+            pdfResourceID: nil, coverResourceID: nil, vaultEntryIDs: [], videoAttachmentIDs: [])]
+        XCTAssertThrowsError(try LibraryBackupArchive.validate(manifest: badSchemaManifest),
+                             "archive manifests reject unsupported note schema declarations")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         var bad = object
         var profiles = try XCTUnwrap(bad["update_profiles"] as? [[String: Any]])

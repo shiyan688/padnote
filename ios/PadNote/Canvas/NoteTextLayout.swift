@@ -21,7 +21,11 @@ enum NoteTextLayout {
         if let compiled = CompiledTextCache.entry(flow) {
             return compiledFragments(compiled.units, flow: flow, pageHeight: pageHeight)
         }
-        let key = "\(flow.id)|\(flow.format)|\(flow.fontSizeSp)|\(flow.lineHeight)|\(flow.width)|\(flow.anchorPageIndex)|\(flow.anchorXInPage)|\(flow.anchorYInPage)|\(pageHeight)|\(flow.source)" as NSString
+        // A profile-2 flow must never fall back to the profile-1 CoreText
+        // approximation. Keep it absent until its matching WebKit compilation
+        // has completed; failures are surfaced by CompiledTextRenderer.
+        guard flow.effectiveMarkdownProfileVersion == 1 || flow.format.lowercased() != "markdown" else { return [] }
+        let key = "\(flow.id)|\(flow.format)|profile:\(flow.effectiveMarkdownProfileVersion)|\(flow.fontSizeSp)|\(flow.lineHeight)|\(flow.width)|\(flow.anchorPageIndex)|\(flow.anchorXInPage)|\(flow.anchorYInPage)|\(pageHeight)|\(flow.source)" as NSString
         if let value = cache.object(forKey: key) { return value.fragments }
         let text = attributed(flow)
         guard text.length > 0 else { return [] }
@@ -79,6 +83,10 @@ enum NoteTextLayout {
 
     static func canFullyLayout(_ flow: NoteTextFlow, pageHeight: Double) -> Bool {
         let result = fragments(flow, pageHeight: pageHeight)
+        if flow.format.lowercased() == "markdown" && flow.effectiveMarkdownProfileVersion == 2 {
+            guard let compiled = CompiledTextCache.entry(flow) else { return false }
+            return result.count == compiled.units.count
+        }
         if let compiled = CompiledTextCache.entry(flow) { return result.count == compiled.units.count }
         return result.reduce(0) { $0 + $1.text.length } == attributed(flow).length
     }

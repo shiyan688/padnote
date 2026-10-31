@@ -13,10 +13,12 @@ private final class MathTextRenderModel: ObservableObject {
     private var originalSource = ""
     private var fontSize = 16.0
     private var format = "markdown"
+    private var markdownProfileVersion = 1
     private var width = 320.0
     private var requestGeneration = 0
 
-    func update(source: String, fontSize: Double, format: String, width: Double) async {
+    func update(source: String, fontSize: Double, format: String, width: Double,
+                markdownProfileVersion: Int = 1) async {
         if source != originalSource {
             originalSource = source
             displaySource = source
@@ -24,6 +26,7 @@ private final class MathTextRenderModel: ObservableObject {
         }
         self.fontSize = fontSize
         self.format = format
+        self.markdownProfileVersion = markdownProfileVersion
         self.width = max(240, min(1200, width))
         await render(retry: false)
     }
@@ -52,7 +55,8 @@ private final class MathTextRenderModel: ObservableObject {
         failure = nil
         let flow = NoteTextFlow(id: "preview-\(owner)", format: format, source: displaySource,
                                 fontSizeSp: max(10, min(32, fontSize)), lineHeight: 1.55,
-                                width: width, anchorPageIndex: 0, anchorXInPage: 0, anchorYInPage: 0)
+                                width: width, anchorPageIndex: 0, anchorXInPage: 0, anchorYInPage: 0,
+                                markdownProfileVersion: format.lowercased() == "markdown" && markdownProfileVersion == 2 ? 2 : nil)
         do {
             let output = try await CompiledTextRenderer.shared.renderPreview(flow: flow, owner: owner, retry: retry)
             guard generation == requestGeneration, !Task.isCancelled else { return }
@@ -78,16 +82,18 @@ public struct MathTextView: View {
     public var source: String
     public var fontSize: Double
     public var format: String
+    public var markdownProfileVersion: Int
     @StateObject private var model = MathTextRenderModel()
     @State private var showingSource = false
     @State private var showingEditor = false
     @State private var editBuffer = ""
     @State private var availableWidth = 320.0
 
-    public init(source: String, fontSize: Double = 16, format: String = "markdown") {
+    public init(source: String, fontSize: Double = 16, format: String = "markdown", markdownProfileVersion: Int = 1) {
         self.source = source
         self.fontSize = fontSize
         self.format = format
+        self.markdownProfileVersion = markdownProfileVersion
     }
 
     public var body: some View {
@@ -130,14 +136,15 @@ public struct MathTextView: View {
             Color.clear.onAppear { availableWidth = Double(proxy.size.width) }
                 .onChange(of: proxy.size.width) { _, value in availableWidth = Double(value) }
         })
-        .task(id: "\(source)|\(fontSize)|\(format)|\(Int(availableWidth.rounded()))") {
+        .task(id: "\(source)|\(fontSize)|\(format)|profile:\(markdownProfileVersion)|\(Int(availableWidth.rounded()))") {
             // Geometry can publish several intermediate widths while a sheet
             // or split view settles. Only the stable width should enter the
             // shared WebKit queue.
             do { try await Task.sleep(nanoseconds: 120_000_000) }
             catch { return }
             guard !Task.isCancelled else { return }
-            await model.update(source: source, fontSize: fontSize, format: format, width: availableWidth)
+            await model.update(source: source, fontSize: fontSize, format: format, width: availableWidth,
+                               markdownProfileVersion: markdownProfileVersion)
         }
         .onDisappear { model.cancel() }
         .sheet(isPresented: $showingSource) {

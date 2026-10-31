@@ -69,6 +69,47 @@ final class PdfBackground {
 
     boolean hasPage(int index) { return index >= 0 && index < renderer.getPageCount(); }
 
+    /** Fail-closed synchronous ink probe for a paper-local ROI used by typography migration. */
+    synchronized boolean hasInkInPageRect(int index, RectF pageRect,
+                                          float paperWidth, float paperHeight) throws IOException {
+        if (closeRequested.get() || closed || !hasPage(index) || pageRect == null ||
+                !Float.isFinite(paperWidth) || !Float.isFinite(paperHeight) ||
+                paperWidth <= 0f || paperHeight <= 0f || pageRect.isEmpty() ||
+                !Float.isFinite(pageRect.left) || !Float.isFinite(pageRect.top) ||
+                !Float.isFinite(pageRect.right) || !Float.isFinite(pageRect.bottom)) {
+            throw new IOException("PDF页面区域无法验证");
+        }
+        Bitmap bitmap = pages.get(index);
+        if (bitmap == null || bitmap.isRecycled()) {
+            try {
+                bitmap = render(index);
+                pages.put(index, bitmap);
+            } catch (RuntimeException failure) {
+                throw new IOException("PDF页面区域无法验证", failure);
+            }
+        }
+        float scale = Math.min(paperWidth / bitmap.getWidth(), paperHeight / bitmap.getHeight());
+        if (!Float.isFinite(scale) || scale <= 0f) throw new IOException("PDF页面区域无法验证");
+        float left = (paperWidth - bitmap.getWidth() * scale) / 2f;
+        float top = (paperHeight - bitmap.getHeight() * scale) / 2f;
+        int x0 = Math.max(0, (int) Math.floor((pageRect.left - left) / scale));
+        int y0 = Math.max(0, (int) Math.floor((pageRect.top - top) / scale));
+        int x1 = Math.min(bitmap.getWidth(), (int) Math.ceil((pageRect.right - left) / scale));
+        int y1 = Math.min(bitmap.getHeight(), (int) Math.ceil((pageRect.bottom - top) / scale));
+        if (x1 <= x0 || y1 <= y0) return false;
+        int[] row = new int[x1 - x0];
+        for (int y = y0; y < y1; y++) {
+            bitmap.getPixels(row, 0, row.length, x0, y, row.length, 1);
+            for (int pixel : row) {
+                int alpha = Color.alpha(pixel);
+                int luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 +
+                        Color.blue(pixel) * 114) / 1000;
+                if (alpha > 8 && luminance < 250) return true;
+            }
+        }
+        return false;
+    }
+
     private synchronized Bitmap render(int index) {
         if (closed) throw new IllegalStateException("PDF 已关闭");
         try (PdfRenderer.Page page = renderer.openPage(index)) {

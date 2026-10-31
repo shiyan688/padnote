@@ -125,4 +125,21 @@
     <string name="core_manual_draft_input_limit">此次编辑超过本地草稿 1,000,000 字符上限，整次输入已拒绝，原有文字保持不变。</string>
     <string name="core_manual_draft_cleanup_failed">恢复草稿尚未清除，仍保留在本机。可从笔记“更多”菜单重试。</string>
     <string name="canvas_pdf_page_size_invalid">PDF 纸张尺寸无效或超出导出范围。请保留原笔记文件，并使用较小的纸张尺寸重试。</string>
+    <string name="canvas_typography_switch">切换排版</string>
+    <string name="canvas_typography_title">预览当前内容的新排版</string>
+    <string name="canvas_typography_old">旧版排版</string>
+    <string name="canvas_typography_new">新版排版</string>
+    <string name="canvas_typography_apply_new">应用新版排版</string>
+    <string name="canvas_typography_apply_old">应用旧版排版</string>
+    <string name="canvas_typography_keep">保留当前排版</string>
+    <string name="canvas_typography_compat_warning">切换排版后，较旧版本的应用可能无法打开这篇笔记。切回旧版排版只会改变显示样式，不会恢复与旧版本的兼容性。</string>
+    <string name="canvas_typography_style_only">只切换当前内容的显示样式，不恢复历史编辑。</string>
+    <string name="canvas_typography_page">第 %1$d / %2$d 页</string>
+    <string name="canvas_typography_preview_failed">无法完成新版排版预览，笔记未更改：%s</string>
+    <string name="canvas_typography_stale">预览期间笔记已变化，请重新打开预览；原稿未更改。</string>
+    <string name="canvas_typography_previous_page">排版预览上一页</string>
+    <string name="canvas_typography_next_page">排版预览下一页</string>
+    <string name="canvas_typography_preparing">正在准备整本笔记的预览…</string>
+    <string name="canvas_typography_measurement_failed">新版排版发生裁切或未能完成测高。</string>
+    <string name="canvas_typography_save_first">请先完成并保存当前编辑，再切换排版。</string>
 </resources>

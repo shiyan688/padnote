@@ -103,6 +103,9 @@ final class NoteTextBoxView extends FrameLayout {
         void onCancel(NoteTextBox textBox);
 
         void onDelete(NoteTextBox textBox);
+
+        default void onTypographySwitchRequested(NoteTextBox textBox) { }
+        default int defaultMarkdownProfileVersion() { return 1; }
     }
 
     private static final int ACCENT = Color.rgb(40, 94, 168);
@@ -135,6 +138,7 @@ final class NoteTextBoxView extends FrameLayout {
     private final LinearLayout selectedStyleBar;
     private final TextView selectedFontDecreaseButton;
     private final TextView selectedFontIncreaseButton;
+    private final TextView selectedTypographyButton;
     private final TextView selectedFontSizeLabel;
     private final Runnable renderDraftRunnable = this::renderDraftNow;
 
@@ -143,12 +147,15 @@ final class NoteTextBoxView extends FrameLayout {
     private String draftSource = "";
     private float draftFontSizeSp = 16f;
     private float draftLineHeight = TextFlow.DEFAULT_LINE_HEIGHT;
+    private int draftMarkdownProfileVersion = 1;
     private NoteTextBox.Format renderedFormat;
     private String renderedSource;
     private float renderedFontSizeSp = -1f;
     private float renderedLineHeight = -1f;
+    private int renderedMarkdownProfileVersion = -1;
     /** World-space column width used by the current compiled document. */
     private float renderedWidth = -1f;
+    private int renderedLayoutEpoch = -1;
     private float viewportScale = 1f;
     private float viewportPanX;
     private float viewportPanY;
@@ -388,6 +395,7 @@ final class NoteTextBoxView extends FrameLayout {
         selectedFontSizeLabel.setTextColor(INK);
         selectedFontSizeLabel.setGravity(Gravity.CENTER);
         selectedFontIncreaseButton = actionButton("A+", getContext().getString(R.string.widget_increase_text_size));
+        selectedTypographyButton = actionButton("文", getContext().getString(R.string.canvas_typography_switch));
         selectedStyleBar.addView(selectedFontDecreaseButton,
                 new LinearLayout.LayoutParams(dp(40), dp(33)));
         LinearLayout.LayoutParams labelParams =
@@ -396,6 +404,8 @@ final class NoteTextBoxView extends FrameLayout {
         selectedStyleBar.addView(selectedFontSizeLabel, labelParams);
         selectedStyleBar.addView(selectedFontIncreaseButton,
                 new LinearLayout.LayoutParams(dp(40), dp(33)));
+        selectedStyleBar.addView(selectedTypographyButton,
+                new LinearLayout.LayoutParams(dp(48), dp(33)));
 
         FrameLayout.LayoutParams styleBarParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -405,6 +415,9 @@ final class NoteTextBoxView extends FrameLayout {
 
         selectedFontDecreaseButton.setOnClickListener(view -> adjustSelectedFontSize(-1f));
         selectedFontIncreaseButton.setOnClickListener(view -> adjustSelectedFontSize(1f));
+        selectedTypographyButton.setOnClickListener(view -> {
+            if (model != null) listener.onTypographySwitchRequested(model.copy());
+        });
 
         latexButton.setOnClickListener(view -> setDraftFormat(NoteTextBox.Format.LATEX));
         markdownButton.setOnClickListener(view -> setDraftFormat(NoteTextBox.Format.MARKDOWN));
@@ -485,7 +498,12 @@ final class NoteTextBoxView extends FrameLayout {
         renderedSource = null;
         if (inlineEditing) renderDraftNow();
         else if (model != null) renderIfChanged(model.format, model.displaySource(),
-                model.fontSizeSp, model.lineHeight);
+                model.fontSizeSp, model.lineHeight, model.effectiveMarkdownProfileVersion());
+    }
+
+    void invalidateRenderedMeasurements() {
+        renderedSource = null;
+        renderedLayoutEpoch = Integer.MIN_VALUE;
     }
 
     private void showRenderRecoveryDialog() {
@@ -520,6 +538,8 @@ final class NoteTextBoxView extends FrameLayout {
         // per-page control that does not exist.
         selectedStyleBar.setVisibility(
                 showSelectionChrome && model.isFlowStart() ? VISIBLE : GONE);
+        selectedTypographyButton.setVisibility(model.format == NoteTextBox.Format.MARKDOWN
+                ? VISIBLE : GONE);
         updateSelectedFontSizeLabel();
 
         if (!inlineEditing || !sameObject) {
@@ -527,8 +547,9 @@ final class NoteTextBoxView extends FrameLayout {
             draftSource = model.source;
             draftFontSizeSp = model.fontSizeSp;
             draftLineHeight = model.lineHeight;
+            draftMarkdownProfileVersion = model.effectiveMarkdownProfileVersion();
             renderIfChanged(model.format, model.displaySource(), model.fontSizeSp,
-                    model.lineHeight);
+                    model.lineHeight, model.effectiveMarkdownProfileVersion());
         }
         applyScreenGeometry();
         // Runs after geometry so it reads the box's final on-screen size. Typed
@@ -617,7 +638,7 @@ final class NoteTextBoxView extends FrameLayout {
     void showDraft(NoteTextBox draft) {
         if (draft != null && model != null && model.id.equals(draft.id)) {
             renderIfChanged(draft.format, draft.displaySource(), draft.fontSizeSp,
-                    draft.lineHeight);
+                    draft.lineHeight, draft.effectiveMarkdownProfileVersion());
         }
     }
 
@@ -663,7 +684,7 @@ final class NoteTextBoxView extends FrameLayout {
         NoteTextBox canceled = model.copy();
         finishInlineUi();
         renderIfChanged(canceled.format, canceled.displaySource(), canceled.fontSizeSp,
-                canceled.lineHeight);
+                canceled.lineHeight, canceled.effectiveMarkdownProfileVersion());
         listener.onCancel(canceled);
     }
 
@@ -932,6 +953,10 @@ final class NoteTextBoxView extends FrameLayout {
             return;
         }
         draftFormat = format;
+        draftMarkdownProfileVersion = format == NoteTextBox.Format.MARKDOWN
+                ? (model.format == NoteTextBox.Format.MARKDOWN
+                    ? model.effectiveMarkdownProfileVersion()
+                    : listener.defaultMarkdownProfileVersion()) : 1;
         updateFormatButtons();
         updateSourceHint();
         scheduleDraftRender();
@@ -952,7 +977,8 @@ final class NoteTextBoxView extends FrameLayout {
         model.fontSizeSp = replacement;
         draftFontSizeSp = replacement;
         updateSelectedFontSizeLabel();
-        renderIfChanged(model.format, model.displaySource(), replacement, model.lineHeight);
+        renderIfChanged(model.format, model.displaySource(), replacement, model.lineHeight,
+                model.effectiveMarkdownProfileVersion());
         listener.onFontSizeChanged(model.copy(), replacement);
     }
 
@@ -1052,34 +1078,40 @@ final class NoteTextBoxView extends FrameLayout {
         }
         removeCallbacks(renderDraftRunnable);
         draftSource = sourceEditor.getText().toString();
-        renderIfChanged(draftFormat, draftSource, draftFontSizeSp, draftLineHeight);
+        renderIfChanged(draftFormat, draftSource, draftFontSizeSp, draftLineHeight,
+                draftMarkdownProfileVersion);
     }
 
     private void renderIfChanged(NoteTextBox.Format format, String source,
-                                 float fontSizeSp, float lineHeight) {
+                                 float fontSizeSp, float lineHeight, int markdownProfileVersion) {
         NoteTextBox.Format normalizedFormat = format == null
                 ? NoteTextBox.Format.LATEX : format;
         String normalizedSource = source == null ? "" : source;
         float normalizedFontSize = TextFlow.clampFontSize(fontSizeSp);
         float normalizedLineHeight = TextFlow.clampLineHeight(lineHeight);
         float normalizedWidth = model == null ? -1f : model.width;
+        int normalizedLayoutEpoch = model == null ? -1 : model.renderLayoutEpoch;
         if (renderedFormat == normalizedFormat && normalizedSource.equals(renderedSource) &&
                 Math.abs(renderedFontSizeSp - normalizedFontSize) < 0.01f &&
                 Math.abs(renderedLineHeight - normalizedLineHeight) < 0.001f &&
-                Math.abs(renderedWidth - normalizedWidth) < 0.5f) {
+                renderedMarkdownProfileVersion == markdownProfileVersion &&
+                Math.abs(renderedWidth - normalizedWidth) < 0.5f &&
+                renderedLayoutEpoch == normalizedLayoutEpoch) {
             return;
         }
         renderedFormat = normalizedFormat;
         renderedSource = normalizedSource;
         renderedFontSizeSp = normalizedFontSize;
         renderedLineHeight = normalizedLineHeight;
+        renderedMarkdownProfileVersion = markdownProfileVersion;
         renderedWidth = normalizedWidth;
+        renderedLayoutEpoch = normalizedLayoutEpoch;
         renderErrorPanel.setVisibility(GONE);
         renderFailed = false;
         // Source font and WebView layout remain in paper coordinates. Canvas zoom
         // is applied to the native child view, not to the renderer inputs.
         compiledView.render(normalizedFormat, normalizedSource,
-                normalizedFontSize, normalizedLineHeight);
+                normalizedFontSize, normalizedLineHeight, markdownProfileVersion);
     }
 
     private void updateFormatButtons() {
@@ -1124,7 +1156,7 @@ final class NoteTextBoxView extends FrameLayout {
         NoteTextBox deleted = model.copy();
         finishInlineUi();
         renderIfChanged(deleted.format, deleted.displaySource(), deleted.fontSizeSp,
-                deleted.lineHeight);
+                deleted.lineHeight, deleted.effectiveMarkdownProfileVersion());
         listener.onDelete(deleted);
     }
 

@@ -214,30 +214,9 @@ public enum LibraryBackupArchive {
 
     static func validateIntegerJSONTokens(_ data: Data) throws {
         try rejectDuplicateJSONKeys(data)
-        // JSONDecoder's integer strategy accepts 1.0 and 1e3; archive integer fields require
-        // exact integer JSON tokens. This is intentionally not applied to NoteDocument payloads.
-        let bytes = [UInt8](data)
-        var i = 0
-        while i < bytes.count {
-            if bytes[i] == 0x22 {
-                i += 1
-                var escaped = false
-                while i < bytes.count {
-                    let b = bytes[i]; i += 1
-                    if escaped { escaped = false; continue }
-                    if b == 0x5c { escaped = true; continue }
-                    if b == 0x22 { break }
-                }
-            } else if bytes[i] == 0x2d || (bytes[i] >= 0x30 && bytes[i] <= 0x39) {
-                let start = i; i += 1
-                while i < bytes.count && bytes[i] != 0x2c && bytes[i] != 0x5d && bytes[i] != 0x7d &&
-                        bytes[i] != 0x20 && bytes[i] != 0x0a && bytes[i] != 0x0d && bytes[i] != 0x09 { i += 1 }
-                let token = String(decoding: bytes[start..<i], as: UTF8.self)
-                guard !token.contains("."), !token.contains("e"), !token.contains("E"), Int64(token) != nil else {
-                    throw LibraryBackupError.invalidManifest("整数必须使用精确的 JSON 整数格式")
-                }
-            } else { i += 1 }
-        }
+        // Keep duplicate-key rejection here. Numeric integer VALUE checks happen
+        // after parsing so note_schema_version can accept equivalent forms such
+        // as 10.0/1e1 under the shared cross-platform schema contract.
     }
 
     static func validateManifestJSON(_ data: Data) throws {
@@ -255,6 +234,19 @@ public enum LibraryBackupArchive {
                   ["c", "s", "i", "q", "l", "C", "S", "I", "Q", "L"].contains(String(cString: number.objCType)) else {
                 throw LibraryBackupError.invalidManifest("\(key)必须为 JSON 整数")
             }
+        }
+        func integerValue(_ value: [String: Any], _ key: String) throws -> Int {
+            guard let number = value[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite else {
+                throw LibraryBackupError.invalidManifest("\(key)必须为 JSON 整数值")
+            }
+            var decimal = number.decimalValue
+            var rounded = Decimal()
+            NSDecimalRound(&rounded, &decimal, 0, .plain)
+            guard decimal == rounded, rounded >= Decimal(1), rounded <= Decimal(10) else {
+                throw LibraryBackupError.invalidManifest("\(key)必须为受支持的 JSON 整数值")
+            }
+            return NSDecimalNumber(decimal: rounded).intValue
         }
         func boolean(_ value: [String: Any], _ key: String) throws {
             guard let number = value[key] as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
@@ -295,7 +287,12 @@ public enum LibraryBackupArchive {
             guard let value = scope[key] as? NSNumber, value.boolValue == expected else { throw LibraryBackupError.invalidManifest("备份范围无效") }
         }
         let notes = try records(doc["notes"], noteKeys, "note")
-        for row in notes { try integer(row, "source_revision_ms"); try integer(row, "note_schema_version") }
+        for row in notes {
+            try integer(row, "source_revision_ms")
+            guard (1...10).contains(try integerValue(row, "note_schema_version")) else {
+                throw LibraryBackupError.invalidManifest("note_schema_version超出支持范围")
+            }
+        }
         guard let vaultAny=doc["vault_entries"] as? [Any] else { throw LibraryBackupError.invalidManifest("vault列表无效") }
         let vault = try vaultAny.map { value -> [String:Any] in
             let row=try object(value,"vault")
@@ -388,7 +385,7 @@ public enum LibraryBackupArchive {
         }
         for note in manifest.notes {
             guard validID(note.itemID, "i"), itemIDs.insert(note.itemID).inserted,
-                  validOpaqueID(note.sourceNoteID), note.sourceRevisionMS >= 0,
+                  validOpaqueID(note.sourceNoteID), (1...10).contains(note.schemaVersion), note.sourceRevisionMS >= 0,
                   has(manifest, note.noteResourceID, "note_document"),
                   (note.pdfResourceID == nil || has(manifest, note.pdfResourceID!, "pdf_original")),
                   (note.coverResourceID == nil || has(manifest, note.coverResourceID!, "assigned_cover_png")),

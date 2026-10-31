@@ -113,7 +113,323 @@ function inline(source, diagnostics) {
     }
     return output + prose(source.slice(last));
 }
-window.renderNote = async function (source, size, format = 'markdown') {
+
+// C38 profile 2 tokenizes inline nodes before emphasis, so delimiters can
+// enclose math nodes without leaking into the paper and code stays opaque.
+function parseProfile2Inline(source, depth = 0) {
+    if (depth > 24) return [{type:'text', value:source}];
+    const nodes = [];
+    let text = '';
+    const flush = () => { if (text) { nodes.push({type:'text', value:text}); text = ''; } };
+    const escapedAt = new Uint8Array(source.length);
+    let backslashRun = 0;
+    for (let index = 0; index < source.length; index++) {
+        escapedAt[index] = backslashRun & 1;
+        backslashRun = source[index] === '\\' ? backslashRun + 1 : 0;
+    }
+    const isEscaped = index => index >= 0 && index < escapedAt.length && escapedAt[index] === 1;
+    // Delimiter lookahead is bounded linearly in source size as well as by the
+    // recursive nesting depth, so malformed input cannot trigger unbounded scans.
+    let matchingBudget = source.length * 32 + 1024;
+    const matchingStep = () => matchingBudget-- > 0;
+    const mathAt = index => {
+        if (source.startsWith('\\(', index) && !isEscaped(index)) return {open:'\\(', close:'\\)', display:false};
+        if (source.startsWith('\\[', index) && !isEscaped(index)) return {open:'\\[', close:'\\]', display:true};
+        if (source.startsWith('$$', index) && !isEscaped(index)) return {open:'$$', close:'$$', display:true};
+        if (source[index] === '$' && !isEscaped(index)) return {open:'$', close:'$', display:false};
+        return null;
+    };
+    const findMathClose = (close, from) => {
+        for (let cursor = from; cursor <= source.length - close.length; cursor++) {
+            if (!matchingStep()) return -1;
+            if (source.startsWith(close, cursor) && !isEscaped(cursor)) return cursor;
+        }
+        return -1;
+    };
+    const runLength = (index, marker) => {
+        let end = index;
+        while (end < source.length && source[end] === marker) end++;
+        return end - index;
+    };
+    const codeClose = (from, expectedRun) => {
+        for (let i = from; i < source.length;) {
+            if (!matchingStep()) return -1;
+            if (source[i] !== '`') { i++; continue; }
+            const run = runLength(i, '`');
+            if (run === expectedRun && !isEscaped(i)) return i;
+            i += run;
+        }
+        return -1;
+    };
+    const delimiterAt = index => {
+        const marker = source[index];
+        if (marker === '~') {
+            const run = runLength(index, marker);
+            return run === 2 && !isEscaped(index) ? {marker:'~~', run, type:'strikethrough'} : null;
+        }
+        if (marker !== '*' && marker !== '_') return null;
+        const run = runLength(index, marker);
+        if (isEscaped(index)) return null;
+        if (run === 3) return {marker:marker.repeat(3), run, type:'triple'};
+        if (run === 2) return {marker:marker.repeat(2), run, type:'strong'};
+        if (run === 1) return {marker, run, type:'emphasis'};
+        return null;
+    };
+    const findClosing = (delimiter, from, nestingDepth = 0) => {
+        if (nestingDepth > 24) return -1;
+        for (let i = from; i < source.length;) {
+            if (!matchingStep()) return -1;
+            if (source[i] === '`') {
+                const run = runLength(i, '`');
+                const end = codeClose(i + run, run);
+                if (end >= 0) { i = end + run; continue; }
+                i += run; continue;
+            }
+            const math = mathAt(i);
+            if (math) {
+                const end = findMathClose(math.close, i + math.open.length);
+                if (end >= 0 && (math.display || !source.slice(i, end).includes('\n'))) {
+                    i = end + math.close.length;
+                    continue;
+                }
+            }
+            if (source[i] === '\\') { i += Math.min(2, source.length - i); continue; }
+            const marker = delimiterAt(i);
+            if (marker) {
+                if (marker.marker === delimiter) return i;
+                if (!/\s/.test(source[i + marker.run] || ' ')) {
+                    const nestedEnd = findClosing(marker.marker, i + marker.run, nestingDepth + 1);
+                    if (nestedEnd > i + marker.run && !/\s/.test(source[nestedEnd - 1] || ' ')) {
+                        i = nestedEnd + marker.run;
+                        continue;
+                    }
+                }
+                // Marker runs are atomic. A single `*` close may never consume
+                // one character from a `**`/`***` token (and vice versa).
+                i += marker.run;
+                continue;
+            }
+            if (source[i] === '*' || source[i] === '_' || source[i] === '~') {
+                i += runLength(i, source[i]);
+                continue;
+            }
+            i++;
+        }
+        return -1;
+    };
+    for (let i = 0; i < source.length;) {
+        // Recognize TeX delimiters before Markdown's general backslash escape
+        // rule. Otherwise \( and \[ are reduced to literal parentheses/brackets.
+        const math = mathAt(i);
+        if (math) {
+            const end = findMathClose(math.close, i + math.open.length);
+            if (end > i + math.open.length && (math.display || !source.slice(i, end).includes('\n'))) {
+                flush(); nodes.push({type:'math', value:source.slice(i + math.open.length, end), display:math.display});
+                i = end + math.close.length; continue;
+            }
+            // Unmatched delimiters remain source text instead of being eaten as
+            // an ordinary Markdown escape.
+            text += math.open; i += math.open.length; continue;
+        }
+        if (source[i] === '\\' && i + 1 < source.length) {
+            const next = source[i + 1];
+            if ('\\`*_{}[]()#+-.!>$'.includes(next)) { text += next; i += 2; continue; }
+        }
+        if (source[i] === '`') {
+            const run = runLength(i, '`');
+            const end = codeClose(i + run, run);
+            if (end >= 0) { flush(); nodes.push({type:'code', value:source.slice(i + run, end)}); i = end + run; continue; }
+            text += source.slice(i, i + run); i += run; continue;
+        }
+        if (source[i] === '[') {
+            const closeLabel = source.indexOf('](', i + 1);
+            if (closeLabel > i) {
+                const closeDestination = source.indexOf(')', closeLabel + 2);
+                if (closeDestination > closeLabel + 2) {
+                    flush();
+                    nodes.push({type:'link', destination:source.slice(closeLabel + 2, closeDestination),
+                        children:parseProfile2Inline(source.slice(i + 1, closeLabel), depth + 1)});
+                    i = closeDestination + 1; continue;
+                }
+            }
+        }
+        const marker = delimiterAt(i);
+        if (marker && i + marker.run < source.length && !/\s/.test(source[i + marker.run])) {
+            const end = findClosing(marker.marker, i + marker.run);
+            if (end > i + marker.run && !/\s/.test(source[end - 1])) {
+                flush();
+                const children = parseProfile2Inline(source.slice(i + marker.run, end), depth + 1);
+                nodes.push(marker.type === 'triple'
+                    ? {type:'strong', children:[{type:'emphasis', children}]}
+                    : {type:marker.type, children});
+                i = end + marker.run; continue;
+            }
+            text += source.slice(i, i + marker.run); i += marker.run; continue;
+        }
+        if (!marker && (source[i] === '*' || source[i] === '_' || source[i] === '~')) {
+            const run = runLength(i, source[i]);
+            text += source.slice(i, i + run); i += run; continue;
+        }
+        text += source[i++];
+    }
+    flush();
+    return nodes;
+}
+
+function renderProfile2Inline(nodes, parent, diagnostics, strong = false) {
+    for (const node of nodes) {
+        if (node.type === 'text') parent.append(document.createTextNode(node.value));
+        else if (node.type === 'code') {
+            const code = document.createElement('code'); code.textContent = node.value; parent.append(code);
+        } else if (node.type === 'math') {
+            if (!window.katex) { parent.append(document.createTextNode('$' + node.value + '$')); continue; }
+            try {
+                const value = strong ? '\\boldsymbol{' + node.value + '}' : node.value;
+                const span = document.createElement('span');
+                span.innerHTML = katex.renderToString(value, {throwOnError:true, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:!!node.display});
+                if (node.display) span.className = 'profile2-display-math';
+                parent.append(span);
+            } catch (_) {
+                diagnostics.push({kind:'syntax', detail:'katex'});
+                const literal = document.createElement('span'); literal.className = 'katex-source-error'; literal.textContent = '$' + node.value + '$'; parent.append(literal);
+            }
+        } else if (node.type === 'strong' || node.type === 'emphasis' || node.type === 'strikethrough') {
+            const tag = node.type === 'strong' ? 'strong' : node.type === 'emphasis' ? 'em' : 'del';
+            const element = document.createElement(tag);
+            renderProfile2Inline(node.children, element, diagnostics, strong || node.type === 'strong'); parent.append(element);
+        } else if (node.type === 'link') {
+            const element = document.createElement('span'); element.className = 'md-link';
+            element.setAttribute('data-destination', node.destination);
+            renderProfile2Inline(node.children, element, diagnostics, strong); parent.append(element);
+        }
+    }
+}
+
+function appendProfile2Markdown(source, root, diagnostics, diagrams) {
+    const lines = source.replace(/\r\n?/g, '\n').split('\n');
+    const isRule = line => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
+    const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+    const alignmentRow = line => {
+        const cells = tableCells(line);
+        if (!cells.length || !cells.every(cell => /^:?-{3,}:?$/.test(cell))) return null;
+        return cells.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center'
+            : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : 'left');
+    };
+    const appendInlineBlock = (tag, value) => {
+        const element = document.createElement(tag);
+        renderProfile2Inline(parseProfile2Inline(value), element, diagnostics);
+        root.append(element);
+    };
+    const appendDisplayMath = formula => {
+        const block = document.createElement('div'); block.className = 'profile2-display-math';
+        if (!window.katex || typeof window.katex.renderToString !== 'function') {
+            diagnostics.push({kind:'resource', detail:'katex-script'}); block.textContent = formula;
+        } else {
+            try { block.innerHTML = katex.renderToString(formula, {throwOnError:true, trust:false, strict:'ignore', maxExpand:1000, maxSize:20, displayMode:true}); }
+            catch (_) { diagnostics.push({kind:'syntax', detail:'katex'}); block.textContent = formula; }
+        }
+        root.append(block);
+    };
+    const appendTable = (headerLine, alignments, bodyLines) => {
+        const table = document.createElement('table');
+        const head = document.createElement('thead'); const headRow = document.createElement('tr');
+        tableCells(headerLine).forEach((cell, index) => {
+            const th = document.createElement('th'); th.style.textAlign = alignments[index] || 'left';
+            renderProfile2Inline(parseProfile2Inline(cell), th, diagnostics); headRow.append(th);
+        });
+        head.append(headRow); table.append(head);
+        const body = document.createElement('tbody');
+        for (const line of bodyLines) {
+            if (!line.includes('|')) break;
+            const cells = tableCells(line); const row = document.createElement('tr');
+            for (let i = 0; i < tableCells(headerLine).length; i++) {
+                const td = document.createElement('td'); td.style.textAlign = alignments[i] || 'left';
+                renderProfile2Inline(parseProfile2Inline(cells[i] || ''), td, diagnostics); row.append(td);
+            }
+            body.append(row);
+        }
+        table.append(body); root.append(table);
+    };
+    let i = 0, prose = [];
+    const flush = () => {
+        for (let j = 0; j < prose.length;) {
+            const line = prose[j];
+            if (!line.trim()) { j++; continue; }
+            const displayStart = line.trim().startsWith('\\[') ? ['\\[', '\\]']
+                : line.trim().startsWith('$$') ? ['$$', '$$'] : null;
+            if (displayStart) {
+                const firstLine = line.trim();
+                const inlineEnd = firstLine.indexOf(displayStart[1], displayStart[0].length);
+                let formula = '', endLine = j;
+                if (inlineEnd >= 0) {
+                    formula = firstLine.slice(displayStart[0].length, inlineEnd);
+                    if (firstLine.slice(inlineEnd + displayStart[1].length).trim()) {
+                        appendInlineBlock('p', line); j++; continue;
+                    }
+                } else {
+                    const pieces = [firstLine.slice(displayStart[0].length)];
+                    let closed = false;
+                    for (let k = j + 1; k < prose.length; k++) {
+                        const close = prose[k].indexOf(displayStart[1]);
+                        if (close >= 0) {
+                            pieces.push(prose[k].slice(0, close)); endLine = k; closed = true;
+                            if (prose[k].slice(close + displayStart[1].length).trim()) pieces.push(prose[k].slice(close + displayStart[1].length));
+                            break;
+                        }
+                        pieces.push(prose[k]);
+                    }
+                    if (!closed) { appendInlineBlock('p', line); j++; continue; }
+                    formula = pieces.join('\n');
+                }
+                appendDisplayMath(formula.trim()); j = endLine + 1; continue;
+            }
+            if (isRule(line)) {
+                const rule = document.createElement('hr'); rule.className = 'thematic-break'; root.append(rule); j++; continue;
+            }
+            if (j + 1 < prose.length && prose[j].includes('|')) {
+                const alignments = alignmentRow(prose[j + 1]);
+                if (alignments && tableCells(prose[j]).length === alignments.length) {
+                    let end = j + 2; while (end < prose.length && prose[end].includes('|')) end++;
+                    appendTable(prose[j], alignments, prose.slice(j + 2, end)); j = end; continue;
+                }
+            }
+            const heading = line.match(/^(#{1,3})\s+(.*)$/);
+            const quote = line.match(/^>\s?(.*)$/);
+            const unordered = line.match(/^\s*[-*+]\s+(.*)$/);
+            const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+            if (heading) { appendInlineBlock('h' + heading[1].length, heading[2]); j++; continue; }
+            if (quote) { appendInlineBlock('blockquote', quote[1]); j++; continue; }
+            if (unordered || ordered) {
+                const kind = unordered ? 'ul' : 'ol'; const list = document.createElement(kind);
+                if (ordered) list.start = Number(ordered[1]);
+                while (j < prose.length) {
+                    const item = prose[j].match(unordered ? /^\s*[-*+]\s+(.*)$/ : /^\s*(\d+)[.)]\s+(.*)$/);
+                    if (!item) break;
+                    const li = document.createElement('li'); renderProfile2Inline(parseProfile2Inline(unordered ? item[1] : item[2]), li, diagnostics); list.append(li); j++;
+                }
+                root.append(list); continue;
+            }
+            appendInlineBlock('p', line); j++;
+        }
+        prose = [];
+    };
+    while (i < lines.length) {
+        const fence = lines[i].match(/^\s*```([^\n]*)$/);
+        if (!fence) { prose.push(lines[i++]); continue; }
+        flush();
+        const language = fence[1].trim().toLowerCase(); const code = []; i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i++]);
+        if (i < lines.length) i++;
+        const element = document.createElement(language === 'mermaid' ? 'div' : 'pre');
+        element.textContent = code.join('\n');
+        if (language === 'mermaid') { element.className = 'diagram'; diagrams.push(element); }
+        else element.className = 'code-block';
+        root.append(element);
+    }
+    flush();
+}
+
+window.renderNote = async function (source, size, format = 'markdown', profileVersion = 1) {
     const revision = ++renderingRevision;
     const diagnostics = [];
     document.body.style.fontSize = Number(size) + 'px';
@@ -160,6 +476,32 @@ window.renderNote = async function (source, size, format = 'markdown') {
         return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight, diagnostics};
     }
     const diagrams = [];
+    if (profileVersion === 2) {
+        appendProfile2Markdown(source, root, diagnostics, diagrams);
+        if (diagrams.length && (!window.mermaid || typeof window.mermaid.render !== 'function')) {
+            diagnostics.push({kind:'resource', detail:'mermaid-script'});
+        } else if (diagrams.length) {
+            mermaid.initialize({startOnLoad:false, securityLevel:'strict', theme:'neutral', suppressErrorRendering:true, maxTextSize:50000});
+            for (let i = 0; i < diagrams.length; i++) {
+                const element = diagrams[i], original = element.textContent;
+                try {
+                    const {svg} = await mermaid.render('diagram-' + revision + '-' + i, original);
+                    if (revision !== renderingRevision) return;
+                    element.innerHTML = svg;
+                } catch (_) {
+                    diagnostics.push({kind:'syntax', detail:'mermaid'});
+                    element.textContent = '图表无法显示，请检查 Mermaid 语法。\n' + original;
+                }
+            }
+        }
+        const fontsReady = await finishRichLayout(root);
+        if (root.querySelector('.katex-error')) diagnostics.push({kind:'syntax', detail:'katex'});
+        const renderedMath = root.querySelector('.katex');
+        if (renderedMath && (!window.katex || !fontsReady || !document.fonts.check('16px "KaTeX_Main"'))) {
+            diagnostics.push({kind:'resource', detail:'katex-font'});
+        }
+        return {formulas:root.querySelectorAll('.katex').length, height:root.scrollHeight, diagnostics};
+    }
     const lines = source.replace(/\r\n?/g, '\n').split('\n');
     let proseLines = [];
     function appendProseLines(values) {
@@ -250,16 +592,18 @@ window.renderNote = async function (source, size, format = 'markdown') {
 // Paper snapshots use exactly the same offline renderer as the preview.
 // Blocks stay together; exceptionally long prose/code is split at measured
 // line boundaries. Formula and Mermaid nodes are never sliced mid-expression.
-window.preparePaper = async function(source, size, spacing, format) {
+window.preparePaper = async function(source, size, spacing, format, profileVersion = 1) {
     document.body.classList.add('paper');
     document.body.style.padding = '0';
     document.body.style.lineHeight = Math.max(1.1, Math.min(2, Number(spacing)));
     const root = document.getElementById('content');
     root.style.transform = '';
-    const rendered = await window.renderNote(source, size, format);
+    const rendered = await window.renderNote(source, size, format, profileVersion);
     await finishRichLayout(root);
     const chunks = [];
-    const records = Array.from(root.children).filter(block => block.textContent.trim() || block.querySelector('svg')).map(block => {
+    const records = Array.from(root.children).filter(block =>
+        block.textContent.trim() || block.querySelector('svg') || block.matches('hr,.thematic-break')
+    ).map(block => {
         const box = block.getBoundingClientRect();
         return {block, bottom:Math.ceil(box.bottom + parseFloat(getComputedStyle(block).marginBottom || 0))};
     });

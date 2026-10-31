@@ -137,11 +137,78 @@ final class NoteDocumentTests: XCTestCase {
         XCTAssertEqual(try NoteDocument.decode(try note.encoded()), note)
     }
 
+    func testSavedAgentResultResolverReopensOneExactReceiptAndPreservesUserEdits() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-result-resolver-match-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let expected = try makeAgentResultFlow(output: "Persisted task output")
+        var note = NoteDocument(schemaVersion: 9, id: "resolver-result-note", title: "Saved result", pageCount: 3)
+        var editedFlow = expected
+        editedFlow.source += "\nLater user edit"
+        editedFlow.anchorPageIndex = 2
+        note.textFlows = [editedFlow]
+        try library.save(note)
+
+        let reopenedLibrary = NoteLibrary(directory: root)
+        let resolved = try XCTUnwrap(reopenedLibrary.savedAgentResult(matching: expected))
+        XCTAssertEqual(resolved.document.id, note.id)
+        XCTAssertEqual(resolved.session.document, note)
+        XCTAssertEqual(resolved.pageIndex, 2)
+        XCTAssertEqual(resolved.document.textFlows[0].source, editedFlow.source,
+                       "The receipt identifies the original output while retaining subsequent user edits")
+    }
+
+    func testSavedAgentResultResolverRejectsChangedTaskOrResultContent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-result-resolver-mismatch-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let expected = try makeAgentResultFlow(output: "Original task output")
+        var note = NoteDocument(schemaVersion: 9, id: "resolver-mismatch-note", title: "Saved result")
+        note.textFlows = [expected]
+        try library.save(note)
+
+        let changedContent = try makeAgentResultFlow(output: "Changed task output")
+        XCTAssertNil(library.savedAgentResult(matching: changedContent))
+
+        var changedTask = expected
+        let receipt = try XCTUnwrap(expected.agentResult)
+        let otherTaskID = "12345678-1234-4234-8234-123456789abd"
+        let digest = receipt.resultSha256
+        let material = ["padnote.agent-result.v1", otherTaskID, receipt.connectionId,
+                        receipt.instanceId ?? "", receipt.agentKind, receipt.transport, digest]
+            .joined(separator: "\n")
+        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        changedTask.agentResult = AgentResultReceipt(applicationId: applicationID, taskId: otherTaskID,
+            connectionId: receipt.connectionId, instanceId: receipt.instanceId,
+            agentKind: receipt.agentKind, transport: receipt.transport,
+            sourceNoteId: receipt.sourceNoteId, sourceNoteRevision: receipt.sourceNoteRevision,
+            resultSha256: digest, addedAt: receipt.addedAt)
+        XCTAssertNil(library.savedAgentResult(matching: changedTask))
+    }
+
+    func testSavedAgentResultResolverHidesMissingOrDeletedNote() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-result-resolver-deleted-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let expected = try makeAgentResultFlow(output: "Deleted result")
+        var note = NoteDocument(schemaVersion: 9, id: "resolver-deleted-note", title: "Saved result")
+        note.textFlows = [expected]
+        try library.save(note)
+        let session = try library.openEditorSession(noteID: note.id)
+        try library.delete(note, basedOn: session)
+        XCTAssertNil(library.savedAgentResult(matching: expected))
+        XCTAssertNil(NoteLibrary(directory: root).savedAgentResult(matching: expected))
+    }
+
     func testLegacyAgentAppendUsesRawBodyCASAndKeepsReceiptAcrossEditorSave() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-result-cas-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = NoteLibrary(directory: root)
-        let original = NoteDocument(title: "Synthetic target")
+        var original = NoteDocument(title: "Synthetic target")
+        original.schemaVersion = 8
         try library.save(original)
         let firstPreview = try library.captureAgentResultTarget(noteID: original.id)
         let stalePreview = try library.captureAgentResultTarget(noteID: original.id)
@@ -185,7 +252,8 @@ final class NoteDocumentTests: XCTestCase {
             "agent-result-utf16-limit-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = NoteLibrary(directory: root)
-        let original = NoteDocument(title: "Synthetic result")
+        var original = NoteDocument(title: "Synthetic result")
+        original.schemaVersion = 8
         try library.save(original)
         let target = try library.captureAgentResultTarget(noteID: original.id)
         let receiptFlow = try makeAgentResultFlow(output: "Short result")
@@ -214,20 +282,25 @@ final class NoteDocumentTests: XCTestCase {
                        "Short result", "Rejected edits must not replace the in-memory canonical note")
     }
 
-    func testAgentResultSaveAsNewUsesFreshNoteIdentityAndIsIdempotent() throws {
+    func testAgentResultSaveAsNewUsesFreshNoteIdentityAndIsIdempotent() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-result-new-note-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = NoteLibrary(directory: root)
         let flow = try makeAgentResultFlow(output: "A completed cached result")
-        let firstCandidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: NoteDocument(title: "Task result"), addFinalPage: false)
+        var newNote = NoteDocument(title: "Task result"); newNote.schemaVersion = 9
+        let firstCandidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow, to: newNote, addFinalPage: false)
         let first = try library.createNoteWithAgentResult(firstCandidate, flow: flow)
         XCTAssertFalse(first.alreadyApplied)
         XCTAssertNotEqual(first.document.id, flow.agentResult?.sourceNoteId,
                           "Save as new creates a fresh note identity instead of restoring the original source ID")
         XCTAssertEqual(first.document.textFlows.count, 1)
 
-        let secondCandidate = try NoteLibrary.candidateAppendingAgentResult(flow,
+        let secondCandidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow,
             to: NoteDocument(title: "A second click"), addFinalPage: false)
+        XCTAssertEqual(secondCandidate.document.schemaVersion, 10)
+        XCTAssertEqual(secondCandidate.document.textFlows[0].effectiveMarkdownProfileVersion, 2)
+        XCTAssertTrue(NoteTextLayout.canFullyLayout(secondCandidate.document.textFlows[0],
+            pageHeight: secondCandidate.document.pageHeight), "Save-as-new only receives a fully compiled schema-10 profile-2 candidate")
         let repeated = try library.createNoteWithAgentResult(secondCandidate, flow: flow)
         XCTAssertTrue(repeated.alreadyApplied)
         XCTAssertEqual(repeated.document.id, first.document.id)
@@ -238,7 +311,8 @@ final class NoteDocumentTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-point-roundtrip-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = NoteLibrary(directory: root)
-        let original = NoteDocument(title: "Point target")
+        var original = NoteDocument(title: "Point target")
+        original.schemaVersion = 9
         try library.save(original)
         let session = try library.captureAgentResultTarget(noteID: original.id)
         let flow = try makeAgentResultFlow(output: "Exact output ✅\nsecond line")
@@ -263,7 +337,8 @@ final class NoteDocumentTests: XCTestCase {
 
     func testPointPlacementRejectsAllContinuationCollisionsAndPreservesOriginalBytes() throws {
         let flow = try makeAgentResultFlow(output: String(repeating: "Continuation paragraph with enough words to wrap.\n", count: 500))
-        let empty = NoteDocument(title: "Occupied later pages")
+        var empty = NoteDocument(title: "Occupied later pages")
+        empty.schemaVersion = 9
         let request = AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 32, yInPage: 40, width: 240)
         let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: empty, addFinalPage: false,
             placement: request, checkPointConflicts: false)
@@ -305,6 +380,7 @@ final class NoteDocumentTests: XCTestCase {
 
     func testPDFPointPlacementAllowsWhiteROIRejectsInkAndFailsClosedWithoutSource() throws {
         var note = NoteDocument(title: "PDF point")
+        note.schemaVersion = 9
         note.pdfPageCount = 1; note.pageCount = 1
         func savePDF(mark: UIColor?, name: String, rotation: Int = 0) throws -> URL {
             let bounds = CGRect(x: 0, y: 0, width: note.pageWidth, height: note.pageHeight)
@@ -369,16 +445,33 @@ final class NoteDocumentTests: XCTestCase {
 
     func testDefaultAppendAndNewNoteCandidateKeepLegacyPageSemantics() throws {
         let flow = try makeAgentResultFlow(output: "Compatibility output")
-        let existing = NoteDocument(title: "Existing")
+        var existing = NoteDocument(title: "Existing")
+        existing.schemaVersion = 9
         let appended = try NoteLibrary.candidateAppendingAgentResult(flow, to: existing, addFinalPage: true)
         XCTAssertEqual(appended.pageIndex, existing.pageCount)
         XCTAssertEqual(appended.document.textFlows.last?.anchorXInPage, 16)
         XCTAssertEqual(appended.document.textFlows.last?.anchorYInPage, 40)
-        let fresh = NoteDocument(title: "Fresh")
+        var fresh = NoteDocument(title: "Fresh")
+        fresh.schemaVersion = 9
         let created = try NoteLibrary.candidateAppendingAgentResult(flow, to: fresh, addFinalPage: false)
         XCTAssertEqual(created.pageIndex, 0)
         XCTAssertEqual(created.document.textFlows.last?.anchorPageIndex, 0)
         XCTAssertEqual(created.document.textFlows.last?.source, flow.source)
+    }
+
+    func testSchema10AgentAppendUsesProfile2AndPreservesExactOrigin() throws {
+        let flow = try makeAgentResultFlow(output: "Schema 10 exact Agent source **$x$**")
+        let note = NoteDocument(title: "New schema 10 task note")
+        let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: note,
+            addFinalPage: false, preparingRenderer: true)
+        let appended = try XCTUnwrap(candidate.document.textFlows.first)
+        XCTAssertEqual(candidate.document.schemaVersion, 10)
+        XCTAssertEqual(appended.markdownProfileVersion, 2)
+        XCTAssertEqual(appended.source, flow.source)
+        XCTAssertEqual(appended.agentResult, flow.agentResult)
+        XCTAssertEqual(appended.anchorPageIndex, flow.anchorPageIndex)
+        XCTAssertEqual(appended.anchorXInPage, 16)
+        XCTAssertEqual(appended.anchorYInPage, 40)
     }
 
     func testAgentResultFlowIDCollisionDoesNotOverwriteExistingFlow() throws {
@@ -621,9 +714,9 @@ final class NoteDocumentTests: XCTestCase {
     }
 
     func testRejectsUnknownSchemaCorruptionAndLimits() throws {
-        let unknown = #"{"schemaVersion":10,"strokes":[]}"#.data(using: .utf8)!
+        let unknown = #"{"schemaVersion":11,"strokes":[]}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(unknown)) { error in
-            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(10))
+            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(11))
         }
         let missingStrokes = #"{"schemaVersion":8,"id":"x"}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(missingStrokes))
@@ -635,6 +728,199 @@ final class NoteDocumentTests: XCTestCase {
         let encoded = try budgetNote.encoded()
         XCTAssertThrowsError(try budgetNote.encoded(maximumBytes: encoded.count - 1))
         XCTAssertThrowsError(try NoteDocument.decode(encoded, maximumBytes: encoded.count - 1))
+    }
+
+    func testSchema10MarkdownProfileIsSparseStrictAndRoundTrips() throws {
+        func noteJSON(schema: Int, flow: String) -> Data {
+            #"{"schemaVersion":\#(schema),"id":"profile-note","title":"profile","updatedAt":1,"pageWidth":800,"pageHeight":1066,"pageGap":24,"pageCount":1,"pdfPageCount":0,"strokes":[],"textFlows":[\#(flow)]}"#.data(using: .utf8)!
+        }
+        let absent = try NoteDocument.decode(noteJSON(schema: 10,
+            flow: #"{"id":"legacy","format":"markdown","source":"**old**"}"#))
+        XCTAssertEqual(absent.textFlows.first?.effectiveMarkdownProfileVersion, 1)
+        let absentRoundTrip = try NoteDocument.decode(absent.encoded())
+        XCTAssertNil(absentRoundTrip.textFlows.first?.markdownProfileVersion,
+                     "opening and saving an absent profile must not backfill it")
+        let canonicalSchema10 = String(decoding: try absent.encoded(), as: UTF8.self)
+        for raw in ["10.0", "1e1"] {
+            let equivalent = Data(canonicalSchema10.replacingOccurrences(of: "\"schemaVersion\":10",
+                with: "\"schemaVersion\":\(raw)").utf8)
+            XCTAssertEqual(try NoteDocument.decode(equivalent).schemaVersion, 10,
+                           "schemaVersion is compared by numeric integer value")
+        }
+        for raw in ["10.5", "true", "\"10\"", "11"] {
+            let invalid = Data(canonicalSchema10.replacingOccurrences(of: "\"schemaVersion\":10",
+                with: "\"schemaVersion\":\(raw)").utf8)
+            XCTAssertThrowsError(try NoteDocument.decode(invalid), "invalid schema value \(raw)")
+        }
+
+        for raw in ["2", "2.0", "2e0"] {
+            let note = try NoteDocument.decode(noteJSON(schema: 10,
+                flow: #"{"id":"v2","format":"markdown","source":"**new**","markdownProfileVersion":\#(raw)}"#))
+            XCTAssertEqual(note.textFlows.first?.markdownProfileVersion, 2)
+            XCTAssertTrue(String(decoding: try note.encoded(), as: UTF8.self).contains("\"markdownProfileVersion\":2"))
+        }
+
+        let invalidValues = ["1", "1.0", "2.5", "3", "null", "\"2\"", "true"]
+        for raw in invalidValues {
+            XCTAssertThrowsError(try NoteDocument.decode(noteJSON(schema: 10,
+                flow: #"{"id":"bad","format":"markdown","source":"x","markdownProfileVersion":\#(raw)}"#)),
+                "profile value \(raw) must be rejected")
+        }
+        XCTAssertThrowsError(try NoteDocument.decode(noteJSON(schema: 9,
+            flow: #"{"id":"old-schema","format":"markdown","source":"x","markdownProfileVersion":2}"#)),
+            "schema 1–9 reject the profile key")
+        XCTAssertThrowsError(try NoteDocument.decode(noteJSON(schema: 10,
+            flow: #"{"id":"latex","format":"latex","source":"x","markdownProfileVersion":2}"#)),
+            "profile 2 is Markdown-only")
+    }
+
+    func testSchema10ProfileSurvivesCanonicalSaveAndColdReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        var note = NoteDocument(title: "schema 10 typography")
+        let flow = NoteTextFlow(id: "typography-flow", format: "markdown", source: "**x $y$**\n\n---",
+            markdownProfileVersion: 2)
+        let untouchedLegacy = NoteTextFlow(id: "untouched-legacy-flow", format: "markdown", source: "**keep old profile**")
+        note.textFlows = [flow, untouchedLegacy]
+        try library.save(note)
+        let reopened = try NoteLibrary(directory: root).openEditorSession(noteID: note.id).document
+        XCTAssertEqual(reopened.schemaVersion, 10)
+        XCTAssertEqual(reopened.textFlows, [flow, untouchedLegacy])
+        XCTAssertEqual(reopened.textFlows[0].effectiveMarkdownProfileVersion, 2)
+        XCTAssertNil(reopened.textFlows[1].markdownProfileVersion, "migration does not backfill unselected legacy flows")
+    }
+
+    func testTypographyProfileCandidateCannotCommitAfterRevisionChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("profile-cas-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        var original = NoteDocument(schemaVersion: 9, title: "Legacy style")
+        let flow = try makeAgentResultFlow(output: "**keep $x$**\n\n---")
+        original.textFlows = [flow]
+        try library.save(original)
+        let captured = try library.openEditorSession(noteID: original.id)
+        XCTAssertEqual(captured.document.schemaVersion, 9, "Synthetic Agent receipt keeps this fixture on the schema-9 CAS path")
+
+        var typographyCandidate = captured.document
+        typographyCandidate.schemaVersion = 10
+        typographyCandidate.textFlows[0].markdownProfileVersion = 2
+        typographyCandidate.updatedAt += 1
+        var intervening = captured.document
+        intervening.title = "Concurrent edit"
+        intervening.updatedAt += 1
+        _ = try library.save(intervening, basedOn: captured)
+
+        XCTAssertThrowsError(try library.save(typographyCandidate, basedOn: captured),
+                             "style preview must use the exact current revision fence")
+        let reopened = try library.openEditorSession(noteID: original.id).document
+        XCTAssertEqual(reopened.title, "Concurrent edit")
+        XCTAssertEqual(reopened.schemaVersion, 9)
+        XCTAssertNil(reopened.textFlows[0].markdownProfileVersion)
+        XCTAssertEqual(reopened.textFlows[0].source, flow.source)
+    }
+
+    func testAcceptedTypographyProfileCommitChangesOnlySelectedFlowAndKeepsReceipt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("profile-commit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        var original = NoteDocument(schemaVersion: 9, title: "Legacy profile save")
+        let selected = try makeAgentResultFlow(output: "Exact **agent $x$** answer")
+        let untouched = NoteTextFlow(id: "other-flow", format: "markdown", source: "Legacy untouched **flow**",
+            anchorPageIndex: 0, anchorXInPage: 80, anchorYInPage: 200)
+        original.textFlows = [selected, untouched]
+        try library.save(original)
+        let captured = try library.openEditorSession(noteID: original.id)
+        var candidate = captured.document
+        candidate.schemaVersion = 10
+        candidate.textFlows[0].markdownProfileVersion = 2
+        candidate.updatedAt += 1
+        let committed = try library.save(candidate, basedOn: captured)
+        let reopened = try NoteLibrary(directory: root).openEditorSession(noteID: original.id).document
+        XCTAssertEqual(committed.document, reopened)
+        XCTAssertEqual(reopened.schemaVersion, 10)
+        XCTAssertEqual(reopened.textFlows[0].source, selected.source)
+        XCTAssertEqual(reopened.textFlows[0].agentResult, selected.agentResult)
+        XCTAssertEqual(reopened.textFlows[0].anchorPageIndex, selected.anchorPageIndex)
+        XCTAssertEqual(reopened.textFlows[0].anchorXInPage, selected.anchorXInPage)
+        XCTAssertEqual(reopened.textFlows[0].anchorYInPage, selected.anchorYInPage)
+        XCTAssertEqual(reopened.textFlows[0].markdownProfileVersion, 2)
+        XCTAssertEqual(reopened.textFlows[1], untouched)
+        XCTAssertNil(reopened.textFlows[1].markdownProfileVersion)
+    }
+
+    func testTypographyCollisionCheckPreservesBaselineAnnotationAndRejectsNewExtent() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { _ in
+            UIColor.black.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        var note = NoteDocument(title: "Existing annotation")
+        var original = NoteTextFlow(id: "profile-collision-flow", format: "markdown", source: "old style",
+            width: 768, anchorXInPage: 100, anchorYInPage: 100)
+        note.textFlows = [original]
+        let sameFootprint = [CompiledTextCache.Unit(image: image, size: CGSize(width: 200, height: 40))]
+        CompiledTextCache.put(sameFootprint, for: original)
+        note.strokes = [
+            InkStroke(baseWidth: 2, points: [InkPoint(x: 295, y: 110), InkPoint(x: 296, y: 110)]),
+            InkStroke(baseWidth: 2, points: [InkPoint(x: 310, y: 110), InkPoint(x: 311, y: 110)])
+        ]
+        var unchanged = note
+        unchanged.textFlows[0].markdownProfileVersion = 2
+        CompiledTextCache.put(sameFootprint, for: unchanged.textFlows[0])
+        XCTAssertNil(try AgentResultPlacementCheck.firstNewConflict(before: note, candidate: unchanged,
+            flowID: original.id, pdfURL: nil), "an existing annotation overlap must remain switchable")
+
+        var wider = unchanged
+        let newFootprint = [CompiledTextCache.Unit(image: image, size: CGSize(width: 300, height: 40))]
+        CompiledTextCache.put(newFootprint, for: wider.textFlows[0])
+        XCTAssertEqual(try AgentResultPlacementCheck.firstNewConflict(before: note, candidate: wider,
+            flowID: original.id, pdfURL: nil), 0, "newly covered ink must block the switch")
+        CompiledTextCache.remove(original)
+        CompiledTextCache.remove(unchanged.textFlows[0])
+        CompiledTextCache.remove(wider.textFlows[0])
+    }
+
+    func testTypographyMigrationPDFChecksOnlyNewFootprintAndFailsClosedWhenMissing() throws {
+        var note = NoteDocument(title: "PDF typography migration", pageCount: 1, pdfPageCount: 1)
+        func makePDF(mark: Bool, name: String) throws -> URL {
+            let bounds = CGRect(x: 0, y: 0, width: note.pageWidth, height: note.pageHeight)
+            let bytes = NSMutableData()
+            UIGraphicsBeginPDFContextToData(bytes, bounds, nil)
+            UIGraphicsBeginPDFPageWithInfo(bounds, nil)
+            if let context = UIGraphicsGetCurrentContext() {
+                context.setFillColor(UIColor.white.cgColor); context.fill(bounds)
+                if mark {
+                    context.setFillColor(UIColor.black.cgColor)
+                    context.fill(CGRect(x: 325, y: 100, width: 12, height: 20))
+                }
+            }
+            UIGraphicsEndPDFContext()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).pdf")
+            try XCTUnwrap(PDFDocument(data: bytes as Data)?.dataRepresentation()).write(to: url)
+            return url
+        }
+        let whiteURL = try makePDF(mark: false, name: "typography-white")
+        let markedURL = try makePDF(mark: true, name: "typography-marked")
+        defer { try? FileManager.default.removeItem(at: whiteURL); try? FileManager.default.removeItem(at: markedURL) }
+        let flow = NoteTextFlow(id: "profile-pdf-flow", format: "markdown", source: "existing annotation",
+            width: 768, anchorXInPage: 100, anchorYInPage: 100)
+        note.textFlows = [flow]
+        let glyph = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { _ in
+            UIColor.black.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        CompiledTextCache.put([CompiledTextCache.Unit(image: glyph, size: CGSize(width: 200, height: 40))], for: flow)
+        var candidate = note
+        candidate.schemaVersion = 10
+        candidate.textFlows[0].markdownProfileVersion = 2
+        CompiledTextCache.put([CompiledTextCache.Unit(image: glyph, size: CGSize(width: 300, height: 40))],
+                              for: candidate.textFlows[0])
+        XCTAssertNil(try AgentResultPlacementCheck.firstNewConflict(before: note, candidate: candidate,
+            flowID: flow.id, pdfURL: whiteURL), "newly occupied PDF whitespace remains available")
+        XCTAssertEqual(try AgentResultPlacementCheck.firstNewConflict(before: note, candidate: candidate,
+            flowID: flow.id, pdfURL: markedURL), 0, "PDF ink under a newly extended fragment blocks migration")
+        XCTAssertThrowsError(try AgentResultPlacementCheck.firstNewConflict(before: note, candidate: candidate,
+            flowID: flow.id, pdfURL: nil), "missing PDF source must fail closed even for a profile-only preview")
+        CompiledTextCache.remove(flow)
+        CompiledTextCache.remove(candidate.textFlows[0])
     }
 
     func testSameContentSaveRepairsMissingOrCorruptCanonicalBeforeReportingSuccess() throws {

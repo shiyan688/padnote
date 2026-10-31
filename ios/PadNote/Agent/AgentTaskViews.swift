@@ -243,12 +243,43 @@ private struct AgentTaskComposeView: View {
     }
 }
 
+private enum AgentTaskResultFlowFactory {
+    static func make(task: AgentTaskRecord, exactOutput: String) throws -> NoteTextFlow {
+        guard exactOutput.utf16.count <= 100_000, Data(exactOutput.utf8).count <= 400_000,
+              !exactOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              task.payload.source.noteRevision >= 0 else {
+            throw NoteDocumentError.tooLarge("结果为空或超出笔记支持的长度。")
+        }
+        let resultDigest = SHA256.hash(data: Data(exactOutput.utf8)).map { String(format: "%02x", $0) }.joined()
+        let taskID = task.payload.clientTaskID.lowercased()
+        let connectionID = task.connection.connectionID.uuidString
+        let instanceID = task.connection.instanceID.flatMap { $0.isEmpty ? nil : $0 }
+        let kind = task.connection.kind.rawValue.lowercased()
+        let transport = task.connection.transport.rawValue.lowercased()
+        let material = ["padnote.agent-result.v1", taskID, connectionID, instanceID ?? "", kind, transport, resultDigest]
+            .joined(separator: "\n")
+        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        let receipt = AgentResultReceipt(applicationId: applicationID, taskId: taskID,
+            connectionId: connectionID, instanceId: instanceID, agentKind: kind, transport: transport,
+            sourceNoteId: task.payload.source.noteID.isEmpty ? nil : task.payload.source.noteID,
+            sourceNoteRevision: Int64(task.payload.source.noteRevision),
+            resultSha256: resultDigest, addedAt: Int64(Date().timeIntervalSince1970 * 1000))
+        let flow = NoteTextFlow(id: "flow-agent-\(applicationID)", format: "markdown", source: exactOutput,
+                                fontSizeSp: 18, lineHeight: 1.35, width: 736,
+                                anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40,
+                                agentResult: receipt)
+        try receipt.validate()
+        return flow
+    }
+}
+
 public struct AgentTaskDetailView: View {
     let taskID: UUID
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var noteLibrary: NoteLibrary
     @State private var task: AgentTaskRecord?
+    @State private var savedAgentResult: NoteSavedAgentResult?
     @State private var noteVideoAttachments: [NoteVideoAttachment] = []
     @State private var unavailableVideoAttachmentCount = 0
     @State private var history: [AgentTaskRecord] = []
@@ -323,6 +354,18 @@ public struct AgentTaskDetailView: View {
                                     showingResultToPaper = true
                                 }
                                 .accessibilityIdentifier("agentResultPreviewToPaper")
+                                if let savedAgentResult {
+                                    NavigationLink {
+                                        NoteEditorView(note: savedAgentResult.document,
+                                            session: savedAgentResult.session,
+                                            initialPage: savedAgentResult.pageIndex,
+                                            showsShelfBackButton: false)
+                                            .environmentObject(noteLibrary)
+                                    } label: {
+                                        Label("打开已添加的笔记", systemImage: "doc.text.magnifyingglass")
+                                    }
+                                    .accessibilityIdentifier("agentTaskOpenSavedNote")
+                                }
                             }
                         }
                     }
@@ -489,6 +532,13 @@ public struct AgentTaskDetailView: View {
             .navigationTitle(task?.payload.title ?? "任务详情")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .task(id: scenePhase) { await loadAndPoll() }
+            .onChange(of: noteLibrary.notes) { _, _ in
+                if let task { refreshSavedAgentResult(for: task) }
+            }
+            .onChange(of: task) { _, current in
+                if let current { refreshSavedAgentResult(for: current) }
+                else { savedAgentResult = nil }
+            }
             .onAppear { refreshBuiltinVideoArtifactsAfterReturn(); loadNoteVideoAttachments() }
             .sheet(item: $artifactPresentation) { presentation in
                 switch presentation {
@@ -532,7 +582,11 @@ public struct AgentTaskDetailView: View {
             fixtureRetrySnapshot = AgentTaskUITestURLProtocol.retryCapture()
         }
 #endif
-        do { task = try store.task(id: taskID); reloadHistory(); loadNoteVideoAttachments(); error = nil }
+        do {
+            task = try store.task(id: taskID)
+            if let task { refreshSavedAgentResult(for: task) }
+            reloadHistory(); loadNoteVideoAttachments(); error = nil
+        }
         catch { self.error = error.localizedDescription; return }
         guard scenePhase == .active else { return }
         var failureDelay = 2.5
@@ -540,6 +594,7 @@ public struct AgentTaskDetailView: View {
             do {
                 try await Task.sleep(for: .seconds(failureDelay))
                 task = try await service.refresh(id: taskID)
+                if let task { refreshSavedAgentResult(for: task) }
                 reloadHistory()
                 error = nil
                 failureDelay = 2.5
@@ -675,6 +730,15 @@ public struct AgentTaskDetailView: View {
 
     private func reloadHistory() {
         history = (try? store.history(for: taskID)) ?? []
+    }
+
+    private func refreshSavedAgentResult(for task: AgentTaskRecord) {
+        guard task.status == .completed, let output = task.output,
+              let expected = try? AgentTaskResultFlowFactory.make(task: task, exactOutput: output) else {
+            savedAgentResult = nil
+            return
+        }
+        savedAgentResult = noteLibrary.savedAgentResult(matching: expected)
     }
 }
 
@@ -952,11 +1016,7 @@ private struct AgentResultToPaperView: View {
                     let placement = pointPlacementEnabled ? AgentResultPlacement(mode: .point, pageIndex: placementPage,
                         xInPage: placementX, yInPage: placementY, width: placementWidth) : nil
                     let pdf = previewPDFURL
-                    let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document,
-                        addFinalPage: true, placement: placement, pdfURL: pdf,
-                        checkPointConflicts: false, preparingRenderer: true)
-                    try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
-                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document,
+                    let candidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow, to: session.document,
                         addFinalPage: true, placement: placement, pdfURL: pdf)
                     guard let paperCandidate, Self.samePaperGeometry(candidate.document, paperCandidate) else {
                         throw NoteDocumentError.malformed("预览布局已变化，请重新生成纸面预览后再确认。")
@@ -969,9 +1029,7 @@ private struct AgentResultToPaperView: View {
                     guard !title.isEmpty else { throw NoteDocumentError.malformed("请填写新笔记名称。") }
                     newNoteBase.title = String(title.prefix(200))
                     let base = newNoteBase
-                    let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: base, addFinalPage: false)
-                    try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
-                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: base, addFinalPage: false)
+                    let candidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow, to: base, addFinalPage: false)
                     guard let paperCandidate, Self.samePaperGeometry(candidate.document, paperCandidate) else {
                         throw NoteDocumentError.malformed("预览布局已变化，请重新生成纸面预览后再确认。")
                     }
@@ -1032,11 +1090,7 @@ private struct AgentResultToPaperView: View {
                     renderPaperPage(existing.anchorPageIndex)
                     return
                 }
-                let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: base,
-                    addFinalPage: previewSession != nil, placement: request,
-                    pdfURL: previewPDFURL, checkPointConflicts: false, preparingRenderer: true)
-                try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
-                let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: base,
+                let candidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow, to: base,
                     addFinalPage: previewSession != nil, placement: request,
                     pdfURL: previewPDFURL)
                 try Task.checkCancellation()
@@ -1124,31 +1178,7 @@ private struct AgentResultToPaperView: View {
 #endif
 
     private func makeFlow(for task: AgentTaskRecord, exactOutput: String) throws -> NoteTextFlow {
-        guard exactOutput.utf16.count <= 100_000, Data(exactOutput.utf8).count <= 400_000,
-              !exactOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              task.payload.source.noteRevision >= 0 else {
-            throw NoteDocumentError.tooLarge("结果为空或超出笔记支持的长度。")
-        }
-        let resultDigest = SHA256.hash(data: Data(exactOutput.utf8)).map { String(format: "%02x", $0) }.joined()
-        let taskID = task.payload.clientTaskID.lowercased()
-        let connectionID = task.connection.connectionID.uuidString
-        let instanceID = task.connection.instanceID.flatMap { $0.isEmpty ? nil : $0 }
-        let kind = task.connection.kind.rawValue.lowercased()
-        let transport = task.connection.transport.rawValue.lowercased()
-        let material = ["padnote.agent-result.v1", taskID, connectionID, instanceID ?? "", kind, transport, resultDigest]
-            .joined(separator: "\n")
-        let applicationID = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
-        let receipt = AgentResultReceipt(applicationId: applicationID, taskId: taskID,
-            connectionId: connectionID, instanceId: instanceID, agentKind: kind, transport: transport,
-            sourceNoteId: task.payload.source.noteID.isEmpty ? nil : task.payload.source.noteID,
-            sourceNoteRevision: Int64(task.payload.source.noteRevision),
-            resultSha256: resultDigest, addedAt: Int64(Date().timeIntervalSince1970 * 1000))
-        let flow = NoteTextFlow(id: "flow-agent-\(applicationID)", format: "markdown", source: exactOutput,
-                                fontSizeSp: 18, lineHeight: 1.35, width: 736,
-                                anchorPageIndex: 0, anchorXInPage: 16, anchorYInPage: 40,
-                                agentResult: receipt)
-        try receipt.validate()
-        return flow
+        try AgentTaskResultFlowFactory.make(task: task, exactOutput: exactOutput)
     }
 }
 

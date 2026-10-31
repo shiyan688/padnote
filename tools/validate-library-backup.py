@@ -76,6 +76,15 @@ def integer(value, minimum=0, maximum=(1 << 63) - 1):
     return type(value) is int and minimum <= value <= maximum
 
 
+def json_integer_value(value, minimum, maximum):
+    """JSON numeric integer value semantics; canonical writers still emit ints."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        return minimum <= value <= maximum
+    return math.isfinite(value) and value.is_integer() and minimum <= value <= maximum
+
+
 def safe_member(path):
     if not isinstance(path, str) or not path or "\\" in path or "\x00" in path or ":" in path:
         return False
@@ -169,7 +178,7 @@ def validate_manifest(m):
         items[iid] = note
         checked_text(note["source_note_id"])
         if not integer(note["source_revision_ms"]): fail("TIME_INVALID")
-        if type(note["note_schema_version"]) is not int or not 1 <= note["note_schema_version"] <= 8: fail("NOTE_SCHEMA")
+        if not json_integer_value(note["note_schema_version"], 1, 10): fail("NOTE_SCHEMA")
         use(note["note_resource_id"], "note_document")
         if note["pdf_resource_id"] is not None: use(note["pdf_resource_id"], "pdf_original")
         if note["cover_resource_id"] is not None: use(note["cover_resource_id"], "assigned_cover_png")
@@ -413,17 +422,42 @@ def read_verified_member(path: Path, info: zipfile.ZipInfo, limit: int) -> bytes
     return b"".join(chunks)
 
 
+def validate_markdown_profile(flow, note_schema_version):
+    """Validate the shared C38 optional per-Markdown-flow profile boundary."""
+    if not isinstance(flow, dict):
+        if note_schema_version >= 10: fail("NOTE_FLOW_INVALID")
+        return 1
+    if "markdownProfileVersion" not in flow:
+        return 1
+    if note_schema_version <= 9:
+        fail("MARKDOWN_PROFILE_SCHEMA")
+    if flow.get("format") != "markdown":
+        fail("MARKDOWN_PROFILE_FORMAT")
+    value = flow["markdownProfileVersion"]
+    # JSON numeric 2, 2.0, and 2e0 share numeric value semantics. bool is
+    # deliberately excluded despite being an int subclass in Python.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value) or value != 2:
+        fail("MARKDOWN_PROFILE_INVALID")
+    return 2
+
+
 def validate_note_payload(note, payload):
     if not isinstance(payload, dict): fail("NOTE_DOCUMENT_INVALID")
     version = payload.get("schemaVersion")
-    if type(version) is not int or version != note["note_schema_version"]: fail("NOTE_SCHEMA_MISMATCH")
+    if not json_integer_value(version, 1, 10) or version != note["note_schema_version"]: fail("NOTE_SCHEMA_MISMATCH")
+    version = int(version)
     if payload.get("id") != note["source_note_id"]: fail("NOTE_SOURCE_ID_MISMATCH")
     updated = payload.get("updatedAt")
     if isinstance(updated, bool) or not isinstance(updated, (int, float)) or not math.isfinite(updated) or updated < 0:
         fail("NOTE_UPDATED_AT_INVALID")
     if math.floor(updated) != note["source_revision_ms"]: fail("NOTE_REVISION_MISMATCH")
     if not isinstance(payload.get("strokes"), list): fail("NOTE_STROKES_MISSING")
-    if version >= 5 and not isinstance(payload.get("textFlows"), list): fail("NOTE_TEXT_FLOWS_MISSING")
+    if version >= 5:
+        flows = payload.get("textFlows")
+        if not isinstance(flows, list): fail("NOTE_TEXT_FLOWS_MISSING")
+        for flow in flows:
+            validate_markdown_profile(flow, version)
     if 3 <= version <= 4 and not isinstance(payload.get("textBoxes"), list): fail("NOTE_TEXT_BOXES_MISSING")
     pdf_pages = payload.get("pdfPageCount", 0)
     page_count = payload.get("pageCount", 1)

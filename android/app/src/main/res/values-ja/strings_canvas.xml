@@ -125,4 +125,21 @@
     <string name="core_manual_draft_input_limit">この編集はローカル下書きの1,000,000文字上限を超えています。入力全体を拒否し、既存のテキストを保持しました。</string>
     <string name="core_manual_draft_cleanup_failed">復元用下書きは削除されず、この端末に残っています。ノートの「その他」メニューから再試行できます。</string>
     <string name="canvas_pdf_page_size_invalid">PDFの用紙サイズが無効か、書き出し可能な範囲を超えています。元のノートを残し、より小さい用紙サイズで再試行してください。</string>
+    <string name="canvas_typography_switch">レイアウトを切り替え</string>
+    <string name="canvas_typography_title">この内容の新しいレイアウトをプレビュー</string>
+    <string name="canvas_typography_old">以前のレイアウト</string>
+    <string name="canvas_typography_new">新しいレイアウト</string>
+    <string name="canvas_typography_apply_new">新しいレイアウトを適用</string>
+    <string name="canvas_typography_apply_old">以前のレイアウトを適用</string>
+    <string name="canvas_typography_keep">現在のレイアウトを維持</string>
+    <string name="canvas_typography_compat_warning">レイアウトを変更すると、古いバージョンのアプリでこのノートを開けなくなる場合があります。元のレイアウトに戻しても見た目が変わるだけで、古いバージョンとの互換性は戻りません。</string>
+    <string name="canvas_typography_style_only">現在の内容の表示スタイルだけを切り替えます。過去の編集内容は復元しません。</string>
+    <string name="canvas_typography_page">%1$d / %2$d ページ</string>
+    <string name="canvas_typography_preview_failed">新しいレイアウトをプレビューできませんでした。ノートは変更されていません: %s</string>
+    <string name="canvas_typography_stale">プレビュー中にノートが変更されました。プレビューを開き直してください。元の内容は変更されていません。</string>
+    <string name="canvas_typography_previous_page">プレビューの前のページ</string>
+    <string name="canvas_typography_next_page">プレビューの次のページ</string>
+    <string name="canvas_typography_preparing">全ページのプレビューを準備しています…</string>
+    <string name="canvas_typography_measurement_failed">新しいレイアウトが切れているか、測定を完了できませんでした。</string>
+    <string name="canvas_typography_save_first">現在の編集を完了して保存してから、レイアウトを変更してください。</string>
 </resources>

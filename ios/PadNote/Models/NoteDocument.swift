@@ -196,11 +196,16 @@ public struct NoteTextFlow: Codable, Identifiable, Equatable {
     public var anchorXInPage: Double
     public var anchorYInPage: Double
     public var agentResult: AgentResultReceipt?
+    /// Absent means the legacy Markdown renderer profile (v1). Only Markdown
+    /// flows in schema 10 may persist the corrected profile value 2.
+    public var markdownProfileVersion: Int?
+    public var effectiveMarkdownProfileVersion: Int { markdownProfileVersion ?? 1 }
 
     public init(id: String = UUID().uuidString, format: String = "latex", source: String = "",
                 fontSizeSp: Double = 16, lineHeight: Double = 1.35, width: Double = 360,
                 anchorPageIndex: Int = 0, anchorXInPage: Double = 0,
-                anchorYInPage: Double = 0, agentResult: AgentResultReceipt? = nil) {
+                anchorYInPage: Double = 0, agentResult: AgentResultReceipt? = nil,
+                markdownProfileVersion: Int? = nil) {
         self.id = id
         self.format = format
         self.source = source
@@ -211,9 +216,13 @@ public struct NoteTextFlow: Codable, Identifiable, Equatable {
         self.anchorXInPage = anchorXInPage
         self.anchorYInPage = anchorYInPage
         self.agentResult = agentResult
+        self.markdownProfileVersion = markdownProfileVersion
     }
 
-    private enum CodingKeys: String, CodingKey, CaseIterable { case id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex, anchorXInPage, anchorYInPage, agentResult }
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case id, format, source, fontSizeSp, lineHeight, width, anchorPageIndex
+        case anchorXInPage, anchorYInPage, agentResult, markdownProfileVersion
+    }
     public init(from decoder: Decoder) throws {
         let raw = try decoder.container(keyedBy: NoteJSONKey.self)
         let allKeys = Set(CodingKeys.allCases.map(\.rawValue))
@@ -228,7 +237,9 @@ public struct NoteTextFlow: Codable, Identifiable, Equatable {
                   anchorPageIndex: try c.decodeIfPresent(Int.self, forKey: .anchorPageIndex) ?? 0,
                   anchorXInPage: try c.decodeIfPresent(Double.self, forKey: .anchorXInPage) ?? 0,
                   anchorYInPage: try c.decodeIfPresent(Double.self, forKey: .anchorYInPage) ?? 0,
-                  agentResult: c.contains(.agentResult) ? try c.decode(AgentResultReceipt.self, forKey: .agentResult) : nil)
+                  agentResult: c.contains(.agentResult) ? try c.decode(AgentResultReceipt.self, forKey: .agentResult) : nil,
+                  markdownProfileVersion: c.contains(.markdownProfileVersion)
+                    ? try c.decode(Int.self, forKey: .markdownProfileVersion) : nil)
     }
 }
 
@@ -316,7 +327,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public var shelfState: String?
     public var shelfRetiredAt: Int64?
 
-    public init(schemaVersion: Int = 8, id: String = UUID().uuidString,
+    public init(schemaVersion: Int = 10, id: String = UUID().uuidString,
                 title: String = "未命名笔记", updatedAt: Double = NoteDocument.nowMillis(),
                 pageWidth: Double = 768, pageHeight: Double = 1086, pageGap: Double = 24,
                 pageCount: Int = 1, pdfPageCount: Int = 0, strokes: [InkStroke] = [],
@@ -360,7 +371,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     }
 
     public func validated() throws -> NoteDocument {
-        guard (1...9).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...10).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard !id.isEmpty, id.count <= 120, safeIdentifier(id) else { throw NoteDocumentError.malformed("Invalid note id") }
         guard title.count <= 200 else { throw NoteDocumentError.malformed("Note title is too long") }
         try checkFinite(updatedAt, "updatedAt")
@@ -420,8 +431,8 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         guard textFlows.count <= 2_000 else { throw NoteDocumentError.tooLarge("Too many text flows") }
         var flowIDs = Set<String>()
         let hasAgentResults = textFlows.contains { $0.agentResult != nil }
-        guard !hasAgentResults || schemaVersion == 9 else {
-            throw NoteDocumentError.malformed("Agent result provenance requires schema version 9")
+        guard !hasAgentResults || (schemaVersion == 9 || schemaVersion == 10) else {
+            throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or 10")
         }
         for flow in textFlows {
             guard !flow.id.isEmpty && flow.id.count <= 120 && safeIdentifier(flow.id) else { throw NoteDocumentError.malformed("Invalid text flow id") }
@@ -434,8 +445,13 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
                     throw NoteDocumentError.tooLarge("Agent result text exceeds the shared size limit")
                 }
                 try receipt.validate()
-                guard schemaVersion == 9 else {
-                    throw NoteDocumentError.malformed("Agent result provenance requires schema version 9")
+                guard schemaVersion == 9 || schemaVersion == 10 else {
+                    throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or 10")
+                }
+            }
+            if let profile = flow.markdownProfileVersion {
+                guard schemaVersion == 10, profile == 2, flow.format.lowercased() == "markdown" else {
+                    throw NoteDocumentError.malformed("markdownProfileVersion is only valid as integer 2 on Markdown flows in schema 10")
                 }
             }
             try checkFinite(flow.fontSizeSp, "font size"); try checkFinite(flow.lineHeight, "line height"); try checkFinite(flow.width, "text width")
@@ -532,7 +548,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
-        guard (1...9).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...10).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard c.contains(.strokes) else { throw NoteDocumentError.malformed("Note is missing strokes data") }
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? "未命名笔记"

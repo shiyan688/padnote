@@ -120,7 +120,8 @@ struct PadNoteApp: App {
             let flowID = "outline-flow-\(fixtureID)"
             var note = NoteDocument(id: "outline-note-\(fixtureID)", title: "内容大纲测试笔记",
                 pageCount: 2, textFlows: [NoteTextFlow(id: flowID, format: "markdown",
-                    source: "第二页的合成测试正文", anchorPageIndex: 1, anchorXInPage: 32, anchorYInPage: 48)])
+                    source: "第二页的合成测试正文", anchorPageIndex: 1, anchorXInPage: 32, anchorYInPage: 48,
+                    markdownProfileVersion: 2)])
             note.updatedAt = Date().timeIntervalSince1970 * 1000
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -768,7 +769,7 @@ private struct AgentResultPaperUITestFixture {
         let noteDirectory = root.appendingPathComponent("notes", isDirectory: true)
         let library = NoteLibrary(directory: noteDirectory)
         if !library.notes.contains(where: { $0.id == noteID }) {
-            let note = NoteDocument(id: noteID, title: "Synthetic result-to-paper note",
+            let note = NoteDocument(schemaVersion: 9, id: noteID, title: "Synthetic result-to-paper note",
                                     updatedAt: NoteDocument.nowMillis(), pageCount: 1)
             do { try library.save(note) }
             catch { preconditionFailure("Could not seed isolated result-to-paper note: \(error)") }
@@ -844,7 +845,7 @@ private struct AgentResultPaperUITestHost: View {
         let taskMatches = receipt?.taskId == fixture.taskID.uuidString.lowercased()
         let exactX = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorXInPage ?? -1)
         let exactY = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorYInPage ?? -1)
-        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); sourceExact=\(sourceExact); sourceDigestMatches=\(sourceDigestMatches); taskMatches=\(taskMatches); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1)); exactAnchor=\(first?.anchorPageIndex ?? -1),\(exactX),\(exactY)"
+        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); profile=\(first?.effectiveMarkdownProfileVersion ?? 0); sourceExact=\(sourceExact); sourceDigestMatches=\(sourceDigestMatches); taskMatches=\(taskMatches); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1)); exactAnchor=\(first?.anchorPageIndex ?? -1),\(exactX),\(exactY)"
     }
 
     var body: some View {

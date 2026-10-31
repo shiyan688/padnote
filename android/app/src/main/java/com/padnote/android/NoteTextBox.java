@@ -36,6 +36,8 @@ final class NoteTextBox {
     int flowIndex;
     int flowCount;
     Format format;
+    /** Effective per-flow profile captured when this derived fragment was laid out. */
+    int markdownProfileVersion = 1;
     /** The owning flow's full source, shared by reference. */
     String source;
     /** Just the slice of {@link #source} rendered on this page. */
@@ -56,11 +58,26 @@ final class NoteTextBox {
                 Format format, String source, String fragmentSource, float fontSizeSp,
                 float lineHeight, int pageIndex, float x, float y, float width,
                 float height) {
+        this(id, flowId, flowIndex, flowCount, format, source, fragmentSource,
+                fontSizeSp, lineHeight, pageIndex, x, y, width, height, 1);
+    }
+
+    NoteTextBox(String id, String flowId, int flowIndex, int flowCount,
+                Format format, String source, String fragmentSource, float fontSizeSp,
+                float lineHeight, int pageIndex, float x, float y, float width,
+                float height, int markdownProfileVersion) {
         this.id = id;
         this.flowId = flowId == null || flowId.trim().isEmpty() ? id : flowId;
         this.flowIndex = Math.max(0, flowIndex);
         this.flowCount = Math.max(1, flowCount);
         this.format = format == null ? Format.LATEX : format;
+        if (markdownProfileVersion != 1 && markdownProfileVersion != 2) {
+            throw new IllegalArgumentException("Invalid Markdown profile for fragment");
+        }
+        if (this.format != Format.MARKDOWN && markdownProfileVersion != 1) {
+            throw new IllegalArgumentException("Markdown profile on non-Markdown fragment");
+        }
+        this.markdownProfileVersion = markdownProfileVersion;
         this.source = source == null ? "" : source;
         this.fragmentSource = fragmentSource == null ? this.source : fragmentSource;
         this.fontSizeSp = TextFlow.clampFontSize(fontSizeSp);
@@ -74,9 +91,15 @@ final class NoteTextBox {
 
     NoteTextBox copy() {
         NoteTextBox duplicate = new NoteTextBox(id, flowId, flowIndex, flowCount, format, source,
-                fragmentSource, fontSizeSp, lineHeight, pageIndex, x, y, width, height);
+                fragmentSource, fontSizeSp, lineHeight, pageIndex, x, y, width, height,
+                markdownProfileVersion);
         duplicate.renderLayoutEpoch = renderLayoutEpoch;
         return duplicate;
+    }
+
+    /** Effective profile on this derived fragment; non-Markdown content stays legacy. */
+    int effectiveMarkdownProfileVersion() {
+        return format == Format.MARKDOWN ? markdownProfileVersion : 1;
     }
 
     String displaySource() {

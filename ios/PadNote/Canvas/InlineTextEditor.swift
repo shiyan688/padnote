@@ -30,7 +30,8 @@ final class CanvasTextEditor {
         guard page >= 0, page < note.pageCount, y >= 0, y < note.pageHeight else { return }
         let x = min(max(24, point.x), max(24, note.pageWidth - 184))
         let flow = NoteTextFlow(format: "markdown", width: min(440, note.pageWidth - x - 24),
-            anchorPageIndex: page, anchorXInPage: x, anchorYInPage: min(y, note.pageHeight - 64))
+            anchorPageIndex: page, anchorXInPage: x, anchorYInPage: min(y, note.pageHeight - 64),
+            markdownProfileVersion: note.schemaVersion == 10 ? 2 : nil)
         show(flow)
     }
 
@@ -105,7 +106,8 @@ private final class InlineTextInput: UIView, UITextViewDelegate {
 
     init(flow: NoteTextFlow) {
         size = flow.fontSizeSp; spacing = flow.lineHeight
-        preview = UIHostingController(rootView: MathTextView(source: flow.source, fontSize: flow.fontSizeSp, format: flow.format))
+        preview = UIHostingController(rootView: MathTextView(source: flow.source, fontSize: flow.fontSizeSp,
+            format: flow.format, markdownProfileVersion: flow.effectiveMarkdownProfileVersion))
         super.init(frame: .zero)
         backgroundColor = UIColor.white
         layer.borderColor = UIColor(red: 0.16, green: 0.37, blue: 0.66, alpha: 1).cgColor
@@ -146,7 +148,10 @@ private final class InlineTextInput: UIView, UITextViewDelegate {
         preview.view.frame = CGRect(x: 4, y: sourceView.frame.maxY, width: bounds.width - 8, height: bounds.height - sourceView.frame.maxY - 44)
         bottom.frame = CGRect(x: 8, y: bounds.height - 44, width: bounds.width - 16, height: 40)
     }
-    func updatePreview(_ flow: NoteTextFlow) { preview.rootView = MathTextView(source: flow.source, fontSize: flow.fontSizeSp, format: flow.format) }
+    func updatePreview(_ flow: NoteTextFlow) {
+        preview.rootView = MathTextView(source: flow.source, fontSize: flow.fontSizeSp,
+            format: flow.format, markdownProfileVersion: flow.effectiveMarkdownProfileVersion)
+    }
     func textViewDidChange(_ textView: UITextView) { changed() }
     @objc private func changed() { onChange?(sourceView.text, format.selectedSegmentIndex == 0 ? "latex" : "markdown", size, spacing) }
     @objc private func finish() { onDone?() }

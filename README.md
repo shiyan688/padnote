@@ -24,7 +24,7 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 在电脑任务列表查看进度；完成后预览结果并可添加回笔记 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 37 变更与检查](BETA37_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 38 排版与兼容检查](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
 ## 从一份示例开始
@@ -134,23 +134,23 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 </details>
 
-## Beta 37：纸面视口与连接诊断
+## Beta 38：纸面排版切换
 
-Android 与 iPad 在把 Agent 文字结果添加到纸面时，纸面预览支持缩放和平移；预览视图状态与笔记内容分离，点选落点仍按逻辑页面坐标保存。Windows 连接助手把“连接已建立但 HTTP 未及时响应”与连接失败及错误服务区分；不把端口监听当作 Hermes 就绪，也不自动重试不确定的 POST。完整验证与发布限制见 [Beta 37 检查说明](BETA37_TESTING.md)。
+打开旧笔记时，原有排版保持不变。想换用新版时，先预览整张纸面，再确认切换。新版改善粗体与行内公式、嵌套强调和分隔线的呈现，同时保留代码、表格、链接、引用和数学内容。切回旧版只改变排版，不撤回当前文字或自动缩减已有页面。
 
-- **Android 平板：**beta.37 APK（versionCode 70）。
-- **Windows：**beta.37 Setup 与 Portable 已构建并核验包内容/版本信息；Portable 服务通过隔离验收，Setup 安装器和 GUI launcher 未测试。安装包不附带 Hermes、模型或 API 密钥。
-- **iPad：**提供 149 文件的源码闭包，没有签名 IPA。
+新版格式使用 schema 10，较早版本的 PadNote 不支持。把新格式笔记发到其他设备前，请先更新那台设备。
 
-本版安装包与源码不附带 Agent 生成的函数图。
+同一段合成测试文字的旧版与新版 Android 导出效果见下图。它们展示纸面排版，不是 AI 或 Agent 的回答。打开旧笔记后可先看完整预览，再决定是否采用新版。
 
-电脑任务面向你明确选择并配对、且支持 PadNote 笔记任务的 Agent。多个 Hermes 配置各自对应不同 Agent 身份、凭据和任务归属；连接助手使用你自己的配置，密钥仅在其进程内存中使用，重开后需明确重连。未知网关模式先用默认配置，再由你选择命名配置；不会自动修改 provider 或重启外部管理的网关。OpenClaw 提供发现与设置引导，但这不代表 PadNote 笔记任务已接入 OpenClaw；Codex 纸面任务尚未接入。
+| 旧版排版 | 新版排版 |
+| --- | --- |
+| <img src="docs/media/2026-10-31/typography-legacy-page-1.png" alt="合成测试内容的旧版排版，Android 导出第一页" width="420"> | <img src="docs/media/2026-10-31/typography-new-page-1.png" alt="同一合成测试内容的新版排版，Android 导出第一页" width="420"> |
 
-更多边界与开发状态见[开发状态与后续工作](docs/DEVELOPMENT_STATUS.md)。
+- **Android：**beta.38，versionCode 71。兼容规则与检查范围见 [Beta 38 检查说明](BETA38_TESTING.md)。
+- **iPad：**提供源码，不含签名 IPA。已添加的任务结果在重启 PadNote 后仍可从原任务直接打开对应笔记。
+- **Windows：**连接助手沿用 beta.37，本版不包含新的桌面构建。
 
-## 下载与校验
-
-Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：本轮均为 beta.37。Windows 安装尚未测试；请先阅读 [Beta 37 检查说明](BETA37_TESTING.md) 中的限制。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
+本版示例还包含经授权公开的真实平板手写页；桌面管理界面示意使用合成数据。演示二维码指向 `demo.invalid`。
 
 ## 从源码构建
 

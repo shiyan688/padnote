@@ -12,6 +12,7 @@ import warnings
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+_UNSET = object()
 VALIDATOR_PATH = ROOT / "tools/validate-library-backup.py"
 GENERATOR_PATH = ROOT / "docs/fixtures/library-backup-r1/generate-fixtures.py"
 
@@ -105,6 +106,30 @@ class BackupValidatorTests(unittest.TestCase):
             validator.validate_archive(path)
         if expected:
             self.assertEqual(str(caught.exception), expected)
+
+    def archive_with_note_schema_profile(self, name, schema_version, profile_marker="absent", flow_format="markdown", manifest_schema_value=_UNSET, payload_schema_value=_UNSET):
+        manifest, payload_rows = generator.make()
+        note = manifest["notes"][0]
+        note["note_schema_version"] = schema_version if manifest_schema_value is _UNSET else manifest_schema_value
+        rid = note["note_resource_id"]
+        body = json.loads(payload_rows[rid][2])
+        body["schemaVersion"] = schema_version if payload_schema_value is _UNSET else payload_schema_value
+        flow = {"id": "flow-profile-fixture", "format": flow_format, "source": "**x**",
+                "fontSizeSp": 18, "lineHeight": 1.3, "width": 400,
+                "anchorPageIndex": 0, "anchorXInPage": 24, "anchorYInPage": 40}
+        if profile_marker != "absent":
+            flow["markdownProfileVersion"] = 2.0 if profile_marker == "json-2e0" else profile_marker
+        body["textFlows"] = [flow]
+        raw = generator.jbytes(body)
+        if profile_marker == "json-2e0":
+            raw = raw.replace(b'"markdownProfileVersion":2.0', b'"markdownProfileVersion":2e0')
+        payload_rows[rid] = ("note_document", "application/json", raw)
+        resource = next(row for row in manifest["resources"] if row["resource_id"] == rid)
+        resource["byte_length"] = len(raw)
+        resource["sha256"] = hashlib.sha256(raw).hexdigest()
+        entries = [("manifest.json", generator.jbytes(manifest))]
+        entries.extend((row["member"], payload_rows[row["resource_id"]][2]) for row in manifest["resources"])
+        return self.put(name, zip_bytes(entries))
 
     def test_canonical_fixture_validates_and_carries_cross_platform_cases(self):
         raw = zip_bytes(self.entries)
@@ -287,10 +312,68 @@ class BackupValidatorTests(unittest.TestCase):
         duplicate_json = b'{"format":"com.padnote.library-archive","format":"again"}'
         self.rejected(self.put("duplicate-json.zip", zip_bytes([("manifest.json", duplicate_json)])), "JSON_DUPLICATE_KEY")
 
+    def test_schema9_and_schema10_archive_profile_roundtrip_contract(self):
+        cases = ((9, "absent", _UNSET, _UNSET), (9.0, "absent", 9.0, 9.0),
+                 (10, "absent", _UNSET, _UNSET), (10, 2, _UNSET, _UNSET), (10, 2.0, _UNSET, _UNSET),
+                 (10, "json-2e0", _UNSET, 10.0))
+        for index, (schema_version, profile, manifest_schema_value, payload_schema_value) in enumerate(cases):
+            with self.subTest(schema=schema_version, profile=profile):
+                archive_path = self.archive_with_note_schema_profile(
+                    f"schema-profile-{index}.zip", int(schema_version), profile,
+                    manifest_schema_value=manifest_schema_value, payload_schema_value=payload_schema_value)
+                result = validator.validate_archive(archive_path)
+                self.assertEqual(result["notes"], 2)
+                with zipfile.ZipFile(archive_path) as archive:
+                    manifest = json.loads(archive.read("manifest.json"))
+                    note = manifest["notes"][0]
+                    resource = next(row for row in manifest["resources"] if row["resource_id"] == note["note_resource_id"])
+                    note_payload = json.loads(archive.read(resource["member"]))
+                    self.assertEqual(note_payload["textFlows"][0]["source"], "**x**")
+                    if profile == "absent":
+                        self.assertNotIn("markdownProfileVersion", note_payload["textFlows"][0])
+                    else:
+                        self.assertEqual(note_payload["textFlows"][0]["markdownProfileVersion"], 2)
+
+    def test_schema_versions_use_numeric_integer_value_semantics(self):
+        result = validator.validate_archive(self.archive_with_note_schema_profile(
+            "schema-10-integral-float.zip", 10, "absent", manifest_schema_value=10.0, payload_schema_value=10.0))
+        self.assertEqual(result["notes"], 2)
+        for index, value in enumerate((True, "10", 10.5, 11, None)):
+            with self.subTest(value=value):
+                path = self.archive_with_note_schema_profile(
+                    f"schema-invalid-{index}.zip", 10, "absent", manifest_schema_value=value)
+                self.rejected(path, "NOTE_SCHEMA")
+
+    def test_old_schema_rejects_profile_and_schema10_rejects_invalid_values(self):
+        self.rejected(self.archive_with_note_schema_profile("schema9-profile2.zip", 9, 2),
+                      "MARKDOWN_PROFILE_SCHEMA")
+        for index, value in enumerate((1, 1.0, True, None, "2", 2.5, 3)):
+            with self.subTest(value=value):
+                self.rejected(self.archive_with_note_schema_profile(
+                    f"schema10-invalid-profile-{index}.zip", 10, value), "MARKDOWN_PROFILE_INVALID")
+        self.rejected(self.archive_with_note_schema_profile("schema10-profile-on-plain.zip", 10, 2, "plain"),
+                      "MARKDOWN_PROFILE_FORMAT")
+
+    def test_shared_typography_fixture_covers_cross_platform_contract_cases(self):
+        fixture_path = ROOT / "tools/fixtures/TYPOGRAPHY_CASES_R1.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        self.assertEqual(fixture["schema"], "padnote.typography-cases.r1")
+        cases = {case["id"]: case for case in fixture["cases"]}
+        for case_id in ("strong-crosses-inline-math", "nested-emphasis", "inline-code-is-opaque",
+                        "fenced-code-is-opaque", "escaped-delimiters-stay-literal",
+                        "unmatched-delimiters-stay-literal", "thematic-break-hyphens",
+                        "table-alignment-is-not-rule", "links-remain-links", "diagram-fence-remains-code"):
+            self.assertIn(case_id, cases)
+        self.assertTrue(cases["strong-crosses-inline-math"]["expected"]["math_nodes_bold"])
+        schema_cases = fixture["schema_profile_cases"]
+        self.assertTrue(schema_cases["schema_9_absent_profile_defaults_one"]["accepted"])
+        self.assertFalse(schema_cases["schema_9_profile_field_rejected"]["accepted"])
+        self.assertEqual(schema_cases["schema_10_profile_two_numeric_equivalents"]["json_numeric_forms"], ["2.0", "2e0"])
+
     def test_version_scope_missing_nullable_and_strict_integer_edges(self):
         mutations = (
             (lambda m: m.__setitem__("format_version", 99), "FORMAT_UNSUPPORTED"),
-            (lambda m: m["notes"][0].__setitem__("note_schema_version", 9), "NOTE_SCHEMA"),
+            (lambda m: m["notes"][0].__setitem__("note_schema_version", 11), "NOTE_SCHEMA"),
             (lambda m: m["scope"].__setitem__("credentials", True), "FORBIDDEN_SCOPE"),
             (lambda m: m["vault_entries"][1].pop("note_item_id"), "VAULT_FIELDS"),
             (lambda m: m.__setitem__("created_at_ms", 1.0), "TIME_INVALID"),

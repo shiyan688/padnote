@@ -1,0 +1,599 @@
+{
+  "schema": "padnote.typography-cases.r1",
+  "contract": "../../../SHARED_CONTRACT_R1.md",
+  "cases": [
+    {
+      "id": "strong-crosses-inline-math",
+      "profile": 2,
+      "markdown": "**before $x^2$ after**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "before "
+                  },
+                  {
+                    "type": "math",
+                    "value": "x^2"
+                  },
+                  {
+                    "type": "text",
+                    "value": " after"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "literal_markdown_delimiters": false,
+        "math_nodes_bold": true
+      }
+    },
+    {
+      "id": "strong-crosses-multiple-math-nodes",
+      "profile": 2,
+      "markdown": "**$a$ plus $b$**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "math",
+                    "value": "a"
+                  },
+                  {
+                    "type": "text",
+                    "value": " plus "
+                  },
+                  {
+                    "type": "math",
+                    "value": "b"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "literal_markdown_delimiters": false,
+        "math_nodes_bold": true
+      }
+    },
+    {
+      "id": "nested-emphasis",
+      "profile": 2,
+      "markdown": "**outer *inner* outer**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "outer "
+                  },
+                  {
+                    "type": "emphasis",
+                    "children": [
+                      {
+                        "type": "text",
+                        "value": "inner"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "text",
+                    "value": " outer"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "inline-code-is-opaque",
+      "profile": 2,
+      "markdown": "`**not bold** $x$` and **yes $y$**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "code",
+                "value": "**not bold** $x$"
+              },
+              {
+                "type": "text",
+                "value": " and "
+              },
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "yes "
+                  },
+                  {
+                    "type": "math",
+                    "value": "y"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "code_contents_unchanged": true,
+        "math_nodes_bold": true
+      }
+    },
+    {
+      "id": "fenced-code-is-opaque",
+      "profile": 2,
+      "markdown": "```text\n**literal**\n---\n```",
+      "expected": {
+        "blocks": [
+          {
+            "type": "code_block",
+            "language": "text",
+            "value": "**literal**\n---"
+          }
+        ],
+        "thematic_break_count": 0,
+        "code_contents_unchanged": true
+      }
+    },
+    {
+      "id": "escaped-delimiters-stay-literal",
+      "profile": 2,
+      "markdown": "\\*\\*literal\\*\\* and \\$x$",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "text",
+                "value": "**literal** and $x$"
+              }
+            ]
+          }
+        ],
+        "literal_markdown_delimiters": true,
+        "math_node_count": 0
+      }
+    },
+    {
+      "id": "unmatched-delimiters-stay-literal",
+      "profile": 2,
+      "markdown": "**unclosed _also",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "text",
+                "value": "**unclosed _also"
+              }
+            ]
+          }
+        ],
+        "literal_markdown_delimiters": true
+      }
+    },
+    {
+      "id": "legacy-profile-1-regression",
+      "profile": 1,
+      "markdown": "**before $x^2$ after**\n\n---",
+      "expected": {
+        "renderer_contract": "preserve-c37-profile-1-output-semantics",
+        "apply_profile_2_transforms": false
+      }
+    },
+    {
+      "id": "thematic-break-hyphens",
+      "profile": 2,
+      "markdown": "above\n\n---\n\nbelow",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "text",
+                "value": "above"
+              }
+            ]
+          },
+          {
+            "type": "thematic_break"
+          },
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "text",
+                "value": "below"
+              }
+            ]
+          }
+        ],
+        "rendered_as_paragraph_text": false,
+        "measured_height_matches_rendered_height": true
+      }
+    },
+    {
+      "id": "thematic-break-asterisks",
+      "profile": 2,
+      "markdown": "***",
+      "expected": {
+        "blocks": [
+          {
+            "type": "thematic_break"
+          }
+        ],
+        "rendered_as_paragraph_text": false,
+        "measured_height_matches_rendered_height": true
+      }
+    },
+    {
+      "id": "thematic-break-underscores",
+      "profile": 2,
+      "markdown": "___",
+      "expected": {
+        "blocks": [
+          {
+            "type": "thematic_break"
+          }
+        ],
+        "rendered_as_paragraph_text": false,
+        "measured_height_matches_rendered_height": true
+      }
+    },
+    {
+      "id": "table-alignment-is-not-rule",
+      "profile": 2,
+      "markdown": "| left | center | right |\n| :--- | :---: | ---: |\n| a | b | c |",
+      "expected": {
+        "blocks": [
+          {
+            "type": "table",
+            "alignment": [
+              "left",
+              "center",
+              "right"
+            ],
+            "row_count": 2
+          }
+        ],
+        "thematic_break_count": 0
+      }
+    },
+    {
+      "id": "links-remain-links",
+      "profile": 2,
+      "markdown": "[PadNote](https://example.invalid/docs)",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "link",
+                "label": "PadNote",
+                "destination": "https://example.invalid/docs"
+              }
+            ]
+          }
+        ],
+        "destination_unchanged": true
+      }
+    },
+    {
+      "id": "diagram-fence-remains-code",
+      "profile": 2,
+      "markdown": "```mermaid\ngraph TD\nA-->B\n```",
+      "expected": {
+        "blocks": [
+          {
+            "type": "diagram",
+            "language": "mermaid",
+            "source": "graph TD\nA-->B"
+          }
+        ],
+        "diagram_source_unchanged": true
+      }
+    },
+    {
+      "id": "nested-emphasis-math-em-outer-strong-inner",
+      "profile": 2,
+      "markdown": "*outer **inner $x$** outer*",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "emphasis",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "outer "
+                  },
+                  {
+                    "type": "strong",
+                    "children": [
+                      {
+                        "type": "text",
+                        "value": "inner "
+                      },
+                      {
+                        "type": "math",
+                        "value": "x"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "text",
+                    "value": " outer"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "math_nodes_bold": true,
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "nested-emphasis-math-strong-outer-em-inner",
+      "profile": 2,
+      "markdown": "**outer *inner $x$* outer**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "outer "
+                  },
+                  {
+                    "type": "emphasis",
+                    "children": [
+                      {
+                        "type": "text",
+                        "value": "inner "
+                      },
+                      {
+                        "type": "math",
+                        "value": "x"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "text",
+                    "value": " outer"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "math_nodes_bold": true,
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "triple-delimiter-strong-and-emphasis-around-math",
+      "profile": 2,
+      "markdown": "***$x$***",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "emphasis",
+                    "children": [
+                      {
+                        "type": "math",
+                        "value": "x"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "math_nodes_bold": true,
+        "math_nodes_emphasized": true,
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "strong-crosses-tex-inline-math-parentheses",
+      "profile": 2,
+      "markdown": "**a \\(x\\) b**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "a "
+                  },
+                  {
+                    "type": "math",
+                    "value": "x"
+                  },
+                  {
+                    "type": "text",
+                    "value": " b"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "math_nodes_bold": true,
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "strong-crosses-tex-math-brackets",
+      "profile": 2,
+      "markdown": "**a \\[x\\] b**",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "strong",
+                "children": [
+                  {
+                    "type": "text",
+                    "value": "a "
+                  },
+                  {
+                    "type": "math",
+                    "value": "x",
+                    "display": true
+                  },
+                  {
+                    "type": "text",
+                    "value": " b"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "math_nodes_bold": true,
+        "literal_markdown_delimiters": false
+      }
+    },
+    {
+      "id": "multiple-backtick-runs-code-is-opaque",
+      "profile": 2,
+      "markdown": "before `` `**opaque** $x$` `` after",
+      "expected": {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "children": [
+              {
+                "type": "text",
+                "value": "before "
+              },
+              {
+                "type": "code",
+                "value": "`**opaque** $x$`"
+              },
+              {
+                "type": "text",
+                "value": " after"
+              }
+            ]
+          }
+        ],
+        "code_contents_unchanged": true,
+        "math_node_count": 0,
+        "literal_markdown_delimiters": true
+      }
+    }
+  ],
+  "schema_profile_cases": {
+    "schema_10_missing_profile": {
+      "note_schema_version": 10,
+      "format": "markdown",
+      "field_present": false,
+      "effective_profile": 1,
+      "accepted": true
+    },
+    "schema_10_profile_two": {
+      "note_schema_version": 10,
+      "format": "markdown",
+      "field_value": 2,
+      "accepted": true
+    },
+    "schema_10_profile_two_numeric_equivalents": {
+      "note_schema_version": 10,
+      "format": "markdown",
+      "json_numeric_forms": [
+        "2.0",
+        "2e0"
+      ],
+      "accepted": true
+    },
+    "schema_10_explicit_one_rejected": {
+      "note_schema_version": 10,
+      "format": "markdown",
+      "json_numeric_forms": [
+        "1",
+        "1.0"
+      ],
+      "accepted": false
+    },
+    "schema_10_invalid_values_rejected": {
+      "note_schema_version": 10,
+      "format": "markdown",
+      "json_values": [
+        true,
+        null,
+        "2",
+        2.5,
+        3
+      ],
+      "accepted": false
+    },
+    "schema_10_profile_on_non_markdown_rejected": {
+      "note_schema_version": 10,
+      "format": "plain",
+      "field_value": 2,
+      "accepted": false
+    },
+    "schema_9_profile_field_rejected": {
+      "note_schema_version": 9,
+      "format": "markdown",
+      "field_value": 2,
+      "accepted": false
+    },
+    "schema_9_absent_profile_defaults_one": {
+      "note_schema_version": 9,
+      "format": "markdown",
+      "field_present": false,
+      "effective_profile": 1,
+      "accepted": true
+    }
+  }
+}

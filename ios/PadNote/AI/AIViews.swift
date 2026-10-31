@@ -570,21 +570,11 @@ public struct AIAssistantView: View {
             let id = UUID(); insertRequestID = id; isSending = true; error = nil
             insertTask = Task { @MainActor in
                 do {
-                    // Compile the existing flows and a temporary candidate
-                    // first. Placement then uses the measured WebKit fragments
-                    // instead of the pre-compilation CoreText estimate.
-                    let width = note.pageWidth - 32
-                    let candidate = NoteTextFlow(format: "markdown", source: source,
-                        fontSizeSp: 16, lineHeight: 1.35, width: width,
-                        anchorPageIndex: min(activePage, max(0, note.pageCount - 1)),
-                        anchorXInPage: 16, anchorYInPage: 40)
-                    var compilationNote = note
-                    compilationNote.textFlows.append(candidate)
-                    try await CompiledTextRenderer.shared.prepareAndWait(document: compilationNote)
-                    guard insertRequestID == id, !Task.isCancelled else { return }
                     let engine = NoteToolEngine(note: note, currentPage: activePage, selectionBounds: activeBounds)
-                    let result = engine.invoke(name: "write_text", callID: UUID().uuidString,
+                    let result = try await engine.invokePreparingLayout(name: "write_text", callID: UUID().uuidString,
                         argumentsJSON: String(decoding: args, as: UTF8.self), authorization: .createInFreeSpace)
+                    guard insertRequestID == id, !Task.isCancelled,
+                          (currentToolDocument == nil || currentToolDocument == note) else { return }
                     guard let proposed = result.proposedNote else {
                         throw NSError(domain: "PadNote.AI", code: 1,
                                       userInfo: [NSLocalizedDescriptionKey: "当前内容无法放入笔记，请缩短后重试。"])

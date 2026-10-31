@@ -125,4 +125,21 @@
     <string name="core_manual_draft_input_limit">편집 내용이 로컬 초안 한도인 1,000,000자를 초과했습니다. 전체 입력을 거부하고 기존 텍스트를 유지했습니다.</string>
     <string name="core_manual_draft_cleanup_failed">복구 초안이 삭제되지 않았으며 이 기기에 남아 있습니다. 노트의 더보기 메뉴에서 다시 시도하세요.</string>
     <string name="canvas_pdf_page_size_invalid">PDF 용지 크기가 올바르지 않거나 내보내기 범위를 벗어났습니다. 원본 노트 파일을 보존하고 더 작은 용지 크기로 다시 시도하세요.</string>
+    <string name="canvas_typography_switch">레이아웃 전환</string>
+    <string name="canvas_typography_title">현재 내용의 새 레이아웃 미리보기</string>
+    <string name="canvas_typography_old">이전 레이아웃</string>
+    <string name="canvas_typography_new">새 레이아웃</string>
+    <string name="canvas_typography_apply_new">새 레이아웃 적용</string>
+    <string name="canvas_typography_apply_old">이전 레이아웃 적용</string>
+    <string name="canvas_typography_keep">현재 레이아웃 유지</string>
+    <string name="canvas_typography_compat_warning">레이아웃을 변경하면 이전 앱 버전에서 이 노트를 열지 못할 수 있습니다. 이전 레이아웃으로 돌아가도 표시 모양만 바뀌며 이전 버전과의 호환성은 복원되지 않습니다.</string>
+    <string name="canvas_typography_style_only">현재 내용의 표시 스타일만 바꾸며 이전 편집 내용을 복원하지 않습니다.</string>
+    <string name="canvas_typography_page">페이지 %1$d / %2$d</string>
+    <string name="canvas_typography_preview_failed">새 레이아웃 미리보기를 완료하지 못했습니다. 노트는 변경되지 않았습니다: %s</string>
+    <string name="canvas_typography_stale">미리보기 중 노트가 변경되었습니다. 미리보기를 다시 여세요. 원본은 변경되지 않았습니다.</string>
+    <string name="canvas_typography_previous_page">미리보기 이전 페이지</string>
+    <string name="canvas_typography_next_page">미리보기 다음 페이지</string>
+    <string name="canvas_typography_preparing">전체 페이지 미리보기를 준비하는 중…</string>
+    <string name="canvas_typography_measurement_failed">새 레이아웃이 잘렸거나 측정을 완료하지 못했습니다.</string>
+    <string name="canvas_typography_save_first">현재 편집을 마치고 저장한 후 레이아웃을 변경하세요.</string>
 </resources>

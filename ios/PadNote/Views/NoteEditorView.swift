@@ -26,6 +26,26 @@ struct NoteAISourceSnapshot: Identifiable {
     }
 }
 
+private struct MarkdownProfilePreview: Identifiable {
+    let id = UUID()
+    let baseDocument: NoteDocument
+    let candidate: NoteDocument
+    let baseSession: NoteGroupEditorSession
+    let flowID: String
+    let targetProfileVersion: Int
+    let baseRevision: Int
+
+    var pageCount: Int { max(1, max(baseDocument.pageCount, candidate.pageCount)) }
+
+    var beforePaperDocument: NoteDocument {
+        var paper = baseDocument
+        // The original document remains the CAS fence. This display-only copy
+        // supplies blank continuation sheets when the candidate adds pages.
+        paper.pageCount = pageCount
+        return paper
+    }
+}
+
 struct NoteEditorView: View {
     private enum SavePhase: Equatable { case saved, dirty, saving, failed }
     private enum PendingContentOutlineAction {
@@ -69,6 +89,11 @@ struct NoteEditorView: View {
     @State private var showDigitize = false
     @State private var showWidth = false
     @State private var showColors = false
+    @State private var markdownProfilePreview: MarkdownProfilePreview?
+    @State private var preparingMarkdownProfileFlowID: String?
+    @State private var markdownProfilePreviewTask: Task<Void, Never>?
+    @State private var markdownProfileGeneration = UUID()
+    @State private var suppressDocumentChangeForSave: NoteDocument?
     @State private var exportingPDF = false
     @State private var showPDFRenderRecovery = false
     @State private var pdfExportOperationID = UUID()
@@ -200,7 +225,13 @@ struct NoteEditorView: View {
         }
         .navigationBarBackButtonHidden(!showsShelfBackButton)
         .onAppear(perform: configureInitialSaveState)
-        .onChange(of: document) { _, _ in documentChanged() }
+        .onChange(of: document) { _, newValue in
+            if suppressDocumentChangeForSave == newValue {
+                suppressDocumentChangeForSave = nil
+            } else {
+                documentChanged()
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 canvas.onFinishTextEditing?()
@@ -208,6 +239,9 @@ struct NoteEditorView: View {
             }
         }
         .onDisappear {
+            markdownProfileGeneration = UUID()
+            markdownProfilePreviewTask?.cancel()
+            markdownProfilePreviewTask = nil
             canvas.onFinishTextEditing?()
             if savePhase != .saved { enqueueDraft(document, revision: editRevision) }
         }
@@ -286,7 +320,8 @@ struct NoteEditorView: View {
                     textManager
                 case .editor(let flow):
                     NavigationStack {
-                        TextFlowEditor(flow: flow) { source, format, size in
+                        TextFlowEditor(flow: flow,
+                            markdownProfileVersion: flow?.effectiveMarkdownProfileVersion ?? (document.schemaVersion == 10 ? 2 : 1)) { source, format, size in
                             insertText(source, format: format, size: size, replacing: flow?.id)
                             textManagementRoute = nil
                         }
@@ -417,6 +452,22 @@ struct NoteEditorView: View {
                             }
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("textFlowEditButton")
+                        if flow.format.lowercased() == "markdown" {
+                            Button {
+                                beginMarkdownProfilePreview(flowID: flow.id,
+                                    targetProfileVersion: flow.effectiveMarkdownProfileVersion == 2 ? 1 : 2)
+                            } label: {
+                                if preparingMarkdownProfileFlowID == flow.id {
+                                    Label("正在准备整页预览…", systemImage: "hourglass")
+                                } else {
+                                    Label(flow.effectiveMarkdownProfileVersion == 2 ? "切换旧版排版" : "切换新版排版",
+                                          systemImage: "textformat")
+                                }
+                            }
+                            .disabled(preparingMarkdownProfileFlowID != nil)
+                            .buttonStyle(.borderless)
+                            .accessibilityIdentifier("markdownProfileSwitch-\(flow.id)")
+                        }
                         if let failure = compiledRenderer.failure(documentID: document.id, flow: flow) {
                             Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundStyle(.orange)
@@ -431,7 +482,7 @@ struct NoteEditorView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { textManagementRoute = nil } } }
                 .navigationDestination(for: String.self) { flowID in
                     if let flow = document.textFlows.first(where: { $0.id == flowID }) {
-                        TextFlowEditor(flow: flow) { source, format, size in
+                        TextFlowEditor(flow: flow, markdownProfileVersion: flow.effectiveMarkdownProfileVersion) { source, format, size in
                             insertText(source, format: format, size: size, replacing: flow.id)
                             textManagementRoute = nil
                         }
@@ -439,6 +490,16 @@ struct NoteEditorView: View {
                         ContentUnavailableView("文字对象不可用", systemImage: "text.alignleft")
                     }
                 }
+        }
+        .sheet(item: $markdownProfilePreview, onDismiss: {
+            markdownProfileGeneration = UUID()
+            markdownProfilePreviewTask?.cancel()
+            markdownProfilePreviewTask = nil
+            preparingMarkdownProfileFlowID = nil
+        }) { preview in
+            MarkdownProfilePreviewSheet(preview: preview, pdfURL: pdfURL,
+                onCancel: { markdownProfilePreview = nil },
+                onAccept: { acceptMarkdownProfilePreview(preview) })
         }
     }
 
@@ -545,6 +606,137 @@ struct NoteEditorView: View {
         UIAccessibility.post(notification: .announcement, argument: "Markdown 已复制到剪贴板")
     }
 
+    @MainActor
+    private func beginMarkdownProfilePreview(flowID: String, targetProfileVersion: Int) {
+        guard targetProfileVersion == 1 || targetProfileVersion == 2,
+              markdownProfilePreviewTask == nil else { return }
+        canvas.onFinishTextEditing?()
+        markdownProfileGeneration = UUID()
+        let generation = markdownProfileGeneration
+        let sourcePDFURL = pdfURL
+        preparingMarkdownProfileFlowID = flowID
+        markdownProfilePreviewTask = Task { @MainActor in
+            defer {
+                if markdownProfileGeneration == generation {
+                    preparingMarkdownProfileFlowID = nil
+                    markdownProfilePreviewTask = nil
+                }
+            }
+            do {
+                guard await saveCurrentRevision(), !Task.isCancelled,
+                      let baseSession = groupSession,
+                      let originalFlow = document.textFlows.first(where: { $0.id == flowID }) else {
+                    throw TypographyPreviewError.stale
+                }
+                let base = document
+                let baseRevision = editRevision
+                guard baseSession.document == base,
+                      originalFlow.format.lowercased() == "markdown",
+                      originalFlow.effectiveMarkdownProfileVersion != targetProfileVersion else {
+                    throw TypographyPreviewError.stale
+                }
+                var candidate = base
+                candidate.schemaVersion = 10
+                guard let candidateIndex = candidate.textFlows.firstIndex(where: { $0.id == flowID }) else {
+                    throw TypographyPreviewError.stale
+                }
+                candidate.textFlows[candidateIndex].markdownProfileVersion = targetProfileVersion == 2 ? 2 : nil
+                candidate.updatedAt = Date().timeIntervalSince1970 * 1000
+                candidate = try candidate.validated()
+
+                try await CompiledTextRenderer.shared.prepareAndWait(document: base)
+                try Task.checkCancellation()
+                guard markdownProfileGeneration == generation, document == base,
+                      editRevision == baseRevision else { throw TypographyPreviewError.stale }
+                try await CompiledTextRenderer.shared.prepareAndWait(document: candidate)
+                try Task.checkCancellation()
+                guard markdownProfileGeneration == generation, document == base,
+                      editRevision == baseRevision else { throw TypographyPreviewError.stale }
+
+                guard let selectedFlow = candidate.textFlows.first(where: { $0.id == flowID }),
+                      NoteTextLayout.canFullyLayout(selectedFlow, pageHeight: candidate.pageHeight) else {
+                    throw TypographyPreviewError.incompleteLayout
+                }
+                let fragments = NoteTextLayout.fragments(selectedFlow, pageHeight: candidate.pageHeight)
+                guard !fragments.isEmpty,
+                      fragments.allSatisfy({ fragment in
+                          let rect = fragment.rect
+                          return fragment.page >= 0 && fragment.page < 500 &&
+                              rect.minX.isFinite && rect.minY.isFinite && rect.width.isFinite && rect.height.isFinite &&
+                              rect.width > 0 && rect.height > 0 &&
+                              CGRect(x: 0, y: 0, width: candidate.pageWidth, height: candidate.pageHeight).contains(rect)
+                      }) else { throw TypographyPreviewError.clipped }
+                // A profile change may legitimately need more continuation pages.
+                // Derive them from compiled layouts, retain every existing page,
+                // and persist that page-count expansion with the accepted profile.
+                let requiredPageCount = max(base.pageCount, NoteTextLayout.requiredPageCount(candidate))
+                guard requiredPageCount <= 500 else { throw TypographyPreviewError.incompleteLayout }
+                candidate.pageCount = requiredPageCount
+                candidate = try candidate.validated()
+                let newConflict: Int?
+                do {
+                    newConflict = try AgentResultPlacementCheck.firstNewConflict(before: base, candidate: candidate,
+                        flowID: flowID, pdfURL: sourcePDFURL)
+                } catch is NoteRenderer.PDFROIError {
+                    throw TypographyPreviewError.sourceUnavailable
+                }
+                if newConflict != nil {
+                    throw TypographyPreviewError.overlap
+                }
+                try Task.checkCancellation()
+                guard markdownProfileGeneration == generation, document == base,
+                      editRevision == baseRevision, let currentSession = groupSession,
+                      sessionsShareFence(baseSession, currentSession) else {
+                    throw TypographyPreviewError.stale
+                }
+                markdownProfilePreview = MarkdownProfilePreview(baseDocument: base, candidate: candidate,
+                    baseSession: baseSession, flowID: flowID,
+                    targetProfileVersion: targetProfileVersion, baseRevision: baseRevision)
+            } catch is CancellationError {
+            } catch {
+                guard markdownProfileGeneration == generation else { return }
+                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    private func sessionsShareFence(_ lhs: NoteGroupEditorSession, _ rhs: NoteGroupEditorSession) -> Bool {
+        lhs.document == rhs.document && lhs.groupToken == rhs.groupToken &&
+            lhs.legacyBodySHA256 == rhs.legacyBodySHA256
+    }
+
+    @MainActor
+    private func acceptMarkdownProfilePreview(_ preview: MarkdownProfilePreview) {
+        guard document == preview.baseDocument, editRevision == preview.baseRevision,
+              savePhase == .saved, let currentSession = groupSession,
+              sessionsShareFence(preview.baseSession, currentSession) else {
+            error = TypographyPreviewError.stale.localizedDescription
+            return
+        }
+        do {
+            let commitRevision = library.nextDraftRevision(noteID: preview.candidate.id)
+            let committedSession = try library.save(preview.candidate, basedOn: preview.baseSession)
+            groupSession = committedSession
+            editRevision = commitRevision
+            persistedDraftRevision = 0
+            lastSavedAt = Date()
+            saveFailure = nil
+            savePhase = .saved
+            suppressDocumentChangeForSave = committedSession.document
+            document = committedSession.document
+            Task { @MainActor in
+                do { try await library.markCanonicalSaved(noteID: preview.candidate.id, revision: commitRevision) }
+                catch {
+                    saveFailure = "排版已保存，但清理恢复副本失败：\(error.localizedDescription)"
+                    savePhase = .failed
+                }
+            }
+            markdownProfilePreview = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     private func shareContentOutline() {
         do {
             let base = LibraryBackupUITestPaths.root.map {
@@ -570,7 +762,11 @@ struct NoteEditorView: View {
             ?? ((!document.strokes.isEmpty || !document.textFlows.isEmpty || document.pdfPageCount > 0 || !document.images.isEmpty) ? document.pageCount : 0)
         canvas.performEdit { note in
             if let id, let index = note.textFlows.firstIndex(where: { $0.id == id }) {
+                let previousFormat = note.textFlows[index].format.lowercased()
+                let previousProfile = note.textFlows[index].markdownProfileVersion
                 note.textFlows[index].source = clean; note.textFlows[index].format = format; note.textFlows[index].fontSizeSp = size
+                note.textFlows[index].markdownProfileVersion = format.lowercased() == "markdown"
+                    ? (previousFormat == "markdown" ? previousProfile : (note.schemaVersion == 10 ? 2 : nil)) : nil
             } else {
                 // A dedicated notes page keeps inserted AI text clear of the original handwriting and PDF.
                 let needsPage = !note.strokes.isEmpty || !note.textFlows.isEmpty || note.pdfPageCount > 0 || !note.images.isEmpty
@@ -579,7 +775,8 @@ struct NoteEditorView: View {
                 if needsPage { _ = NotePageOperations.appendBlankPage(in: &note) }
                 let flow = NoteTextFlow(id: UUID().uuidString, format: format, source: clean, fontSizeSp: size,
                                         lineHeight: 1.35, width: note.pageWidth - 32, anchorPageIndex: page,
-                                        anchorXInPage: 16, anchorYInPage: 40)
+                                        anchorXInPage: 16, anchorYInPage: 40,
+                                        markdownProfileVersion: format.lowercased() == "markdown" && note.schemaVersion == 10 ? 2 : nil)
                 note.textFlows.append(flow)
             }
         }
@@ -916,17 +1113,109 @@ struct NoteEditorView: View {
     }
 }
 
+private enum TypographyPreviewError: Error, LocalizedError {
+    case stale
+    case incompleteLayout
+    case clipped
+    case overlap
+    case sourceUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .stale: return "笔记版本已变化，请重新准备排版预览。当前内容没有切换。"
+        case .incompleteLayout: return "新版排版尚未完整生成，当前内容没有切换。"
+        case .clipped: return "新版排版会超出当前纸面或页面范围，当前内容没有切换。"
+        case .overlap: return "新版排版会与现有文字、手写、图片或 PDF 内容重叠，当前内容没有切换。"
+        case .sourceUnavailable: return "无法完整验证原始 PDF 页面，当前内容没有切换。请重新载入 PDF 后重试。"
+        }
+    }
+}
+
+private struct MarkdownProfilePreviewSheet: View {
+    let preview: MarkdownProfilePreview
+    let pdfURL: URL?
+    let onCancel: () -> Void
+    let onAccept: () -> Void
+    @State private var pageIndex = 0
+
+    private var pageCount: Int { preview.pageCount }
+    private var beforeImage: UIImage {
+        NoteRenderer.renderPage(document: preview.beforePaperDocument, page: pageIndex, pdfURL: pdfURL, maxEdge: 1280)
+    }
+    private var afterImage: UIImage {
+        NoteRenderer.renderPage(document: preview.candidate, page: pageIndex, pdfURL: pdfURL, maxEdge: 1280)
+    }
+
+    var body: some View {
+        let oldPaper = beforeImage
+        let newPaper = afterImage
+        NavigationStack {
+            VStack(spacing: 12) {
+                Text("只切换当前内容显示样式，不恢复历史编辑。逐页查看原稿和候选纸面；确认后仅更改这段 Markdown 的排版版本。切换后需用新版 PadNote 打开；切回旧样式也不会降级文件格式。")
+                    .font(.footnote).foregroundStyle(PadTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Button("上一页", systemImage: "chevron.left") { pageIndex = max(0, pageIndex - 1) }
+                        .disabled(pageIndex == 0).accessibilityIdentifier("typographyPreviewPreviousPage")
+                    Text("第 \(pageIndex + 1) / \(pageCount) 页")
+                        .font(.subheadline.monospacedDigit())
+                        .accessibilityIdentifier("typographyPreviewPageStatus")
+                    Button("下一页", systemImage: "chevron.right") { pageIndex = min(pageCount - 1, pageIndex + 1) }
+                        .disabled(pageIndex >= pageCount - 1).accessibilityIdentifier("typographyPreviewNextPage")
+                }
+                HStack(alignment: .top, spacing: 12) {
+                    previewColumn(title: "当前排版", image: oldPaper, identifier: "typographyPreviewBefore")
+                    previewColumn(title: "候选排版", image: newPaper, identifier: "typographyPreviewAfter")
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .navigationTitle("排版预览")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("保留当前排版", action: onCancel).accessibilityIdentifier("typographyPreviewCancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(preview.targetProfileVersion == 2 ? "应用新版排版" : "应用旧版排版", action: onAccept)
+                        .disabled(oldPaper.cgImage == nil || newPaper.cgImage == nil)
+                        .accessibilityIdentifier("typographyPreviewAccept")
+                }
+            }
+        }
+        .accessibilityIdentifier("markdownProfilePreviewSheet")
+    }
+
+    private func previewColumn(title: String, image: UIImage, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            if image.cgImage == nil {
+                ContentUnavailableView("纸面预览不可用", systemImage: "exclamationmark.triangle")
+            } else {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 540)
+                    .background(.white)
+                    .overlay(Rectangle().stroke(PadTheme.secondary.opacity(0.25), lineWidth: 1))
+                    .accessibilityIdentifier(identifier)
+            }
+        }.frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
 private struct TextFlowEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var source: String
     @State private var format: String
     @State private var size: Double
     @State private var preview = false
+    let markdownProfileVersion: Int
     let onSave: (String, String, Double) -> Void
-    init(flow: NoteTextFlow?, onSave: @escaping (String, String, Double) -> Void) {
+    init(flow: NoteTextFlow?, markdownProfileVersion: Int = 1,
+         onSave: @escaping (String, String, Double) -> Void) {
         _source = State(initialValue: flow?.source ?? "")
         _format = State(initialValue: flow?.format ?? "latex")
         _size = State(initialValue: flow?.fontSizeSp ?? 18)
+        self.markdownProfileVersion = markdownProfileVersion
         self.onSave = onSave
     }
     var body: some View {
@@ -936,7 +1225,8 @@ private struct TextFlowEditor: View {
                 Stepper("\(Int(size)) pt", value: $size, in: 10...32, step: 1).frame(width: 180)
                 Toggle("预览", isOn: $preview).toggleStyle(.button)
             }
-            if preview { MathTextView(source: source, fontSize: size, format: format) }
+            if preview { MathTextView(source: source, fontSize: size, format: format,
+                                      markdownProfileVersion: markdownProfileVersion) }
             else {
                 TextEditor(text: $source).font(.system(size: 17, design: .monospaced))
                     .accessibilityIdentifier("textSourceEditor")

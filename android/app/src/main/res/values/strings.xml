@@ -110,4 +110,21 @@
     <string name="core_header_ai">AI Chat</string>
     <string name="core_header_tasks">Tasks</string>
     <string name="core_header_share">Share / Agent</string>
+    <string name="canvas_typography_switch">Change layout</string>
+    <string name="canvas_typography_title">Preview the updated layout</string>
+    <string name="canvas_typography_old">Previous layout</string>
+    <string name="canvas_typography_new">Updated layout</string>
+    <string name="canvas_typography_apply_new">Apply updated layout</string>
+    <string name="canvas_typography_apply_old">Apply previous layout</string>
+    <string name="canvas_typography_keep">Keep current layout</string>
+    <string name="canvas_typography_compat_warning">Changing the layout may make this note incompatible with older app versions. Switching back changes only its appearance; it does not restore older-version compatibility.</string>
+    <string name="canvas_typography_style_only">Changes how the current content looks; it does not restore earlier edits.</string>
+    <string name="canvas_typography_page">Page %1$d of %2$d</string>
+    <string name="canvas_typography_preview_failed">Could not finish the layout preview. The note was not changed: %s</string>
+    <string name="canvas_typography_stale">The note changed during preview. Reopen it; no changes were saved.</string>
+    <string name="canvas_typography_preparing">Preparing a full-paper preview…</string>
+    <string name="canvas_typography_measurement_failed">The new layout was clipped or could not finish measuring.</string>
+    <string name="canvas_typography_previous_page">Previous preview page</string>
+    <string name="canvas_typography_next_page">Next preview page</string>
+    <string name="canvas_typography_save_first">Please finish and save the current edit before changing the layout.</string>
 </resources>

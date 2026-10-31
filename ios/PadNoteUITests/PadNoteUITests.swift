@@ -2147,6 +2147,105 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(afterRetry.label.contains("schema=9; flows=1; receipts=1"), afterRetry.label)
     }
 
+    func testLegacyAgentMarkdownProfilePreviewCancelAndAcceptPersistsSchema10() throws {
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        app.buttons["agentResultPreviewToPaper"].tap()
+        let append = app.buttons["agentResultConfirmAppend"]
+        XCTAssertTrue(append.waitForExistence(timeout: 8))
+        waitUntilEnabled(append)
+        append.tap()
+        let open = app.buttons["agentResultOpenSavedNote"]
+        XCTAssertTrue(open.waitForExistence(timeout: 30))
+        open.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let fixtureState = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(fixtureState.waitForExistence(timeout: 8))
+        XCTAssertTrue(fixtureState.label.contains("schema=9; flows=1; receipts=1; profile=1"), fixtureState.label)
+        XCTAssertTrue(fixtureState.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), fixtureState.label)
+        XCTAssertTrue(fixtureState.label.contains("anchor=1,16,40"), "the append fixture starts on its explicit final page: \(fixtureState.label)")
+        XCTAssertTrue(fixtureState.label.contains("exactAnchor=1,16.000000,40.000000"), fixtureState.label)
+
+        func openTypographySwitch() -> XCUIElement {
+            app.buttons["moreActionsButton"].tap()
+            app.buttons["管理文字"].tap()
+            XCTAssertTrue(app.navigationBars["页面文字"].waitForExistence(timeout: 8))
+            let button = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "markdownProfileSwitch-")).firstMatch
+            XCTAssertTrue(button.waitForExistence(timeout: 8))
+            return button
+        }
+
+        func directlyOpenPersistedResult(profile: Int) -> XCUIElement {
+            let openExisting = app.buttons["agentTaskOpenSavedNote"]
+            XCTAssertTrue(openExisting.waitForExistence(timeout: 12),
+                          "a durable matching receipt must expose the saved note on task detail")
+            XCTAssertTrue(openExisting.isHittable)
+            openExisting.tap()
+            XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+            let state = app.staticTexts["agentResultPaperFixtureState"]
+            XCTAssertTrue(state.waitForExistence(timeout: 8))
+            XCTAssertTrue(state.label.contains("schema=10; flows=1; receipts=1; profile=\(profile)"), state.label)
+            XCTAssertTrue(state.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), state.label)
+            XCTAssertTrue(state.label.contains("anchor=1,16,40"), state.label)
+            XCTAssertTrue(state.label.contains("exactAnchor=1,16.000000,40.000000"), state.label)
+            return state
+        }
+
+        var profileSwitch = openTypographySwitch()
+        profileSwitch.tap()
+        XCTAssertTrue(app.navigationBars["排版预览"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["typographyPreviewBefore"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["typographyPreviewAfter"].exists)
+        app.buttons["typographyPreviewCancel"].tap()
+        XCTAssertTrue(app.navigationBars["页面文字"].waitForExistence(timeout: 8))
+        XCTAssertTrue(fixtureState.label.contains("schema=9; flows=1; receipts=1; profile=1"),
+                      "cancel must preserve the legacy note bytes/profile: \(fixtureState.label)")
+
+        profileSwitch = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "markdownProfileSwitch-")).firstMatch
+        profileSwitch.tap()
+        XCTAssertTrue(app.navigationBars["排版预览"].waitForExistence(timeout: 30))
+        app.buttons["typographyPreviewAccept"].tap()
+        XCTAssertTrue(app.navigationBars["页面文字"].waitForExistence(timeout: 12))
+        let upgraded = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "schema=10; flows=1; receipts=1; profile=2", "sourceDigestMatches=true")
+        expectation(for: upgraded, evaluatedWith: fixtureState)
+        waitForExpectations(timeout: 15)
+        XCTAssertTrue(fixtureState.label.contains("anchor=1,16,40"), fixtureState.label)
+        XCTAssertTrue(fixtureState.label.contains("exactAnchor=1,16.000000,40.000000"), fixtureState.label)
+        app.terminate()
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        let fixtureAfterProfile2Restart = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(fixtureAfterProfile2Restart.waitForExistence(timeout: 8))
+        XCTAssertTrue(fixtureAfterProfile2Restart.label.contains("schema=10; flows=1; receipts=1; profile=2"), fixtureAfterProfile2Restart.label)
+        XCTAssertTrue(fixtureAfterProfile2Restart.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), fixtureAfterProfile2Restart.label)
+        let afterRestart = directlyOpenPersistedResult(profile: 2)
+
+        profileSwitch = openTypographySwitch()
+        profileSwitch.tap()
+        XCTAssertTrue(app.navigationBars["排版预览"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["typographyPreviewAccept"].label.contains("应用旧版排版"))
+        app.buttons["typographyPreviewAccept"].tap()
+        XCTAssertTrue(app.navigationBars["页面文字"].waitForExistence(timeout: 12))
+        let switchedBack = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "schema=10; flows=1; receipts=1; profile=1", "sourceDigestMatches=true")
+        expectation(for: switchedBack, evaluatedWith: afterRestart)
+        waitForExpectations(timeout: 15)
+        XCTAssertTrue(afterRestart.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), afterRestart.label)
+        XCTAssertTrue(afterRestart.label.contains("anchor=1,16,40"), afterRestart.label)
+        XCTAssertTrue(afterRestart.label.contains("exactAnchor=1,16.000000,40.000000"), afterRestart.label)
+
+        app.terminate()
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        let fixtureAfterProfile1Restart = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(fixtureAfterProfile1Restart.waitForExistence(timeout: 8))
+        XCTAssertTrue(fixtureAfterProfile1Restart.label.contains("schema=10; flows=1; receipts=1; profile=1"), fixtureAfterProfile1Restart.label)
+        XCTAssertTrue(fixtureAfterProfile1Restart.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), fixtureAfterProfile1Restart.label)
+        let afterSwitchBackRestart = directlyOpenPersistedResult(profile: 1)
+    }
+
     func testSyntheticTaskPointPreviewConfirmAndReopenPreservesTappedAnchor() throws {
         app = makeApp()
         app.launch()

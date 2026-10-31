@@ -80,6 +80,16 @@ final class LibraryBackupJson {
         return result;
     }
 
+    /** Numeric integer value parser for note schema declarations (e.g. 10.0 is value 10). */
+    static long numericIntegerValue(Object value, long minimum, long maximum, String code) throws IOException {
+        if (!(value instanceof NumberToken)) throw new IOException(code);
+        final long result;
+        try { result = new java.math.BigDecimal(((NumberToken) value).value).longValueExact(); }
+        catch (NumberFormatException | ArithmeticException error) { throw new IOException(code); }
+        if (result < minimum || result > maximum) throw new IOException(code);
+        return result;
+    }
+
     static void exactKeys(Map<String, Object> object, String code, String... keys) throws IOException {
         if (object.size() != keys.length) throw new IOException(code);
         for (String key : keys) if (!object.containsKey(key)) throw new IOException(code);
