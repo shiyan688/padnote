@@ -150,7 +150,7 @@ public final class NoteToolEngine {
                   let seed = placementSeed(args["placement"] as? [String: Any], content: source, format: format) else { return nil }
             return NoteTextFlow(format: format, source: source, fontSizeSp: 16, lineHeight: 1.35,
                 width: seed.width, anchorPageIndex: seed.page, anchorXInPage: seed.x, anchorYInPage: seed.y,
-                markdownProfileVersion: format == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
+                markdownProfileVersion: format == "markdown" && proposed.schemaVersion >= 10 ? 2 : nil)
         case "draw_diagram":
             guard authorization >= .createInFreeSpace,
                   let code = args["code"] as? String, validMermaid(code) else { return nil }
@@ -158,7 +158,7 @@ public final class NoteToolEngine {
             guard let seed = placementSeed(args["placement"] as? [String: Any], content: source) else { return nil }
             return NoteTextFlow(format: "markdown", source: source, fontSizeSp: 16, lineHeight: 1.35,
                 width: seed.width, anchorPageIndex: seed.page, anchorXInPage: seed.x, anchorYInPage: seed.y,
-                markdownProfileVersion: proposed.schemaVersion == 10 ? 2 : nil)
+                markdownProfileVersion: proposed.schemaVersion >= 10 ? 2 : nil)
         case "set_text_flow_style":
             guard authorization >= .modifyExisting,
                   let id = args["flowId"] as? String,
@@ -258,7 +258,7 @@ public final class NoteToolEngine {
         proposed.pageCount = max(proposed.pageCount, resolved.page + 1)
         let flow = NoteTextFlow(format: format, source: content, fontSizeSp: 16, lineHeight: 1.35,
                                 width: resolved.width, anchorPageIndex: resolved.page, anchorXInPage: resolved.x, anchorYInPage: resolved.y,
-                                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
+                                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion >= 10 ? 2 : nil)
         proposed.textFlows.append(flow)
         let required = NoteTextLayout.requiredPageCount(proposed)
         guard required <= 500, NoteTextLayout.canFullyLayout(flow, pageHeight: proposed.pageHeight) else { proposed = snapshot; return failure("文字分页超过 500 页") }
@@ -374,7 +374,7 @@ public final class NoteToolEngine {
             guard page < 500 else { return nil }
             var candidate = proposed.textFlows.first(where: { $0.id == excluding }) ?? NoteTextFlow(
                 format: format, source: content,
-                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion == 10 ? 2 : nil)
+                markdownProfileVersion: format.lowercased() == "markdown" && proposed.schemaVersion >= 10 ? 2 : nil)
             candidate.width = seed.width; candidate.anchorPageIndex = page
             candidate.anchorXInPage = seed.x; candidate.anchorYInPage = y
             guard NoteTextLayout.canFullyLayout(candidate, pageHeight: proposed.pageHeight) else { return nil }

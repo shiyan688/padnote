@@ -31,7 +31,7 @@ final class CanvasTextEditor {
         let x = min(max(24, point.x), max(24, note.pageWidth - 184))
         let flow = NoteTextFlow(format: "markdown", width: min(440, note.pageWidth - x - 24),
             anchorPageIndex: page, anchorXInPage: x, anchorYInPage: min(y, note.pageHeight - 64),
-            markdownProfileVersion: note.schemaVersion == 10 ? 2 : nil)
+            markdownProfileVersion: note.schemaVersion >= 10 ? 2 : nil)
         show(flow)
     }
 

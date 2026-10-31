@@ -321,7 +321,7 @@ struct NoteEditorView: View {
                 case .editor(let flow):
                     NavigationStack {
                         TextFlowEditor(flow: flow,
-                            markdownProfileVersion: flow?.effectiveMarkdownProfileVersion ?? (document.schemaVersion == 10 ? 2 : 1)) { source, format, size in
+                            markdownProfileVersion: flow?.effectiveMarkdownProfileVersion ?? (document.schemaVersion >= 10 ? 2 : 1)) { source, format, size in
                             insertText(source, format: format, size: size, replacing: flow?.id)
                             textManagementRoute = nil
                         }
@@ -636,7 +636,7 @@ struct NoteEditorView: View {
                     throw TypographyPreviewError.stale
                 }
                 var candidate = base
-                candidate.schemaVersion = 10
+                candidate.schemaVersion = max(10, candidate.schemaVersion)
                 guard let candidateIndex = candidate.textFlows.firstIndex(where: { $0.id == flowID }) else {
                     throw TypographyPreviewError.stale
                 }
@@ -766,7 +766,7 @@ struct NoteEditorView: View {
                 let previousProfile = note.textFlows[index].markdownProfileVersion
                 note.textFlows[index].source = clean; note.textFlows[index].format = format; note.textFlows[index].fontSizeSp = size
                 note.textFlows[index].markdownProfileVersion = format.lowercased() == "markdown"
-                    ? (previousFormat == "markdown" ? previousProfile : (note.schemaVersion == 10 ? 2 : nil)) : nil
+                    ? (previousFormat == "markdown" ? previousProfile : (note.schemaVersion >= 10 ? 2 : nil)) : nil
             } else {
                 // A dedicated notes page keeps inserted AI text clear of the original handwriting and PDF.
                 let needsPage = !note.strokes.isEmpty || !note.textFlows.isEmpty || note.pdfPageCount > 0 || !note.images.isEmpty
@@ -776,7 +776,7 @@ struct NoteEditorView: View {
                 let flow = NoteTextFlow(id: UUID().uuidString, format: format, source: clean, fontSizeSp: size,
                                         lineHeight: 1.35, width: note.pageWidth - 32, anchorPageIndex: page,
                                         anchorXInPage: 16, anchorYInPage: 40,
-                                        markdownProfileVersion: format.lowercased() == "markdown" && note.schemaVersion == 10 ? 2 : nil)
+                                        markdownProfileVersion: format.lowercased() == "markdown" && note.schemaVersion >= 10 ? 2 : nil)
                 note.textFlows.append(flow)
             }
         }

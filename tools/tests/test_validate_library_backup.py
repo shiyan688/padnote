@@ -1,5 +1,6 @@
 """Adversarial, synthetic tests for the read-only library archive validator."""
 import hashlib
+import base64
 import importlib.util
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 import warnings
 import zipfile
+import copy
 
 ROOT = Path(__file__).resolve().parents[2]
 _UNSET = object()
@@ -81,6 +83,18 @@ def zip_bytes(entries, *, descriptors=None, flags=None, duplicate=False, zip64=F
     return b"".join(local_parts) + central_bytes + eocd
 
 
+def synthetic_png(width, height):
+    """Build a small, valid RGBA PNG with the requested dimensions."""
+    def chunk(kind, content):
+        return (struct.pack(">I", len(content)) + kind + content
+                + struct.pack(">I", __import__("zlib").crc32(kind + content) & 0xFFFFFFFF))
+    scanline = b"\x00" + b"\x00\x00\x00\x00" * width
+    pixels = __import__("zlib").compress(scanline * height)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", pixels) + chunk(b"IEND", b""))
+
+
 class BackupValidatorTests(unittest.TestCase):
     def test_archive_quota_matches_contract_bytes(self):
         self.assertEqual(validator.MAX_ARCHIVE, 1_181_116_006)
@@ -130,6 +144,141 @@ class BackupValidatorTests(unittest.TestCase):
         entries = [("manifest.json", generator.jbytes(manifest))]
         entries.extend((row["member"], payload_rows[row["resource_id"]][2]) for row in manifest["resources"])
         return self.put(name, zip_bytes(entries))
+
+    def archive_with_agent_image(self, name, schema_version, *, mutation=None, duplicate=False, with_receipt=True):
+        corpus_path = ROOT / "tools/fixtures/AGENT_IMAGE_RECEIPT_CASES_R1.json"
+        corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+        manifest, payload_rows = generator.make()
+        note = manifest["notes"][0]
+        note["note_schema_version"] = schema_version
+        rid = note["note_resource_id"]
+        body = json.loads(payload_rows[rid][2])
+        body["schemaVersion"] = schema_version
+        if schema_version == 11:
+            body["textFlows"] = copy.deepcopy(corpus["validSchema11"]["textFlows"])
+        image = copy.deepcopy(corpus["validSchema11"]["images"][0])
+        if mutation == "png_sha":
+            image["agentImage"]["pngSha256"] = "0" * 64
+        elif mutation == "unknown_field":
+            image["agentImage"]["future"] = True
+        elif mutation == "bad_time":
+            image["agentImage"]["addedAt"] = 1.0
+        elif mutation == "bad_geometry":
+            image["width"] = 0
+        elif mutation == "bad_png_header":
+            damaged = b"\x89PNG\r\n\x1a\n" + b"not-an-IHDR"
+            image["png"] = base64.b64encode(damaged).decode("ascii")
+            image["agentImage"]["pngSha256"] = hashlib.sha256(damaged).hexdigest()
+        elif mutation == "unknown_image_field":
+            image["unexpected"] = True
+        images = [image, copy.deepcopy(image)] if duplicate else [image]
+        body["images"] = images if with_receipt else []
+        raw = generator.jbytes(body)
+        payload_rows[rid] = ("note_document", "application/json", raw)
+        resource = next(row for row in manifest["resources"] if row["resource_id"] == rid)
+        resource["byte_length"] = len(raw)
+        resource["sha256"] = hashlib.sha256(raw).hexdigest()
+        entries = [("manifest.json", generator.jbytes(manifest))]
+        entries.extend((row["member"], payload_rows[row["resource_id"]][2]) for row in manifest["resources"])
+        return self.put(name, zip_bytes(entries))
+
+    def test_schema11_agent_image_receipt_and_canonical_bytes(self):
+        corpus = json.loads((ROOT / "tools/fixtures/AGENT_IMAGE_RECEIPT_CASES_R1.json").read_text(encoding="utf-8"))
+        summary = validator.validate_archive(self.archive_with_agent_image("image-v11.zip", 11))
+        self.assertEqual(summary["notes"], 2)
+        receipt = corpus["validSchema11"]["images"][0]["agentImage"]
+        self.assertEqual(validator.canonical_agent_image_receipt(receipt).hex(), corpus["canonicalReceiptHex"])
+        self.assertEqual(hashlib.sha256(bytes.fromhex(corpus["identityInputHex"])).hexdigest(), corpus["identitySHA256"])
+
+    def test_schema11_empty_note_remains_valid(self):
+        summary = validator.validate_archive(self.archive_with_agent_image(
+            "schema11-empty.zip", 11, with_receipt=False))
+        self.assertEqual(summary["notes"], 2)
+
+    def test_all_shared_agent_image_receipt_vectors(self):
+        corpus = json.loads((ROOT / "tools/fixtures/AGENT_IMAGE_RECEIPT_CASES_R1.json").read_text(encoding="utf-8"))
+        for case in corpus["cases"]:
+            with self.subTest(case=case["id"]):
+                if "rawDocumentJSON" in case:
+                    payload = json.loads(case["rawDocumentJSON"])
+                elif case["id"] == "schema9_plain_no_receipt":
+                    payload = copy.deepcopy(corpus["validSchema9"])
+                elif case["id"] == "schema10_plain_no_receipt":
+                    payload = copy.deepcopy(corpus["validSchema10"])
+                else:
+                    payload = copy.deepcopy(corpus["validSchema11"])
+                images = payload.setdefault("images", [])
+                mutation = case.get("mutation") or {}
+                if mutation.get("attachReceipt"):
+                    payload["schemaVersion"] = mutation["schemaVersion"]
+                if mutation.get("duplicateImage"):
+                    images.append(copy.deepcopy(images[0]))
+                for key, value in mutation.items():
+                    if key.startswith("receipt."):
+                        field = key.split(".", 1)[1]
+                        if field == "removeField": images[0]["agentImage"].pop(value)
+                        else: images[0]["agentImage"][field] = value
+                    elif key == "image.id": images[0]["id"] = value
+                note = {"note_schema_version": payload["schemaVersion"],
+                        "source_note_id": payload["id"], "source_revision_ms": payload["updatedAt"],
+                        "pdf_resource_id": None}
+                if case["accepted"]:
+                    validator.validate_note_payload(note, payload)
+                else:
+                    with self.assertRaises(validator.ArchiveError) as caught:
+                        validator.validate_note_payload(note, payload)
+                    self.assertEqual(str(caught.exception), case["expectedError"])
+
+    def test_agent_image_receipt_strictness_and_legacy_schema_boundary(self):
+        cases = ((11, "png_sha", False, "IMAGE_RECEIPT_PNG_SHA"),
+                 (11, "unknown_field", False, "IMAGE_RECEIPT_FIELDS"),
+                 (11, "bad_time", False, "IMAGE_RECEIPT_INTEGER"),
+                 (11, "bad_geometry", False, "IMAGE_GEOMETRY"),
+                 (11, "bad_png_header", False, "IMAGE_PNG_HEADER"),
+                 (11, "unknown_image_field", False, "IMAGE_FIELDS"),
+                 (11, None, True, "IMAGE_RECEIPT_DUPLICATE"),
+                 (10, None, False, "IMAGE_RECEIPT_OLD_SCHEMA"))
+        for index, (schema, mutation, duplicate, code) in enumerate(cases):
+            with self.subTest(schema=schema, mutation=mutation, duplicate=duplicate):
+                self.rejected(self.archive_with_agent_image(
+                    f"image-invalid-{index}.zip", schema, mutation=mutation, duplicate=duplicate), code)
+
+    def _schema11_note_payload(self, images, **overrides):
+        note = {"note_schema_version": 11, "source_note_id": "source-note",
+                "source_revision_ms": 1, "pdf_resource_id": None}
+        payload = {"schemaVersion": 11, "id": "source-note", "updatedAt": 1,
+                   "strokes": [], "textFlows": [], "images": images,
+                   "pageCount": 1, "pdfPageCount": 0}
+        payload.update(overrides)
+        return note, payload
+
+    def _image_without_receipt(self, image_id, png, **overrides):
+        image = {"id": image_id, "png": base64.b64encode(png).decode("ascii"),
+                 "page": 0, "x": 0, "y": 0, "width": 1, "height": 1}
+        image.update(overrides)
+        return image
+
+    def test_schema11_aggregate_png_pixel_budget_matches_clients(self):
+        png = synthetic_png(1600, 1600)
+        images = [self._image_without_receipt(f"image-{index}", png) for index in range(6)]
+        note, payload = self._schema11_note_payload(images)
+        with self.assertRaises(validator.ArchiveError) as caught:
+            validator.validate_note_payload(note, payload)
+        self.assertEqual(str(caught.exception), "IMAGE_TOTAL_PIXELS")
+
+    def test_schema11_image_must_fit_effective_page_and_page_count(self):
+        png = synthetic_png(1, 1)
+        note, payload = self._schema11_note_payload(
+            [self._image_without_receipt("edge", png, x=760, width=10)])
+        with self.assertRaises(validator.ArchiveError) as caught:
+            validator.validate_note_payload(note, payload)
+        self.assertEqual(str(caught.exception), "IMAGE_PAGE_BOUNDS")
+
+        note, payload = self._schema11_note_payload(
+            [self._image_without_receipt("wrong-page", png, page=1)])
+        with self.assertRaises(validator.ArchiveError) as caught:
+            validator.validate_note_payload(note, payload)
+        self.assertEqual(str(caught.exception), "IMAGE_PAGE")
 
     def test_canonical_fixture_validates_and_carries_cross_platform_cases(self):
         raw = zip_bytes(self.entries)
@@ -338,7 +487,7 @@ class BackupValidatorTests(unittest.TestCase):
         result = validator.validate_archive(self.archive_with_note_schema_profile(
             "schema-10-integral-float.zip", 10, "absent", manifest_schema_value=10.0, payload_schema_value=10.0))
         self.assertEqual(result["notes"], 2)
-        for index, value in enumerate((True, "10", 10.5, 11, None)):
+        for index, value in enumerate((True, "10", 10.5, 12, None)):
             with self.subTest(value=value):
                 path = self.archive_with_note_schema_profile(
                     f"schema-invalid-{index}.zip", 10, "absent", manifest_schema_value=value)
@@ -373,7 +522,7 @@ class BackupValidatorTests(unittest.TestCase):
     def test_version_scope_missing_nullable_and_strict_integer_edges(self):
         mutations = (
             (lambda m: m.__setitem__("format_version", 99), "FORMAT_UNSUPPORTED"),
-            (lambda m: m["notes"][0].__setitem__("note_schema_version", 11), "NOTE_SCHEMA"),
+            (lambda m: m["notes"][0].__setitem__("note_schema_version", 12), "NOTE_SCHEMA"),
             (lambda m: m["scope"].__setitem__("credentials", True), "FORBIDDEN_SCOPE"),
             (lambda m: m["vault_entries"][1].pop("note_item_id"), "VAULT_FIELDS"),
             (lambda m: m.__setitem__("created_at_ms", 1.0), "TIME_INVALID"),

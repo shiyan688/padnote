@@ -340,6 +340,23 @@ public final class AgentProtocolTest {
         try { corrupt.download(task, connection, artifact, directory); fail(); }
         catch (IllegalStateException expected) { }
         assertEquals(0, directory.listFiles().length);
+
+        for(AgentTaskStore.Artifact descriptor:new AgentTaskStore.Artifact[]{
+                new AgentTaskStore.Artifact("artifact-a","renamed.txt","text/plain",bytes.length,sha),
+                new AgentTaskStore.Artifact("artifact-a","result.txt","image/png",bytes.length,sha)}){
+            File rejectDirectory=temporary.newFolder();
+            try{downloader.download(task,connection,descriptor,rejectDirectory);fail("changed descriptor must not be accepted");}
+            catch(IllegalArgumentException expected){}
+            assertEquals(0,rejectDirectory.listFiles().length);
+        }
+        AgentTaskStore.Artifact oversized=new AgentTaskStore.Artifact("artifact-a","large.png","image/png",
+                AgentArtifactDownloader.MAX_IMAGE_BYTES+1,"a".repeat(64));
+        AgentTaskStore.Task oversizedTask=task(Collections.singletonList(oversized),"remote-a",AgentTaskStore.Status.COMPLETED);
+        File oversizedDirectory=temporary.newFolder();
+        try{downloader.downloadImage(oversizedTask,connection,oversized,oversizedDirectory,
+                new AgentArtifactDownloader.Cancellation());fail("Agent image byte cap must be enforced before streaming");}
+        catch(IllegalArgumentException expected){}
+        assertEquals(0,oversizedDirectory.listFiles().length);
     }
 
     private static AgentConnectionStore.Config config(java.util.List<String> capabilities) {

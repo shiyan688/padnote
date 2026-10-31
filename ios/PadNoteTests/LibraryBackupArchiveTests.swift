@@ -541,7 +541,7 @@ final class LibraryBackupArchiveTests: XCTestCase {
         XCTAssertThrowsError(try LibraryBackupArchive.readStagedManifest(from: stagedDirectory))
     }
 
-    func testFormatV2TypedProfileShapeIsAcceptedAndUnsupportedSchemaRejected() throws {
+    func testFormatV2TypedProfileShapeAndSchemaElevenAreAcceptedUnsupportedSchemaRejected() throws {
         let note = NoteDocument(title: "typed v2 copy")
         let payload = try note.encoded()
         let resource = descriptor("r-0123456789abcdef0123456789abcdef", payload)
@@ -569,12 +569,29 @@ final class LibraryBackupArchiveTests: XCTestCase {
             with: "\"note_schema_version\":10.5").utf8)
         XCTAssertThrowsError(try LibraryBackupArchive.validateManifestJSON(fractionalNoteSchema))
         let unknownNoteSchema = Data(manifestText.replacingOccurrences(of: "\"note_schema_version\":10",
-            with: "\"note_schema_version\":11").utf8)
+            with: "\"note_schema_version\":12").utf8)
         XCTAssertThrowsError(try LibraryBackupArchive.validateManifestJSON(unknownNoteSchema))
         XCTAssertNoThrow(try LibraryBackupArchive.validate(manifest: manifest), "v2 remains a read/copy format without update authority")
+        var schema11Note = note
+        schema11Note.schemaVersion = 11
+        let schema11Payload = try schema11Note.encoded()
+        let schema11Resource = descriptor("r-1123456789abcdef0123456789abcdef", schema11Payload)
+        let schema11Item = LibraryBackupManifest.Note(itemID: item.itemID, sourceNoteID: note.id,
+            sourceRevisionMS: Int64(floor(schema11Note.updatedAt)), schemaVersion: 11,
+            noteResourceID: schema11Resource.resourceID, pdfResourceID: nil, coverResourceID: nil,
+            vaultEntryIDs: [], videoAttachmentIDs: [])
+        var schema11Manifest = LibraryBackupManifest(createdAtMS: 1, producer: ["platform": "ios", "app_version": "test"],
+            notes: [schema11Item], vaultEntries: [], videoAttachments: [], coverPresets: [], resources: [schema11Resource])
+        schema11Manifest.formatVersion = 2
+        schema11Manifest.updateProfiles = [.init(schemaVersion: 2, noteItemID: schema11Item.itemID,
+            sourceNoteID: schema11Item.sourceNoteID, sourceLineageID: "01234567-89ab-3cde-8fab-0123456789ab",
+            sourceRevisionID: "11234567-89ab-3cde-8fab-0123456789ab",
+            groupSHA256: String(repeating: "b", count: 64), bodySHA256: schema11Resource.sha256, timestamps: [])]
+        XCTAssertNoThrow(try LibraryBackupArchive.validate(manifest: schema11Manifest),
+                         "archive-v2 must accept the schema-11 image-provenance ceiling")
         var badSchemaManifest = manifest
         badSchemaManifest.notes = [LibraryBackupManifest.Note(itemID: item.itemID, sourceNoteID: item.sourceNoteID,
-            sourceRevisionMS: item.sourceRevisionMS, schemaVersion: 11, noteResourceID: item.noteResourceID,
+            sourceRevisionMS: item.sourceRevisionMS, schemaVersion: 12, noteResourceID: item.noteResourceID,
             pdfResourceID: nil, coverResourceID: nil, vaultEntryIDs: [], videoAttachmentIDs: [])]
         XCTAssertThrowsError(try LibraryBackupArchive.validate(manifest: badSchemaManifest),
                              "archive manifests reject unsupported note schema declarations")

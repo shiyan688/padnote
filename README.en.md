@@ -24,7 +24,7 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | Track progress in the computer task list; review the result and add it back to a note when complete |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 38 typography and compatibility checks](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 39 image placement and compatibility](BETA39_TESTING.md) · [Beta 38 typography history](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 
 ## Start with a sample
@@ -57,6 +57,8 @@ Synthetic interface and example state. See the [media provenance and scope](docs
 ## Bring task results onto the page
 
 Preview completed text on the actual note page, then append it or choose a starting point and text width on the target page. Long answers continue across pages. If the result overlaps existing text, ink, images, or PDF content, choose another position or width before adding it. Existing material stays in place.
+
+Completed Bridge tasks that list a PNG or JPEG also offer a paper preview and a user-confirmed placement action; ordinary file download remains available. Confirming an image placement upgrades that note to schema 11, which older PadNote versions cannot open. See [Agent image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md).
 
 <a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="Synthetic iPad example: a task result saved to a note" width="480"></a>
 
@@ -134,6 +136,14 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 </details>
 
+## Beta 39: put Agent images back on the page
+
+When a computer task is complete, supported PNG/JPEG attachments can be previewed and positioned or resized before you confirm adding them to the original or a new note. Cancelling leaves no empty entry; after saving, the note can be reopened from its original task. If an image overlaps existing content, review and adjust it before confirming. Existing paper content is not moved or deleted.
+
+Only a note where you confirm adding an image moves to schema 11; earlier versions cannot open that note. Ordinary notes are unchanged. See [image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md) and the [beta.39 testing guide](BETA39_TESTING.md).
+
+Android beta.39 uses versionCode 72. iPad source is included, with no signed IPA; the Windows Connection Assistant remains beta.37.
+
 ## Beta 38: paper typography profiles
 
 Older notes keep their current typography when opened. To use the new profile, review the whole page and confirm the change. The new profile improves bold text around inline math, nested emphasis, and thematic breaks while retaining code, tables, links, quotes, and math. Switching back changes the layout without undoing current text or automatically removing existing pages.
@@ -146,7 +156,7 @@ The images below compare the old and new Android exports of the same synthetic t
 | --- | --- |
 | <img src="docs/media/2026-10-31/typography-legacy-page-1.png" alt="Old layout of synthetic test text, first Android export page" width="420"> | <img src="docs/media/2026-10-31/typography-new-page-1.png" alt="New layout of the same synthetic test text, first Android export page" width="420"> |
 
-- **Android:** beta.38, versionCode 71. See [Beta 38 testing and compatibility](BETA38_TESTING.md).
+- **Android:** beta.38, versionCode 71; this section records the typography profile history.
 - **iPad:** source is included; there is no signed IPA. After restarting PadNote, open an added result's saved note directly from its original task.
 - **Windows:** the Connection Assistant remains beta.37; this release includes no new desktop build.
 

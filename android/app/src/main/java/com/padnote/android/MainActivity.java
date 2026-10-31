@@ -164,6 +164,38 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         synchronized void bind(MainActivity next){activity=next;}
         synchronized MainActivity activity(){return activity;}
     }
+    private static final class AgentImagePlacementOperation {
+        final AgentTaskStore.Task task;
+        final AgentTaskStore.Artifact artifact;
+        final AgentConnectionStore.Config connection;
+        final AgentArtifactDownloader.Cancellation cancellation=new AgentArtifactDownloader.Cancellation();
+        final int generation;
+        java.util.concurrent.Future<?> future;
+        ProgressDialog progress;
+        String targetNoteId,targetTitle;
+        long targetSession,targetDocumentRevision,targetDocumentGeneration;
+        long targetBookshelfGeneration;
+        String targetContextNoteId;
+        boolean targetEditorVisibleAtStart,targetCanvasDetached;
+        NoteCanvasView targetCanvas;
+        String groupLineage,groupRevision,groupDigest,legacySha;
+        boolean newTarget;
+        NoteImage image;
+        NoteCanvasView.PdfExportSnapshot snapshot;
+        AlertDialog preview;
+        FrameLayout renderHost;
+        PaperBitmapViewport viewport;
+        Bitmap previewBitmap;
+        NoteCanvasView.AgentImagePlacementCandidate candidate;
+        int previewSerial,pageIndex;
+        double x,y,width,height;
+        boolean overlapAcknowledged,renderReady,confirmed;
+        CheckBox overlapCheck;
+        AgentImagePlacementOperation(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
+                                     AgentConnectionStore.Config connection,int generation){
+            this.task=task;this.artifact=artifact;this.connection=connection;this.generation=generation;
+        }
+    }
     private volatile String pendingRestoredMaterialId;
     private volatile boolean pendingRestoredMaterialShare;
     private volatile String pendingRestoredMaterialRequestNonce;
@@ -258,6 +290,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private AgentConnectionStore agentConnectionStore;
     /** Isolated task-store override used only by instrumentation exercising the real result UI. */
     private AgentTaskStore agentResultTaskStoreForTest;
+    private AgentConnectionStore.Config agentImageConnectionForTest;
+    private AgentArtifactDownloader agentImageDownloaderForTest;
     private AgentTaskClient.Factory videoTaskClientFactory = AgentTaskClient::new;
     private AgentArtifactDownloader videoAttachmentDownloader;
     private java.util.function.Consumer<Exception> videoAttachmentFailureForTest;
@@ -265,6 +299,11 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private SharedPreferences preferences;
     private String currentNoteId;
     private String currentNoteTitle;
+    private String pendingImageImportNoteId;
+    private long pendingImageImportSession=-1L;
+    private long pendingImageImportDocumentGeneration=-1L;
+    private long pendingImageImportDocumentRevision=-1L;
+    private int pendingImageImportPageIndex;
     private Button noteTaskAction;
     private String noteProgressTaskId = "";
     private String noteProgressTaskNoteId = "";
@@ -541,6 +580,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private PaperBitmapViewport activeAgentPreviewViewport;
     private AlertDialog activeAgentPreviewDialog;
     private FrameLayout activeAgentPreviewHost;
+    private AgentImagePlacementOperation activeAgentImagePlacement;
+    private int agentImageLookupGeneration;
+    private boolean agentImageLookupInFlight;
+    private boolean agentImageTargetChooserShowing;
+    private volatile String agentImageLookupDebug="idle";
+    private volatile String agentImageTaskDialogDebug="never_requested";
+    private int agentImageTaskDialogGeneration;
+    private AlertDialog agentImageTaskDialogForTest;
     private String groupEditorSessionId = java.util.UUID.randomUUID().toString();
     private long editorSessionGeneration;
     private long groupDraftCaptureSequence;
@@ -702,10 +749,15 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     @Override
     protected void onDestroy() {
+        agentImageLookupGeneration++;
+        agentImageLookupInFlight=false;
+        agentImageTargetChooserShowing=false;
+        agentImageTaskDialogGeneration++;
         cancelRemovedNotesUi();
         cancelManualDraftRecoveryForContextChange();
         cancelAiSelectionRender();
         cancelAgentResultPreview();
+        if(activeAgentImagePlacement!=null&&!activeAgentImagePlacement.confirmed)cancelAgentImagePlacement(activeAgentImagePlacement);
         if (aiSelectionRenderer != null) {
             aiSelectionRenderer.close();
             aiSelectionRenderer = null;
@@ -2378,11 +2430,543 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 this::launchCreateAgentArtifactDocument, agentResultTaskStore(),
                 VideoTaskDialogs::new, this::openTaskSourceNote, videoTaskClientFactory);
         dialogs.setResultAppender(this::beginAgentResultAppend);
+        dialogs.setArtifactImagePlacementLauncher(this::beginAgentImagePlacement);
         return dialogs;
+    }
+
+    private void beginAgentImagePlacement(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact){
+        if(agentImageLookupInFlight){
+            agentImageLookupDebug="rejected_duplicate_lookup";
+            Toast.makeText(this,getString(R.string.agent_image_busy),Toast.LENGTH_SHORT).show();return;
+        }
+        AgentTaskStore.Task latest=agentResultTaskStore().get(task==null?"":task.clientTaskId);
+        AgentConnectionStore.Config connection=task==null?null:agentImageConnection(task.connectionId);
+        if(!sameAgentImageTask(task,latest,artifact)||connection==null||!latest.matches(connection)
+                ||latest.status!=AgentTaskStore.Status.COMPLETED
+                ||!("image/png".equals(artifact.mediaType)||"image/jpeg".equals(artifact.mediaType))){
+            agentImageLookupDebug="rejected_task_or_connection_gate;taskPresent="+(latest!=null)
+                    +";connectionPresent="+(connection!=null)+";taskMatches="+(latest!=null&&sameAgentImageTask(task,latest,artifact))
+                    +";connectionMatches="+(latest!=null&&connection!=null&&latest.matches(connection))
+                    +";status="+(latest==null||latest.status==null?"none":latest.status.name())
+                    +";media="+(artifact==null?"none":artifact.mediaType);
+            Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();return;
+        }
+        String instance=latest.instanceId==null||latest.instanceId.isEmpty()?null:latest.instanceId;
+        String appId=AgentImageReceipt.calculateApplicationId(latest.clientTaskId,latest.connectionId,instance,
+                latest.kind.name().toLowerCase(java.util.Locale.ROOT),latest.transport.name().toLowerCase(java.util.Locale.ROOT),
+                artifact.id,artifact.name,artifact.mediaType,artifact.sizeBytes,artifact.sha256.toLowerCase(java.util.Locale.ROOT));
+        final int lookup=++agentImageLookupGeneration;
+        final long capturedSession=editorSessionGeneration;
+        final String capturedNoteId=currentNoteId;
+        final boolean capturedEditorVisible=editorVisible;
+        agentImageLookupInFlight=true;
+        agentImageLookupDebug="queued;session="+capturedSession+";notePresent="+(capturedNoteId!=null)
+                +";editorVisible="+capturedEditorVisible+";restoreCompleted="+restoreCompleted
+                +";saveInFlight="+saveInFlight;
+        storageExecutor.execute(()->{
+            agentImageLookupDebug="worker_started";
+            ImageReceiptLocation found=null;Exception failure=null;
+            try{found=findAgentImageLocation(appId);}catch(Exception error){failure=error;}
+            final ImageReceiptLocation existing=found;final Exception problem=failure;
+            agentImageLookupDebug=problem==null?"worker_completed_no_match":"worker_failed:"+safeAgentImageLookupFailure(problem);
+            runOnUiThread(()->{
+                if(lookup!=agentImageLookupGeneration){agentImageLookupDebug="callback_generation_stale";return;}
+                agentImageLookupInFlight=false;
+                if(isFinishing()||isDestroyed()) {agentImageLookupDebug="callback_activity_destroyed";return;}
+                if(capturedSession!=editorSessionGeneration||capturedEditorVisible!=editorVisible
+                        ||!java.util.Objects.equals(capturedNoteId,currentNoteId)){
+                    agentImageLookupDebug="callback_context_changed;sessionSame="+(capturedSession==editorSessionGeneration)
+                            +";noteSame="+java.util.Objects.equals(capturedNoteId,currentNoteId)
+                            +";editorVisible="+editorVisible+";restoreCompleted="+restoreCompleted
+                            +";saveInFlight="+saveInFlight;return;
+                }
+                if(problem!=null){agentImageLookupDebug="callback_scan_failed:"+safeAgentImageLookupFailure(problem);
+                    Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();return;}
+                if(existing!=null){NoteStore.Entry entry=findNoteEntry(existing.noteId);
+                    if(entry!=null&&existing.noteId.equals(currentNoteId)&&canvasView!=null)canvasView.goToPage(existing.page);
+                    else if(entry!=null)openAgentImageLocation(entry,existing);
+                    agentImageLookupDebug="callback_duplicate_found";
+                    Toast.makeText(this,getString(R.string.agent_image_already_placed),Toast.LENGTH_LONG).show();return;}
+                agentImageLookupDebug="callback_ready_for_chooser;restoreCompleted="+restoreCompleted+";saveInFlight="+saveInFlight;
+                try{showAgentImageTargetChoices(latest,artifact);}
+                catch(RuntimeException chooserFailure){agentImageLookupDebug="chooser_failed:"+chooserFailure.getClass().getSimpleName();
+                    Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();}
+            });
+        });
+    }
+
+    private static String safeAgentImageLookupFailure(Exception failure){
+        StringBuilder summary=new StringBuilder(failure.getClass().getSimpleName());
+        java.util.Set<Throwable> seen=java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<Throwable,Boolean>());
+        ArrayList<String> codes=new ArrayList<>();
+        Throwable cause=failure;
+        while(cause!=null&&seen.add(cause)&&codes.size()<8){
+            String message=cause.getMessage();
+            if(message!=null&&message.matches("[A-Z0-9_]{1,80}"))
+                codes.add(cause.getClass().getSimpleName()+":"+message);
+            cause=cause.getCause();
+        }
+        if(!codes.isEmpty())summary.append(";codes=").append(android.text.TextUtils.join(">",codes));
+        int frames=0;
+        for(StackTraceElement frame:failure.getStackTrace()){
+            if(!frame.getClassName().startsWith("com.padnote.android."))continue;
+            if(frames++==0)summary.append(";appFrames=");else summary.append(",");
+            summary.append(frame.getClassName()).append(".")
+                    .append(frame.getMethodName()).append("#").append(frame.getLineNumber());
+            if(frames>=3)break;
+        }
+        return summary.toString();
+    }
+
+    private void openAgentImageLocation(NoteStore.Entry entry,ImageReceiptLocation location){
+        openNote(entry);final long started=android.os.SystemClock.elapsedRealtime();Runnable[] poll={null};
+        poll[0]=()->{
+            if(isFinishing()||isDestroyed()||!location.noteId.equals(currentNoteId))return;
+            if(editorVisible&&restoreCompleted&&canvasView!=null){canvasView.goToPage(location.page);return;}
+            if(android.os.SystemClock.elapsedRealtime()-started>=30000L){
+                Toast.makeText(this,getString(R.string.agent_image_target_missing),Toast.LENGTH_LONG).show();return;}
+            handler.postDelayed(poll[0],100L);
+        };
+        handler.post(poll[0]);
+    }
+
+    private static final class ImageReceiptLocation{final String noteId;final int page;
+        ImageReceiptLocation(String id,int page){noteId=id;this.page=page;}}
+
+    private ImageReceiptLocation findAgentImageLocation(String applicationId)throws Exception{
+        ImageReceiptLocation match=null;
+        for(NoteStore.Entry entry:NoteStore.list(this)){
+            JSONObject document=NoteStore.load(this,entry.id);JSONArray images=document.optJSONArray("images");
+            if(images==null)continue;
+            for(int i=0;i<images.length();i++){JSONObject image=images.getJSONObject(i);
+                JSONObject receipt=image.optJSONObject("agentImage");
+                if(receipt!=null&&applicationId.equals(receipt.optString("applicationId"))){
+                    if(match!=null)throw new java.io.IOException("AGENT_IMAGE_APPLICATION_AMBIGUOUS");
+                    match=new ImageReceiptLocation(entry.id,image.getInt("page"));
+                }
+            }
+        }
+        return match;
+    }
+
+    private void showAgentImageTargetChoices(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact){
+        ArrayList<String> labels=new ArrayList<>();ArrayList<Runnable> choices=new ArrayList<>();
+        if(editorVisible&&currentNoteId!=null){String displayedNoteId=currentNoteId,displayedTitle=currentNoteTitle;
+            labels.add(getString(R.string.agent_image_current_note,displayedTitle));
+            choices.add(()->selectAgentImageTarget(task,artifact,displayedNoteId,false,displayedTitle));}
+        NoteStore.Entry source=task.noteId==null||task.noteId.isEmpty()?null:findNoteEntry(task.noteId);
+        if(source!=null&&(currentNoteId==null||!source.id.equals(currentNoteId))){labels.add(getString(R.string.agent_image_source_note,source.title));
+            choices.add(()->selectAgentImageTarget(task,artifact,source.id,false,source.title));}
+        labels.add(getString(R.string.agent_image_choose_saved));choices.add(()->showAgentImageSavedTarget(task,artifact));
+        labels.add(getString(R.string.agent_image_new_note));choices.add(()->selectAgentImageTarget(task,artifact,
+                "note-"+java.util.UUID.randomUUID().toString().replace("-",""),true,
+                getString(R.string.agent_image_new_note_title,artifact.name)));
+        AlertDialog dialog=ChoiceRows.builder(this)
+                .setCustomTitle(pendingVideoActionHeader(getString(R.string.agent_image_choose_target),
+                        getString(R.string.agent_image_choose_target_message)))
+                .setAdapter(ChoiceRows.adapter(this,labels.toArray(new String[0])),(d,w)->choices.get(w).run())
+                .setNegativeButton(getString(R.string.core_cancel),null).create();
+        agentImageTargetChooserShowing=true;
+        dialog.setOnDismissListener(d->agentImageTargetChooserShowing=false);
+        dialog.show();
+        agentImageLookupDebug="chooser_shown;restoreCompleted="+restoreCompleted+";saveInFlight="+saveInFlight;
+    }
+
+    private void showAgentImageSavedTarget(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact){
+        try{
+            List<NoteStore.Entry> entries=NoteStore.list(this);String[] labels=new String[entries.size()];
+            for(int i=0;i<entries.size();i++)labels[i]=entries.get(i).title;
+            ChoiceRows.builder(this).setTitle(getString(R.string.agent_image_choose_saved))
+                    .setAdapter(ChoiceRows.adapter(this,labels),(d,w)->selectAgentImageTarget(task,artifact,
+                            entries.get(w).id,false,entries.get(w).title))
+                    .setNegativeButton(getString(R.string.core_cancel),null).show();
+        }catch(Exception error){Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();}
+    }
+
+    private void selectAgentImageTarget(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
+            String targetId,boolean newTarget,String title){
+        int selectionGeneration=++agentImageTargetSelectionGeneration;
+        if(!newTarget&&!targetId.equals(currentNoteId)){
+            NoteStore.Entry entry=findNoteEntry(targetId);if(entry==null){Toast.makeText(this,getString(R.string.agent_image_target_missing),Toast.LENGTH_LONG).show();return;}
+            openNote(entry);final long started=android.os.SystemClock.elapsedRealtime();
+            final long expectedSession=editorSessionGeneration;
+            Runnable[] wait={null};wait[0]=()->{
+                if(selectionGeneration!=agentImageTargetSelectionGeneration||expectedSession!=editorSessionGeneration
+                        ||!editorVisible)return;
+                if(!targetId.equals(currentNoteId)){if(android.os.SystemClock.elapsedRealtime()-started>30000){Toast.makeText(this,getString(R.string.agent_image_target_missing),Toast.LENGTH_LONG).show();return;}handler.postDelayed(wait[0],150);return;}
+                if(!restoreCompleted||canvasView==null){if(android.os.SystemClock.elapsedRealtime()-started>30000){Toast.makeText(this,getString(R.string.agent_image_target_missing),Toast.LENGTH_LONG).show();return;}handler.postDelayed(wait[0],150);return;}
+                startAgentImageDownload(task,artifact,targetId,false,title);
+            };handler.post(wait[0]);return;
+        }
+        startAgentImageDownload(task,artifact,targetId,newTarget,title);
+    }
+
+    private void startAgentImageDownload(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact,
+            String targetId,boolean newTarget,String title){
+        if(activeAgentImagePlacement!=null){Toast.makeText(this,getString(R.string.agent_image_busy),Toast.LENGTH_SHORT).show();return;}
+        boolean editorReady=editorVisible&&restoreCompleted&&canvasView!=null&&!saveInFlight
+                &&documentRevision==lastSavedRevision;
+        if(saveInFlight||!newTarget&&!editorReady||newTarget&&editorVisible&&!editorReady
+                ||!newTarget&&!targetId.equals(currentNoteId)){
+            Toast.makeText(this,getString(R.string.agent_image_save_first),Toast.LENGTH_LONG).show();return;}
+        AgentTaskStore.Task latest=agentResultTaskStore().get(task.clientTaskId);
+        AgentConnectionStore.Config connection=agentImageConnection(task.connectionId);
+        if(!sameAgentImageTask(task,latest,artifact)||connection==null||!latest.matches(connection)){
+            Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();return;}
+        AgentImagePlacementOperation op=new AgentImagePlacementOperation(latest,artifact,connection,++agentImageGeneration);
+        op.targetNoteId=targetId;op.targetTitle=title;op.newTarget=newTarget;
+        op.targetSession=editorSessionGeneration;op.targetDocumentRevision=documentRevision;
+        op.targetBookshelfGeneration=bookshelfLoadGeneration;op.targetContextNoteId=currentNoteId;
+        op.targetEditorVisibleAtStart=editorVisible;
+        try{
+            if(newTarget&&!editorVisible){
+                op.targetCanvas=createDetachedAgentImageDraftCanvas(targetId,title);
+                op.targetCanvasDetached=true;
+            }else op.targetCanvas=canvasView;
+        }catch(Exception error){Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();return;}
+        if(op.targetCanvas==null){Toast.makeText(this,getString(R.string.agent_image_unavailable),Toast.LENGTH_LONG).show();return;}
+        op.targetDocumentGeneration=op.targetCanvas.documentGeneration();
+        if(op.targetEditorVisibleAtStart){op.groupLineage=currentGroupLineage;op.groupRevision=currentGroupRevision;
+            op.groupDigest=currentGroupDigest;op.legacySha=currentLegacyBodySha256;}
+        activeAgentImagePlacement=op;
+        ProgressDialog progress=new ProgressDialog(this);op.progress=progress;
+        progress.setTitle(getString(R.string.agent_image_download_title));
+        progress.setMessage(getString(R.string.agent_image_downloading));progress.setCancelable(true);
+        progress.setCanceledOnTouchOutside(false);progress.setOnCancelListener(d->cancelAgentImagePlacement(op));
+        progress.show();
+        op.future=aiExecutor.submit(()->{
+            File staged=null;NoteImage image=null;Exception failure=null;
+            try{
+                AgentConnectionStore.Config latestConnection=agentImageConnection(latest.connectionId);
+                AgentTaskStore.Task current=agentResultTaskStore().get(latest.clientTaskId);
+                if(!sameAgentImageTask(latest,current,artifact)||latestConnection==null||!sameAgentImageConnection(connection,latestConnection)
+                        ||!current.matches(latestConnection))
+                    throw new java.io.IOException("AGENT_IMAGE_TASK_OR_CONNECTION_CHANGED");
+                AgentArtifactDownloader downloader=agentImageDownloaderForTest==null
+                        ?new AgentArtifactDownloader():agentImageDownloaderForTest;
+                staged=downloader.downloadImage(current,latestConnection,artifact,
+                        new File(getCacheDir(),"agent-image-staging"),op.cancellation);
+                if(op.cancellation.isCancelled())throw new java.io.InterruptedIOException("cancelled");
+                image=NoteImage.fromAgentArtifact(staged,current,latestConnection,artifact,
+                        current.noteId==null||current.noteId.isEmpty()?null:current.noteId,current.noteRevision);
+            }catch(Exception error){failure=error;}finally{if(staged!=null&&!staged.delete())staged.deleteOnExit();}
+            final NoteImage ready=image;final Exception error=failure;
+            runOnUiThread(()->{
+                if(activeAgentImagePlacement!=op||op.cancellation.isCancelled()){
+                    if(ready!=null&&!ready.bitmap.isRecycled())ready.bitmap.recycle();return;}
+                if(op.progress!=null&&op.progress.isShowing())op.progress.dismiss();
+                if(error!=null){finishAgentImagePlacement(op);Toast.makeText(this,getString(R.string.agent_image_download_failed),Toast.LENGTH_LONG).show();return;}
+                op.image=ready;showAgentImagePreview(op);
+            });
+        });
+    }
+
+    private NoteCanvasView createDetachedAgentImageDraftCanvas(String noteId,String title)throws Exception{
+        NoteCanvasView draft=new NoteCanvasView(this);
+        org.json.JSONObject document=NoteStore.emptyDocumentForAgentImage(noteId,title,System.currentTimeMillis())
+                .put("schemaVersion",11).put("pageWidth",768d).put("pageHeight",1086d)
+                .put("canvasWidth",768d).put("canvasHeight",1086d).put("pageGap",dp(28))
+                .put("pageCount",1).put("pageStyle",PageStyle.legacyDefault().toJson());
+        draft.loadJsonDocument(document);
+        return draft;
+    }
+
+    private int agentImageGeneration;
+    private int agentImageTargetSelectionGeneration;
+    private void cancelAgentImagePlacement(AgentImagePlacementOperation op){
+        if(op==null)return;op.cancellation.cancel();if(op.future!=null)op.future.cancel(true);
+        if(op.snapshot!=null){op.snapshot.close();op.snapshot=null;}
+        if(op.preview!=null&&op.preview.isShowing())op.preview.dismiss();
+        if(op.image!=null&&!op.image.bitmap.isRecycled())op.image.bitmap.recycle();
+        finishAgentImagePlacement(op);
+    }
+
+    private void finishAgentImagePlacement(AgentImagePlacementOperation op){
+        if(activeAgentImagePlacement==op)activeAgentImagePlacement=null;
+        if(op.progress!=null&&op.progress.isShowing())op.progress.dismiss();
+        op.targetCanvas=null;
+    }
+
+    static boolean sameAgentImageTask(AgentTaskStore.Task expected,AgentTaskStore.Task actual,
+                                               AgentTaskStore.Artifact artifact){
+        if(expected==null||actual==null||artifact==null||actual.status!=AgentTaskStore.Status.COMPLETED
+                ||!same(expected.clientTaskId,actual.clientTaskId)||!same(expected.connectionId,actual.connectionId)
+                ||expected.connectionRevision!=actual.connectionRevision||!same(expected.origin,actual.origin)
+                ||!same(expected.credentialRef,actual.credentialRef)||expected.transport!=actual.transport
+                ||expected.kind!=actual.kind||!same(expected.instanceId,actual.instanceId)
+                ||!same(expected.bridgeId,actual.bridgeId)||!same(expected.noteId,actual.noteId)
+                ||expected.noteRevision!=actual.noteRevision||!same(expected.remoteTaskId,actual.remoteTaskId)
+                ||!same(expected.submissionSha256,actual.submissionSha256)
+                ||expected.artifacts.size()!=actual.artifacts.size())return false;
+        for(AgentTaskStore.Artifact wanted:expected.artifacts){boolean matched=false;
+            for(AgentTaskStore.Artifact got:actual.artifacts)if(wanted.id.equals(got.id)&&wanted.name.equals(got.name)
+                    &&wanted.mediaType.equals(got.mediaType)&&wanted.sizeBytes==got.sizeBytes
+                    &&wanted.sha256.equalsIgnoreCase(got.sha256)){matched=true;break;}
+            if(!matched)return false;
+        }
+        for(AgentTaskStore.Artifact candidate:actual.artifacts)
+            if(candidate.id.equals(artifact.id)&&candidate.name.equals(artifact.name)
+                    &&candidate.mediaType.equals(artifact.mediaType)&&candidate.sizeBytes==artifact.sizeBytes
+                    &&candidate.sha256.equalsIgnoreCase(artifact.sha256))return true;
+        return false;
+    }
+
+    private static boolean sameAgentImageConnection(AgentConnectionStore.Config expected,AgentConnectionStore.Config actual){
+        return expected!=null&&actual!=null&&same(expected.id,actual.id)&&expected.revision==actual.revision
+                &&same(expected.endpoint,actual.endpoint)&&same(expected.credentialRef,actual.credentialRef)
+                &&same(expected.token,actual.token)&&expected.kind==actual.kind&&expected.transport==actual.transport
+                &&same(expected.bridgeId,actual.bridgeId)&&same(expected.instanceId,actual.instanceId)
+                &&same(expected.certSha256,actual.certSha256);
+    }
+
+    private void showAgentImagePreview(AgentImagePlacementOperation op){
+        if(!isAgentImageTargetCurrent(op)){cancelAgentImagePlacement(op);return;}
+        final NoteCanvasView targetCanvas=op.targetCanvas;
+        final float pageWidth=targetCanvas.paperWidthForPlacement(),pageHeight=targetCanvas.paperHeightForPlacement();
+        int existingPages=op.newTarget?1:targetCanvas.getPageCount();
+        if(!op.newTarget&&existingPages>=500){Toast.makeText(this,getString(R.string.agent_image_page_overflow),Toast.LENGTH_LONG).show();cancelAgentImagePlacement(op);return;}
+        op.pageIndex=op.newTarget?0:existingPages; // default to a new blank last page
+        double margin=dp(20),maxW=Math.max(dp(80),pageWidth*0.48f),maxH=Math.max(dp(80),pageHeight*0.38f);
+        double fit=Math.min(maxW/op.image.bitmap.getWidth(),maxH/op.image.bitmap.getHeight());
+        op.width=op.image.bitmap.getWidth()*fit;op.height=op.image.bitmap.getHeight()*fit;
+        op.x=(pageWidth-op.width)/2d;op.y=(pageHeight-op.height)/2d;
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(18),dp(8),dp(18),dp(8));
+        TextView hint=text(getString(R.string.agent_image_tap_to_place),13,SECONDARY_TEXT);root.addView(hint);
+        TextView compat=text(getString(R.string.agent_image_compatibility),12,SECONDARY_TEXT);root.addView(compat);
+        LinearLayout nav=new LinearLayout(this);nav.setGravity(Gravity.CENTER_VERTICAL);
+        Button previous=new Button(this);previous.setText(getString(R.string.agent_image_previous_page));
+        TextView pageLabel=text("",14,INK_COLOR);pageLabel.setGravity(Gravity.CENTER);
+        Button next=new Button(this);next.setText(getString(R.string.agent_image_next_page));
+        nav.addView(previous,new LinearLayout.LayoutParams(0,-2,1));nav.addView(pageLabel,new LinearLayout.LayoutParams(0,-2,1.2f));nav.addView(next,new LinearLayout.LayoutParams(0,-2,1));root.addView(nav);
+        PaperBitmapViewport viewport=new PaperBitmapViewport(this);op.viewport=viewport;
+        viewport.setContentDescription(getString(R.string.agent_image_preview_title));root.addView(viewport,new LinearLayout.LayoutParams(-1,0,1f));
+        TextView sizeLabel=text(getString(R.string.agent_image_size),12,SECONDARY_TEXT);root.addView(sizeLabel);
+        SeekBar size=new SeekBar(this);size.setMax(80);size.setProgress(80);root.addView(size);
+        TextView overlap=text(getString(R.string.agent_image_overlap_warning),13,0xffae5410);root.addView(overlap);overlap.setVisibility(View.GONE);
+        CheckBox ack=new CheckBox(this);ack.setText(getString(R.string.agent_image_ack_overlap));ack.setVisibility(View.GONE);op.overlapCheck=ack;root.addView(ack);
+        FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);host.setClipChildren(false);host.setClipToPadding(false);
+        host.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);root.addView(host,new LinearLayout.LayoutParams(1,1));op.renderHost=host;
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(getString(R.string.agent_image_preview_title))
+                .setView(root).setNegativeButton(getString(R.string.core_cancel),null)
+                .setPositiveButton(getString(R.string.agent_image_confirm),(d,w)->{}).create();op.preview=dialog;
+        final int[] maxPage={op.newTarget?0:Math.min(499,existingPages)};
+        Runnable buildCandidate=()->{
+            op.renderReady=false;op.previewSerial++;
+            if(dialog.isShowing())dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            previous.setEnabled(false);next.setEnabled(false);
+            if(!isAgentImageTargetCurrent(op)){hint.setText(getString(R.string.agent_image_target_changed));return;}
+            try{
+                if(op.snapshot!=null){op.snapshot.close();op.snapshot=null;}
+                op.candidate=op.newTarget?targetCanvas.prepareNewAgentImagePlacement(op.targetNoteId,op.targetTitle,
+                        op.image,op.pageIndex,op.x,op.y,op.width,op.height)
+                        :targetCanvas.prepareAgentImagePlacement(op.targetNoteId,op.targetTitle,
+                        op.image,op.pageIndex,op.x,op.y,op.width,op.height);
+                op.snapshot=targetCanvas.createAgentImagePreviewSnapshot(op.candidate);
+                boolean collision=op.candidate.overlap;ack.setChecked(false);op.overlapAcknowledged=false;
+                overlap.setVisibility(collision?View.VISIBLE:View.GONE);
+                ack.setVisibility(collision?View.VISIBLE:View.GONE);if(!collision){ack.setChecked(false);op.overlapAcknowledged=false;}
+                ack.setOnCheckedChangeListener((button,checked)->{op.overlapAcknowledged=checked;updateAgentImageConfirmEnabled(op,dialog);});
+                pageLabel.setText(getString(R.string.agent_image_page_of,op.pageIndex+1,op.snapshot.getPageCount()));
+                maxPage[0]=op.snapshot.getPageCount()-1;
+                previous.setEnabled(false);next.setEnabled(false);viewport.clearPaper();
+                int request=op.previewSerial;NoteCanvasView.PdfExportSnapshot frozen=op.snapshot;
+                frozen.renderPageWithTextAsync(op.pageIndex,1400,host,new NoteCanvasView.PdfExportSnapshot.PageCallback(){
+                    public void onRendered(Bitmap bitmap){
+                        if(activeAgentImagePlacement!=op||op.cancellation.isCancelled()||request!=op.previewSerial||!dialog.isShowing()
+                                ||!isAgentImageTargetCurrent(op)){
+                            if(!bitmap.isRecycled())bitmap.recycle();return;}
+                        op.previewBitmap=bitmap;viewport.setPaper(op.pageIndex,frozen.getPageWidth(),frozen.getPageHeight(),bitmap);
+                        op.renderReady=true;previous.setEnabled(op.pageIndex>0);next.setEnabled(op.pageIndex<maxPage[0]);
+                        updateAgentImageConfirmEnabled(op,dialog);
+                    }
+                    public void onFailure(Exception error){if(activeAgentImagePlacement==op&&request==op.previewSerial&&isAgentImageTargetCurrent(op)){
+                        op.renderReady=false;hint.setText(getString(R.string.agent_image_render_failed));updateAgentImageConfirmEnabled(op,dialog);}}
+                });
+            }catch(Exception error){op.renderReady=false;hint.setText(getString(R.string.agent_image_page_overflow));updateAgentImageConfirmEnabled(op,dialog);}
+        };
+        previous.setOnClickListener(v->{if(op.pageIndex>0){op.pageIndex--;buildCandidate.run();}});
+        next.setOnClickListener(v->{if(op.pageIndex<maxPage[0]){op.pageIndex++;buildCandidate.run();}});
+        viewport.setListener((page,px,py)->{
+            if(page!=op.pageIndex||!Float.isFinite(px)||!Float.isFinite(py))return;
+            double marginPage=dp(12);
+            op.x=clampAgentImageOrigin(px,op.width,pageWidth,marginPage);
+            op.y=clampAgentImageOrigin(py,op.height,pageHeight,marginPage);
+            viewport.setMarker((float)(op.x+op.width/2),(float)(op.y+op.height/2));buildCandidate.run();
+        });
+        size.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar bar,int progress,boolean fromUser){if(!fromUser)return;
+                double target=0.25+0.75*(progress/80d),scale=Math.min(maxW/op.image.bitmap.getWidth(),maxH/op.image.bitmap.getHeight())*target;
+                op.width=op.image.bitmap.getWidth()*scale;op.height=op.image.bitmap.getHeight()*scale;
+                op.x=Math.max(margin,Math.min(pageWidth-margin-op.width,op.x));op.y=Math.max(margin,Math.min(pageHeight-margin-op.height,op.y));buildCandidate.run();}
+            public void onStartTrackingTouch(SeekBar bar){}public void onStopTrackingTouch(SeekBar bar){}
+        });
+        dialog.setOnDismissListener(d->{if(op.snapshot!=null){op.snapshot.close();op.snapshot=null;}
+            if(viewport!=null)viewport.clearPaper();op.previewBitmap=null;
+            if(!op.confirmed)cancelAgentImagePlacement(op);else finishAgentImagePlacement(op);});
+        dialog.show();sizePaperViewportDialog(dialog,root);dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->commitAgentImagePlacement(op));
+        buildCandidate.run();
+    }
+
+    private void updateAgentImageConfirmEnabled(AgentImagePlacementOperation op,AlertDialog dialog){
+        if(dialog!=null&&dialog.isShowing()&&activeAgentImagePlacement==op)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(op.renderReady&&op.candidate!=null
+                    &&(!op.candidate.overlap||op.overlapAcknowledged));
+    }
+
+    private boolean isAgentImageTargetCurrent(AgentImagePlacementOperation op){
+        if(activeAgentImagePlacement!=op||op.cancellation.isCancelled()||op.targetCanvas==null
+                ||editorSessionGeneration!=op.targetSession||!java.util.Objects.equals(op.targetContextNoteId,currentNoteId)
+                ||op.targetEditorVisibleAtStart!=editorVisible
+                ||op.targetCanvas.documentGeneration()!=op.targetDocumentGeneration)return false;
+        if(op.targetCanvasDetached)
+            return op.newTarget&&!editorVisible&&!saveInFlight&&bookshelfLoadGeneration==op.targetBookshelfGeneration;
+        if(!editorVisible||!restoreCompleted||canvasView==null||canvasView!=op.targetCanvas
+                ||documentRevision!=op.targetDocumentRevision||saveInFlight
+                ||documentRevision!=lastSavedRevision)return false;
+        return (op.newTarget||op.targetNoteId.equals(currentNoteId))
+                &&same(op.groupLineage,currentGroupLineage)&&same(op.groupRevision,currentGroupRevision)
+                &&same(op.groupDigest,currentGroupDigest)&&same(op.legacySha,currentLegacyBodySha256);
+    }
+
+    private void commitAgentImagePlacement(AgentImagePlacementOperation op){
+        if(activeAgentImagePlacement!=op||!op.renderReady||op.candidate==null
+                ||op.candidate.overlap&&!op.overlapAcknowledged)return;
+        AgentTaskStore.Task latest=agentResultTaskStore().get(op.task.clientTaskId);
+        AgentConnectionStore.Config connection=agentImageConnection(op.task.connectionId);
+        if(!sameAgentImageTask(op.task,latest,op.artifact)||connection==null||!sameAgentImageConnection(op.connection,connection)||!latest.matches(connection)
+                ||!isAgentImageTargetCurrent(op)){
+            Toast.makeText(this,getString(R.string.agent_image_target_changed),Toast.LENGTH_LONG).show();return;}
+        String json;try{json=NoteJsonCodec.stringify(op.candidate.document);NoteStore.validateDocument(op.candidate.document);}
+        catch(Exception error){Toast.makeText(this,getString(R.string.agent_image_save_failed),Toast.LENGTH_LONG).show();return;}
+        op.confirmed=true;op.preview.setCancelable(false);
+        op.preview.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        op.preview.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+        final String payload=json;final long operation=op.generation;
+        ProgressDialog progress=new ProgressDialog(this);op.progress=progress;progress.setMessage(getString(R.string.agent_image_saving));
+        progress.setCancelable(false);progress.show();saveInFlight=true;
+        if(op.targetEditorVisibleAtStart&&canvasView!=null)canvasView.setEnabled(false);
+        storageExecutor.execute(()->{
+            com.padnote.android.streaming.StreamingGroupStore.Snapshot group=null;NoteStore.VersionedSaveResult legacy=null;
+            NoteStore.Entry created=null;Exception failure=null;
+            try{
+                AgentTaskStore.Task reloaded=agentResultTaskStore().get(op.task.clientTaskId);
+                AgentConnectionStore.Config currentConnection=agentImageConnection(op.task.connectionId);
+                if(!sameAgentImageTask(op.task,reloaded,op.artifact)||currentConnection==null
+                        ||!sameAgentImageConnection(op.connection,currentConnection)||!reloaded.matches(currentConnection))
+                    throw new java.io.IOException("AGENT_IMAGE_TASK_OR_CONNECTION_CHANGED");
+                if(op.newTarget)created=NoteStore.createWithDocumentIfAbsent(this,op.targetTitle,op.targetNoteId,payload);
+                else if(op.groupLineage!=null){
+                    group=new NoteGroupFacade(this).saveEditorRevision(op.targetNoteId,op.groupRevision,op.groupDigest,op.targetTitle,payload);
+                }else legacy=NoteStore.saveLegacyIfBodyMatches(this,op.targetNoteId,op.targetTitle,payload,op.legacySha);
+                JSONObject persisted=NoteStore.load(this,op.targetNoteId);NoteStore.validateDocument(persisted);
+                JSONArray persistedImages=persisted.optJSONArray("images");boolean verified=false;
+                if(persistedImages!=null)for(int i=0;i<persistedImages.length();i++){
+                    JSONObject im=persistedImages.getJSONObject(i),receipt=im.optJSONObject("agentImage");
+                    if(receipt!=null&&op.image.agentImage.applicationId.equals(receipt.optString("applicationId"))){
+                        NoteImage.StoredImageInfo info=NoteImage.inspectJson(im);
+                        byte[] png=TypedNoteTimeProjection.decodeCanonicalBase64(im.getString("png"));
+                        op.image.agentImage.validatePng(png);verified=info.width>0&&info.height>0;break;
+                    }
+                }
+                if(!verified)throw new java.io.IOException("AGENT_IMAGE_REOPEN_VERIFY_FAILED");
+            }catch(Exception error){failure=error;}
+            final com.padnote.android.streaming.StreamingGroupStore.Snapshot savedGroup=group;
+            final NoteStore.VersionedSaveResult savedLegacy=legacy;final NoteStore.Entry newEntry=created;final Exception result=failure;
+            runOnUiThread(()->{
+                if(op.progress!=null&&op.progress.isShowing())op.progress.dismiss();saveInFlight=false;
+                if(activeAgentImagePlacement!=op)return;
+                if(result!=null){op.confirmed=false;if(op.preview!=null&&op.preview.isShowing()){
+                        op.preview.setCancelable(true);op.preview.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true);}
+                    if(op.targetEditorVisibleAtStart&&canvasView!=null)canvasView.setEnabled(true);
+                    if(op.preview!=null&&op.preview.isShowing())op.preview.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(op.renderReady);
+                    Toast.makeText(this,getString(R.string.agent_image_save_failed),Toast.LENGTH_LONG).show();return;}
+                boolean canAdopt=isAgentImageTargetCurrent(op);
+                if(canAdopt&&!op.newTarget){
+                    try{canvasView.loadJsonDocument(NoteStore.load(this,op.targetNoteId));
+                        if(savedGroup!=null){currentGroupLineage=savedGroup.lineage;currentGroupRevision=savedGroup.revision;currentGroupDigest=savedGroup.digest;}
+                        if(savedLegacy!=null)currentLegacyBodySha256=savedLegacy.bodySha256;
+                        documentRevision++;lastSavedRevision=documentRevision;pendingUnsavedJson=null;
+                        canvasView.setEnabled(true);
+                    }catch(Exception error){canAdopt=false;}
+                }
+                if(op.preview!=null&&op.preview.isShowing())op.preview.dismiss();
+                if(op.newTarget&&newEntry!=null&&canAdopt)openNote(newEntry);
+                refreshBookshelf();Toast.makeText(this,getString(canAdopt?R.string.agent_image_saved:R.string.agent_image_saved_reopen),Toast.LENGTH_LONG).show();
+                if(op.image!=null&&!op.image.bitmap.isRecycled())op.image.bitmap.recycle();finishAgentImagePlacement(op);
+            });
+        });
     }
 
     private AgentTaskStore agentResultTaskStore() {
         return agentResultTaskStoreForTest == null ? new AgentTaskStore(this) : agentResultTaskStoreForTest;
+    }
+
+    private AgentConnectionStore.Config agentImageConnection(String id){
+        if(agentImageConnectionForTest!=null&&agentImageConnectionForTest.id.equals(id))return agentImageConnectionForTest;
+        return new AgentConnectionStore(this).get(id);
+    }
+
+    void showCachedAgentImageTaskForTest(String clientTaskId,AgentTaskStore isolatedStore,
+            AgentConnectionStore.Config connection,AgentArtifactDownloader.Source source){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0
+                ||isolatedStore==null||isolatedStore.get(clientTaskId)==null||connection==null||source==null)
+            throw new SecurityException("synthetic image task must use isolated fixtures");
+        agentResultTaskStoreForTest=isolatedStore;agentImageConnectionForTest=connection;
+        agentImageDownloaderForTest=new AgentArtifactDownloader(source);
+        final int request=++agentImageTaskDialogGeneration;
+        agentImageTaskDialogDebug="requested";
+        AgentTaskDialogs dialogs=newVideoTaskDialogs();
+        dialogs.setLifecycleObserverForTest(state->{if(request==agentImageTaskDialogGeneration)
+            agentImageTaskDialogDebug=state;});
+        try{
+            agentImageTaskDialogForTest=dialogs.showDetail(clientTaskId);
+            agentImageTaskDialogDebug=agentImageTaskDialogForTest==null?"returned_null"
+                    :"returned;isShowing="+agentImageTaskDialogForTest.isShowing();
+        }catch(RuntimeException error){agentImageTaskDialogDebug="launch_failed:"+error.getClass().getSimpleName();throw error;}
+    }
+
+    boolean agentImagePlacementIdleForTest(){
+        return (getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
+                &&activeAgentImagePlacement==null&&!saveInFlight;
+    }
+    String agentImageTargetForTest(){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
+            throw new SecurityException("debug-only synthetic image fixture");
+        return activeAgentImagePlacement==null?"":activeAgentImagePlacement.targetNoteId;
+    }
+    boolean agentImageUsesDetachedDraftForTest(){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
+            throw new SecurityException("debug-only synthetic image fixture");
+        return activeAgentImagePlacement!=null&&activeAgentImagePlacement.targetCanvasDetached;
+    }
+    float[] agentImageDraftPageSizeForTest(){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
+            throw new SecurityException("debug-only synthetic image fixture");
+        if(activeAgentImagePlacement==null||!activeAgentImagePlacement.targetCanvasDetached
+                ||activeAgentImagePlacement.targetCanvas==null)return new float[0];
+        return new float[]{activeAgentImagePlacement.targetCanvas.paperWidthForPlacement(),
+                activeAgentImagePlacement.targetCanvas.paperHeightForPlacement()};
+    }
+    boolean editorReadyForImageTest(String noteId){
+        return (getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
+                &&editorVisible&&restoreCompleted&&canvasView!=null&&noteId!=null&&noteId.equals(currentNoteId);
+    }
+    String agentImageLookupDiagnosticsForTest(){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
+            throw new SecurityException("debug-only synthetic image fixture");
+        return agentImageLookupDebug+";inFlight="+agentImageLookupInFlight
+                +";session="+editorSessionGeneration+";notePresent="+(currentNoteId!=null)
+                +";editorVisible="+editorVisible+";restoreCompleted="+restoreCompleted
+                +";saveInFlight="+saveInFlight+";chooserShowing="+agentImageTargetChooserShowing
+                +";taskDetail="+agentImageTaskDialogDebug+";taskDetailShowing="
+                +(agentImageTaskDialogForTest!=null&&agentImageTaskDialogForTest.isShowing());
+    }
+    void replaceAgentImageConnectionForTest(AgentConnectionStore.Config connection){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0||connection==null)
+            throw new SecurityException("debug-only synthetic image fixture");
+        agentImageConnectionForTest=connection;
     }
 
     /** Opens a real cached task detail for isolated ActivityScenario result-flow tests. */
@@ -3748,6 +4332,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void launchImportImage() {
+        if(!editorVisible||!restoreCompleted||canvasView==null||currentNoteId==null)return;
+        pendingImageImportNoteId=currentNoteId;
+        pendingImageImportSession=editorSessionGeneration;
+        pendingImageImportDocumentGeneration=canvasView.documentGeneration();
+        pendingImageImportDocumentRevision=documentRevision;
+        pendingImageImportPageIndex=canvasView.getCurrentPageIndexForUi();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/*");
@@ -11608,15 +12198,30 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     }
 
     private void handleImportedImage(android.net.Uri uri) {
+        final String targetNote=pendingImageImportNoteId;
+        final long targetSession=pendingImageImportSession,targetGeneration=pendingImageImportDocumentGeneration,
+                targetRevision=pendingImageImportDocumentRevision;
+        final int targetPage=pendingImageImportPageIndex;
+        pendingImageImportNoteId=null;pendingImageImportSession=-1L;
+        pendingImageImportDocumentGeneration=-1L;pendingImageImportDocumentRevision=-1L;
+        if(uri==null||targetNote==null)return;
         storageExecutor.execute(() -> {
             try {
                 NoteImage image = NoteImage.read(getContentResolver(), uri);
                 runOnUiThread(() -> {
                     try {
-                        canvasView.insertImage(image, currentPageNumber - 1);
+                        if(!imageImportTargetMatches(targetNote,currentNoteId,targetSession,editorSessionGeneration,
+                                targetGeneration,canvasView==null?-1L:canvasView.documentGeneration(),
+                                targetRevision,documentRevision,editorVisible,restoreCompleted,saveInFlight)){
+                            if(!image.bitmap.isRecycled())image.bitmap.recycle();
+                            Toast.makeText(this,getString(R.string.tail_image_import_target_changed),Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        canvasView.insertImage(image, targetPage);
                         Toast.makeText(this, getString(R.string.tail_image_inserted), Toast.LENGTH_SHORT).show();
                     } catch (RuntimeException error) {
-                        image.bitmap.recycle();
+                        // insertImage may have transferred this bitmap to the live canvas before
+                        // a later UI operation failed; leave reclamation to the owning view/GC.
                         Toast.makeText(this, getString(R.string.tail_could_not_insert_image, error.getMessage()), Toast.LENGTH_LONG).show();
                     }
                 });
@@ -11625,6 +12230,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                         getString(R.string.tail_could_not_read_image, safeError(error)), Toast.LENGTH_LONG).show());
             }
         });
+    }
+
+    static boolean imageImportTargetMatches(String capturedNote,String currentNote,
+            long capturedSession,long currentSession,long capturedGeneration,long currentGeneration,
+            long capturedRevision,long currentRevision,boolean editorVisible,boolean restoreCompleted,
+            boolean saveInFlight){
+        return capturedNote!=null&&capturedNote.equals(currentNote)&&capturedSession==currentSession
+                &&capturedGeneration==currentGeneration&&capturedRevision==currentRevision
+                &&editorVisible&&restoreCompleted&&!saveInFlight;
+    }
+
+    static double clampAgentImageOrigin(double tappedCenter,double imageSize,double pageSize,double margin){
+        double latest=Math.max(margin,pageSize-margin-imageSize);
+        return Math.max(margin,Math.min(latest,tappedCenter-imageSize/2d));
     }
 
     /** SAF result for a picked cover image; routes to note or new-note flow. */

@@ -2076,14 +2076,8 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 8))
         let form = app.descendants(matching: .any).matching(identifier: "agentResultAppendForm").firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 8))
-        let rawAnswer = app.descendants(matching: .any).matching(identifier: "agentResultRawAnswerDisclosure").firstMatch
-        // The paper candidate owns an inner UIScrollView. Drag in the Form's far-left
-        // gutter so the gesture scrolls the form toward the offscreen disclosure row.
-        for _ in 0..<8 where !rawAnswer.isHittable {
-            let start = form.coordinate(withNormalizedOffset: CGVector(dx: 0.015, dy: 0.88))
-            let end = form.coordinate(withNormalizedOffset: CGVector(dx: 0.015, dy: 0.18))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
+        let rawAnswer = app.buttons["agentResultRawAnswerDisclosure"]
+        XCTAssertTrue(rawAnswer.waitForExistence(timeout: 8), "the raw-answer disclosure should be listed before the paper preview")
         if !rawAnswer.isHittable {
             attachResultPaperFailureDiagnostics("raw-answer-disclosure-not-hittable")
             let status = """
@@ -2099,7 +2093,7 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(rawAnswer.isHittable)
         rawAnswer.tap()
         XCTAssertTrue(app.staticTexts["Synthetic result for the isolated result-to-paper UI test."].exists)
-        waitUntilEnabled(confirm)
+        waitUntilEnabledWithPaperDiagnostics(confirm)
         confirm.tap()
         let open = app.buttons["agentResultOpenSavedNote"]
         if !open.waitForExistence(timeout: 30) {
@@ -2135,7 +2129,7 @@ final class AgentResultToPaperUITests: XCTestCase {
         app.buttons["agentResultPreviewToPaper"].tap()
         let retryConfirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(retryConfirm.waitForExistence(timeout: 8))
-        waitUntilEnabled(retryConfirm)
+        waitUntilEnabledWithPaperDiagnostics(retryConfirm)
         retryConfirm.tap()
         XCTAssertTrue(app.staticTexts["结果已在笔记中"].waitForExistence(timeout: 20))
         let reopen = app.buttons["agentResultOpenSavedNote"]
@@ -2244,6 +2238,75 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(fixtureAfterProfile1Restart.label.contains("schema=10; flows=1; receipts=1; profile=1"), fixtureAfterProfile1Restart.label)
         XCTAssertTrue(fixtureAfterProfile1Restart.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), fixtureAfterProfile1Restart.label)
         let afterSwitchBackRestart = directlyOpenPersistedResult(profile: 1)
+    }
+
+    func testSyntheticAgentPNGPlacementPreviewConfirmReopenAndDuplicateGuard() throws {
+        app = makeApp(image: true)
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        let place = app.buttons["agentImagePlaceArtifact-synthetic-image-1"]
+        XCTAssertTrue(place.waitForExistence(timeout: 8))
+        place.tap()
+
+        let confirm = app.buttons["agentImagePlacementConfirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        waitUntilEnabled(confirm)
+        let preview = app.descendants(matching: .any)["agentResultPaperViewport"]
+        XCTAssertTrue(preview.exists, "the candidate must be rendered on a paper before confirmation")
+        let selected = app.staticTexts["agentImagePlacementState"]
+        XCTAssertTrue(selected.exists)
+        let before = selected.value as? String ?? ""
+        XCTAssertTrue(before.contains("page=1;"), before)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "synthetic-agent-image-paper-preview"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        preview.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.43)).tap()
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", before), object: selected)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 8), .completed,
+                       "the preview tap should update the paper-space image placement")
+        let chosen = selected.value as? String ?? ""
+        XCTAssertTrue(chosen.contains("page=1;"), chosen)
+        XCTAssertNotEqual(chosen, before)
+        waitUntilEnabled(confirm)
+        confirm.tap()
+
+        let openSaved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "agentTaskOpenSavedImage-agent-image-")).firstMatch
+        XCTAssertTrue(openSaved.waitForExistence(timeout: 30), "a saved/reopened image link appears only after durable verification")
+        openSaved.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let paperState = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(paperState.waitForExistence(timeout: 8))
+        XCTAssertTrue(paperState.label.contains("schema=11"), paperState.label)
+        XCTAssertTrue(paperState.label.contains("images=1; imageReceipts=1; imageHashMatches=true"), paperState.label)
+        let pdfValue = app.staticTexts["agentImagePaperPDFBase64"]
+        XCTAssertTrue(pdfValue.waitForExistence(timeout: 8), "the synthetic paper test exports its actual NoteRenderer PDF")
+        let pdfBytes = try XCTUnwrap(Data(base64Encoded: pdfValue.label))
+        let pdfAttachment = XCTAttachment(data: pdfBytes, uniformTypeIdentifier: "com.adobe.pdf")
+        pdfAttachment.name = "synthetic-agent-image-paper-export.pdf"
+        pdfAttachment.lifetime = .keepAlways
+        add(pdfAttachment)
+        let placementParts = chosen.split(separator: ";")
+        let expectedX = placementParts.first(where: { $0.hasPrefix("x=") }).map { String($0.dropFirst(2)) } ?? ""
+        let expectedY = placementParts.first(where: { $0.hasPrefix("y=") }).map { String($0.dropFirst(2)) } ?? ""
+        XCTAssertTrue(paperState.label.contains("imageAnchor=1,\(expectedX),\(expectedY)"), paperState.label)
+
+        app.terminate()
+        app = makeApp(image: true)
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        let directLink = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "agentTaskOpenSavedImage-agent-image-")).firstMatch
+        XCTAssertTrue(directLink.waitForExistence(timeout: 12), "the exact saved receipt must resolve after relaunch")
+        let placeAgain = app.buttons["agentImagePlaceArtifact-synthetic-image-1"]
+        XCTAssertTrue(placeAgain.exists)
+        XCTAssertFalse(placeAgain.isEnabled, "a receipt already placed in this note must not offer a second insertion")
+        directLink.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let reopenedState = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(reopenedState.waitForExistence(timeout: 8))
+        XCTAssertTrue(reopenedState.label.contains("schema=11; flows=0; receipts=0; profile=0"), reopenedState.label)
+        XCTAssertTrue(reopenedState.label.contains("images=1; imageReceipts=1; imageHashMatches=true"), reopenedState.label)
     }
 
     func testSyntheticTaskPointPreviewConfirmAndReopenPreservesTappedAnchor() throws {
@@ -2399,11 +2462,21 @@ final class AgentResultToPaperUITests: XCTestCase {
             let errorElement = app.staticTexts["agentResultAppendError"]
             let placementElement = app.staticTexts["agentResultPlacementState"]
             let paperElement = app.descendants(matching: .any)["agentResultPaperViewport"]
+            let diagnosticElement = app.descendants(matching: .any)["agentResultPaperPreviewDiagnostic"]
+            let errorStatus = errorElement.exists
+                ? "label=\(errorElement.label);value=\(String(describing: errorElement.value))" : "absent"
+            let placementStatus = placementElement.exists
+                ? "label=\(placementElement.label);value=\(String(describing: placementElement.value))" : "absent"
+            let paperStatus = paperElement.exists
+                ? "hittable=\(paperElement.isHittable);frame=\(String(describing: paperElement.frame))" : "absent"
+            let diagnosticStatus = diagnosticElement.exists
+                ? "label=\(diagnosticElement.label);value=\(String(describing: diagnosticElement.value))" : "absent"
             let status = """
             result=\(result); confirm.exists=\(element.exists); confirm.enabled=\(element.isEnabled)
-            appendError.exists=\(errorElement.exists); appendError.label=\(errorElement.label); appendError.value=\(String(describing: errorElement.value))
-            placement.exists=\(placementElement.exists); placement.label=\(placementElement.label); placement.value=\(String(describing: placementElement.value))
-            paper.exists=\(paperElement.exists); paper.hittable=\(paperElement.isHittable); paper.frame=\(String(describing: paperElement.frame))
+            appendError=\(errorStatus)
+            placement=\(placementStatus)
+            paper=\(paperStatus)
+            previewDiagnostic=\(diagnosticStatus)
             """
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "agent-result-paper-preview-not-ready-screenshot"
@@ -2428,12 +2501,43 @@ final class AgentResultToPaperUITests: XCTestCase {
                        "paper candidate should become ready before confirmation", file: file, line: line)
     }
 
-    private func makeApp(cleanup: Bool = false, stale: Bool = false) -> XCUIApplication {
+    private func makeApp(cleanup: Bool = false, stale: Bool = false, image: Bool = false) -> XCUIApplication {
         let result = XCUIApplication()
         result.launchArguments = ["--uitesting", "--uitesting-agent-result-paper",
                                  "--agent-result-paper-fixture-id", fixtureID]
         if cleanup { result.launchArguments.append("--agent-result-paper-cleanup") }
         if stale { result.launchArguments.append("--uitesting-agent-result-paper-stale") }
+        if image { result.launchArguments.append("--uitesting-agent-image-paper") }
         return result
+    }
+}
+
+final class WKLoadProbeUITests: XCTestCase {
+    func testMinimalLocalPageThenBundledReaderNavigation() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-wk-load-probe"]
+        app.launch()
+        defer { app.terminate() }
+
+        let result = app.staticTexts["wkLoadProbeResult"]
+        XCTAssertTrue(result.waitForExistence(timeout: 10), "the isolated WK probe host should appear")
+        guard result.exists else { return }
+        let terminal = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "probe=complete", "probe=error"),
+            object: result)
+        let terminalWait = XCTWaiter.wait(for: [terminal], timeout: 70)
+        let report = (result.value as? String) ?? result.label
+        let reportAttachment = XCTAttachment(string: report)
+        reportAttachment.name = "wk-load-probe-results-no-paths-or-content"
+        reportAttachment.lifetime = .keepAlways
+        add(reportAttachment)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "wk-load-probe-final-state"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        XCTAssertEqual(terminalWait, .completed, "bounded WK probe should reach a terminal report")
+        XCTAssertTrue(report.contains("minimal=finish"), "the minimal local page must reach didFinish; report=\(report)")
+        XCTAssertTrue(report.contains("reader=finish"), "the bundled reader must reach didFinish; report=\(report)")
     }
 }

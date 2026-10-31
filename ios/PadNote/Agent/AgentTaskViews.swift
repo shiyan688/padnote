@@ -285,6 +285,8 @@ public struct AgentTaskDetailView: View {
     @State private var history: [AgentTaskRecord] = []
     @State private var error: String?
     @State private var showingResultToPaper = false
+    @State private var imageArtifactToPlace: AgentTaskArtifact?
+    @State private var savedAgentImages: [NoteSavedAgentImage] = []
     @State private var working = false
     @State private var artifactPresentation: AgentTaskArtifactPresentation?
 #if DEBUG
@@ -458,7 +460,41 @@ public struct AgentTaskDetailView: View {
                                             .buttonStyle(.borderless)
                                             .accessibilityIdentifier("agentVideoShareArtifact-\(artifact.id)")
                                     }
+                                    if artifact.mediaType == "image/png" || artifact.mediaType == "image/jpeg" {
+                                        let applicationID = AgentImageReceipt.applicationIdentity(
+                                            taskId: task.id.uuidString.lowercased(),
+                                            connectionId: task.connection.connectionID.uuidString.lowercased(),
+                                            instanceId: task.connection.instanceID,
+                                            agentKind: task.connection.kind.rawValue.lowercased(),
+                                            transport: task.connection.transport.rawValue.lowercased(),
+                                            artifactId: artifact.id, artifactName: artifact.name,
+                                            mediaType: artifact.mediaType.lowercased(),
+                                            sizeBytes: Int64(artifact.sizeBytes), artifactSha256: artifact.sha256.lowercased())
+                                        let alreadyPlaced = noteLibrary.savedAgentImage(matchingApplicationID: applicationID) != nil
+                                        Button(alreadyPlaced ? "已放到纸面" : "放到纸面", systemImage: alreadyPlaced ? "checkmark.circle" : "photo.badge.plus") {
+                                            imageArtifactToPlace = artifact
+                                        }
+                                        .disabled(working || task.status != .completed || alreadyPlaced)
+                                        .buttonStyle(.borderless)
+                                        .accessibilityIdentifier("agentImagePlaceArtifact-\(artifact.id)")
+                                    }
                                 }
+                            }
+                        }
+                    }
+                    if !savedAgentImages.isEmpty {
+                        Section("已放到纸面") {
+                            ForEach(Array(savedAgentImages.enumerated()), id: \.offset) { _, savedAgentImage in
+                                NavigationLink {
+                                    NoteEditorView(note: savedAgentImage.document,
+                                        session: savedAgentImage.session,
+                                        initialPage: savedAgentImage.pageIndex,
+                                        showsShelfBackButton: false)
+                                        .environmentObject(noteLibrary)
+                                } label: {
+                                    Label("打开 \(savedAgentImage.artifactName) · 第 \(savedAgentImage.pageIndex + 1) 页", systemImage: "photo.on.rectangle.angled")
+                                }
+                                .accessibilityIdentifier("agentTaskOpenSavedImage-\(savedAgentImage.imageID)")
                             }
                         }
                     }
@@ -533,11 +569,16 @@ public struct AgentTaskDetailView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .task(id: scenePhase) { await loadAndPoll() }
             .onChange(of: noteLibrary.notes) { _, _ in
-                if let task { refreshSavedAgentResult(for: task) }
+                if let task {
+                    refreshSavedAgentResult(for: task)
+                    refreshSavedAgentImage(for: task)
+                }
             }
             .onChange(of: task) { _, current in
-                if let current { refreshSavedAgentResult(for: current) }
-                else { savedAgentResult = nil }
+                if let current {
+                    refreshSavedAgentResult(for: current)
+                    refreshSavedAgentImage(for: current)
+                } else { savedAgentResult = nil; savedAgentImages = [] }
             }
             .onAppear { refreshBuiltinVideoArtifactsAfterReturn(); loadNoteVideoAttachments() }
             .sheet(item: $artifactPresentation) { presentation in
@@ -550,6 +591,16 @@ public struct AgentTaskDetailView: View {
                 if let task {
                     AgentResultToPaperView(task: task, store: store)
                         .environmentObject(noteLibrary)
+                }
+            }
+            .sheet(item: $imageArtifactToPlace, onDismiss: {
+                if let task { refreshSavedAgentImage(for: task) }
+            }) { artifact in
+                if let task {
+                    AgentImageToPaperView(task: task, artifact: artifact, store: store, service: service) {
+                        refreshSavedAgentImage(for: task)
+                    }
+                    .environmentObject(noteLibrary)
                 }
             }
             .sheet(isPresented: $composingFollowup, onDismiss: {
@@ -740,6 +791,26 @@ public struct AgentTaskDetailView: View {
         }
         savedAgentResult = noteLibrary.savedAgentResult(matching: expected)
     }
+
+    private func refreshSavedAgentImage(for task: AgentTaskRecord) {
+        guard task.status == .completed else { savedAgentImages = []; return }
+        let matches = task.artifacts.compactMap { artifact -> String? in
+            guard artifact.mediaType == "image/png" || artifact.mediaType == "image/jpeg" else { return nil }
+            return AgentImageReceipt.applicationIdentity(taskId: task.id.uuidString.lowercased(),
+                connectionId: task.connection.connectionID.uuidString.lowercased(),
+                instanceId: task.connection.instanceID, agentKind: task.connection.kind.rawValue.lowercased(),
+                transport: task.connection.transport.rawValue.lowercased(), artifactId: artifact.id,
+                artifactName: artifact.name, mediaType: artifact.mediaType.lowercased(),
+                sizeBytes: Int64(artifact.sizeBytes), artifactSha256: artifact.sha256.lowercased())
+        }
+        var unique = [String: NoteSavedAgentImage]()
+        for applicationID in matches {
+            if let saved = noteLibrary.savedAgentImage(matchingApplicationID: applicationID) {
+                unique[saved.imageID] = saved
+            }
+        }
+        savedAgentImages = unique.values.sorted { $0.artifactName < $1.artifactName }
+    }
 }
 
 private struct AgentResultToPaperView: View {
@@ -764,6 +835,9 @@ private struct AgentResultToPaperView: View {
     @State private var paperPreview: UIImage?
     @State private var previewGeneration = 0
     @State private var previewTask: Task<Void, Never>?
+#if DEBUG
+    @State private var previewDiagnostic = "phase=idle;error=none"
+#endif
     @State private var newNoteBase = NoteDocument(title: "Agent 任务结果")
 
     private let newNoteTag = "__padnote_new_agent_result_note__"
@@ -807,6 +881,15 @@ private struct AgentResultToPaperView: View {
                     }
                 }
 #endif
+                Section {
+                    DisclosureGroup("查看原始回答") {
+                        Text(output)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("agentResultPlainTextPreview")
+                    }
+                    .accessibilityIdentifier("agentResultRawAnswerDisclosure")
+                }
                 if let previewSession {
                     Section("纸面预览") {
                         HStack(spacing: 12) {
@@ -895,15 +978,6 @@ private struct AgentResultToPaperView: View {
                         else { Button("生成纸面预览") { refreshPaperCandidate() }.disabled(working) }
                     }
                 }
-                Section {
-                    DisclosureGroup("查看原始回答") {
-                        Text(output)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityIdentifier("agentResultPlainTextPreview")
-                    }
-                    .accessibilityIdentifier("agentResultRawAnswerDisclosure")
-                }
                 Section("任务来源") {
                     LabeledContent("连接", value: task.connection.connectionName)
                     DisclosureGroup("任务与连接详情") {
@@ -980,6 +1054,19 @@ private struct AgentResultToPaperView: View {
             .onDisappear { previewGeneration += 1; previewTask?.cancel(); previewTask = nil; paperPreview = nil; paperCandidate = nil }
         }
         .frame(width: container.size.width, height: container.size.height)
+        .overlay(alignment: .topTrailing) {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper") {
+                Text("预览 · \(previewDiagnostic)")
+                    .accessibilityIdentifier("agentResultPaperPreviewDiagnostic")
+                    .accessibilityValue(previewDiagnostic)
+                    .font(.system(size: 8, weight: .regular, design: .monospaced))
+                    .padding(2)
+                    .background(.regularMaterial)
+                    .allowsHitTesting(false)
+            }
+#endif
+        }
         }
     }
 
@@ -1065,15 +1152,21 @@ private struct AgentResultToPaperView: View {
         } catch {
             previewSession = nil
             self.error = "无法读取所选笔记的当前版本。请返回笔记列表后重新打开预览。"
+            setPreviewDiagnostic("error-target")
         }
     }
 
     private func refreshPaperCandidate() {
-        guard !working, let flow = try? makeFlow(for: task, exactOutput: output) else { return }
+        guard !working else { setPreviewDiagnostic("blocked-busy"); return }
+        guard let flow = try? makeFlow(for: task, exactOutput: output) else {
+            setPreviewDiagnostic("error-flow")
+            return
+        }
         previewTask?.cancel()
         previewGeneration += 1
         paperCandidate = nil
         error = nil
+        setPreviewDiagnostic("compiling-candidate")
         let generation = previewGeneration
         let base = previewSession?.document ?? newNoteBase
         let request: AgentResultPlacement? = pointPlacementEnabled && previewSession != nil
@@ -1088,6 +1181,7 @@ private struct AgentResultToPaperView: View {
                     paperCandidate = base
                     paperShownPage = existing.anchorPageIndex
                     renderPaperPage(existing.anchorPageIndex)
+                    setPreviewDiagnostic(paperPreview == nil ? "error-render-empty" : "ready")
                     return
                 }
                 let candidate = try await NoteLibrary.preparedCandidateAppendingAgentResult(flow, to: base,
@@ -1095,9 +1189,11 @@ private struct AgentResultToPaperView: View {
                     pdfURL: previewPDFURL)
                 try Task.checkCancellation()
                 guard generation == previewGeneration else { return }
+                setPreviewDiagnostic("rendering-paper")
                 paperCandidate = candidate.document
                 paperShownPage = candidate.pageIndex
                 renderPaperPage(candidate.pageIndex)
+                setPreviewDiagnostic(paperPreview == nil ? "error-render-empty" : "ready")
             } catch {
                 if Task.isCancelled { return }
                 guard generation == previewGeneration else { return }
@@ -1105,8 +1201,24 @@ private struct AgentResultToPaperView: View {
                 paperPreview = NoteRenderer.renderPage(document: base, page: displayPage,
                     pdfURL: previewPDFURL)
                 self.error = (error as? LocalizedError)?.errorDescription ?? "无法生成完整纸面预览。"
+                setPreviewDiagnostic("error", failure: error)
             }
         }
+    }
+
+    private func setPreviewDiagnostic(_ phase: String, failure: Error? = nil) {
+#if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper") else { return }
+        if let failure = failure as? CompiledTextRenderFailure {
+            previewDiagnostic = "phase=\(phase);error=\(failure.kind.rawValue):\(failure.stage)"
+        } else if failure is CancellationError {
+            previewDiagnostic = "phase=\(phase);error=cancelled"
+        } else if failure != nil {
+            previewDiagnostic = "phase=\(phase);error=other"
+        } else {
+            previewDiagnostic = "phase=\(phase);error=none"
+        }
+#endif
     }
 
     private func renderPaperPage(_ page: Int) {
@@ -1181,6 +1293,444 @@ private struct AgentResultToPaperView: View {
         try AgentTaskResultFlowFactory.make(task: task, exactOutput: exactOutput)
     }
 }
+
+private struct AgentImageToPaperView: View {
+    @EnvironmentObject private var noteLibrary: NoteLibrary
+    @Environment(\.dismiss) private var dismiss
+    let task: AgentTaskRecord
+    let artifact: AgentTaskArtifact
+    let store: AgentTaskStore
+    let service: AgentTaskService
+    let onSaved: () -> Void
+
+    @State private var targetID = "__new__"
+    @State private var targetSession: NoteGroupEditorSession?
+    @State private var targetDraftRevision: Int?
+    @State private var targetRevisionSnapshot: NoteDraftRevisionSnapshot?
+    @State private var newNote = NoteDocument(title: "Agent 图片")
+    @State private var title = "Agent 图片"
+    @State private var imageData: Data?
+    @State private var imagePixelWidth = 0
+    @State private var imagePixelHeight = 0
+    @State private var receipt: AgentImageReceipt?
+    @State private var candidate: NoteDocument?
+    @State private var paperImage: UIImage?
+    @State private var previewReady = false
+    @State private var page = 0
+    @State private var shownPage = 0
+    @State private var x = 0.0
+    @State private var y = 0.0
+    @State private var width = 300.0
+    @State private var acceptsOverlap = false
+    @State private var overlap = false
+    @State private var working = false
+    @State private var error: String?
+    @State private var status = "准备图片…"
+    @State private var generation = 0
+    @State private var operation: Task<Void, Never>?
+    @State private var renderOperation: Task<Void, Never>?
+
+    private var isNew: Bool { targetID == "__new__" }
+    private var baseDocument: NoteDocument { targetSession?.document ?? newNote }
+    private var pdfURL: URL? {
+        guard let session = targetSession, session.document.pdfPageCount > 0 else { return nil }
+        return session.members.first(where: { $0.record.role == .pdf })?.url ?? noteLibrary.pdfURL(for: session.document)
+    }
+
+    var body: some View {
+        GeometryReader { container in
+            NavigationStack {
+                Form {
+                    if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("agentImagePlacementError") }
+                    Section("放到纸面") {
+                        Picker("目标笔记", selection: $targetID) {
+                            Text("新建笔记…").tag("__new__")
+                            ForEach(noteLibrary.notes) { note in
+                                Text(note.title.isEmpty ? "未命名笔记" : note.title).tag(note.id)
+                            }
+                        }
+                        .accessibilityIdentifier("agentImageTargetPicker")
+                        if isNew {
+                            TextField("笔记名称", text: $title).accessibilityIdentifier("agentImageNewNoteTitle")
+                        }
+                        if let candidate, let paperImage {
+                            Text("已选第 \(page + 1) 页的位置")
+                                .accessibilityIdentifier("agentImagePlacementState")
+                                .accessibilityValue("page=\(page);x=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), x));y=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), y));width=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), width))")
+                            HStack {
+                                Button { shownPage = max(0, shownPage - 1); renderPage(shownPage) } label: {
+                                    Label("上一页", systemImage: "chevron.left")
+                                }.disabled(shownPage <= 0)
+                                Spacer()
+                                Text("第 \(shownPage + 1) / \(candidate.pageCount) 页").font(.caption)
+                                    .accessibilityIdentifier("agentImagePreviewPageState")
+                                Spacer()
+                                Button { shownPage = min(candidate.pageCount - 1, shownPage + 1); renderPage(shownPage) } label: {
+                                    Label("下一页", systemImage: "chevron.right")
+                                }.disabled(shownPage >= candidate.pageCount - 1)
+                            }
+                            PaperPreviewViewport(image: paperImage,
+                                paperSize: CGSize(width: candidate.pageWidth, height: candidate.pageHeight),
+                                viewportHeight: max(280, min(620, container.size.height * 0.55)),
+                                pageIdentity: "agent-image:\(candidate.id):\(shownPage):\(generation)",
+                                selectionEnabled: true,
+                                selectedPoint: shownPage == page ? CGPoint(x: x, y: y) : nil,
+                                onSelectPaperPoint: selectPoint)
+                            Text("图片按比例放在纸面上。点按预览可调整位置，也可用宽度滑块改变大小。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Text("图片宽度")
+                            Slider(value: $width, in: 80...max(80, candidate.pageWidth - x - 8), step: 10)
+                                .accessibilityIdentifier("agentImageWidthSlider")
+                            Text("约占纸宽 \(Int(width / candidate.pageWidth * 100))%")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if overlap {
+                                Label("预览中图片与现有纸面内容重叠。", systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange).accessibilityIdentifier("agentImageOverlapWarning")
+                                Toggle("我已检查预览并接受重叠", isOn: $acceptsOverlap)
+                                    .accessibilityIdentifier("agentImageOverlapAcknowledgement")
+                            }
+                        } else {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text(status).font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        }
+                        if !isNew, let session = targetSession {
+                            Text("默认先在笔记末尾添加一页；原有页面内容不会移动。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text("目标笔记：\(session.document.title)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("添加后，图片和任务来源会保存在这份笔记中。较旧版本的 PadNote 可能无法打开 schema 11 笔记。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("任务产物") {
+                        LabeledContent("文件", value: artifact.name)
+                        LabeledContent("格式", value: artifact.mediaType.uppercased())
+                        if working { ProgressView(status).accessibilityIdentifier("agentImagePlacementProgress") }
+                    }
+                }
+                .navigationTitle("图片纸面预览")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { generation += 1; operation?.cancel(); dismiss() }
+                            .accessibilityIdentifier("agentImagePlacementCancel")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("确认放置") { confirm() }
+                        .disabled(working || !previewReady || candidate == nil || imageData == nil || receipt == nil ||
+                                      (overlap && !acceptsOverlap))
+                            .accessibilityIdentifier("agentImagePlacementConfirm")
+                    }
+                }
+                .onAppear {
+                    if noteLibrary.notes.contains(where: { $0.id == task.payload.source.noteID }) {
+                        targetID = task.payload.source.noteID
+                    }
+                    captureTarget()
+                    beginDownload()
+                }
+                .onChange(of: targetID) { _, _ in captureTarget(); rebuildCandidate() }
+                .onChange(of: title) { _, next in
+                    if isNew { newNote.title = String(next.prefix(200)); rebuildCandidate() }
+                }
+                .onChange(of: width) { _, _ in rebuildCandidate() }
+                .onDisappear { generation += 1; operation?.cancel(); renderOperation?.cancel(); operation = nil; renderOperation = nil; paperImage = nil; candidate = nil }
+            }
+            .frame(width: container.size.width, height: container.size.height)
+        }
+    }
+
+    private func captureTarget() {
+        guard !isNew else {
+            targetSession = nil; targetDraftRevision = nil; targetRevisionSnapshot = nil
+            page = 0; x = max(0, (newNote.pageWidth - width) / 2); y = 180
+            return
+        }
+        do {
+            let snapshot = noteLibrary.draftRevisionSnapshot(noteID: targetID)
+            targetRevisionSnapshot = snapshot
+            let draft = noteLibrary.pendingDraft(noteID: targetID)
+            if snapshot.latest > snapshot.saved && (draft == nil || draft?.revision != snapshot.latest) {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            if let draft {
+                targetDraftRevision = draft.revision
+                targetSession = try noteLibrary.openEditorSession(for: draft)
+            } else {
+                targetDraftRevision = nil
+                targetSession = try noteLibrary.captureAgentResultTarget(noteID: targetID)
+            }
+            page = targetSession!.document.pageCount
+            x = max(0, (targetSession!.document.pageWidth - width) / 2)
+            y = targetSession!.document.pageHeight / 2
+        } catch {
+            targetSession = nil
+            let revision = noteLibrary.draftRevisionSnapshot(noteID: targetID)
+            self.error = revision.latest > revision.saved
+                ? "这份笔记仍有未保存的编辑。等它保存后再打开图片预览。"
+                : "无法读取所选笔记的当前版本。"
+        }
+    }
+
+    private func beginDownload() {
+        guard !working, artifact.sizeBytes > 0, artifact.sizeBytes <= AgentImageArtifactCodec.maximumSourceBytes,
+              (artifact.mediaType == "image/png" || artifact.mediaType == "image/jpeg") else {
+            error = "仅支持不超过 20 MB 的 PNG 或 JPEG 图片。"
+            return
+        }
+        generation += 1
+        let currentGeneration = generation
+        working = true; status = "正在下载并检查图片…"; error = nil
+        operation = Task { @MainActor in
+            var stagedURL: URL?
+            defer { if let stagedURL { try? FileManager.default.removeItem(at: stagedURL) }; working = false }
+            do {
+                try verifyTaskSnapshot()
+                let url: URL
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-image-paper") {
+                    let fixtureURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+                        "PadNote-Synthetic-Agent-Image-\(UUID().uuidString).png")
+                    try AgentImagePaperUITestSupport.png.write(to: fixtureURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+                    url = fixtureURL
+                } else {
+                    url = try await service.download(id: task.id, artifact: artifact)
+                }
+#else
+                url = try await service.download(id: task.id, artifact: artifact)
+#endif
+                stagedURL = url
+                try Task.checkCancellation()
+                guard currentGeneration == generation else { return }
+                status = "正在整理图片…"
+                let mediaType = artifact.mediaType.lowercased()
+                let digest = artifact.sha256.lowercased()
+                let normalized = try await Task.detached(priority: .utility) {
+                    try AgentImageArtifactCodec.normalize(fileURL: url, declaredMediaType: mediaType,
+                                                          expectedSHA256: digest)
+                }.value
+                try Task.checkCancellation()
+                guard currentGeneration == generation else { return }
+                imageData = normalized.png
+                imagePixelWidth = normalized.width
+                imagePixelHeight = normalized.height
+                let sourceID = task.payload.source.noteID.isEmpty ? nil : task.payload.source.noteID
+                receipt = AgentImageReceipt(taskId: task.id.uuidString.lowercased(),
+                    connectionId: task.connection.connectionID.uuidString.lowercased(),
+                    instanceId: task.connection.instanceID, agentKind: task.connection.kind.rawValue.lowercased(),
+                    transport: task.connection.transport.rawValue.lowercased(), sourceNoteId: sourceID,
+                    sourceNoteRevision: Int64(task.payload.source.noteRevision), artifactId: artifact.id,
+                    artifactName: artifact.name, mediaType: mediaType, sizeBytes: Int64(artifact.sizeBytes),
+                    artifactSha256: digest, pngSha256: AgentImageArtifactCodec.sha256(normalized.png),
+                    addedAt: Int64(Date().timeIntervalSince1970 * 1000))
+                working = false
+                status = "正在生成真实纸面预览…"
+                rebuildCandidate()
+            } catch is CancellationError { }
+            catch { self.error = (error as? LocalizedError)?.errorDescription ?? "图片准备失败；笔记没有更改。" }
+        }
+    }
+
+    private func rebuildCandidate() {
+        guard let imageData, let receipt, !working, isNew || targetSession != nil else { return }
+        generation += 1
+        renderOperation?.cancel()
+        let currentGeneration = generation
+        previewReady = false
+        let base = baseDocument
+        do {
+            var proposed = base
+            let targetPage: Int
+            if isNew { targetPage = 0 }
+            else {
+                guard NotePageOperations.appendBlankPage(in: &proposed) else {
+                    throw NoteDocumentError.tooLarge("笔记已达到页数上限，无法添加空白页。")
+                }
+                targetPage = min(page, proposed.pageCount - 1)
+            }
+            page = targetPage
+            let ratio = imagePixelHeight > 0 ? Double(imagePixelWidth) / Double(imagePixelHeight) : 1
+            let actualWidth = min(max(80, width), proposed.pageWidth - x - 8)
+            let actualHeight = actualWidth / max(0.05, ratio)
+            if y + actualHeight > proposed.pageHeight { y = max(0, (proposed.pageHeight - actualHeight) / 2) }
+            guard actualWidth >= 80, actualHeight.isFinite, actualHeight > 0,
+                  x >= 0, y >= 0, x + actualWidth <= proposed.pageWidth,
+                  y + actualHeight <= proposed.pageHeight else {
+                throw NoteDocumentError.malformed("图片大小或位置超出纸面范围。")
+            }
+            let image = NoteImage(id: "agent-image-\(receipt.applicationId)",
+                png: imageData.base64EncodedString(), page: targetPage, x: x, y: y,
+                width: actualWidth, height: actualHeight, agentImage: receipt)
+            proposed.images.append(image)
+            proposed.schemaVersion = 11
+            proposed.updatedAt = NoteDocument.nowMillis()
+            _ = try proposed.validated()
+            candidate = proposed
+            shownPage = targetPage
+            acceptsOverlap = false
+            paperImage = nil
+            let capturedPDF = pdfURL
+            renderOperation = Task { @MainActor in
+                do {
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: proposed)
+                    try Task.checkCancellation()
+                    guard currentGeneration == generation else { return }
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        let overlaps = try Self.imageOverlapsPaper(image, in: base, pdfURL: capturedPDF)
+                        let rendered = NoteRenderer.renderPage(document: proposed, page: targetPage, pdfURL: capturedPDF)
+                        return (overlaps, rendered.pngData())
+                    }.value
+                    try Task.checkCancellation()
+                    guard currentGeneration == generation else { return }
+                    overlap = result.0
+                    guard let rendered = result.1, let pageImage = UIImage(data: rendered) else {
+                        throw NoteDocumentError.malformed("无法显示纸面预览。")
+                    }
+                    paperImage = pageImage
+                    previewReady = true
+                } catch {
+                    guard currentGeneration == generation else { return }
+                    candidate = nil; paperImage = nil
+                    self.error = (error as? LocalizedError)?.errorDescription ?? "无法生成纸面预览。"
+                }
+            }
+            error = nil
+        } catch {
+            candidate = nil; paperImage = nil
+            self.error = (error as? LocalizedError)?.errorDescription ?? "无法生成纸面预览。"
+        }
+    }
+
+    private var imageAspectRatio: Double {
+        imagePixelHeight > 0 ? Double(imagePixelWidth) / Double(imagePixelHeight) : 1
+    }
+
+    private static func imageOverlapsPaper(_ image: NoteImage, in base: NoteDocument, pdfURL: URL?) throws -> Bool {
+        let rect = CGRect(x: image.x, y: image.y, width: image.width, height: image.height)
+        if image.page < base.pdfPageCount {
+            guard let pdfURL else { throw NoteRenderer.PDFROIError.missing }
+            if try NoteRenderer.pdfHasInk(in: rect, document: base, page: image.page, pdfURL: pdfURL) { return true }
+        }
+        for flow in base.textFlows {
+            let fragments: [NoteTextLayout.Fragment]
+            if let units = CompiledTextCache.entry(flow)?.units {
+                fragments = NoteTextLayout.compiledFragments(units, flow: flow, pageHeight: base.pageHeight)
+            } else {
+                fragments = NoteTextLayout.fragments(flow, pageHeight: base.pageHeight)
+            }
+            if fragments.contains(where: {
+                $0.page == image.page && rect.intersects($0.rect.insetBy(dx: -4, dy: -4))
+            }) { return true }
+        }
+        if base.images.contains(where: {
+            $0.page == image.page && rect.intersects(CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height))
+        }) { return true }
+        let pageTop = Double(image.page) * (base.pageHeight + base.pageGap)
+        for stroke in base.strokes {
+            let radius = max(0, stroke.baseWidth * 0.7)
+            for point in stroke.points {
+                let pointRect = CGRect(x: point.x - radius, y: point.y - pageTop - radius,
+                                       width: radius * 2, height: radius * 2)
+                if rect.intersects(pointRect) { return true }
+            }
+            for pair in zip(stroke.points, stroke.points.dropFirst()) {
+                let segment = CGRect(x: min(pair.0.x, pair.1.x) - radius,
+                    y: min(pair.0.y, pair.1.y) - pageTop - radius,
+                    width: abs(pair.1.x - pair.0.x) + radius * 2,
+                    height: abs(pair.1.y - pair.0.y) + radius * 2)
+                if rect.intersects(segment) { return true }
+            }
+        }
+        return false
+    }
+
+    private func selectPoint(_ point: CGPoint) {
+        guard let imageData else { return }
+        let ratio = imageAspectRatio
+        x = max(0, min(baseDocument.pageWidth - width, Double(point.x)))
+        y = max(0, min(baseDocument.pageHeight - width / max(0.05, ratio), Double(point.y)))
+        page = shownPage
+        rebuildCandidate()
+    }
+
+    private func renderPage(_ page: Int) {
+        guard let candidate, page >= 0, page < candidate.pageCount else { return }
+        paperImage = NoteRenderer.renderPage(document: candidate, page: page, pdfURL: pdfURL)
+    }
+
+    private func verifyTaskSnapshot() throws {
+        guard let current = try store.task(id: task.id), current.id == task.id,
+              current.status == .completed, current.connection == task.connection,
+              current.payload == task.payload, current.artifacts.contains(artifact) else {
+            throw NoteGroupStoreError.compareAndSwapConflict
+        }
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-image-paper") { return }
+#endif
+        guard let profile = AgentConnectionStore().profile(id: task.connection.connectionID),
+              profile.connected, task.connection.stillMatches(profile) else {
+            throw NoteGroupStoreError.compareAndSwapConflict
+        }
+    }
+
+    private func confirm() {
+        guard let candidate, !working else { return }
+        working = true; error = nil; status = "正在保存并核对笔记…"
+        let generationAtConfirm = generation
+        Task { @MainActor in
+            defer { working = false }
+            do {
+                try verifyTaskSnapshot()
+                guard generationAtConfirm == generation else { throw CancellationError() }
+                if isNew {
+                    guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw NoteDocumentError.malformed("请填写笔记名称。")
+                    }
+                } else {
+                    guard let targetSession, targetSession.document.id == targetID else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                    let currentDraft = noteLibrary.pendingDraft(noteID: targetID)
+                    guard currentDraft?.revision == targetDraftRevision else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                    guard noteLibrary.draftRevisionSnapshot(noteID: targetID) == targetRevisionSnapshot else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                    let fresh = try currentDraft.map { try noteLibrary.openEditorSession(for: $0) }
+                        ?? noteLibrary.captureAgentResultTarget(noteID: targetID)
+                    guard fresh.document == targetSession.document,
+                          fresh.groupToken == targetSession.groupToken,
+                          fresh.legacyBodySHA256 == targetSession.legacyBodySHA256 else {
+                        throw NoteGroupStoreError.compareAndSwapConflict
+                    }
+                }
+                guard let currentTask = try store.task(id: task.id), currentTask.artifacts.contains(artifact),
+                      currentTask.connection == task.connection else { throw NoteGroupStoreError.compareAndSwapConflict }
+                try verifyTaskSnapshot()
+                let saved = try noteLibrary.commitAgentImage(candidate, basedOn: targetSession,
+                    newNoteBase: isNew ? newNote : nil,
+                    expectedDraftRevision: isNew ? nil : targetRevisionSnapshot)
+                if let targetDraftRevision {
+                    try await noteLibrary.markCanonicalSaved(noteID: targetID, revision: targetDraftRevision)
+                }
+                guard generationAtConfirm == generation else { return }
+                _ = saved
+                onSaved()
+                dismiss()
+            } catch is CancellationError { error = "操作已取消；笔记没有更改。" }
+            catch { self.error = (error as? LocalizedError)?.errorDescription ?? "无法保存图片；笔记没有更改。" }
+        }
+    }
+}
+
+#if DEBUG
+enum AgentImagePaperUITestSupport {
+    static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==")!
+    static let artifact = AgentTaskArtifact(id: "synthetic-image-1", name: "synthetic-graph.png",
+        mediaType: "image/png", sizeBytes: png.count, sha256: AgentImageArtifactCodec.sha256(png))
+}
+#endif
 
 private struct AgentTaskFollowupComposeView: View {
     @Environment(\.dismiss) private var dismiss

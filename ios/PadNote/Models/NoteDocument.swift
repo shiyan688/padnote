@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CoreFoundation
 
 private struct NoteJSONKey: CodingKey, Hashable {
     let stringValue: String
@@ -185,6 +186,193 @@ public struct AgentResultReceipt: Codable, Equatable {
     }
 }
 
+public struct AgentImageReceipt: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let applicationId: String
+    public let taskId: String
+    public let connectionId: String
+    public let instanceId: String?
+    public let agentKind: String
+    public let transport: String
+    public let sourceNoteId: String?
+    public let sourceNoteRevision: Int64
+    public let artifactId: String
+    public let artifactName: String
+    public let mediaType: String
+    public let sizeBytes: Int64
+    public let artifactSha256: String
+    public let pngSha256: String
+    public let addedAt: Int64
+
+    public init(taskId: String, connectionId: String, instanceId: String?, agentKind: String,
+                transport: String, sourceNoteId: String?, sourceNoteRevision: Int64,
+                artifactId: String, artifactName: String, mediaType: String, sizeBytes: Int64,
+                artifactSha256: String, pngSha256: String, addedAt: Int64) {
+        self.schemaVersion = 1
+        self.taskId = taskId; self.connectionId = connectionId; self.instanceId = instanceId
+        self.agentKind = agentKind; self.transport = transport; self.sourceNoteId = sourceNoteId
+        self.sourceNoteRevision = sourceNoteRevision; self.artifactId = artifactId
+        self.artifactName = artifactName; self.mediaType = mediaType; self.sizeBytes = sizeBytes
+        self.artifactSha256 = artifactSha256.lowercased(); self.pngSha256 = pngSha256.lowercased()
+        self.addedAt = addedAt
+        self.applicationId = Self.applicationIdentity(taskId: taskId, connectionId: connectionId,
+            instanceId: instanceId, agentKind: agentKind, transport: transport, artifactId: artifactId,
+            artifactName: artifactName, mediaType: mediaType, sizeBytes: sizeBytes,
+            artifactSha256: artifactSha256.lowercased())
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, applicationId, taskId, connectionId, instanceId, agentKind, transport
+        case sourceNoteId, sourceNoteRevision, artifactId, artifactName, mediaType, sizeBytes
+        case artifactSha256, pngSha256, addedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.container(keyedBy: NoteJSONKey.self)
+        guard Set(raw.allKeys.map(\.stringValue)) == Set(CodingKeys.allCases.map(\.rawValue)) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                debugDescription: "Invalid agent image receipt fields"))
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(taskId: try c.decode(String.self, forKey: .taskId),
+            connectionId: try c.decode(String.self, forKey: .connectionId),
+            instanceId: try c.decodeIfPresent(String.self, forKey: .instanceId),
+            agentKind: try c.decode(String.self, forKey: .agentKind),
+            transport: try c.decode(String.self, forKey: .transport),
+            sourceNoteId: try c.decodeIfPresent(String.self, forKey: .sourceNoteId),
+            sourceNoteRevision: try c.decode(Int64.self, forKey: .sourceNoteRevision),
+            artifactId: try c.decode(String.self, forKey: .artifactId),
+            artifactName: try c.decode(String.self, forKey: .artifactName),
+            mediaType: try c.decode(String.self, forKey: .mediaType),
+            sizeBytes: try c.decode(Int64.self, forKey: .sizeBytes),
+            artifactSha256: try c.decode(String.self, forKey: .artifactSha256),
+            pngSha256: try c.decode(String.self, forKey: .pngSha256),
+            addedAt: try c.decode(Int64.self, forKey: .addedAt))
+        guard try c.decode(Int.self, forKey: .schemaVersion) == 1,
+              try c.decode(String.self, forKey: .applicationId) == applicationId else {
+            throw DecodingError.dataCorruptedError(forKey: .applicationId, in: c,
+                debugDescription: "Agent image application identity mismatch")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion); try c.encode(applicationId, forKey: .applicationId)
+        try c.encode(taskId, forKey: .taskId); try c.encode(connectionId, forKey: .connectionId)
+        try Self.encodeNullable(instanceId, to: &c, forKey: .instanceId)
+        try c.encode(agentKind, forKey: .agentKind); try c.encode(transport, forKey: .transport)
+        try Self.encodeNullable(sourceNoteId, to: &c, forKey: .sourceNoteId)
+        try c.encode(sourceNoteRevision, forKey: .sourceNoteRevision); try c.encode(artifactId, forKey: .artifactId)
+        try c.encode(artifactName, forKey: .artifactName); try c.encode(mediaType, forKey: .mediaType)
+        try c.encode(sizeBytes, forKey: .sizeBytes); try c.encode(artifactSha256, forKey: .artifactSha256)
+        try c.encode(pngSha256, forKey: .pngSha256); try c.encode(addedAt, forKey: .addedAt)
+    }
+
+    private static func encodeNullable(_ value: String?, to c: inout KeyedEncodingContainer<CodingKeys>,
+                                       forKey key: CodingKeys) throws {
+        if let value { try c.encode(value, forKey: key) } else { try c.encodeNil(forKey: key) }
+    }
+
+    public static func applicationIdentity(taskId: String, connectionId: String, instanceId: String?,
+                                           agentKind: String, transport: String, artifactId: String,
+                                           artifactName: String, mediaType: String, sizeBytes: Int64,
+                                           artifactSha256: String) -> String {
+        guard let data = applicationIdentityBytes(taskId: taskId, connectionId: connectionId,
+            instanceId: instanceId, agentKind: agentKind, transport: transport, artifactId: artifactId,
+            artifactName: artifactName, mediaType: mediaType, sizeBytes: sizeBytes,
+            artifactSha256: artifactSha256) else { return "" }
+        return Self.sha256(data)
+    }
+
+    static func applicationIdentityBytes(taskId: String, connectionId: String, instanceId: String?,
+                                         agentKind: String, transport: String, artifactId: String,
+                                         artifactName: String, mediaType: String, sizeBytes: Int64,
+                                         artifactSha256: String) -> Data? {
+        var data = Data("padnote.agent-image.v1\n".utf8)
+        for value in [taskId, connectionId, instanceId ?? "", agentKind, transport, artifactId,
+                      artifactName, mediaType, String(sizeBytes), artifactSha256.lowercased()] {
+            let bytes = Data(value.utf8)
+            guard bytes.count <= Int(UInt32.max) else { return nil }
+            var length = UInt32(bytes.count).bigEndian
+            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+            data.append(bytes)
+        }
+        return data
+    }
+
+    public func canonicalBytes() -> Data {
+        var data = Data("PadNote/AgentImage/receipt-v1\0".utf8)
+        Self.appendI64(Int64(schemaVersion), to: &data)
+        Self.appendLP(applicationId, to: &data); Self.appendLP(taskId, to: &data)
+        Self.appendLP(connectionId, to: &data); Self.appendNullable(instanceId, to: &data)
+        Self.appendLP(agentKind, to: &data); Self.appendLP(transport, to: &data)
+        Self.appendNullable(sourceNoteId, to: &data); Self.appendI64(sourceNoteRevision, to: &data)
+        Self.appendLP(artifactId, to: &data); Self.appendLP(artifactName, to: &data)
+        Self.appendLP(mediaType, to: &data); Self.appendI64(sizeBytes, to: &data)
+        Self.appendLP(artifactSha256, to: &data); Self.appendLP(pngSha256, to: &data)
+        Self.appendI64(addedAt, to: &data)
+        return data
+    }
+
+    public func validate(pngBytes: Data? = nil) throws {
+        guard schemaVersion == 1,
+              Self.isSHA(applicationId), Self.validTaskID(taskId),
+              Self.validIdentifier(connectionId), Self.validIdentifier(instanceId),
+              Self.validIdentifier(sourceNoteId), Self.validToken(agentKind), Self.validToken(transport),
+              Self.validIdentifier(artifactId), Self.validArtifactName(artifactName),
+              ["image/png", "image/jpeg"].contains(mediaType), (1...20*1024*1024).contains(sizeBytes),
+              Self.isSHA(artifactSha256), Self.isSHA(pngSha256), sourceNoteRevision >= 0, addedAt >= 0,
+              Self.applicationIdentity(taskId: taskId, connectionId: connectionId, instanceId: instanceId,
+                agentKind: agentKind, transport: transport, artifactId: artifactId, artifactName: artifactName,
+                mediaType: mediaType, sizeBytes: sizeBytes, artifactSha256: artifactSha256) == applicationId else {
+            throw NoteDocumentError.malformed("Invalid agent image provenance")
+        }
+        if let pngBytes, Self.sha256(pngBytes) != pngSha256 {
+            throw NoteDocumentError.malformed("Agent image PNG digest mismatch")
+        }
+    }
+
+    private static func validTaskID(_ value: String) -> Bool {
+        if value.range(of: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", options: .regularExpression) != nil {
+            return UUID(uuidString: value)?.uuidString.lowercased() == value
+        }
+        return value.range(of: "^padnote-[0-9a-f]{32}$", options: .regularExpression) != nil
+    }
+    private static func validIdentifier(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return !value.isEmpty && value.utf8.count <= 256 && !value.unicodeScalars.contains {
+            $0.value <= 0x1f || (0x7f...0x9f).contains($0.value)
+        }
+    }
+    private static func validToken(_ value: String) -> Bool {
+        !value.isEmpty && value == value.lowercased() && value.utf8.count <= 64 &&
+            value.range(of: "^[a-z0-9._-]+$", options: .regularExpression) != nil
+    }
+    private static func validArtifactName(_ value: String) -> Bool {
+        validIdentifier(value) && !value.contains("/") && !value.contains("\\")
+    }
+    private static func isSHA(_ value: String) -> Bool {
+        value.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+    }
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    private static func appendLP(_ value: String, to data: inout Data) {
+        let bytes = Data(value.utf8)
+        var length = UInt32(bytes.count).bigEndian
+        withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+        data.append(bytes)
+    }
+    private static func appendNullable(_ value: String?, to data: inout Data) {
+        guard let value else { data.append(0); return }
+        data.append(1); appendLP(value, to: &data)
+    }
+    private static func appendI64(_ value: Int64, to data: inout Data) {
+        var big = value.bigEndian
+        withUnsafeBytes(of: &big) { data.append(contentsOf: $0) }
+    }
+}
+
 public struct NoteTextFlow: Codable, Identifiable, Equatable {
     public var id: String
     public var format: String
@@ -251,9 +439,15 @@ public struct NoteImage: Codable, Identifiable, Equatable {
     public var y: Double
     public var width: Double
     public var height: Double
+    public var agentImage: AgentImageReceipt?
+    // Remember a field supplied by JSON even when it decodes as an absent optional.
+    // Legacy schemas must reject an attempted receipt instead of silently dropping it.
+    var agentImageFieldPresent: Bool
+    var unknownImageFieldsPresent: Bool
 
     public init(id: String = UUID().uuidString, png: String = "", page: Int = 0,
-                x: Double = 0, y: Double = 0, width: Double = 0, height: Double = 0) {
+                x: Double = 0, y: Double = 0, width: Double = 0, height: Double = 0,
+                agentImage: AgentImageReceipt? = nil) {
         self.id = id
         self.png = png
         self.page = page
@@ -261,15 +455,33 @@ public struct NoteImage: Codable, Identifiable, Equatable {
         self.y = y
         self.width = width
         self.height = height
+        self.agentImage = agentImage
+        self.agentImageFieldPresent = agentImage != nil
+        self.unknownImageFieldsPresent = false
     }
 
-    private enum CodingKeys: String, CodingKey { case id, png, page, x, y, width, height }
+    private enum CodingKeys: String, CodingKey, CaseIterable { case id, png, page, x, y, width, height, agentImage }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try decoder.container(keyedBy: NoteJSONKey.self)
+        let hasAgentImage = raw.allKeys.contains { $0.stringValue == CodingKeys.agentImage.rawValue }
+        let known = Set(CodingKeys.allCases.map(\.rawValue))
+        let hasUnknownFields = raw.allKeys.contains { !known.contains($0.stringValue) }
         self.init(id: try c.decode(String.self, forKey: .id), png: try c.decode(String.self, forKey: .png),
                   page: try c.decodeIfPresent(Int.self, forKey: .page) ?? 0,
                   x: try c.decode(Double.self, forKey: .x), y: try c.decode(Double.self, forKey: .y),
-                  width: try c.decode(Double.self, forKey: .width), height: try c.decode(Double.self, forKey: .height))
+                  width: try c.decode(Double.self, forKey: .width), height: try c.decode(Double.self, forKey: .height),
+                  agentImage: hasAgentImage ? try c.decode(AgentImageReceipt.self, forKey: .agentImage) : nil)
+        agentImageFieldPresent = hasAgentImage
+        unknownImageFieldsPresent = hasUnknownFields
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(png, forKey: .png); try c.encode(page, forKey: .page)
+        try c.encode(x, forKey: .x); try c.encode(y, forKey: .y)
+        try c.encode(width, forKey: .width); try c.encode(height, forKey: .height)
+        if let agentImage { try c.encode(agentImage, forKey: .agentImage) }
     }
 }
 
@@ -371,7 +583,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     }
 
     public func validated() throws -> NoteDocument {
-        guard (1...10).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...11).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard !id.isEmpty, id.count <= 120, safeIdentifier(id) else { throw NoteDocumentError.malformed("Invalid note id") }
         guard title.count <= 200 else { throw NoteDocumentError.malformed("Note title is too long") }
         try checkFinite(updatedAt, "updatedAt")
@@ -431,8 +643,8 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         guard textFlows.count <= 2_000 else { throw NoteDocumentError.tooLarge("Too many text flows") }
         var flowIDs = Set<String>()
         let hasAgentResults = textFlows.contains { $0.agentResult != nil }
-        guard !hasAgentResults || (schemaVersion == 9 || schemaVersion == 10) else {
-            throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or 10")
+        guard !hasAgentResults || (9...11).contains(schemaVersion) else {
+            throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or newer")
         }
         for flow in textFlows {
             guard !flow.id.isEmpty && flow.id.count <= 120 && safeIdentifier(flow.id) else { throw NoteDocumentError.malformed("Invalid text flow id") }
@@ -445,13 +657,13 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
                     throw NoteDocumentError.tooLarge("Agent result text exceeds the shared size limit")
                 }
                 try receipt.validate()
-                guard schemaVersion == 9 || schemaVersion == 10 else {
-                    throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or 10")
+                guard (9...11).contains(schemaVersion) else {
+                    throw NoteDocumentError.malformed("Agent result provenance requires schema version 9 or newer")
                 }
             }
             if let profile = flow.markdownProfileVersion {
-                guard schemaVersion == 10, profile == 2, flow.format.lowercased() == "markdown" else {
-                    throw NoteDocumentError.malformed("markdownProfileVersion is only valid as integer 2 on Markdown flows in schema 10")
+                guard schemaVersion >= 10, profile == 2, flow.format.lowercased() == "markdown" else {
+                    throw NoteDocumentError.malformed("markdownProfileVersion is only valid as integer 2 on Markdown flows in schema 10 or newer")
                 }
             }
             try checkFinite(flow.fontSizeSp, "font size"); try checkFinite(flow.lineHeight, "line height"); try checkFinite(flow.width, "text width")
@@ -462,8 +674,10 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
         }
         guard images.count <= 2_000 else { throw NoteDocumentError.tooLarge("Too many images") }
         var encodedImageBytes = 0
+        var encodedImageBase64Bytes = 0
         var imagePixels = 0
         var imageIDs = Set<String>()
+        var agentImageApplicationIDs = Set<String>()
         for image in images {
             guard !image.id.isEmpty && image.id.count <= 120 && safeIdentifier(image.id) else { throw NoteDocumentError.malformed("Invalid image id") }
             guard imageIDs.insert(image.id).inserted else { throw NoteDocumentError.malformed("Duplicate image id") }
@@ -473,9 +687,26 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
                   image.x + image.width <= pageWidth + 1, image.y + image.height <= pageHeight + 1 else { throw NoteDocumentError.malformed("Image is outside page bounds") }
             guard let bytes = strictBase64(image.png), bytes.count <= 20 * 1024 * 1024,
                   isPNG(bytes), let dimensions = pngDimensions(bytes), dimensions.width <= 1_600, dimensions.height <= 1_600 else { throw NoteDocumentError.malformed("Invalid or oversized PNG image") }
+            if schemaVersion <= 10 && (image.agentImageFieldPresent || image.agentImage != nil) {
+                throw NoteDocumentError.malformed("Agent image provenance requires schema version 11")
+            }
+            if schemaVersion == 11 && image.unknownImageFieldsPresent {
+                throw NoteDocumentError.malformed("Unknown image fields are not supported in schema 11")
+            }
+            if let receipt = image.agentImage {
+                guard schemaVersion == 11, image.id == "agent-image-\(receipt.applicationId)",
+                      agentImageApplicationIDs.insert(receipt.applicationId).inserted else {
+                    throw NoteDocumentError.malformed("Agent image identity is invalid or duplicated")
+                }
+                try receipt.validate(pngBytes: bytes)
+            }
             encodedImageBytes += bytes.count
+            encodedImageBase64Bytes += image.png.utf8.count
             imagePixels += dimensions.width * dimensions.height
             guard encodedImageBytes <= 20 * 1024 * 1024, imagePixels <= 12 * 1024 * 1024 else { throw NoteDocumentError.tooLarge("Image data exceeds document limits") }
+            if schemaVersion == 11 && encodedImageBase64Bytes > 20 * 1024 * 1024 {
+                throw NoteDocumentError.tooLarge("Encoded image data exceeds the schema-11 document limit")
+            }
         }
         return self
     }
@@ -483,11 +714,33 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public static func decode(_ data: Data, maximumBytes: Int = NoteDocument.maximumEncodedBytes) throws -> NoteDocument {
         guard maximumBytes > 0, data.count <= maximumBytes else { throw NoteDocumentError.tooLarge("Note file exceeds 50 MB") }
         do {
+            try validateAgentImageIntegerTokens(data)
             return try JSONDecoder().decode(NoteDocument.self, from: data).validated()
         } catch let error as NoteDocumentError {
             throw error
         } catch {
             throw NoteDocumentError.malformed(error.localizedDescription)
+        }
+    }
+
+    private static func validateAgentImageIntegerTokens(_ data: Data) throws {
+        // Parse the actual JSON keys before checking numeric token kinds. Searching
+        // the byte stream for `"agentImage"` misses equivalent escaped JSON keys.
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let images = root["images"] as? [[String: Any]] else { return }
+        for image in images {
+            guard let rawReceipt = image["agentImage"] else { continue }
+            guard let receipt = rawReceipt as? [String: Any] else {
+                throw NoteDocumentError.malformed("Agent image receipt must be an object")
+            }
+            for field in ["schemaVersion", "sourceNoteRevision", "sizeBytes", "addedAt"] {
+                guard let number = receipt[field] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      !CFNumberIsFloatType(number as CFNumber),
+                      Int64(number.stringValue) != nil else {
+                    throw NoteDocumentError.malformed("Agent image receipt \(field) must be an exact signed integer")
+                }
+            }
         }
     }
 
@@ -548,7 +801,7 @@ public struct NoteDocument: Codable, Identifiable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
-        guard (1...10).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
+        guard (1...11).contains(schemaVersion) else { throw NoteDocumentError.unsupportedSchema(schemaVersion) }
         guard c.contains(.strokes) else { throw NoteDocumentError.malformed("Note is missing strokes data") }
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? "未命名笔记"

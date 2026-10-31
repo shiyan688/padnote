@@ -1,5 +1,9 @@
 import SwiftUI
 import CryptoKit
+#if DEBUG
+import UIKit
+import WebKit
+#endif
 
 @main
 struct PadNoteApp: App {
@@ -69,7 +73,7 @@ struct PadNoteApp: App {
 #endif
         let testing: Bool
 #if DEBUG
-        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history") || arguments.contains("--uitesting-agent-result-paper")
+        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history") || arguments.contains("--uitesting-agent-result-paper") || arguments.contains("--uitesting-wk-load-probe")
 #else
         testing = false
 #endif
@@ -170,6 +174,8 @@ struct PadNoteApp: App {
                     } else {
                         AgentResultPaperCleanupHost(initialResult: agentResultPaperMaintenanceResult ?? "pending")
                     }
+                } else if ProcessInfo.processInfo.arguments.contains("--uitesting-wk-load-probe") {
+                    WKLoadProbeUITestHost()
                 } else if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-settings-layout") {
                     if let agentSettingsLayoutFixture {
                         AgentSettingsLayoutUITestHost(store: agentSettingsLayoutFixture.store)
@@ -223,6 +229,176 @@ struct PadNoteApp: App {
         }
     }
 }
+
+#if DEBUG
+private struct WKLoadProbeUITestHost: View {
+    @StateObject private var probe = WKLoadProbe()
+
+    var body: some View {
+        Text(probe.report)
+            .font(.system(size: 12, design: .monospaced))
+            .padding()
+            .accessibilityIdentifier("wkLoadProbeResult")
+            .accessibilityValue(probe.report)
+            .onAppear { probe.start() }
+    }
+}
+
+@MainActor
+private final class WKLoadProbe: NSObject, ObservableObject, WKNavigationDelegate {
+    @Published private(set) var report = "probe=pending"
+
+    private var started = false
+    private var webView: WKWebView?
+    private var root: URL?
+    private var currentNavigation: WKNavigation?
+    private var currentEvents: [String] = []
+    private var currentStart = ProcessInfo.processInfo.systemUptime
+    private var completion: ((String, Double, [String], Bool) -> Void)?
+    private var timeoutWork: DispatchWorkItem?
+    private var eightSecondWork: DispatchWorkItem?
+
+    func start() {
+        guard !started else { return }
+        started = true
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-wk-load-probe"),
+              let reader = Bundle.main.url(forResource: "reader", withExtension: "html", subdirectory: "Web"),
+              let minimal = Bundle.main.url(forResource: "wk-load-probe", withExtension: "html", subdirectory: "Web") else {
+            report = "probe=error;resources=missing"
+            return
+        }
+        let root = reader.deletingLastPathComponent().standardizedFileURL
+        guard minimal.deletingLastPathComponent().standardizedFileURL == root else {
+            report = "probe=error;resources=outside-common-root"
+            return
+        }
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let view = WKWebView(frame: CGRect(x: -8192, y: 0, width: 640, height: 900), configuration: configuration)
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.scrollView.isScrollEnabled = false
+        view.scrollView.backgroundColor = .clear
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.scrollView.contentInset = .zero
+        view.isUserInteractionEnabled = false
+        view.navigationDelegate = self
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows).first(where: \.isKeyWindow) else {
+            report = "probe=error;window=missing"
+            return
+        }
+        window.addSubview(view)
+        webView = view
+        self.root = root
+
+        Task { @MainActor in
+            let minimalResult = await load(minimal, label: "minimal")
+            let readerResult = await load(reader, label: "reader")
+            report = "probe=complete;minimal=\(minimalResult.0);ms=\(minimalResult.1);events=\(minimalResult.2.joined(separator: ","));loading=\(minimalResult.3 ? 1 : 0)|reader=\(readerResult.0);ms=\(readerResult.1);events=\(readerResult.2.joined(separator: ","));loading=\(readerResult.3 ? 1 : 0)"
+            view.stopLoading()
+            view.navigationDelegate = nil
+            view.removeFromSuperview()
+            webView = nil
+        }
+    }
+
+    private func load(_ url: URL, label: String) async -> (String, Int, [String], Bool) {
+        guard let webView else { return ("error-no-view", 0, [], false) }
+        currentEvents = []
+        currentStart = ProcessInfo.processInfo.systemUptime
+        currentNavigation = nil
+        return await withCheckedContinuation { continuation in
+            completion = { [weak self, weak webView] status, elapsed, events, loading in
+                self?.timeoutWork?.cancel()
+                self?.timeoutWork = nil
+                self?.eightSecondWork?.cancel()
+                self?.eightSecondWork = nil
+                self?.completion = nil
+                self?.currentNavigation = nil
+                continuation.resume(returning: (status, Int(elapsed * 1000), events, loading))
+                if status == "timeout", let webView { webView.stopLoading() }
+            }
+            let timeout = DispatchWorkItem { [weak self, weak webView] in
+                guard let self, let webView else { return }
+                self.finish(status: "timeout", loading: webView.isLoading)
+            }
+            timeoutWork = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
+            let eightSecond = DispatchWorkItem { [weak self, weak webView] in
+                guard let self, let webView, self.completion != nil else { return }
+                self.record("sample-8s-loading-\(webView.isLoading ? 1 : 0)-window-\(webView.window == nil ? 0 : 1)")
+            }
+            eightSecondWork = eightSecond
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: eightSecond)
+            guard let root, url.standardizedFileURL.path.hasPrefix(root.path + "/") else {
+                record("policy-reject")
+                finish(status: "error-policy", loading: webView.isLoading)
+                return
+            }
+            record("start-\(label)")
+            currentNavigation = webView.loadFileURL(url, allowingReadAccessTo: root)
+            if currentNavigation == nil { finish(status: "error-no-navigation", loading: webView.isLoading) }
+        }
+    }
+
+    private func record(_ event: String) {
+        guard currentEvents.count < 255 else {
+            if currentEvents.last != "events-truncated" { currentEvents.append("events-truncated") }
+            return
+        }
+        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - currentStart)
+        currentEvents.append("\(event)@\(Int(elapsed * 1000))ms")
+    }
+
+    private func finish(status: String, loading: Bool) {
+        guard completion != nil else { return }
+        record(status)
+        completion?(status, max(0, ProcessInfo.processInfo.systemUptime - currentStart), currentEvents, loading)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard webView === self.webView, navigation === currentNavigation else { return }
+        record("provisional")
+    }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard webView === self.webView, navigation === currentNavigation else { return }
+        record("commit")
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === self.webView, navigation === currentNavigation else { return }
+        record("finish")
+        finish(status: "finish", loading: webView.isLoading)
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard webView === self.webView, navigation === currentNavigation else { return }
+        record("provisional-fail-\((error as NSError).code)")
+        finish(status: "provisional-fail", loading: webView.isLoading)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard webView === self.webView, navigation === currentNavigation else { return }
+        record("fail-\((error as NSError).code)")
+        finish(status: "fail", loading: webView.isLoading)
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === self.webView else { return }
+        record("web-content-terminated")
+        finish(status: "web-content-terminated", loading: webView.isLoading)
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = action.request.url, let root, url.isFileURL,
+              url.standardizedFileURL.path.hasPrefix(root.path + "/"), action.navigationType != .linkActivated else {
+            record("policy-cancel")
+            decisionHandler(.cancel)
+            return
+        }
+        record("policy-allow")
+        decisionHandler(.allow)
+    }
+}
+#endif
 
 #if DEBUG
 private struct ContentOutlineUITestHost: View {
@@ -785,7 +961,7 @@ private struct AgentResultPaperUITestFixture {
             endpoint: "https://result-paper.fixture.invalid:443", transport: .bridge,
             bridgeID: "fixture-bridge", instanceID: "fixture-instance")
         let clientTaskID = "e2222222-2222-4222-8222-222222222222"
-        let task: AgentTaskRecord
+        var task: AgentTaskRecord
         do {
             if let existing = try taskStore.tasks().first(where: { $0.payload.clientTaskID == clientTaskID }) {
                 guard existing.connection.stillMatches(profile),
@@ -810,7 +986,7 @@ private struct AgentResultPaperUITestFixture {
         }
         if task.status != .completed {
             do {
-                _ = try taskStore.mutate(id: task.id, expectedRevision: task.recordRevision) { value in
+                task = try taskStore.mutate(id: task.id, expectedRevision: task.recordRevision) { value in
                     value.status = .completed
                     value.output = "Synthetic result for the isolated result-to-paper UI test."
                 }
@@ -818,6 +994,16 @@ private struct AgentResultPaperUITestFixture {
         } else if task.output != "Synthetic result for the isolated result-to-paper UI test." {
             preconditionFailure("Existing isolated result-to-paper task had unexpected fixture output")
         }
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-image-paper"),
+           !task.artifacts.contains(where: { $0.id == AgentImagePaperUITestSupport.artifact.id }) {
+            do {
+                task = try taskStore.mutate(id: task.id, expectedRevision: task.recordRevision) { value in
+                    value.artifacts.append(AgentImagePaperUITestSupport.artifact)
+                }
+            } catch { preconditionFailure("Could not seed isolated Agent image fixture: \(error)") }
+        }
+#endif
         let suite = "PadNote.AgentResultPaper.UITest.\(AgentResultPaperUITestPaths.fixtureID)"
         let defaults = UserDefaults(suiteName: suite)!
         let connections = AgentConnectionStore(defaults: defaults, keychain: AgentTaskHistoryUITestTokenStore())
@@ -843,9 +1029,25 @@ private struct AgentResultPaperUITestHost: View {
         let sourceExact = first?.source == expectedSource
         let sourceDigestMatches = receipt?.resultSha256 == expectedDigest
         let taskMatches = receipt?.taskId == fixture.taskID.uuidString.lowercased()
+        let imageRows = note.images.filter { $0.agentImage != nil }
+        let imageReceipts = imageRows.count
+        let image = imageRows.first
+        let imageHashMatches = image.flatMap { row in
+            guard let bytes = Data(base64Encoded: row.png), let receipt = row.agentImage else { return nil }
+            return AgentImageArtifactCodec.sha256(bytes) == receipt.pngSha256
+        } ?? false
         let exactX = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorXInPage ?? -1)
         let exactY = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorYInPage ?? -1)
-        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); profile=\(first?.effectiveMarkdownProfileVersion ?? 0); sourceExact=\(sourceExact); sourceDigestMatches=\(sourceDigestMatches); taskMatches=\(taskMatches); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1)); exactAnchor=\(first?.anchorPageIndex ?? -1),\(exactX),\(exactY)"
+        let imageX = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), image?.x ?? -1)
+        let imageY = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), image?.y ?? -1)
+        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); profile=\(first?.effectiveMarkdownProfileVersion ?? 0); sourceExact=\(sourceExact); sourceDigestMatches=\(sourceDigestMatches); taskMatches=\(taskMatches); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1)); exactAnchor=\(first?.anchorPageIndex ?? -1),\(exactX),\(exactY); images=\(note.images.count); imageReceipts=\(imageReceipts); imageHashMatches=\(imageHashMatches); imageAnchor=\(image?.page ?? -1),\(imageX),\(imageY)"
+    }
+
+    private var syntheticImagePaperPDFBase64: String? {
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-agent-image-paper"),
+              let note = library.notes.first(where: { $0.id == fixture.noteID }),
+              note.images.contains(where: { $0.agentImage != nil }) else { return nil }
+        return NoteRenderer.exportPDF(document: note, pdfURL: nil).base64EncodedString()
     }
 
     var body: some View {
@@ -853,6 +1055,11 @@ private struct AgentResultPaperUITestHost: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Text(stateLabel).font(.caption2).accessibilityIdentifier("agentResultPaperFixtureState")
                     .frame(maxWidth: .infinity).padding(4).background(.thinMaterial)
+                if let syntheticImagePaperPDFBase64 {
+                    Text(syntheticImagePaperPDFBase64)
+                        .accessibilityIdentifier("agentImagePaperPDFBase64")
+                        .frame(width: 1, height: 1).clipped()
+                }
             }
     }
 }

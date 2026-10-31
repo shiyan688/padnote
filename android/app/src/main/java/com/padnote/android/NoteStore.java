@@ -348,6 +348,30 @@ final class NoteStore {
         }
 }
 
+    /** Create-if-absent used after explicit confirmation of a detached Agent image paper. */
+    static Entry createWithDocumentIfAbsent(Context context,String requestedTitle,String noteId,
+                                             String documentJson)throws Exception{
+        if(noteId==null||!noteId.matches("note-[0-9a-f]{32}"))throw new IOException("NEW_NOTE_ID_INVALID");
+        JSONObject document=new JSONObject(documentJson);validateDocument(document);
+        if(!noteId.equals(document.getString("id"))||schemaVersion(document)!=11)
+            throw new IOException("NEW_AGENT_IMAGE_DOCUMENT_INVALID");
+        try(LegacyGroupMutationLock.Lease ignored=LegacyGroupMutationLock.acquire()){
+            synchronized(NoteStore.class){
+                JSONObject index=loadIndex(context);migrateLegacyIfNeeded(context,index);
+                JSONArray indexed=index.optJSONArray("notes");
+                if(noteFile(context,noteId).exists())throw new IOException("NEW_NOTE_CREATE_CONFLICT");
+                if(indexed!=null)for(int i=0;i<indexed.length();i++)
+                    if(noteId.equals(indexed.getJSONObject(i).optString("id")))throw new IOException("NEW_NOTE_CREATE_CONFLICT");
+                String title=normalizeTitle(requestedTitle,"Agent image");long now=System.currentTimeMillis();
+                document.put("title",title).put("updatedAt",now);
+                validateDocument(document);
+                writeAtomic(noteFile(context,noteId),NoteJsonCodec.stringify(document),NOTE_VALIDATOR);
+                Entry entry=new Entry(noteId,title,now,0,1);upsertEntry(index,entry);saveIndex(context,index);
+                return entry;
+            }
+        }
+    }
+
     static JSONObject load(Context context,String noteId)throws Exception {
         try (LegacyGroupMutationLock.Lease mutationGate=LegacyGroupMutationLock.acquire()) {
             synchronized (NoteStore.class) {
@@ -1326,6 +1350,10 @@ final class NoteStore {
                 .put("images", new JSONArray());
     }
 
+    static JSONObject emptyDocumentForAgentImage(String id,String title,long now)throws Exception{
+        return emptyDocument(id,title,now);
+    }
+
     private static JSONObject loadIndex(Context context) throws Exception {
         Set<String> deletedIds = committedLegacyDeleteIds(context);
         File file = new File(context.getFilesDir(), INDEX_FILE);
@@ -1661,19 +1689,41 @@ final class NoteStore {
                 requireFinite(box.optDouble("y", 0), "文字位置无效");
             }
         }
-        if ((version == 9 || version == 10) && flows == null) {
+        if ((version == 9 || version == 10 || version == 11) && flows == null) {
             throw new IllegalArgumentException("schemaVersion 9/10 缺少来源文字流");
         }
-        if (hasAgentResult && version != 9 && version != 10) {
+        if (hasAgentResult && version != 9 && version != 10 && version != 11) {
             throw new IllegalArgumentException("Agent 来源文字流需要 schemaVersion 9 或 10");
         }
         JSONArray imageArray = document.optJSONArray("images");
         long imagePixels = 0;
         long imageEncoded = 0;
+        Set<String> imageIds=new HashSet<>();
+        Set<String> agentApplications=new HashSet<>();
         if (imageArray != null) {
             for (int index = 0; index < imageArray.length(); index++) {
                 JSONObject storedImage = imageArray.getJSONObject(index);
+                Set<String> imageKeys=new HashSet<>();
+                java.util.Iterator<String> imageKeyIterator=storedImage.keys();
+                while(imageKeyIterator.hasNext())imageKeys.add(imageKeyIterator.next());
+                Set<String> expectedImageKeys=new HashSet<>(java.util.Arrays.asList("id","png","page","x","y","width","height"));
+                if(storedImage.has("agentImage"))expectedImageKeys.add("agentImage");
+                if(version==11&&!expectedImageKeys.equals(imageKeys))throw new IllegalArgumentException("图片字段不受支持");
+                String imageId=storedImage.getString("id");
+                if(version==11&&(imageId.isEmpty()||!imageIds.add(imageId)))throw new IllegalArgumentException("图片 ID 无效或重复");
+                AgentImageReceipt receipt=null;
+                if(storedImage.has("agentImage")){
+                    if(version<11)throw new IllegalArgumentException("Agent 图片来源需要 schemaVersion 11");
+                    receipt=AgentImageReceipt.fromJson(storedImage.getJSONObject("agentImage"));
+                    if(!imageId.equals("agent-image-"+receipt.applicationId)
+                            ||!agentApplications.add(receipt.applicationId))
+                        throw new IllegalArgumentException("Agent 图片身份重复或不匹配");
+                }
                 NoteImage.StoredImageInfo info = NoteImage.inspectJson(storedImage);
+                if(receipt!=null){
+                    byte[] png=TypedNoteTimeProjection.decodeCanonicalBase64(storedImage.getString("png"));
+                    receipt.validatePng(png);
+                }
                 int page = storedImage.getInt("page");
                 double width = storedImage.getDouble("width");
                 double height = storedImage.getDouble("height");
@@ -1698,7 +1748,7 @@ final class NoteStore {
         if (!(value instanceof Number)) throw new JSONException("Invalid PadNote schema version");
         try {
             int version = new java.math.BigDecimal(value.toString()).intValueExact();
-            if (version < 1 || version > 10) throw new JSONException("Unsupported PadNote schema version");
+            if (version < 1 || version > 11) throw new JSONException("Unsupported PadNote schema version");
             return version;
         } catch (NumberFormatException | ArithmeticException invalid) {
             JSONException exception = new JSONException("Invalid PadNote schema version");

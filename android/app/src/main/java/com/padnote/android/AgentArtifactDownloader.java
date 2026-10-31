@@ -5,12 +5,15 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.security.MessageDigest;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.net.ssl.HttpsURLConnection;
 
 /** Streams one task-owned Bridge artifact to a verified temporary file. */
 final class AgentArtifactDownloader {
     private static final long MAX_BYTES = 100L * 1024L * 1024L;
+    static final long MAX_IMAGE_BYTES = 20L * 1024L * 1024L;
 
     interface Source {
         OpenResponse open(URL url, String bearer, String certSha256) throws Exception;
@@ -38,6 +41,14 @@ final class AgentArtifactDownloader {
             try { if (input != null) input.close(); }
             finally { closeAction.run(); }
         }
+        void cancel(){try{if(input!=null)input.close();}catch(Exception ignored){}finally{closeAction.run();}}
+    }
+
+    static final class Cancellation {
+        private final AtomicBoolean cancelled=new AtomicBoolean();
+        private final AtomicReference<OpenResponse> response=new AtomicReference<>();
+        boolean isCancelled(){return cancelled.get();}
+        void cancel(){cancelled.set(true);OpenResponse active=response.get();if(active!=null)active.cancel();}
     }
 
     private final Source source;
@@ -47,6 +58,18 @@ final class AgentArtifactDownloader {
 
     File download(AgentTaskStore.Task task, AgentConnectionStore.Config connection,
                   AgentTaskStore.Artifact artifact, File cacheDirectory) throws Exception {
+        return download(task,connection,artifact,cacheDirectory,MAX_BYTES,null);
+    }
+
+    File downloadImage(AgentTaskStore.Task task, AgentConnectionStore.Config connection,
+                      AgentTaskStore.Artifact artifact, File cacheDirectory,
+                      Cancellation cancelled) throws Exception {
+        return download(task,connection,artifact,cacheDirectory,MAX_IMAGE_BYTES,cancelled);
+    }
+
+    private File download(AgentTaskStore.Task task, AgentConnectionStore.Config connection,
+                  AgentTaskStore.Artifact artifact, File cacheDirectory, long maxBytes,
+                  Cancellation cancelled) throws Exception {
         if (task == null || connection == null || artifact == null || !task.matches(connection)) {
             throw new IllegalStateException("任务绑定的连接身份已变更，不能下载产物");
         }
@@ -56,10 +79,12 @@ final class AgentArtifactDownloader {
         }
         boolean listed = false;
         for (AgentTaskStore.Artifact candidate : task.artifacts) {
-            if (candidate.id.equals(artifact.id) && candidate.sizeBytes == artifact.sizeBytes &&
-                    candidate.sha256.equalsIgnoreCase(artifact.sha256)) { listed = true; break; }
+            if (candidate.id.equals(artifact.id) && candidate.name.equals(artifact.name)
+                    && candidate.mediaType.equals(artifact.mediaType)
+                    && candidate.sizeBytes == artifact.sizeBytes
+                    && candidate.sha256.equalsIgnoreCase(artifact.sha256)) { listed = true; break; }
         }
-        if (!listed || artifact.sizeBytes < 0L || artifact.sizeBytes > MAX_BYTES ||
+        if (!listed || artifact.sizeBytes < 1L || artifact.sizeBytes > maxBytes ||
                 !artifact.sha256.matches("[a-fA-F0-9]{64}")) {
             throw new IllegalArgumentException("产物元数据无效或已变化");
         }
@@ -70,7 +95,9 @@ final class AgentArtifactDownloader {
         boolean complete = false;
         try {
             URL url = new AgentTaskClient().artifactUrl(task, artifact.id);
-            try (OpenResponse response = source.open(url, connection.token, connection.certSha256)) {
+            OpenResponse opened=source.open(url,connection.token,connection.certSha256);
+            if(cancelled!=null){cancelled.response.set(opened);if(cancelled.isCancelled())opened.cancel();}
+            try (OpenResponse response = opened) {
                 if (response.status != 200) throw new IllegalStateException(
                         "下载产物失败（HTTP " + response.status + "）");
                 if (!response.requestedUrl.toExternalForm().equals(response.finalUrl.toExternalForm())) {
@@ -86,8 +113,9 @@ final class AgentArtifactDownloader {
                     int count;
                     while ((count = response.input.read(buffer)) >= 0) {
                         if (count == 0) continue;
+                        if(cancelled!=null&&cancelled.isCancelled())throw new java.io.InterruptedIOException("artifact download cancelled");
                         total += count;
-                        if (total > artifact.sizeBytes || total > MAX_BYTES) {
+                        if (total > artifact.sizeBytes || total > maxBytes) {
                             throw new IllegalStateException("产物超过声明大小");
                         }
                         digest.update(buffer, 0, count);

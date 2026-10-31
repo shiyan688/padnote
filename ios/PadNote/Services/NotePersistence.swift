@@ -80,6 +80,12 @@ final class NoteRevisionGate: @unchecked Sendable {
         }
     }
 
+    func snapshot(noteID: String) -> NoteDraftRevisionSnapshot {
+        lock.withNoteLock {
+            NoteDraftRevisionSnapshot(latest: latest[noteID] ?? 0, saved: saved[noteID] ?? 0)
+        }
+    }
+
     func invalidate(noteID: String) {
         lock.withNoteLock {
             invalidated.insert(noteID)
@@ -87,6 +93,11 @@ final class NoteRevisionGate: @unchecked Sendable {
             saved.removeValue(forKey: noteID)
         }
     }
+}
+
+struct NoteDraftRevisionSnapshot: Equatable {
+    let latest: Int
+    let saved: Int
 }
 
 actor NoteDraftWorker {

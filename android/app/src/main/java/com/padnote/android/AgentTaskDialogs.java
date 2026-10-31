@@ -49,20 +49,26 @@ final class AgentTaskDialogs {
     interface ArtifactSaveLauncher {
         void choose(AgentTaskStore.Task task, AgentTaskStore.Artifact artifact);
     }
+    interface ArtifactImagePlacementLauncher { void place(AgentTaskStore.Task task,AgentTaskStore.Artifact artifact); }
     interface ResultAppender { void append(String clientTaskId); }
     private final Activity activity;
     private final AgentConnectionStore connections;
     private final AgentTaskStore tasks;
     private final ExecutorService worker;
     private final ArtifactSaveLauncher artifactSaveLauncher;
+    private ArtifactImagePlacementLauncher artifactImagePlacementLauncher;
     private final VideoTaskDialogs.Factory videoDialogFactory;
     private final SourceNoteOpener sourceNoteOpener;
     private final AgentTaskClient.Factory taskClientFactory;
     private final TaskConnectionSource taskConnectionSource;
     private final Handler main = new Handler(Looper.getMainLooper());
     private ResultAppender resultAppender;
+    private java.util.function.Consumer<String> lifecycleObserverForTest;
 
     void setResultAppender(ResultAppender appender) { resultAppender = appender; }
+    void setLifecycleObserverForTest(java.util.function.Consumer<String> observer) {
+        lifecycleObserverForTest=observer;
+    }
 
     AgentTaskDialogs(Activity activity, AgentConnectionStore connections, ExecutorService worker) {
         this(activity, connections, worker, null);
@@ -283,8 +289,8 @@ final class AgentTaskDialogs {
                 }).show();
     }
 
-    void showDetail(String clientId) {
-        AgentTaskStore.Task initial=tasks.get(clientId);if(initial==null){toast(activity.getString(R.string.flow_record_missing));return;}
+    AlertDialog showDetail(String clientId) {
+        AgentTaskStore.Task initial=tasks.get(clientId);if(initial==null){observeLifecycleForTest("missing_task");toast(activity.getString(R.string.flow_record_missing));return null;}
         final boolean videoBundleValid=VideoTaskClient.isVideoBundle(initial);
         LinearLayout body=new LinearLayout(activity);body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(20),dp(8),dp(20),dp(8));
@@ -384,6 +390,12 @@ final class AgentTaskDialogs {
             if(artifactSaveLauncher!=null)for(AgentTaskStore.Artifact artifact:task.artifacts){
                 Button save=button(activity.getString(R.string.flow_save_artifact,artifact.name,size(artifact.sizeBytes)));
                 save.setOnClickListener(v->artifactSaveLauncher.choose(task,artifact));artifacts.addView(save);
+                if(artifactImagePlacementLauncher!=null&&task.status==AgentTaskStore.Status.COMPLETED
+                        &&("image/png".equals(artifact.mediaType)||"image/jpeg".equals(artifact.mediaType))){
+                    Button place=button(activity.getString(R.string.agent_image_place_on_paper,artifact.name));
+                    place.setOnClickListener(v->{dialog.dismiss();artifactImagePlacementLauncher.place(task,artifact);});
+                    artifacts.addView(place);
+                }
             }
             if(!shouldContinueObserving(task.status,task.remoteTaskId,inFlight))return;
             if(activity.getWindow().getDecorView().getWindowVisibility()!=View.VISIBLE){
@@ -471,7 +483,17 @@ final class AgentTaskDialogs {
         previous.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&!t.parentClientTaskId.isEmpty()){dialog.dismiss();showDetail(t.parentClientTaskId);}});
         video.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null)videoDialogFactory.create(activity,connections,tasks,worker).show(t);});
         stop.setOnClickListener(v->control(clientId,"stop",dialog));once.setOnClickListener(v->control(clientId,"once",dialog));deny.setOnClickListener(v->control(clientId,"deny",dialog));
-        dialog.setOnDismissListener(d->main.removeCallbacks(update[0]));dialog.show();update[0].run();
+        dialog.setOnDismissListener(d->{main.removeCallbacks(update[0]);observeLifecycleForTest("dismissed");});
+        dialog.show();observeLifecycleForTest("shown;isShowing="+dialog.isShowing());update[0].run();return dialog;
+    }
+
+    private void observeLifecycleForTest(String state){
+        java.util.function.Consumer<String> observer=lifecycleObserverForTest;
+        if(observer!=null)observer.accept(state);
+    }
+
+    void setArtifactImagePlacementLauncher(ArtifactImagePlacementLauncher launcher){
+        artifactImagePlacementLauncher=launcher;
     }
 
     private LinearLayout paperCard(){

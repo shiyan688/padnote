@@ -11,6 +11,215 @@ final class NoteDocumentTests: XCTestCase {
         Bundle(for: Self.self).resourceURL!.appendingPathComponent("legacy-notes", isDirectory: true)
     }
 
+    func testAgentImageSharedReceiptIdentityAndSchema11RoundTrip() throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let valid = try XCTUnwrap(fixture["validSchema11"] as? [String: Any])
+        let noteData = try JSONSerialization.data(withJSONObject: valid, options: [.sortedKeys])
+        let note = try NoteDocument.decode(noteData)
+        XCTAssertEqual(note.schemaVersion, 11)
+        let image = try XCTUnwrap(note.images.first)
+        let receipt = try XCTUnwrap(image.agentImage)
+        XCTAssertEqual(receipt.applicationId, fixture["identitySHA256"] as? String)
+        let identityBytes = AgentImageReceipt.applicationIdentityBytes(taskId: receipt.taskId,
+            connectionId: receipt.connectionId, instanceId: receipt.instanceId, agentKind: receipt.agentKind,
+            transport: receipt.transport, artifactId: receipt.artifactId, artifactName: receipt.artifactName,
+            mediaType: receipt.mediaType, sizeBytes: receipt.sizeBytes, artifactSha256: receipt.artifactSha256)
+        XCTAssertEqual(identityBytes.map(hex), fixture["identityInputHex"] as? String)
+        XCTAssertEqual(hex(receipt.canonicalBytes()), fixture["canonicalReceiptHex"] as? String)
+        XCTAssertEqual(try NoteDocument.decode(try note.encoded()), note)
+
+        var schema11WithoutImage = note
+        schema11WithoutImage.images.removeAll()
+        XCTAssertEqual(try NoteDocument.decode(try schema11WithoutImage.encoded()).schemaVersion, 11,
+                       "A schema-11 note remains valid after its Agent images are deleted.")
+        XCTAssertEqual(NoteDocument().schemaVersion, 10, "Ordinary notes remain schema 10.")
+    }
+
+    func testAgentImageRejectsSchema10ReceiptAndImageIdentityOrDigestMutation() throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let valid11 = try XCTUnwrap(fixture["validSchema11"] as? [String: Any])
+        let schema10 = try XCTUnwrap(fixture["validSchema10"] as? [String: Any])
+        var imageNote = valid11
+        imageNote["schemaVersion"] = 10
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: imageNote)))
+        XCTAssertEqual(try NoteDocument.decode(JSONSerialization.data(withJSONObject: schema10)).schemaVersion, 10)
+
+        var wrongID = valid11
+        var images = try XCTUnwrap(wrongID["images"] as? [[String: Any]])
+        images[0]["id"] = "agent-image-\(String(repeating: "0", count: 64))"
+        wrongID["images"] = images
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: wrongID)))
+
+        var wrongPNG = valid11
+        images = try XCTUnwrap(wrongPNG["images"] as? [[String: Any]])
+        var image = try XCTUnwrap(images.first)
+        var receipt = try XCTUnwrap(image["agentImage"] as? [String: Any])
+        receipt["pngSha256"] = String(repeating: "0", count: 64)
+        image["agentImage"] = receipt
+        images[0] = image; wrongPNG["images"] = images
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: wrongPNG)))
+
+        let schema9 = try XCTUnwrap(fixture["validSchema9"] as? [String: Any])
+        XCTAssertEqual(try NoteDocument.decode(JSONSerialization.data(withJSONObject: schema9)).schemaVersion, 9)
+
+        var unknownImageField = valid11
+        images = try XCTUnwrap(unknownImageField["images"] as? [[String: Any]])
+        var ordinaryImage = try XCTUnwrap(images.first)
+        ordinaryImage.removeValue(forKey: "agentImage")
+        ordinaryImage["futureImageField"] = "unknown"
+        images[0] = ordinaryImage; unknownImageField["images"] = images
+        XCTAssertThrowsError(try NoteDocument.decode(JSONSerialization.data(withJSONObject: unknownImageField)),
+                             "schema 11 is exact even on images without Agent provenance")
+        unknownImageField["schemaVersion"] = 10
+        XCTAssertNoThrow(try NoteDocument.decode(JSONSerialization.data(withJSONObject: unknownImageField)),
+                         "schema 1–10 retains its legacy unknown-image-field behavior")
+    }
+
+    func testSchema11EnforcesAggregateBase64ImageBudget() throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let valid = try XCTUnwrap(fixture["validSchema11"] as? [String: Any])
+        var note = try NoteDocument.decode(JSONSerialization.data(withJSONObject: valid))
+        let first = try XCTUnwrap(note.images.first)
+        let original = try XCTUnwrap(Data(base64Encoded: first.png))
+        var padded = original
+        padded.append(Data(repeating: 0, count: 16 * 1024 * 1024))
+        note.images.append(NoteImage(id: "ordinary-padded", png: padded.base64EncodedString(),
+            page: first.page, x: 400, y: 400, width: 20, height: 20))
+        XCTAssertThrowsError(try note.validated(), "schema 11 bounds the aggregate encoded-base64 payload")
+    }
+
+    func testAgentImageRunsEverySharedReceiptAcceptanceAndRejectionVector() throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
+        for vector in cases {
+            let id = try XCTUnwrap(vector["id"] as? String)
+            let accepted = try XCTUnwrap(vector["accepted"] as? Bool)
+            var value = try XCTUnwrap(fixture[accepted && id == "schema10_plain_no_receipt" ? "validSchema10" :
+                (accepted ? "validSchema11" : "validSchema11")] as? [String: Any])
+            var rawOverride: Data?
+            if let rawDocumentJSON = vector["rawDocumentJSON"] as? String {
+                // Preserve source JSON spellings that Foundation's object serializer
+                // cannot round-trip, including lone surrogates and integer-valued floats.
+                rawOverride = Data(rawDocumentJSON.utf8)
+            } else if !accepted {
+                let mutation = try XCTUnwrap(vector["mutation"] as? [String: Any])
+                if mutation["attachReceipt"] as? Bool == true {
+                    value["schemaVersion"] = mutation["schemaVersion"]
+                } else if mutation["duplicateImage"] as? Bool == true {
+                    var rows = try XCTUnwrap(value["images"] as? [[String: Any]])
+                    rows.append(try XCTUnwrap(rows.first)); value["images"] = rows
+                } else if let (key, replacement) = mutation.first {
+                    if key == "schemaVersion" {
+                        value[key] = replacement
+                    } else if key == "image.id" {
+                        var rows = try XCTUnwrap(value["images"] as? [[String: Any]])
+                        rows[0]["id"] = replacement; value["images"] = rows
+                    } else if key.hasPrefix("receipt.") {
+                        var rows = try XCTUnwrap(value["images"] as? [[String: Any]])
+                        var image = try XCTUnwrap(rows.first)
+                        var receipt = try XCTUnwrap(image["agentImage"] as? [String: Any])
+                        let field = String(key.dropFirst("receipt.".count))
+                        if field == "removeField" { receipt.removeValue(forKey: replacement as! String) }
+                        else { receipt[field] = replacement }
+                        image["agentImage"] = receipt; rows[0] = image; value["images"] = rows
+                    }
+                }
+            } else if id == "schema9_plain_no_receipt" {
+                value = try XCTUnwrap(fixture["validSchema9"] as? [String: Any])
+            }
+            do {
+                let bytes: Data
+                if let rawOverride { bytes = rawOverride }
+                else { bytes = try JSONSerialization.data(withJSONObject: value) }
+                _ = try NoteDocument.decode(bytes)
+                XCTAssertTrue(accepted, "shared vector \(id) should be rejected")
+            } catch {
+                XCTAssertFalse(accepted, "shared vector \(id) should be accepted: \(error)")
+            }
+        }
+
+        // JSON permits escaped spellings of member names. The strict raw-number
+        // preflight must not be bypassed by spelling `agentImage` with an escape.
+        let valid = try XCTUnwrap(fixture["validSchema11"] as? [String: Any])
+        let canonical = String(decoding: try JSONSerialization.data(withJSONObject: valid, options: [.sortedKeys]), as: UTF8.self)
+        let escapedKey = canonical.replacingOccurrences(of: "\"agentImage\"", with: "\"agent\\u0049mage\"")
+            .replacingOccurrences(of: "\"addedAt\":1790000000456", with: "\"addedAt\":1790000000456.0")
+        XCTAssertNotEqual(canonical, escapedKey)
+        XCTAssertThrowsError(try NoteDocument.decode(Data(escapedKey.utf8)),
+                             "escaped JSON keys must receive the same exact-integer receipt validation")
+    }
+
+    func testAgentImageCodecNormalizesOnlyMatchingStaticRasterMime() throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let pngBytes = Data(base64Encoded: try XCTUnwrap(fixture["pngBytesBase64"] as? String))!
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("agent-image-fixture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try pngBytes.write(to: url, options: .atomic)
+        let normalized = try AgentImageArtifactCodec.normalize(fileURL: url, declaredMediaType: "image/png",
+            expectedSHA256: try XCTUnwrap(fixture["pngSha256"] as? String))
+        XCTAssertLessThanOrEqual(max(normalized.width, normalized.height), 1_600)
+        XCTAssertEqual(String(SHA256.hash(data: normalized.png).map { String(format: "%02x", $0) }.joined().prefix(64)),
+                       AgentImageArtifactCodec.sha256(normalized.png))
+        XCTAssertThrowsError(try AgentImageArtifactCodec.normalize(fileURL: url, declaredMediaType: "image/jpeg",
+            expectedSHA256: try XCTUnwrap(fixture["pngSha256"] as? String)))
+        XCTAssertThrowsError(try AgentImageArtifactCodec.normalize(fileURL: url, declaredMediaType: "image/svg+xml",
+            expectedSHA256: try XCTUnwrap(fixture["pngSha256"] as? String)))
+        let jpegURL = FileManager.default.temporaryDirectory.appendingPathComponent("agent-image-fixture-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: jpegURL) }
+        let jpeg = try XCTUnwrap(UIImage(data: pngBytes)?.jpegData(compressionQuality: 0.9))
+        try jpeg.write(to: jpegURL, options: .atomic)
+        let normalizedJPEG = try AgentImageArtifactCodec.normalize(fileURL: jpegURL, declaredMediaType: "image/jpeg",
+            expectedSHA256: AgentImageArtifactCodec.sha256(jpeg))
+        XCTAssertTrue(normalizedJPEG.png.starts(with: Data([137, 80, 78, 71, 13, 10, 26, 10])))
+    }
+
+    func testAgentImageCommitReopensReceiptPreservesExistingContentAndDeduplicates() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-image-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        var base = NoteDocument(id: UUID().uuidString.lowercased(), title: "Existing note", pageCount: 1,
+            textFlows: [NoteTextFlow(id: "flow-existing", format: "markdown", source: "Original source",
+                                     width: 500, anchorPageIndex: 0, anchorXInPage: 20, anchorYInPage: 30)])
+        try library.save(base)
+        let originalFlow = try XCTUnwrap(base.textFlows.first)
+        let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "AGENT_IMAGE_RECEIPT_CASES_R1", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        let valid = try XCTUnwrap(fixture["validSchema11"] as? [String: Any])
+        let encodedFixture = try JSONSerialization.data(withJSONObject: valid)
+        let template = try NoteDocument.decode(encodedFixture)
+        let fixtureImage = try XCTUnwrap(template.images.first)
+        let imageBytes = try XCTUnwrap(Data(base64Encoded: fixtureImage.png))
+        var candidate = try library.captureAgentResultTarget(noteID: base.id).document
+        candidate.images = [fixtureImage]
+        candidate.schemaVersion = 11
+        candidate.updatedAt += 1
+        let baseSession = try library.captureAgentResultTarget(noteID: base.id)
+        let first = try library.commitAgentImage(candidate, basedOn: baseSession)
+        XCTAssertEqual(first.document.schemaVersion, 11)
+        XCTAssertEqual(first.document.textFlows.first, originalFlow)
+        XCTAssertEqual(first.document.images.first?.agentImage?.applicationId, fixtureImage.agentImage?.applicationId)
+        XCTAssertEqual(Data(base64Encoded: try XCTUnwrap(first.document.images.first?.png)), imageBytes)
+
+        let reopenedLibrary = NoteLibrary(directory: root)
+        let reopened = try XCTUnwrap(reopenedLibrary.savedAgentImage(
+            matchingApplicationID: try XCTUnwrap(fixtureImage.agentImage?.applicationId)))
+        XCTAssertEqual(reopened.document.schemaVersion, 11)
+        XCTAssertEqual(reopened.pageIndex, fixtureImage.page)
+        XCTAssertEqual(reopened.document.textFlows.first, originalFlow)
+        let duplicate = try reopenedLibrary.commitAgentImage(candidate, basedOn: baseSession)
+        XCTAssertEqual(duplicate.document.id, reopened.document.id)
+        XCTAssertEqual(reopenedLibrary.notes.filter { $0.images.contains(where: {
+            $0.agentImage?.applicationId == fixtureImage.agentImage?.applicationId
+        }) }.count, 1)
+    }
+
+    private func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
     func testSchemaEightRoundTripPreservesInkPressureAndTime() throws {
         var note = NoteDocument(title: "Calculus", pageStyle: PageStyle(paper: "grid", ratio: "a4", landscape: true))
         note.updatedAt = 1_725_000_000_123
@@ -714,9 +923,9 @@ final class NoteDocumentTests: XCTestCase {
     }
 
     func testRejectsUnknownSchemaCorruptionAndLimits() throws {
-        let unknown = #"{"schemaVersion":11,"strokes":[]}"#.data(using: .utf8)!
+        let unknown = #"{"schemaVersion":12,"strokes":[]}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(unknown)) { error in
-            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(11))
+            XCTAssertEqual(error as? NoteDocumentError, .unsupportedSchema(12))
         }
         let missingStrokes = #"{"schemaVersion":8,"id":"x"}"#.data(using: .utf8)!
         XCTAssertThrowsError(try NoteDocument.decode(missingStrokes))
@@ -747,7 +956,11 @@ final class NoteDocumentTests: XCTestCase {
             XCTAssertEqual(try NoteDocument.decode(equivalent).schemaVersion, 10,
                            "schemaVersion is compared by numeric integer value")
         }
-        for raw in ["10.5", "true", "\"10\"", "11"] {
+        let schema11 = Data(canonicalSchema10.replacingOccurrences(of: "\"schemaVersion\":10",
+            with: "\"schemaVersion\":11").utf8)
+        XCTAssertEqual(try NoteDocument.decode(schema11).schemaVersion, 11,
+                       "schema 11 is now a supported note envelope")
+        for raw in ["10.5", "true", "\"10\"", "12"] {
             let invalid = Data(canonicalSchema10.replacingOccurrences(of: "\"schemaVersion\":10",
                 with: "\"schemaVersion\":\(raw)").utf8)
             XCTAssertThrowsError(try NoteDocument.decode(invalid), "invalid schema value \(raw)")

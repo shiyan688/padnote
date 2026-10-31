@@ -92,8 +92,17 @@ public enum NoteRenderer {
         return renderer.image { context in
             let cg = context.cgContext
             cg.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
-            drawPage(document: document, page: page, pdfURL: pdfURL, in: cg)
+            drawPage(document: document, page: page, pdfURL: pdfURL,
+                     compiledText: compiledTextSnapshot(for: document), in: cg)
         }
+    }
+
+    private static func compiledTextSnapshot(for document: NoteDocument) -> [String: [CompiledTextCache.Unit]]? {
+        var result = [String: [CompiledTextCache.Unit]]()
+        for flow in document.textFlows {
+            if let units = CompiledTextCache.entry(flow)?.units { result[flow.id] = units }
+        }
+        return result.isEmpty ? nil : result
     }
 
     static func renderSelection(document: NoteDocument, polygon: [CGPoint], pdfURL: URL?, maxEdge: CGFloat = 1600) -> UIImage? {

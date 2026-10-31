@@ -40,6 +40,14 @@ struct NoteSavedAgentResult {
     let pageIndex: Int
 }
 
+struct NoteSavedAgentImage {
+    let document: NoteDocument
+    let session: NoteGroupEditorSession
+    let imageID: String
+    let pageIndex: Int
+    let artifactName: String
+}
+
 public struct NoteAgentResultCandidate {
     public let document: NoteDocument
     public let flowID: String
@@ -183,7 +191,7 @@ public final class NoteLibrary: ObservableObject {
 
     private func saveLegacy(_ note: NoteDocument) throws {
         var value = note
-        if value.schemaVersion != 10 {
+        if value.schemaVersion != 10 && value.schemaVersion != 11 {
             value.schemaVersion = value.textFlows.contains(where: { $0.agentResult != nil }) ? 9 : 8
         }
         if let existing = notes.first(where: { $0.id == value.id }) {
@@ -205,6 +213,105 @@ public final class NoteLibrary: ObservableObject {
         notes.removeAll { $0.id == value.id }
         notes.append(value)
         notes.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Creates an Agent-image note only when its captured preview owner is still absent.
+    /// This is intentionally separate from save(_:), which is an update API for legacy notes.
+    func createNoteWithAgentImage(_ note: NoteDocument, basedOn base: NoteDocument) throws -> NoteGroupEditorSession {
+        let checked = try note.validated()
+        guard checked.schemaVersion == 11,
+              checked.images.filter({ $0.agentImage != nil }).count == 1,
+              let image = checked.images.last,
+              image.agentImage != nil,
+              Self.isOnlyAgentImageInsertion(checked, over: base, insertedImageID: image.id) else {
+            throw NoteDocumentError.malformed("An Agent image is required for this new note")
+        }
+        return try NoteGroupCatalogFence.withWriter {
+            guard !notes.contains(where: { $0.id == checked.id }),
+                  !fileManager.fileExists(atPath: noteURL(for: checked).path) else {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            try requireLegacyMutationAllowed(noteID: checked.id)
+            try saveLegacy(checked)
+            return try openEditorSession(noteID: checked.id)
+        }
+    }
+
+    func commitAgentImage(_ candidate: NoteDocument, basedOn session: NoteGroupEditorSession?,
+                          newNoteBase: NoteDocument? = nil,
+                          expectedDraftRevision: NoteDraftRevisionSnapshot? = nil) throws -> NoteSavedAgentImage {
+        let checked = try candidate.validated()
+        let base = session?.document ?? newNoteBase
+        let priorApplications = Set(base?.images.compactMap { $0.agentImage?.applicationId } ?? [])
+        let newlyAdded = checked.images.filter { image in
+            guard let receipt = image.agentImage else { return false }
+            return !priorApplications.contains(receipt.applicationId)
+        }
+        guard checked.schemaVersion == 11,
+              newlyAdded.count == 1,
+              let inserted = newlyAdded.first,
+              let bytes = Data(base64Encoded: inserted.png),
+              let receipt = inserted.agentImage else {
+            throw NoteDocumentError.malformed("Agent image receipt is required")
+        }
+        try receipt.validate(pngBytes: bytes)
+        return try NoteGroupCatalogFence.withWriter {
+            if let session, let expectedDraftRevision,
+               revisionGate.snapshot(noteID: session.document.id) != expectedDraftRevision {
+                throw NoteGroupStoreError.compareAndSwapConflict
+            }
+            if let prior = savedAgentImage(matchingApplicationID: receipt.applicationId) { return prior }
+            let savedSession: NoteGroupEditorSession
+            if let session {
+                guard session.document.id == checked.id,
+                      !session.document.images.contains(where: { $0.agentImage?.applicationId == receipt.applicationId }),
+                      Self.isOnlyAgentImageInsertion(checked, over: session.document, insertedImageID: inserted.id) else {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                savedSession = try save(checked, basedOn: session)
+            } else {
+                guard let newNoteBase,
+                      Self.isOnlyAgentImageInsertion(checked, over: newNoteBase, insertedImageID: inserted.id) else {
+                    throw NoteGroupStoreError.compareAndSwapConflict
+                }
+                savedSession = try createNoteWithAgentImage(checked, basedOn: newNoteBase)
+            }
+            guard let saved = savedSession.document.images.first(where: {
+                $0.agentImage?.applicationId == receipt.applicationId
+            }), let storedReceipt = saved.agentImage,
+               storedReceipt == receipt,
+               let bytes = Data(base64Encoded: saved.png) else {
+                throw NoteGroupStoreError.corruptRevision
+            }
+            try storedReceipt.validate(pngBytes: bytes)
+            return NoteSavedAgentImage(document: savedSession.document, session: savedSession,
+                                       imageID: saved.id, pageIndex: saved.page,
+                                       artifactName: storedReceipt.artifactName)
+        }
+    }
+
+    private static func isOnlyAgentImageInsertion(_ candidate: NoteDocument, over base: NoteDocument,
+                                                   insertedImageID: String) -> Bool {
+        guard candidate.id == base.id, candidate.schemaVersion == 11,
+              candidate.title == base.title, candidate.pageWidth == base.pageWidth,
+              candidate.pageHeight == base.pageHeight, candidate.pageGap == base.pageGap,
+              candidate.pdfPageCount == base.pdfPageCount, candidate.pageStyle == base.pageStyle,
+              candidate.strokes == base.strokes, candidate.textFlows == base.textFlows,
+              candidate.images.count == base.images.count + 1,
+              Array(candidate.images.dropLast()) == base.images,
+              candidate.images.last?.id == insertedImageID,
+              candidate.pageCount >= base.pageCount, candidate.pageCount <= base.pageCount + 1,
+              candidate.pageTopologyRevision >= base.pageTopologyRevision,
+              candidate.pageTopologyRevision <= base.pageTopologyRevision + 1,
+              candidate.viewportZoom == base.viewportZoom,
+              candidate.viewportCenterX == base.viewportCenterX,
+              candidate.viewportCenterY == base.viewportCenterY,
+              candidate.viewportScale == base.viewportScale,
+              candidate.authorPageEditSerial == base.authorPageEditSerial,
+              candidate.authorPageTopologySerial == base.authorPageTopologySerial,
+              candidate.shelfState == base.shelfState,
+              candidate.shelfRetiredAt == base.shelfRetiredAt else { return false }
+        return true
     }
 
     public func openEditorSession(noteID: String) throws -> NoteGroupEditorSession {
@@ -260,6 +367,29 @@ public final class NoteLibrary: ObservableObject {
               currentFlow.id == match.flowID else { return nil }
         return NoteSavedAgentResult(document: session.document, session: session,
                                     pageIndex: currentFlow.anchorPageIndex)
+    }
+
+    func savedAgentImage(matchingApplicationID applicationID: String) -> NoteSavedAgentImage? {
+        guard applicationID.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else { return nil }
+        var matches: [(noteID: String, imageID: String, page: Int)] = []
+        for note in notes {
+            for image in note.images {
+                guard let receipt = image.agentImage, receipt.applicationId == applicationID else { continue }
+                do {
+                    try receipt.validate(pngBytes: Data(base64Encoded: image.png))
+                    guard image.id == "agent-image-\(applicationID)" else { return nil }
+                } catch { return nil }
+                matches.append((note.id, image.id, image.page))
+            }
+        }
+        guard matches.count == 1, let match = matches.first,
+              let session = try? openEditorSession(noteID: match.noteID),
+              session.document.images.filter({ $0.agentImage?.applicationId == applicationID }).count == 1,
+              let current = session.document.images.first(where: { $0.id == match.imageID }),
+              current.agentImage?.applicationId == applicationID else { return nil }
+        return NoteSavedAgentImage(document: session.document, session: session,
+                                   imageID: current.id, pageIndex: current.page,
+                                   artifactName: current.agentImage?.artifactName ?? "Agent 图片")
     }
 
     public func openEditorSession(for draft: NotePendingDraft) throws -> NoteGroupEditorSession {
@@ -490,7 +620,7 @@ public final class NoteLibrary: ObservableObject {
         appended.anchorXInPage = selected.xInPage
         appended.anchorYInPage = selected.yInPage
         appended.width = selected.width
-        if candidate.schemaVersion == 10 {
+        if candidate.schemaVersion >= 10 {
             if appended.format.lowercased() == "markdown" && appended.markdownProfileVersion == nil {
                 appended.markdownProfileVersion = 2
             }
@@ -507,7 +637,7 @@ public final class NoteLibrary: ObservableObject {
             appended.width = min(appended.width, right - appended.anchorXInPage)
         }
         candidate.textFlows.append(appended)
-        candidate.schemaVersion = original.schemaVersion == 10 ? 10 : 9
+        candidate.schemaVersion = original.schemaVersion >= 10 ? original.schemaVersion : 9
         candidate.updatedAt = NoteDocument.nowMillis()
         if !preparingRenderer {
             let requiredPages = NoteTextLayout.requiredPageCount(candidate)
@@ -1439,6 +1569,10 @@ public final class NoteLibrary: ObservableObject {
 
     public func pendingDraft(noteID: String) -> NotePendingDraft? {
         pendingDrafts.first { $0.id == noteID }
+    }
+
+    func draftRevisionSnapshot(noteID: String) -> NoteDraftRevisionSnapshot {
+        revisionGate.snapshot(noteID: noteID)
     }
 
     public func editorSessionIfLoaded(noteID: String) -> NoteGroupEditorSession? {

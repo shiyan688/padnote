@@ -20,6 +20,7 @@
     <string name="tail_share_video">動画を共有</string>
     <string name="tail_could_not_save_video_separately">動画を別名で保存できませんでした：%1$s</string>
     <string name="tail_image_inserted">画像を挿入しました</string>
+    <string name="tail_image_import_target_changed">画像選択中にノートが変更されました。現在のノートでもう一度選択してください。</string>
     <string name="tail_could_not_insert_image">画像を挿入できませんでした：%1$s</string>
     <string name="tail_could_not_read_image">画像を読み込めませんでした：%1$s</string>
     <string name="tail_import_failed">読み込みに失敗しました：%1$s</string>

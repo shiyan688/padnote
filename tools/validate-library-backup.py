@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import math
@@ -178,7 +179,7 @@ def validate_manifest(m):
         items[iid] = note
         checked_text(note["source_note_id"])
         if not integer(note["source_revision_ms"]): fail("TIME_INVALID")
-        if not json_integer_value(note["note_schema_version"], 1, 10): fail("NOTE_SCHEMA")
+        if not json_integer_value(note["note_schema_version"], 1, 11): fail("NOTE_SCHEMA")
         use(note["note_resource_id"], "note_document")
         if note["pdf_resource_id"] is not None: use(note["pdf_resource_id"], "pdf_original")
         if note["cover_resource_id"] is not None: use(note["cover_resource_id"], "assigned_cover_png")
@@ -445,7 +446,7 @@ def validate_markdown_profile(flow, note_schema_version):
 def validate_note_payload(note, payload):
     if not isinstance(payload, dict): fail("NOTE_DOCUMENT_INVALID")
     version = payload.get("schemaVersion")
-    if not json_integer_value(version, 1, 10) or version != note["note_schema_version"]: fail("NOTE_SCHEMA_MISMATCH")
+    if not json_integer_value(version, 1, 11) or version != note["note_schema_version"]: fail("NOTE_SCHEMA_MISMATCH")
     version = int(version)
     if payload.get("id") != note["source_note_id"]: fail("NOTE_SOURCE_ID_MISMATCH")
     updated = payload.get("updatedAt")
@@ -458,6 +459,36 @@ def validate_note_payload(note, payload):
         if not isinstance(flows, list): fail("NOTE_TEXT_FLOWS_MISSING")
         for flow in flows:
             validate_markdown_profile(flow, version)
+    images = payload.get("images", [])
+    if version == 11 and not isinstance(images, list): fail("IMAGE_RECEIPT_IMAGES")
+    if isinstance(images, list):
+        page_count = payload.get("pageCount", 1)
+        if version == 11 and (type(page_count) is not int or not 1 <= page_count <= 500):
+            fail("NOTE_PAGE_COUNT_INVALID")
+        page_width = _effective_page_dimension(payload, "pageWidth", "canvasWidth", 768.0) if version == 11 else 0.0
+        page_height = _effective_page_dimension(payload, "pageHeight", "canvasHeight", 1086.0) if version == 11 else 0.0
+        application_ids = set()
+        image_ids = set()
+        encoded_total = 0
+        pixel_total = 0
+        for image in images:
+            if version <= 10:
+                if isinstance(image, dict) and "agentImage" in image: fail("IMAGE_RECEIPT_OLD_SCHEMA")
+            else:
+                if not isinstance(image, dict): fail("IMAGE_FIELDS")
+                png, encoded_size, dimensions = validate_note_image(image, page_count, page_width, page_height)
+                encoded_total += encoded_size
+                if encoded_total > 20 * 1024 * 1024: fail("IMAGE_TOTAL_SIZE")
+                pixel_total += dimensions[0] * dimensions[1]
+                if pixel_total > 12 * 1024 * 1024: fail("IMAGE_TOTAL_PIXELS")
+                if "agentImage" in image:
+                    validate_agent_image_receipt(image, png)
+                    application_id = image["agentImage"]["applicationId"]
+                    if application_id in application_ids: fail("IMAGE_RECEIPT_DUPLICATE")
+                    application_ids.add(application_id)
+                image_id = image["id"]
+                if image_id in image_ids: fail("IMAGE_ID_DUPLICATE")
+                image_ids.add(image_id)
     if 3 <= version <= 4 and not isinstance(payload.get("textBoxes"), list): fail("NOTE_TEXT_BOXES_MISSING")
     pdf_pages = payload.get("pdfPageCount", 0)
     page_count = payload.get("pageCount", 1)
@@ -465,6 +496,226 @@ def validate_note_payload(note, payload):
     if type(pdf_pages) is not int or not 0 <= pdf_pages <= page_count: fail("NOTE_PDF_PAGE_COUNT_INVALID")
     if note["pdf_resource_id"] is None and pdf_pages != 0: fail("NOTE_PDF_REFERENCE_MISMATCH")
     if note["pdf_resource_id"] is not None and pdf_pages < 1: fail("NOTE_PDF_REFERENCE_MISMATCH")
+
+
+AGENT_IMAGE_FIELDS = {
+    "schemaVersion", "applicationId", "taskId", "connectionId", "instanceId",
+    "agentKind", "transport", "sourceNoteId", "sourceNoteRevision", "artifactId",
+    "artifactName", "mediaType", "sizeBytes", "artifactSha256", "pngSha256", "addedAt",
+}
+
+
+def _image_lp(value):
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except (AttributeError, UnicodeError):
+        fail("IMAGE_RECEIPT_UTF8")
+    if len(encoded) > 0xFFFFFFFF: fail("IMAGE_RECEIPT_UTF8")
+    return struct.pack(">I", len(encoded)) + encoded
+
+
+def _image_text(value, limit, *, optional=False):
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or not value:
+        fail("IMAGE_RECEIPT_TEXT")
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except UnicodeError:
+        fail("IMAGE_RECEIPT_UTF8")
+    if len(encoded) > limit or any(unicodedata.category(char) == "Cc" for char in value):
+        fail("IMAGE_RECEIPT_TEXT")
+    return value
+
+
+def _image_nullable(value):
+    return b"\x00" if value is None else b"\x01" + _image_lp(value)
+
+
+NOTE_IMAGE_FIELDS = {"id", "png", "page", "x", "y", "width", "height"}
+
+
+def _read_canonical_png(data):
+    signature = b"\x89PNG\r\n\x1a\n"
+    if len(data) < 45 or not data.startswith(signature): fail("IMAGE_PNG_HEADER")
+    cursor = 8
+    first = True
+    has_idat = False
+    has_iend = False
+    dimensions = None
+    chunk_count = 0
+    while cursor < len(data):
+        if cursor + 12 > len(data): fail("IMAGE_PNG_HEADER")
+        length = struct.unpack_from(">I", data, cursor)[0]
+        kind = data[cursor + 4:cursor + 8]
+        end = cursor + 12 + length
+        if end > len(data): fail("IMAGE_PNG_HEADER")
+        content = data[cursor + 8:cursor + 8 + length]
+        crc = struct.unpack_from(">I", data, cursor + 8 + length)[0]
+        if zlib.crc32(kind + content) & 0xFFFFFFFF != crc: fail("IMAGE_PNG_HEADER")
+        chunk_count += 1
+        if chunk_count > 100_000: fail("IMAGE_PNG_HEADER")
+        if first:
+            if kind != b"IHDR" or length != 13: fail("IMAGE_PNG_HEADER")
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", content)
+            legal_depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8),
+                            4: (8, 16), 6: (8, 16)}
+            if width < 1 or height < 1 or width > 1600 or height > 1600 \
+                    or width * height > 64 * 1024 * 1024 \
+                    or depth not in legal_depths.get(color, ()) \
+                    or compression != 0 or filtering != 0 or interlace not in (0, 1):
+                fail("IMAGE_PNG_DIMENSIONS")
+            dimensions = (width, height)
+            first = False
+        elif kind == b"IHDR":
+            fail("IMAGE_PNG_HEADER")
+        if kind in (b"acTL", b"fcTL", b"fdAT"): fail("IMAGE_PNG_ANIMATED")
+        if kind == b"IDAT": has_idat = True
+        if kind == b"IEND":
+            if length != 0 or end != len(data): fail("IMAGE_PNG_HEADER")
+            has_iend = True
+            cursor = end
+            break
+        cursor = end
+    if first or dimensions is None or not has_idat or not has_iend or cursor != len(data):
+        fail("IMAGE_PNG_HEADER")
+    return dimensions
+
+
+def _effective_page_dimension(payload, primary, fallback, default):
+    if primary in payload:
+        value = payload[primary]
+    elif fallback in payload:
+        value = payload[fallback]
+    else:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value) or value <= 0:
+        fail("IMAGE_PAGE_DIMENSIONS")
+    return float(value)
+
+
+def validate_note_image(image, page_count, page_width, page_height):
+    fields = NOTE_IMAGE_FIELDS | ({"agentImage"} if "agentImage" in image else set())
+    exact(image, fields, "IMAGE_FIELDS")
+    image_id = _image_text(image["id"], 256)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", image_id): fail("IMAGE_ID")
+    page = image["page"]
+    if type(page) is not int or not 0 <= page < page_count: fail("IMAGE_PAGE")
+    geometry = []
+    for key in ("x", "y", "width", "height"):
+        value = image[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            fail("IMAGE_GEOMETRY")
+        geometry.append(float(value))
+    x, y, width, height = geometry
+    if x < 0 or y < 0 or width <= 0 or height <= 0 or not math.isfinite(x + width) or not math.isfinite(y + height):
+        fail("IMAGE_GEOMETRY")
+    if x + width > page_width + 1.0 or y + height > page_height + 1.0:
+        fail("IMAGE_PAGE_BOUNDS")
+    encoded = image["png"]
+    if not isinstance(encoded, str): fail("IMAGE_PNG_BASE64")
+    try:
+        raw = encoded.encode("ascii", "strict")
+    except UnicodeError:
+        fail("IMAGE_PNG_BASE64")
+    if len(raw) > 20 * 1024 * 1024: fail("IMAGE_TOTAL_SIZE")
+    try:
+        png = base64.b64decode(raw, validate=True)
+    except ValueError:
+        fail("IMAGE_PNG_BASE64")
+    if base64.b64encode(png) != raw: fail("IMAGE_PNG_BASE64")
+    dimensions = _read_canonical_png(png)
+    return png, len(raw), dimensions
+
+
+def canonical_agent_image_receipt(receipt):
+    """Encode the typed bytes for metadata already accepted by validate_agent_image_receipt."""
+    exact(receipt, AGENT_IMAGE_FIELDS, "IMAGE_RECEIPT_FIELDS")
+    if type(receipt["schemaVersion"]) is not int or receipt["schemaVersion"] != 1 \
+            or not integer(receipt["sourceNoteRevision"]) or not integer(receipt["addedAt"]) \
+            or not integer(receipt["sizeBytes"], 1, 20 * 1024 * 1024):
+        fail("IMAGE_RECEIPT_INTEGER")
+    values = bytearray(b"PadNote/AgentImage/receipt-v1\x00")
+    values.extend(struct.pack(">q", receipt["schemaVersion"]))
+    values.extend(_image_lp(receipt["applicationId"]))
+    values.extend(_image_lp(receipt["taskId"]))
+    values.extend(_image_lp(receipt["connectionId"]))
+    values.extend(_image_nullable(receipt["instanceId"]))
+    values.extend(_image_lp(receipt["agentKind"]))
+    values.extend(_image_lp(receipt["transport"]))
+    values.extend(_image_nullable(receipt["sourceNoteId"]))
+    values.extend(struct.pack(">q", receipt["sourceNoteRevision"]))
+    values.extend(_image_lp(receipt["artifactId"]))
+    values.extend(_image_lp(receipt["artifactName"]))
+    values.extend(_image_lp(receipt["mediaType"]))
+    values.extend(struct.pack(">q", receipt["sizeBytes"]))
+    values.extend(_image_lp(receipt["artifactSha256"]))
+    values.extend(_image_lp(receipt["pngSha256"]))
+    values.extend(struct.pack(">q", receipt["addedAt"]))
+    return bytes(values)
+
+
+def validate_agent_image_receipt(image, png_bytes=None):
+    receipt = image.get("agentImage")
+    exact(receipt, AGENT_IMAGE_FIELDS, "IMAGE_RECEIPT_FIELDS")
+    if type(receipt["schemaVersion"]) is not int or receipt["schemaVersion"] != 1:
+        fail("IMAGE_RECEIPT_SCHEMA")
+    if type(receipt["sourceNoteRevision"]) is not int or not 0 <= receipt["sourceNoteRevision"] <= (1 << 63) - 1:
+        fail("IMAGE_RECEIPT_INTEGER")
+    if type(receipt["addedAt"]) is not int or not 0 <= receipt["addedAt"] <= (1 << 63) - 1:
+        fail("IMAGE_RECEIPT_INTEGER")
+    if type(receipt["sizeBytes"]) is not int or not 1 <= receipt["sizeBytes"] <= 20 * 1024 * 1024:
+        fail("IMAGE_RECEIPT_INTEGER")
+
+    task_id = _image_text(receipt["taskId"], 256)
+    if not (re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", task_id)
+            or re.fullmatch(r"padnote-[0-9a-f]{32}", task_id)):
+        fail("IMAGE_RECEIPT_TASK")
+    connection_id = _image_text(receipt["connectionId"], 256)
+    instance_id = _image_text(receipt["instanceId"], 256, optional=True)
+    source_note_id = _image_text(receipt["sourceNoteId"], 256, optional=True)
+    agent_kind = _image_text(receipt["agentKind"], 64)
+    transport = _image_text(receipt["transport"], 64)
+    if not re.fullmatch(r"[a-z0-9._-]{1,64}", agent_kind) or not re.fullmatch(r"[a-z0-9._-]{1,64}", transport):
+        fail("IMAGE_RECEIPT_TOKEN")
+    artifact_id = _image_text(receipt["artifactId"], 256)
+    artifact_name = _image_text(receipt["artifactName"], 256)
+    if "/" in artifact_name or "\\" in artifact_name: fail("IMAGE_RECEIPT_NAME")
+    media_type = receipt["mediaType"]
+    if media_type not in ("image/png", "image/jpeg"): fail("IMAGE_RECEIPT_MEDIA")
+    artifact_sha = receipt["artifactSha256"]
+    png_sha = receipt["pngSha256"]
+    if not isinstance(artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha):
+        fail("IMAGE_RECEIPT_SHA")
+    if not isinstance(png_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", png_sha):
+        fail("IMAGE_RECEIPT_SHA")
+
+    identity = b"padnote.agent-image.v1\n" + b"".join((
+        _image_lp(task_id), _image_lp(connection_id), _image_lp(instance_id or ""),
+        _image_lp(agent_kind), _image_lp(transport), _image_lp(artifact_id),
+        _image_lp(artifact_name), _image_lp(media_type), _image_lp(str(receipt["sizeBytes"])),
+        _image_lp(artifact_sha),
+    ))
+    application_id = hashlib.sha256(identity).hexdigest()
+    if receipt["applicationId"] != application_id: fail("IMAGE_RECEIPT_IDENTITY")
+    if image.get("id") != "agent-image-" + application_id: fail("IMAGE_RECEIPT_ID")
+
+    if png_bytes is None:
+        encoded_png = image.get("png")
+        if not isinstance(encoded_png, str): fail("IMAGE_RECEIPT_PNG_SIZE")
+        try:
+            if len(encoded_png.encode("ascii", "strict")) > 20 * 1024 * 1024:
+                fail("IMAGE_RECEIPT_PNG_SIZE")
+        except UnicodeError:
+            fail("IMAGE_RECEIPT_UTF8")
+        try:
+            png_bytes = base64.b64decode(encoded_png, validate=True)
+        except (ValueError, UnicodeError):
+            fail("IMAGE_RECEIPT_PNG_BASE64")
+        if base64.b64encode(png_bytes).decode("ascii") != encoded_png: fail("IMAGE_RECEIPT_PNG_BASE64")
+    if hashlib.sha256(png_bytes).hexdigest() != png_sha:
+        fail("IMAGE_RECEIPT_PNG_SHA")
 
 
 def validate_archive(path: Path):

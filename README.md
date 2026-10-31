@@ -24,7 +24,7 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 在电脑任务列表查看进度；完成后预览结果并可添加回笔记 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 38 排版与兼容检查](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 39 图像回纸面与兼容检查](BETA39_TESTING.md) · [Beta 38 排版历史](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
 ## 从一份示例开始
@@ -57,6 +57,8 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 ## 任务结果回到纸面
 
 完成的文字结果可以先看真实纸面预览，再放在笔记末尾，或在目标页点选起点、调整文字宽度。长回答会继续分页；遇到已有文字、手写、图片或 PDF 正文重叠时，先换个落点或调整宽度，再确认添加。原稿保留在原位。
+
+Bridge 任务完成后列出的 PNG/JPEG 图像也可先预览，再由用户确认放置到纸面；普通文件仍可下载。确认插图后笔记升级到 schema 11，较旧版本无法打开这类笔记。详见[Agent 图像放置与兼容说明](docs/AGENT_IMAGE_TO_PAPER.md)。
 
 <a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="合成 iPad 示例：任务结果已保存到笔记" width="480"></a>
 
@@ -134,6 +136,14 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 </details>
 
+## Beta 39：把 Agent 图像放回纸面
+
+电脑任务完成后，支持的 PNG/JPEG 附件可预览并调整位置与大小，再确认添加到原笔记或新笔记。取消不会留下空白条目；添加后可从原任务再次打开笔记。若图像与已有内容重叠，可在确认前检查并调整；纸面上的原有内容不会被移动或删除。
+
+只有确认添加图像的笔记才升级到 schema 11，较早版本无法打开这类笔记。普通笔记不变；详见[图像放置与兼容说明](docs/AGENT_IMAGE_TO_PAPER.md)及[Beta 39 检查说明](BETA39_TESTING.md)。
+
+Android beta.39 使用 versionCode 72。iPad 提供源码，不含签名 IPA；Windows 连接助手沿用 beta.37。
+
 ## Beta 38：纸面排版切换
 
 打开旧笔记时，原有排版保持不变。想换用新版时，先预览整张纸面，再确认切换。新版改善粗体与行内公式、嵌套强调和分隔线的呈现，同时保留代码、表格、链接、引用和数学内容。切回旧版只改变排版，不撤回当前文字或自动缩减已有页面。
@@ -146,7 +156,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 | --- | --- |
 | <img src="docs/media/2026-10-31/typography-legacy-page-1.png" alt="合成测试内容的旧版排版，Android 导出第一页" width="420"> | <img src="docs/media/2026-10-31/typography-new-page-1.png" alt="同一合成测试内容的新版排版，Android 导出第一页" width="420"> |
 
-- **Android：**beta.38，versionCode 71。兼容规则与检查范围见 [Beta 38 检查说明](BETA38_TESTING.md)。
+- **Android：**beta.38，versionCode 71；本节记录排版配置的历史版本。
 - **iPad：**提供源码，不含签名 IPA。已添加的任务结果在重启 PadNote 后仍可从原任务直接打开对应笔记。
 - **Windows：**连接助手沿用 beta.37，本版不包含新的桌面构建。
 

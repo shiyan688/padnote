@@ -147,7 +147,7 @@ for (const requiredToken of ['getHistoricalPressure', 'getPressure', 'TOOL_TYPE_
   'addAiResultTextBox', 'R.string.canvas_ai_flow_done',
   'onTextBoxSelectionChanged', 'selectTextBoxInsideLasso', 'textBoxIntersectsLasso',
   'reflowFlow', 'layoutFlow', 'splitTextFlowBlocks', 'expandOversizedTextBlocks',
-  'flowCount', 'fontSizeSp', 'schemaVersion", 10',
+  'flowCount', 'fontSizeSp',
   // schema 5: flows are the fact source, fragments are derived
   'textFlows', 'migrateLegacyTextBoxes', 'rebuildAllFlows',
   'anchorPageIndex', 'anchorForDraggedFragment', 'previewTextBoxDrag',
@@ -341,12 +341,53 @@ const typedProjectionSource = readFileSync(join(projectRoot,
 if (!typedProjectionSource.includes('markdownProfileVersion')) {
   throw new Error('Typed note projection must preserve the Markdown profile field');
 }
+const typedProjectionCompact = typedProjectionSource.replace(/\s+/g, '');
+if (!typedProjectionCompact.includes('schema>=10&&f.has("markdownProfileVersion")') ||
+    !typedProjectionSource.includes('markdown_profile_requires_schema10')) {
+  throw new Error('Typed note projection must preserve the profile for schema 10+ and reject it in legacy schemas');
+}
+const backupValidatorSource = readFileSync(join(projectRoot,
+  'tools/validate-library-backup.py'), 'utf8');
+const agentImageCases = JSON.parse(readFileSync(join(projectRoot,
+  'tools/fixtures/AGENT_IMAGE_RECEIPT_CASES_R1.json'), 'utf8'));
+const typographyCases = JSON.parse(readFileSync(join(projectRoot,
+  'tools/fixtures/TYPOGRAPHY_CASES_R1.json'), 'utf8'));
+for (const requiredToken of ['AGENT_IMAGE_FIELDS', 'canonical_agent_image_receipt',
+  'validate_agent_image_receipt', 'IMAGE_RECEIPT_OLD_SCHEMA', 'IMAGE_RECEIPT_PNG_SHA',
+  'json_integer_value(version, 1, 11)', 'NOTE_IMAGE_FIELDS', '_read_canonical_png',
+  'IMAGE_TOTAL_SIZE', 'IMAGE_GEOMETRY']) {
+  if (!backupValidatorSource.includes(requiredToken)) {
+    throw new Error(`Archive validator is missing C39 image receipt check: ${requiredToken}`);
+  }
+}
+if (agentImageCases.schema !== 'padnote.agent-image-receipt-cases.v1' ||
+    agentImageCases.validSchema11.schemaVersion !== 11 ||
+    agentImageCases.validSchema10.schemaVersion !== 10 ||
+    agentImageCases.validSchema9.schemaVersion !== 9 ||
+    !agentImageCases.validSchema11.images[0].agentImage ||
+    !agentImageCases.cases.some(item => item.id === 'png_digest_mismatch' && !item.accepted) ||
+    !agentImageCases.cases.some(item => item.id === 'duplicate_application_in_note' && !item.accepted)) {
+  throw new Error('C39 shared Agent image receipt vectors are incomplete');
+}
+const schemaCases = typographyCases.schema_profile_cases ?? {};
+if (schemaCases.schema_9_absent_profile_defaults_one?.accepted !== true ||
+    schemaCases.schema_9_profile_field_rejected?.accepted !== false ||
+    schemaCases.schema_10_missing_profile?.effective_profile !== 1 ||
+    schemaCases.schema_10_profile_two?.accepted !== true ||
+    schemaCases.schema_10_explicit_one_rejected?.accepted !== false ||
+    agentImageCases.validSchema11.textFlows?.[0]?.markdownProfileVersion !== 2) {
+  throw new Error('C39 schema 9/10/11 profile compatibility fixtures are incomplete');
+}
+if (!existsSync(join(projectRoot, 'docs/AGENT_IMAGE_TO_PAPER.md')) ||
+    !existsSync(join(projectRoot, 'docs/AGENT_IMAGE_TO_PAPER.en.md'))) {
+  throw new Error('Agent image placement compatibility guide is missing');
+}
 
 const noteStoreSource = readFileSync(join(projectRoot,
   'android/app/src/main/java/com/padnote/android/NoteStore.java'), 'utf8');
 for (const requiredToken of ['padnote-index.json', 'legacyMigrated', 'importDocument',
   'writeAtomic', 'MAX_NOTE_BYTES', 'schemaVersion", 10',
-  'version < 1 || version > 10', 'version >= 10', 'version < 10 && flowJson.has("markdownProfileVersion")',
+  'version >= 10', 'version < 10 && flowJson.has("markdownProfileVersion")',
   'textFlows']) {
   if (!noteStoreSource.includes(requiredToken)) {
     throw new Error(`Multi-note store is missing required token: ${requiredToken}`);
@@ -405,9 +446,7 @@ for (const [source, requiredTokens, label] of [
   [textFlowSource, ['version != 1 && version != 2', 'version == 2 && format != NoteTextBox.Format.MARKDOWN',
     'if (markdownProfileVersion == 2) json.put("markdownProfileVersion", 2)',
     '? parseMarkdownProfileVersion(json.opt("markdownProfileVersion")) : 1',
-    'json.has("markdownProfileVersion") && format != NoteTextBox.Format.MARKDOWN'], 'Markdown profile serialization'],
-  [typedProjectionSource, ['schema==10&&f.has("markdownProfileVersion")',
-    'markdown_profile_requires_schema10'], 'typed projection schema-10 gating']
+    'json.has("markdownProfileVersion") && format != NoteTextBox.Format.MARKDOWN'], 'Markdown profile serialization']
 ]) {
   for (const requiredToken of requiredTokens) {
     if (!source.includes(requiredToken)) {

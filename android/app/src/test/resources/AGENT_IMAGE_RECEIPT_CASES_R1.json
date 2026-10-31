@@ -1,0 +1,260 @@
+{
+  "canonicalReceiptHex": "5061644e6f74652f4167656e74496d6167652f726563656970742d763100000000000000000100000040626431333938383834656439336563313330393632333365353763653530633839656461376137643164646263303530386466333330363936646534343838640000002431323365343536372d653839622d313264332d613435362d3432363631343137343030300000000c636f6e6e2d64656d6f2d3031010000000c696e73742d64656d6f2d3031000000066865726d657300000006627269646765010000000c6e6f74652d64656d6f2d3031000001a0c4506c7b0000001061727469666163742d64656d6f2d30310000000967726170682e706e6700000009696d6167652f706e67000000000000040000000040616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610000004061626335386435313237643763646633313362656239656338656538333938363061396336626662633438633862386562366133663764386262363364653666000001a0c4506dc8",
+  "cases": [
+    {
+      "accepted": true,
+      "id": "schema11_valid_png_receipt"
+    },
+    {
+      "accepted": true,
+      "id": "schema10_plain_no_receipt"
+    },
+    {
+      "accepted": true,
+      "id": "schema9_plain_no_receipt"
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_OLD_SCHEMA",
+      "id": "schema10_agent_image_forbidden",
+      "mutation": {
+        "attachReceipt": true,
+        "schemaVersion": 10
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_SCHEMA",
+      "id": "receipt_wrong_schema",
+      "mutation": {
+        "receipt.schemaVersion": 2
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_FIELDS",
+      "id": "receipt_partial_or_unknown_field",
+      "mutation": {
+        "receipt.removeField": "artifactId"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_FIELDS",
+      "id": "receipt_unknown_field",
+      "mutation": {
+        "receipt.futureField": true
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_PNG_SHA",
+      "id": "png_digest_mismatch",
+      "mutation": {
+        "receipt.pngSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_ID",
+      "id": "image_id_mismatch",
+      "mutation": {
+        "image.id": "agent-image-0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_NAME",
+      "id": "artifact_name_path_separator",
+      "mutation": {
+        "receipt.artifactName": "../graph.png"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_TEXT",
+      "id": "artifact_name_control_character",
+      "mutation": {
+        "receipt.artifactName": "graph\u0000.png"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_UTF8",
+      "id": "artifact_name_unpaired_surrogate",
+      "rawDocumentJSON": "{\"id\":\"note-demo-01\",\"images\":[{\"agentImage\":{\"addedAt\":1790000000456,\"agentKind\":\"hermes\",\"applicationId\":\"bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"artifactId\":\"artifact-demo-01\",\"artifactName\":\"graph\\ud800.png\",\"artifactSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"mediaType\":\"image/png\",\"pngSha256\":\"abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f\",\"schemaVersion\":1,\"sizeBytes\":1024,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"height\":180.0,\"id\":\"agent-image-bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"page\":0,\"png\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==\",\"width\":300.0,\"x\":24.0,\"y\":40.0}],\"schemaVersion\":11,\"strokes\":[],\"textFlows\":[{\"agentResult\":{\"addedAt\":1790000000456,\"agentKind\":\"hermes\",\"applicationId\":\"e322f18f3ecba7d9c69830ac6a3b1e21e2f87f01c6fca5c5d2a857151065d0a6\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"resultSha256\":\"21aa0200a2b681b0a61f475ab5dbc9fe317252aabc61465bdc4c023045107e4c\",\"schemaVersion\":1,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"format\":\"markdown\",\"id\":\"flow-demo-01\",\"markdownProfileVersion\":2,\"source\":\"Synthetic result\"}],\"updatedAt\":1790000000123}"
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_INTEGER",
+      "id": "negative_source_revision",
+      "mutation": {
+        "receipt.sourceNoteRevision": -1
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_INTEGER",
+      "id": "float_added_at",
+      "rawDocumentJSON": "{\"id\":\"note-demo-01\",\"images\":[{\"agentImage\":{\"addedAt\":1790000000456.0,\"agentKind\":\"hermes\",\"applicationId\":\"bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"artifactId\":\"artifact-demo-01\",\"artifactName\":\"graph.png\",\"artifactSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"mediaType\":\"image/png\",\"pngSha256\":\"abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f\",\"schemaVersion\":1,\"sizeBytes\":1024,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"height\":180.0,\"id\":\"agent-image-bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"page\":0,\"png\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==\",\"width\":300.0,\"x\":24.0,\"y\":40.0}],\"schemaVersion\":11,\"strokes\":[],\"textFlows\":[{\"agentResult\":{\"addedAt\":1790000000456,\"agentKind\":\"hermes\",\"applicationId\":\"e322f18f3ecba7d9c69830ac6a3b1e21e2f87f01c6fca5c5d2a857151065d0a6\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"resultSha256\":\"21aa0200a2b681b0a61f475ab5dbc9fe317252aabc61465bdc4c023045107e4c\",\"schemaVersion\":1,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"format\":\"markdown\",\"id\":\"flow-demo-01\",\"markdownProfileVersion\":2,\"source\":\"Synthetic result\"}],\"updatedAt\":1790000000123}"
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_INTEGER",
+      "id": "boolean_size",
+      "mutation": {
+        "receipt.sizeBytes": true
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_MEDIA",
+      "id": "wrong_mime",
+      "mutation": {
+        "receipt.mediaType": "image/webp"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_DUPLICATE",
+      "id": "duplicate_application_in_note",
+      "mutation": {
+        "duplicateImage": true
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_IDENTITY",
+      "id": "application_identity_mismatch",
+      "mutation": {
+        "receipt.applicationId": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_INTEGER",
+      "id": "size_over_20mib",
+      "mutation": {
+        "receipt.sizeBytes": 20971521
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_INTEGER",
+      "id": "added_at_int64_overflow",
+      "mutation": {
+        "receipt.addedAt": 9223372036854775808
+      }
+    },
+    {
+      "accepted": false,
+      "expectedError": "IMAGE_RECEIPT_SCHEMA",
+      "id": "receipt_schema_float_one",
+      "rawDocumentJSON": "{\"id\":\"note-demo-01\",\"images\":[{\"agentImage\":{\"addedAt\":1790000000456,\"agentKind\":\"hermes\",\"applicationId\":\"bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"artifactId\":\"artifact-demo-01\",\"artifactName\":\"graph.png\",\"artifactSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"mediaType\":\"image/png\",\"pngSha256\":\"abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f\",\"schemaVersion\":1.0,\"sizeBytes\":1024,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"height\":180.0,\"id\":\"agent-image-bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d\",\"page\":0,\"png\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==\",\"width\":300.0,\"x\":24.0,\"y\":40.0}],\"schemaVersion\":11,\"strokes\":[],\"textFlows\":[{\"agentResult\":{\"addedAt\":1790000000456,\"agentKind\":\"hermes\",\"applicationId\":\"e322f18f3ecba7d9c69830ac6a3b1e21e2f87f01c6fca5c5d2a857151065d0a6\",\"connectionId\":\"conn-demo-01\",\"instanceId\":\"inst-demo-01\",\"resultSha256\":\"21aa0200a2b681b0a61f475ab5dbc9fe317252aabc61465bdc4c023045107e4c\",\"schemaVersion\":1,\"sourceNoteId\":\"note-demo-01\",\"sourceNoteRevision\":1790000000123,\"taskId\":\"123e4567-e89b-12d3-a456-426614174000\",\"transport\":\"bridge\"},\"format\":\"markdown\",\"id\":\"flow-demo-01\",\"markdownProfileVersion\":2,\"source\":\"Synthetic result\"}],\"updatedAt\":1790000000123}"
+    }
+  ],
+  "description": "Synthetic shared vectors. No task was submitted; artifactSha256 is deterministic test metadata, not an actual Agent result. Apply each mutation to validSchema11 before validation.",
+  "identityInputHex": "7061646e6f74652e6167656e742d696d6167652e76310a0000002431323365343536372d653839622d313264332d613435362d3432363631343137343030300000000c636f6e6e2d64656d6f2d30310000000c696e73742d64656d6f2d3031000000066865726d6573000000066272696467650000001061727469666163742d64656d6f2d30310000000967726170682e706e6700000009696d6167652f706e6700000004313032340000004061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+  "identitySHA256": "bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d",
+  "pngBytesBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==",
+  "pngSha256": "abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f",
+  "schema": "padnote.agent-image-receipt-cases.v1",
+  "validSchema10": {
+    "id": "note-demo-01",
+    "images": [],
+    "schemaVersion": 10,
+    "strokes": [],
+    "textFlows": [
+      {
+        "agentResult": {
+          "addedAt": 1790000000456,
+          "agentKind": "hermes",
+          "applicationId": "e322f18f3ecba7d9c69830ac6a3b1e21e2f87f01c6fca5c5d2a857151065d0a6",
+          "connectionId": "conn-demo-01",
+          "instanceId": "inst-demo-01",
+          "resultSha256": "21aa0200a2b681b0a61f475ab5dbc9fe317252aabc61465bdc4c023045107e4c",
+          "schemaVersion": 1,
+          "sourceNoteId": "note-demo-01",
+          "sourceNoteRevision": 1790000000123,
+          "taskId": "123e4567-e89b-12d3-a456-426614174000",
+          "transport": "bridge"
+        },
+        "format": "markdown",
+        "id": "flow-demo-01",
+        "markdownProfileVersion": 2,
+        "source": "Synthetic result"
+      }
+    ],
+    "updatedAt": 1790000000123
+  },
+  "validSchema11": {
+    "id": "note-demo-01",
+    "images": [
+      {
+        "agentImage": {
+          "addedAt": 1790000000456,
+          "agentKind": "hermes",
+          "applicationId": "bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d",
+          "artifactId": "artifact-demo-01",
+          "artifactName": "graph.png",
+          "artifactSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "connectionId": "conn-demo-01",
+          "instanceId": "inst-demo-01",
+          "mediaType": "image/png",
+          "pngSha256": "abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f",
+          "schemaVersion": 1,
+          "sizeBytes": 1024,
+          "sourceNoteId": "note-demo-01",
+          "sourceNoteRevision": 1790000000123,
+          "taskId": "123e4567-e89b-12d3-a456-426614174000",
+          "transport": "bridge"
+        },
+        "height": 180.0,
+        "id": "agent-image-bd1398884ed93ec13096233e57ce50c89eda7a7d1ddbc0508df330696de4488d",
+        "page": 0,
+        "png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==",
+        "width": 300.0,
+        "x": 24.0,
+        "y": 40.0
+      }
+    ],
+    "schemaVersion": 11,
+    "strokes": [],
+    "textFlows": [
+      {
+        "agentResult": {
+          "addedAt": 1790000000456,
+          "agentKind": "hermes",
+          "applicationId": "e322f18f3ecba7d9c69830ac6a3b1e21e2f87f01c6fca5c5d2a857151065d0a6",
+          "connectionId": "conn-demo-01",
+          "instanceId": "inst-demo-01",
+          "resultSha256": "21aa0200a2b681b0a61f475ab5dbc9fe317252aabc61465bdc4c023045107e4c",
+          "schemaVersion": 1,
+          "sourceNoteId": "note-demo-01",
+          "sourceNoteRevision": 1790000000123,
+          "taskId": "123e4567-e89b-12d3-a456-426614174000",
+          "transport": "bridge"
+        },
+        "format": "markdown",
+        "id": "flow-demo-01",
+        "markdownProfileVersion": 2,
+        "source": "Synthetic result"
+      }
+    ],
+    "updatedAt": 1790000000123
+  },
+  "validSchema9": {
+    "id": "note-demo-01",
+    "images": [],
+    "schemaVersion": 9,
+    "strokes": [],
+    "textFlows": [
+      {
+        "format": "markdown",
+        "id": "flow-demo-01",
+        "source": "Legacy"
+      }
+    ],
+    "updatedAt": 1790000000123
+  }
+}

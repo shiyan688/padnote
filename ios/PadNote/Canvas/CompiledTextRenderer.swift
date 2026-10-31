@@ -15,7 +15,7 @@ struct CompiledTextRenderFailure: Error, LocalizedError, Equatable {
         switch kind {
         case .resourceMissing: return "本地显示资源缺失。源码仍已保留，可修复应用后重试。"
         case .syntax: return "公式或图表语法无法显示。请查看并编辑源码后重试。"
-        case .timeout: return "本地排版超时。源码仍已保留，可稍后重试。"
+        case .timeout: return "本地排版超时。原文仍已保留，可稍后重试。"
         case .tooLarge: return "内容超过本地排版限制。请编辑或拆分源码后重试。"
         case .webProcessTerminated: return "本地显示进程已退出。源码仍已保留，可重试。"
         case .cancelled: return "本地排版已取消。"
@@ -121,7 +121,7 @@ private final class RenderContinuationGate<Value>: @unchecked Sendable {
 @MainActor
 final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelegate {
     struct Configuration {
-        var loadTimeout: TimeInterval = 8
+        var loadTimeout: TimeInterval = 15
         var javaScriptTimeout: TimeInterval = 12
         var snapshotTimeout: TimeInterval = 8
         var maximumSourceBytes = 2 * 1024 * 1024
@@ -173,6 +173,10 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
     private var resourceRoot: URL?
     private var navigationCompletion: ((Result<Void, Error>) -> Void)?
     private var activeStage: ActiveStage?
+    // Safe, bounded WebKit navigation facts for the explicit synthetic UI
+    // fixture. Never includes note/task identifiers, paths, or source text.
+    private var lastNavigationEvent = "none"
+    private var navigationPolicyCounts = (allowed: 0, cancelled: 0)
     private var queue: [Job] = []
     private var activeJob: Job?
     private var worker: Task<Void, Never>?
@@ -625,10 +629,16 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
         view.scrollView.contentInsetAdjustmentBehavior = .never; view.scrollView.contentInset = .zero
         view.isUserInteractionEnabled = false; view.navigationDelegate = self
         resourceRoot = url.deletingLastPathComponent()
+        lastNavigationEvent = "started"
+        navigationPolicyCounts = (0, 0)
         if let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
             .flatMap(\.windows).first(where: \.isKeyWindow) { window.addSubview(view) }
         web = view
-        try await runStage(name: "load", timeout: configuration.loadTimeout) { [weak self] completion in
+        try await runStage(name: "load", timeout: configuration.loadTimeout,
+                           timeoutStage: { [weak self, weak view] in
+            guard let self, let view else { return "load:renderer-unavailable" }
+            return self.safeLoadTimeoutStage(view: view, url: url, root: url.deletingLastPathComponent())
+        }) { [weak self] completion in
             self?.navigationCompletion = completion
             view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         }
@@ -651,6 +661,7 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
     }
 
     private func runStage<Value>(name: String, timeout: TimeInterval,
+                                 timeoutStage: (() -> String)? = nil,
                                  start: (@escaping (Result<Value, Error>) -> Void) -> Void) async throws -> Value {
         let id = UUID(), gate = RenderContinuationGate<Value>()
         defer { if activeStage?.id == id { activeStage = nil } }
@@ -660,7 +671,7 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
                 activeStage = ActiveStage(id: id, abort: { error in gate.resolve(.failure(error)) })
                 DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
                     guard let self, self.activeStage?.id == id else { return }
-                    let failure = CompiledTextRenderFailure(kind: .timeout, stage: name)
+                    let failure = CompiledTextRenderFailure(kind: .timeout, stage: timeoutStage?() ?? name)
                     self.activeStage = nil; self.navigationCompletion = nil
                     gate.resolve(.failure(failure)); self.resetWeb()
                 }
@@ -697,10 +708,20 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard webView === web else { return }
+        lastNavigationEvent = "finish"
         navigationCompletion?(.success(())); navigationCompletion = nil
+    }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard webView === web else { return }
+        lastNavigationEvent = "provisional-start"
+    }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard webView === web else { return }
+        lastNavigationEvent = "commit"
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         guard webView === web else { return }
+        lastNavigationEvent = safeErrorEvent(error)
         navigationCompletion?(.failure(error)); navigationCompletion = nil; resetWeb()
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -708,6 +729,7 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard webView === web else { return }
+        lastNavigationEvent = "web-content-terminated"
         let failure = CompiledTextRenderFailure(kind: .webProcessTerminated, stage: "webkit")
         navigationCompletion?(.failure(failure)); navigationCompletion = nil
         activeStage?.abort(failure); activeStage = nil; resetWeb()
@@ -716,7 +738,34 @@ final class CompiledTextRenderer: NSObject, ObservableObject, WKNavigationDelega
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard webView === web, let url = action.request.url, let resourceRoot, url.isFileURL,
               url.standardizedFileURL.path.hasPrefix(resourceRoot.path + "/"),
-              action.navigationType != .linkActivated else { decisionHandler(.cancel); return }
+              action.navigationType != .linkActivated else {
+            navigationPolicyCounts.cancelled += 1
+            lastNavigationEvent = "policy-cancelled"
+            decisionHandler(.cancel); return
+        }
+        navigationPolicyCounts.allowed += 1
+        lastNavigationEvent = "policy-allowed"
         decisionHandler(.allow)
+    }
+
+    private func safeLoadTimeoutStage(view: WKWebView, url: URL, root: URL) -> String {
+#if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper") else { return "load" }
+        let component = url.lastPathComponent == "reader.html" ? "reader" : "other"
+        let rootMatches = url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/")
+        return "load:timeout;event=\(lastNavigationEvent);allow=\(navigationPolicyCounts.allowed);cancel=\(navigationPolicyCounts.cancelled);window=\(view.window == nil ? 0 : 1);loading=\(view.isLoading ? 1 : 0);resource=\(component);root=\(rootMatches ? 1 : 0)"
+#else
+        return "load"
+#endif
+    }
+
+    private func safeErrorEvent(_ error: Error) -> String {
+#if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper") else { return "navigation-failed" }
+        let nsError = error as NSError
+        return "navigation-failed:\(String(nsError.domain.prefix(24))):\(nsError.code)"
+#else
+        return "navigation-failed"
+#endif
     }
 }

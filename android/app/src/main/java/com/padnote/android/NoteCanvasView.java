@@ -761,6 +761,22 @@ public final class NoteCanvasView extends View {
         }
     }
 
+    /** Detached image placement; the live paper is not changed until a durable CAS succeeds. */
+    static final class AgentImagePlacementCandidate {
+        final JSONObject document;
+        final NoteImage image;
+        final long documentGeneration;
+        final int pageIndex;
+        final boolean overlap;
+        final boolean newNote;
+        final String noteId,title;
+        AgentImagePlacementCandidate(JSONObject document,NoteImage image,long generation,
+                                     int pageIndex,boolean overlap,boolean newNote,String noteId,String title){
+            this.document=document;this.image=image;this.documentGeneration=generation;
+            this.pageIndex=pageIndex;this.overlap=overlap;this.newNote=newNote;this.noteId=noteId;this.title=title;
+        }
+    }
+
     /** Detached, rendered-before-commit candidate for a per-flow typography switch. */
     static final class TypographySwitchCandidate {
         final String flowId;
@@ -3728,6 +3744,13 @@ public final class NoteCanvasView extends View {
     private PdfExportSnapshot createPaperSnapshot(boolean requirePhysicalPdfGeometry,
                                                    AgentResultAppendCandidate candidate)
             throws IOException {
+        return createPaperSnapshot(requirePhysicalPdfGeometry,candidate,null);
+    }
+
+    private PdfExportSnapshot createPaperSnapshot(boolean requirePhysicalPdfGeometry,
+                                                   AgentResultAppendCandidate candidate,
+                                                   AgentImagePlacementCandidate imageCandidate)
+            throws IOException {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             throw new IllegalStateException("PDF 导出快照必须在主线程创建");
         }
@@ -3782,6 +3805,12 @@ public final class NoteCanvasView extends View {
             snapshotPageCount=Math.max(snapshotPageCount,candidate.lastPageIndex+1);
             if (candidate.lastPageIndex >= 500) throw new IOException("Agent预览超过最大页数");
         }
+        if(imageCandidate!=null){
+            imageCopies.add(imageCandidate.image.copy(false));
+            snapshotPageCount=Math.max(snapshotPageCount,imageCandidate.pageIndex+1);
+            if(imageCandidate.pageIndex<0||imageCandidate.pageIndex>=500)
+                throw new IOException("Agent image preview exceeds paper page limit");
+        }
         PdfBackground backgroundCopy = pdfBackground == null
                 ? null : pdfBackground.copyFor(this);
         try {
@@ -3795,6 +3824,84 @@ public final class NoteCanvasView extends View {
             if (backgroundCopy != null) backgroundCopy.close();
             throw failure;
         }
+    }
+
+    AgentImagePlacementCandidate prepareAgentImagePlacement(String noteId,String title,NoteImage image,
+            int pageIndex,double x,double y,double width,double height)throws Exception{
+        if(image==null||image.agentImage==null)throw new IllegalArgumentException("AGENT_IMAGE_RECEIPT_REQUIRED");
+        ensurePageGeometry();
+        if(pageIndex<0||pageIndex>=500||width<=0||height<=0||x<0||y<0
+                ||x+width>pageWidth||y+height>pageHeight)throw new IllegalArgumentException("AGENT_IMAGE_PLACEMENT_INVALID");
+        image.page=pageIndex;image.setGeometry(x,y,width,height);
+        checkImageBudget(image);
+        JSONObject document=toJsonDocument(noteId,title);
+        JSONArray values=document.optJSONArray("images");if(values==null)values=new JSONArray();
+        String app=image.agentImage.applicationId;
+        for(int i=0;i<values.length();i++){
+            JSONObject existing=values.getJSONObject(i);
+            if(existing.optString("id").equals(image.id))throw new java.io.IOException("AGENT_IMAGE_IDENTITY_COLLISION");
+            JSONObject receipt=existing.optJSONObject("agentImage");
+            if(receipt!=null&&app.equals(receipt.optString("applicationId")))
+                throw new java.io.IOException("AGENT_IMAGE_ALREADY_APPLIED");
+        }
+        values.put(image.toJson());document.put("images",values)
+                .put("schemaVersion",11).put("pageCount",Math.max(pageCount,pageIndex+1));
+        NoteStore.validateDocument(document);
+        boolean overlap=false;
+        RectF candidateBounds=new RectF((float)x,(float)y,(float)(x+width),(float)(y+height));
+        for(NoteTextBox box:textBoxes)if(box.pageIndex==pageIndex&&RectF.intersects(candidateBounds,
+                new RectF(box.x,box.y-pageTop(pageIndex),box.x+box.width,box.y-pageTop(pageIndex)+box.height))){overlap=true;break;}
+        if(!overlap)for(NoteImage old:images)if(old.page==pageIndex&&RectF.intersects(candidateBounds,
+                new RectF(old.x,old.y,old.x+old.width,old.y+old.height))){overlap=true;break;}
+        if(!overlap&&pageIndex<pdfPageCount)overlap=true; // PDF pixels are opaque to geometry; require visual review.
+        if(!overlap){RectF worldBounds=new RectF(candidateBounds.left,pageTop(pageIndex)+candidateBounds.top,
+                candidateBounds.right,pageTop(pageIndex)+candidateBounds.bottom);
+            for(InkStroke stroke:strokes)if(strokeTouchesRect(stroke,worldBounds)){overlap=true;break;}}
+        return new AgentImagePlacementCandidate(document,image,documentGeneration,pageIndex,overlap,false,noteId,title);
+    }
+
+    AgentImagePlacementCandidate prepareNewAgentImagePlacement(String noteId,String title,NoteImage image,
+            int pageIndex,double x,double y,double width,double height)throws Exception{
+        if(image==null||image.agentImage==null||noteId==null||!noteId.matches("note-[0-9a-f]{32}"))
+            throw new IllegalArgumentException("AGENT_IMAGE_NEW_TARGET_INVALID");
+        ensurePageGeometry();
+        if(pageIndex<0||pageIndex>=500||width<=0||height<=0||x<0||y<0
+                ||x+width>pageWidth||y+height>pageHeight)throw new IllegalArgumentException("AGENT_IMAGE_PLACEMENT_INVALID");
+        image.page=pageIndex;image.setGeometry(x,y,width,height);
+        JSONObject document=NoteStore.emptyDocumentForAgentImage(noteId,title,System.currentTimeMillis());
+        document.put("pageWidth",pageWidth64).put("pageHeight",pageHeight64)
+                .put("canvasWidth",pageWidth64).put("canvasHeight",pageHeight64).put("pageGap",pageGap64)
+                .put("pageCount",pageIndex+1).put("schemaVersion",11);
+        JSONArray values=new JSONArray().put(image.toJson());document.put("images",values);
+        NoteStore.validateDocument(document);
+        return new AgentImagePlacementCandidate(document,image,documentGeneration,pageIndex,false,true,noteId,title);
+    }
+
+    PdfExportSnapshot createAgentImagePreviewSnapshot(AgentImagePlacementCandidate candidate)throws IOException{
+        if(candidate==null||candidate.documentGeneration!=documentGeneration)
+            throw new IOException("AGENT_IMAGE_DOCUMENT_CHANGED");
+        if(candidate.newNote){
+            List<NoteImage> previewImages=Collections.singletonList(candidate.image.copy(false));
+            PdfPageGeometry geometry=resolvePdfPageGeometry(null);
+            return new PdfExportSnapshot(this,candidate.pageIndex+1,pageWidth,pageHeight,pageGap,
+                    getResources().getDisplayMetrics().density,PageStyle.legacyDefault(),geometry,
+                    Collections.emptyList(),new ArrayList<>(previewImages),Collections.emptyList(),null,null);
+        }
+        return createPaperSnapshot(true,null,candidate);
+    }
+
+    private static boolean strokeTouchesRect(InkStroke stroke,RectF rect){
+        InkPoint previous=null;
+        for(InkPoint p:stroke.points){
+            float x=(float)p.x64,y=(float)p.y64;
+            if(rect.contains(x,y))return true;
+            if(previous!=null){float radius=Math.max(0.5f,stroke.baseWidth/2f);
+                float left=Math.min(x,(float)previous.x64)-radius,right=Math.max(x,(float)previous.x64)+radius;
+                float top=Math.min(y,(float)previous.y64)-radius,bottom=Math.max(y,(float)previous.y64)+radius;
+                if(RectF.intersects(rect,new RectF(left,top,right,bottom)))return true;}
+            previous=p;
+        }
+        return false;
     }
 
     private PdfPageGeometry resolvePdfPageGeometry(PdfBackground backgroundCopy)
@@ -4521,7 +4628,7 @@ public final class NoteCanvasView extends View {
         int schemaVersion = noteSchemaVersion;
         if (hasAgentResult) schemaVersion = Math.max(schemaVersion, 9);
         for (TextFlow flow : textFlows.values()) {
-            if (flow.effectiveMarkdownProfileVersion() == 2) schemaVersion = 10;
+            if (flow.effectiveMarkdownProfileVersion() == 2) schemaVersion = Math.max(schemaVersion,10);
         }
         noteSchemaVersion = schemaVersion;
         document.put("schemaVersion", schemaVersion);
@@ -4861,7 +4968,7 @@ public final class NoteCanvasView extends View {
     void loadJsonDocument(JSONObject document) throws JSONException {
         ParsedDocument parsed = new ParsedDocument();
         parsed.schemaVersion = NoteStore.schemaVersion(document);
-        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 10) {
+        if (parsed.schemaVersion < 1 || parsed.schemaVersion > 11) {
             throw new JSONException("Unsupported PadNote schema version");
         }
         parsed.pdfPageCount = document.optInt("pdfPageCount", 0);
@@ -4950,7 +5057,8 @@ public final class NoteCanvasView extends View {
                             throw new JSONException("文字流页码或 ID 无效");
                         }
                     }
-                    if (hasAgentResult && parsed.schemaVersion != 9 && parsed.schemaVersion != 10) {
+                    if (hasAgentResult && parsed.schemaVersion != 9 && parsed.schemaVersion != 10
+                            && parsed.schemaVersion != 11) {
                         throw new JSONException("Agent provenance schema mismatch");
                     }
                     if (parsed.schemaVersion < 10) {
@@ -4959,7 +5067,7 @@ public final class NoteCanvasView extends View {
                                 throw new JSONException("Markdown profile requires schema 10");
                         }
                     }
-                } else if (parsed.schemaVersion == 9 || parsed.schemaVersion == 10) {
+                } else if (parsed.schemaVersion == 9 || parsed.schemaVersion == 10 || parsed.schemaVersion == 11) {
                     throw new JSONException("Agent provenance schema mismatch");
                 }
             } else {
@@ -6724,6 +6832,8 @@ public final class NoteCanvasView extends View {
     }
 
     int getCurrentPageIndexForUi() { return currentPageIndex(); }
+    float paperWidthForPlacement(){ensurePageGeometry();return pageWidth;}
+    float paperHeightForPlacement(){ensurePageGeometry();return pageHeight;}
 
     private float screenToWorldX(float screenX) {
         return (screenX - viewportPanX) / Math.max(0.001f, viewportScale);
@@ -8141,7 +8251,7 @@ public final class NoteCanvasView extends View {
                 break;
             }
             if (!found) throw new IOException(getContext().getString(R.string.canvas_typography_stale));
-            if (candidate.targetProfile == 2) document.put("schemaVersion", 10);
+            if (candidate.targetProfile == 2) document.put("schemaVersion", Math.max(10,noteSchemaVersion));
             document.put("pageCount", candidate.candidatePageCount);
             NoteStore.validateDocument(document);
             return NoteJsonCodec.stringify(document);
@@ -8175,7 +8285,7 @@ public final class NoteCanvasView extends View {
         deferredTypographyRemeasureRequired = false;
         pushUndoSnapshot();
         textFlows.put(candidate.flowId, candidate.candidateFlow);
-        noteSchemaVersion = candidate.targetProfile == 2 ? 10 : candidate.baseSchemaVersion;
+        noteSchemaVersion = candidate.targetProfile == 2 ? Math.max(10,candidate.baseSchemaVersion) : candidate.baseSchemaVersion;
         pageCount = candidate.candidatePageCount;
         reflowFlow(candidate.candidateFlow, candidate.layouts);
         dispatchTextBoxesChanged();

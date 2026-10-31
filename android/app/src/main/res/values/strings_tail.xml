@@ -20,6 +20,7 @@
     <string name="tail_share_video">Share video</string>
     <string name="tail_could_not_save_video_separately">Could not save video separately: %1$s</string>
     <string name="tail_image_inserted">Image inserted</string>
+    <string name="tail_image_import_target_changed">The note changed while the image picker was open. Choose the image again in the current note.</string>
     <string name="tail_could_not_insert_image">Could not insert image: %1$s</string>
     <string name="tail_could_not_read_image">Could not read image: %1$s</string>
     <string name="tail_import_failed">Import failed: %1$s</string>

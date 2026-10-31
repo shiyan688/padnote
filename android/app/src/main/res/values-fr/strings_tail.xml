@@ -20,6 +20,7 @@
     <string name="tail_share_video">Partager la vidéo</string>
     <string name="tail_could_not_save_video_separately">Impossible d’enregistrer la vidéo séparément : %1$s</string>
     <string name="tail_image_inserted">Image insérée</string>
+    <string name="tail_image_import_target_changed">La note a changé pendant le choix de l’image. Sélectionnez-la à nouveau dans la note actuelle.</string>
     <string name="tail_could_not_insert_image">Impossible d’insérer l’image : %1$s</string>
     <string name="tail_could_not_read_image">Impossible de lire l’image : %1$s</string>
     <string name="tail_import_failed">Échec de l’importation : %1$s</string>

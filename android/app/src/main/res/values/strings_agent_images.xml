@@ -1,0 +1,35 @@
+<resources>
+    <string name="agent_image_place_on_paper">Place on paper · %1$s</string>
+    <string name="agent_image_choose_target">Choose a paper</string>
+    <string name="agent_image_choose_target_message">The picture is not added until you review and confirm the paper preview.</string>
+    <string name="agent_image_current_note">Current note · %1$s</string>
+    <string name="agent_image_source_note">Source note · %1$s</string>
+    <string name="agent_image_choose_saved">Choose another saved note</string>
+    <string name="agent_image_new_note">Create a new note</string>
+    <string name="agent_image_new_note_title">Agent image · %1$s</string>
+    <string name="agent_image_target_missing">This note is no longer available. Nothing was added.</string>
+    <string name="agent_image_unavailable">This completed task or image is no longer available.</string>
+    <string name="agent_image_already_placed">This task image is already on its saved paper.</string>
+    <string name="agent_image_busy">An image placement is already preparing.</string>
+    <string name="agent_image_save_first">Save or finish the current edit before placing an image.</string>
+    <string name="agent_image_download_title">Preparing image</string>
+    <string name="agent_image_downloading">Verifying and preparing the image…</string>
+    <string name="agent_image_download_failed">The image could not be verified or prepared. The note is unchanged.</string>
+    <string name="agent_image_preview_title">Review image on paper</string>
+    <string name="agent_image_page_of">Page %1$d of %2$d</string>
+    <string name="agent_image_previous_page">Previous page</string>
+    <string name="agent_image_next_page">Next page</string>
+    <string name="agent_image_size">Image size</string>
+    <string name="agent_image_tap_to_place">Tap the paper to choose an image position. Dragging existing content is not part of this action.</string>
+    <string name="agent_image_overlap_warning">The image overlaps existing paper content. Review it and acknowledge the overlap before saving.</string>
+    <string name="agent_image_ack_overlap">I reviewed this overlap</string>
+    <string name="agent_image_compatibility">Older PadNote versions cannot open this note.</string>
+    <string name="agent_image_confirm">Save image to paper</string>
+    <string name="agent_image_render_failed">The paper preview could not be rendered. Nothing was saved.</string>
+    <string name="agent_image_target_changed">The note, task, or connection changed. Nothing was saved.</string>
+    <string name="agent_image_saving">Saving and verifying the image on paper…</string>
+    <string name="agent_image_saved">Image saved to paper.</string>
+    <string name="agent_image_saved_reopen">The image was saved. Reopen the note to view it.</string>
+    <string name="agent_image_save_failed">Could not save the image. The original note was kept.</string>
+    <string name="agent_image_page_overflow">The image does not fit on this paper. Choose another page or size.</string>
+</resources>

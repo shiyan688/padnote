@@ -289,7 +289,7 @@ public enum LibraryBackupArchive {
         let notes = try records(doc["notes"], noteKeys, "note")
         for row in notes {
             try integer(row, "source_revision_ms")
-            guard (1...10).contains(try integerValue(row, "note_schema_version")) else {
+            guard (1...11).contains(try integerValue(row, "note_schema_version")) else {
                 throw LibraryBackupError.invalidManifest("note_schema_version超出支持范围")
             }
         }
@@ -385,7 +385,7 @@ public enum LibraryBackupArchive {
         }
         for note in manifest.notes {
             guard validID(note.itemID, "i"), itemIDs.insert(note.itemID).inserted,
-                  validOpaqueID(note.sourceNoteID), (1...10).contains(note.schemaVersion), note.sourceRevisionMS >= 0,
+                  validOpaqueID(note.sourceNoteID), (1...11).contains(note.schemaVersion), note.sourceRevisionMS >= 0,
                   has(manifest, note.noteResourceID, "note_document"),
                   (note.pdfResourceID == nil || has(manifest, note.pdfResourceID!, "pdf_original")),
                   (note.coverResourceID == nil || has(manifest, note.coverResourceID!, "assigned_cover_png")),

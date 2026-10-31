@@ -30,7 +30,7 @@ final class TypedNoteTimeProjection {
     private TypedNoteTimeProjection(){}
     static Projection nativeAndroid(String raw)throws Exception {
         rejectDuplicateKeys(raw);
-        JSONObject doc=NotePrecisionJsonParser.parseObject(raw); int schema=NoteStore.schemaVersion(doc); if(schema!=8&&schema!=9&&schema!=10)throw new IllegalArgumentException("update_requires_schema8_through_10");
+        JSONObject doc=NotePrecisionJsonParser.parseObject(raw); int schema=NoteStore.schemaVersion(doc); if(schema!=8&&schema!=9&&schema!=10&&schema!=11)throw new IllegalArgumentException("update_requires_schema8_through_11");
         requireExactTimestampFields(doc);
         NoteStore.validateDocument(doc); return project(doc,"native-android",null,raw);
     }
@@ -40,7 +40,7 @@ final class TypedNoteTimeProjection {
         if(!sha(raw.getBytes(StandardCharsets.UTF_8)).equals(sidecar.sha256))throw new IllegalArgumentException("provenance_document_hash_mismatch");
         Set<String> f64NegativeZeroTimes=new HashSet<>();
         for(Map.Entry<String,ProvenanceValue> entry:sidecar.values.entrySet())if(entry.getValue().kind==Kind.F64&&entry.getValue().doubleBits==Long.MIN_VALUE)f64NegativeZeroTimes.add(entry.getKey());
-        JSONObject doc=NotePrecisionJsonParser.parseObject(raw,f64NegativeZeroTimes); int schema=NoteStore.schemaVersion(doc); if(schema!=8&&schema!=9&&schema!=10)throw new IllegalArgumentException("update_requires_schema8_through_10");
+        JSONObject doc=NotePrecisionJsonParser.parseObject(raw,f64NegativeZeroTimes); int schema=NoteStore.schemaVersion(doc); if(schema!=8&&schema!=9&&schema!=10&&schema!=11)throw new IllegalArgumentException("update_requires_schema8_through_11");
         requireExactTimestampFields(doc);
         NoteStore.validateDocument(doc); if(!doc.getString("id").equals(sidecar.noteId))throw new IllegalArgumentException("provenance_note_id_mismatch");
         Projection p=project(doc,sidecar.source,sidecar.values,raw);
@@ -122,27 +122,27 @@ final class TypedNoteTimeProjection {
             JSONObject f=flows.getJSONObject(i);
             Set<String> flowKeys=keySet("id","format","source","fontSizeSp","lineHeight","width","anchorPageIndex","anchorXInPage","anchorYInPage");
             if(schema>=9&&f.has("agentResult"))flowKeys.add("agentResult");
-            if(schema==10&&f.has("markdownProfileVersion"))flowKeys.add("markdownProfileVersion");
+            if(schema>=10&&f.has("markdownProfileVersion"))flowKeys.add("markdownProfileVersion");
             requireKeys(f,flowKeys);
             double font=f.getDouble("fontSizeSp"),line=f.getDouble("lineHeight"),width=f.getDouble("width");
             if(font<10||font>32||line<1.1||line>2||width<80)throw new IllegalArgumentException("text_flow_outside_android_exact_storage_range");
             for(String k:new String[]{"id","format","source"})putBytes(out,f.getString(k).getBytes(StandardCharsets.UTF_8));
             for(double d:new double[]{font,line,width})putF64(out,d);
             putI64(out,strictInteger(f,"anchorPageIndex"));putF64(out,f.getDouble("anchorXInPage"));putF64(out,f.getDouble("anchorYInPage"));
-            if(schema==10){
+            if(schema>=10){
                 TextFlow validated=TextFlow.fromJson(f);
                 out.writeByte(f.has("markdownProfileVersion")?1:0);
                 if(f.has("markdownProfileVersion"))putI64(out,validated.markdownProfileVersion);
             } else if(f.has("markdownProfileVersion")) throw new IllegalArgumentException("markdown_profile_requires_schema10");
             if(f.has("agentResult")){
-                if(schema!=9&&schema!=10)throw new IllegalArgumentException("agent_result_requires_schema9_or_10");
+                if(schema!=9&&schema!=10&&schema!=11)throw new IllegalArgumentException("agent_result_requires_schema9_or_11");
                 AgentResultProvenance receipt=AgentResultProvenance.fromJson(f.getJSONObject("agentResult"));String source=f.getString("source");
                 if(source.length()>AgentResultProvenance.MAX_UTF16_UNITS||!AgentResultProvenance.wellFormedUtf16(source))throw new IllegalArgumentException("agent_result_source_invalid");
                 hasAgentResult=true;out.writeByte(1);putBytes(out,receipt.canonicalBytes());
-            }else if(schema==9||schema==10)out.writeByte(0);
+            }else if(schema==9||schema==10||schema==11)out.writeByte(0);
         }
-        if(hasAgentResult&&schema!=9&&schema!=10)throw new IllegalArgumentException("agent_result_schema_mismatch");
-        JSONArray images=doc.optJSONArray("images");if(images==null)images=new JSONArray();putCount(out,images.length());for(int i=0;i<images.length();i++){JSONObject im=images.getJSONObject(i);requireKeys(im,keySet("id","png","page","x","y","width","height"));putBytes(out,im.getString("id").getBytes(StandardCharsets.UTF_8));String encoded=im.getString("png");byte[] png=decodeCanonicalBase64(encoded);if(!encodeCanonicalBase64(png).equals(encoded))throw new IllegalArgumentException("image_base64");putBytes(out,png);putI64(out,strictInteger(im,"page"));for(String k:new String[]{"x","y","width","height"})putF64(out,im.getDouble(k));}
+        if(hasAgentResult&&schema!=9&&schema!=10&&schema!=11)throw new IllegalArgumentException("agent_result_schema_mismatch");
+        JSONArray images=doc.optJSONArray("images");if(images==null)images=new JSONArray();putCount(out,images.length());for(int i=0;i<images.length();i++){JSONObject im=images.getJSONObject(i);Set<String> imageKeys=keySet("id","png","page","x","y","width","height");if(im.has("agentImage"))imageKeys.add("agentImage");requireKeys(im,imageKeys);putBytes(out,im.getString("id").getBytes(StandardCharsets.UTF_8));String encoded=im.getString("png");byte[] png=decodeCanonicalBase64(encoded);if(!encodeCanonicalBase64(png).equals(encoded))throw new IllegalArgumentException("image_base64");putBytes(out,png);putI64(out,strictInteger(im,"page"));for(String k:new String[]{"x","y","width","height"})putF64(out,im.getDouble(k));if(schema==11){if(im.has("agentImage")){AgentImageReceipt receipt=AgentImageReceipt.fromJson(im.getJSONObject("agentImage"));receipt.validatePng(png);out.writeByte(1);putBytes(out,receipt.canonicalBytes());}else out.writeByte(0);}else if(im.has("agentImage"))throw new IllegalArgumentException("agent_image_requires_schema11");}
         out.flush();return bytes.toByteArray();
     }
     private static Time requiredTime(Map<String,Time> values,String path){Time t=values.get(path);if(t==null)throw new IllegalArgumentException("time_path_missing:"+path);return t;}

@@ -20,6 +20,7 @@
     <string name="tail_share_video">分享视频</string>
     <string name="tail_could_not_save_video_separately">另存视频失败：%1$s</string>
     <string name="tail_image_inserted">图片已插入</string>
+    <string name="tail_image_import_target_changed">选择图片期间笔记已变化，请在当前笔记中重新选择。</string>
     <string name="tail_could_not_insert_image">图片插入失败：%1$s</string>
     <string name="tail_could_not_read_image">图片读取失败：%1$s</string>
     <string name="tail_import_failed">导入失败：%1$s</string>
