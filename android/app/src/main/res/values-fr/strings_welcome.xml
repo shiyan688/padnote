@@ -1,0 +1,6 @@
+<resources>
+    <string name="core_open_sample_note">Ouvrir la note d’exemple</string>
+    <string name="core_sample_note_title">Bien démarrer avec PadNote</string>
+    <string name="core_sample_note_body">Cet exemple local est rédigé par une personne et n’est jamais envoyé automatiquement à l’IA ou à un ordinateur.\n\n## 1 Écrire et poser une question\nÉcrivez à la main dans une zone vierge, sélectionnez une zone précise et interrogez le modèle de votre choix.\n\n## 2 Partager\nExportez un PDF depuis le menu Partager pour que d’autres personnes puissent lire la page actuelle.\n\n## 3 Envoyer à un ordinateur\nConnectez d’abord un Agent et scannez le code d’association dans l’assistant de bureau. Depuis une note, choisissez ensuite Envoyer à l’Agent. Vous pouvez continuer à écrire après l’envoi et consulter le résultat plus tard dans les tâches de l’ordinateur.</string>
+    <string name="core_sample_open_failed">Impossible d’ouvrir la note d’exemple. Réessayez plus tard.</string>
+</resources>

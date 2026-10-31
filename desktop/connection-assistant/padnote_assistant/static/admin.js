@@ -181,6 +181,20 @@
         }
       }
     }
+    const freshHermes = ageLabels.some((item) => {
+      const card = item.element.closest('.agent-card');
+      const age = item.initialAge + Math.floor((performance.now() - item.startedAt) / 1000);
+      return card?.dataset.freshHermesReady === 'true' && age <= 60;
+    });
+    if (!freshHermes) {
+      const agentStep = document.querySelector('.onboarding-progress a[href="#agents"]');
+      agentStep?.classList.remove('complete');
+      const heading = document.querySelector('.onboarding-section .section-title h2');
+      if (heading) heading.textContent = '请重新检测 Agent';
+      const guidance = document.querySelector('.onboarding-section .onboarding-grid');
+      const note = guidance?.querySelector('[data-recheck-guidance]');
+      if (note) note.textContent = '检测结果已过期，请重新运行接口检测后再继续配对。';
+    }
   };
   refreshCheckAges();
   const fetchLive = async () => {

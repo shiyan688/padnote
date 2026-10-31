@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">Annotation brève</string>
+    <string name="core_preset_derivation">Démonstration complète</string>
+    <string name="core_preset_cards">Cartes de révision</string>
+    <string name="core_instruction_annotation">Ajoutez de brèves annotations au contenu, reliez-les au texte d’origine et indiquez les incertitudes.</string>
+    <string name="core_instruction_derivation">Énumérez les hypothèses et procédez étape par étape. Conservez les formules, conditions et unités ; signalez les informations manquantes.</string>
+    <string name="core_instruction_cards">Créez des cartes de questions-réponses et des cartes sur les idées reçues courantes.</string>
+</resources>

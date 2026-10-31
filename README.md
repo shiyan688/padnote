@@ -21,6 +21,23 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 [下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
+## 从一份示例开始
+
+第一次打开时，在书架选择“打开示例笔记”，试着写、圈选和分享。想把材料交给电脑时，再按助手中的四个步骤完成检测、配对、批准和首次任务。任务说明提供简短批注、完整推导、复习卡片三种形式，可以自行修改。[使用步骤](BETA35_TESTING.md)。
+
+<details>
+<summary>查看示例笔记与电脑助手</summary>
+
+<img src="docs/media/2026-10-31/android-sample-note.png" alt="Android 中可编辑的本地使用示例" width="960">
+
+电脑助手示意，使用合成服务状态。
+
+<img src="docs/media/2026-10-31/desktop-first-use-guide.png" alt="电脑助手四步连接指引，合成服务状态" width="960">
+
+[素材来源](docs/media/2026-10-31/README.md)。
+
+</details>
+
 ## 电脑连接引导
 
 发送后继续写，顶部“查看进度”可随时回到这条任务。若接收情况不明确，可在详情中点“确认电脑是否收到”，继续跟踪原任务，无需重新整理材料。连接助手会就地解释 WSL 或 Hermes 配置问题，并提供重试与安装指引。
@@ -111,8 +128,8 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 平台与连接
 
-- **Android 平板：**beta.34 APK（versionCode 67）。
-- **Windows：**beta.33 连接助手提供 Setup 安装包和便携包，不附带 Hermes、模型或 API 密钥。WSL 向导支持从启动器进入、查看不确定操作状态并返回选择。
+- **Android 平板：**beta.35 APK（versionCode 68）。
+- **Windows：**beta.35 连接助手提供 Setup 安装包和便携包，不附带 Hermes、模型或 API 密钥。WSL 向导支持从启动器进入、查看不确定操作状态并返回选择。
 - **iPad：**提供包含本轮改动的源码，暂无可安装的签名 IPA。
 
 电脑任务面向你明确选择并配对、且支持 PadNote 笔记任务的 Agent。多个 Hermes 配置各自对应不同 Agent 身份、凭据和任务归属；连接助手使用你自己的配置，密钥仅在其进程内存中使用，重开后需明确重连。未知网关模式先用默认配置，再由你选择命名配置；不会自动修改 provider 或重启外部管理的网关。OpenClaw 提供发现与设置引导，但这不代表 PadNote 笔记任务已接入 OpenClaw；Codex 纸面任务尚未接入。
@@ -121,7 +138,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 下载与校验
 
-Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：Android 为 beta.34，Windows 助手继续为 beta.33。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
+Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：Android 与 Windows 助手本轮均为 beta.35。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
 
 ## 从源码构建
 

@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">Ergebnis gespeichert. Öffne die Notiz erneut, um es zu sehen.</string>
     <string name="flow_agent_result_save_uncertain">Der Speicherstatus ist unklar. Öffne die Notiz erneut und prüfe sie, bevor du es noch einmal versuchst.</string>
     <string name="flow_agent_result_save_failed">Ergebnis konnte nicht gespeichert werden. Die Notiz blieb unverändert.</string>
+    <string name="flow_expand_task_details">Aufgabendetails anzeigen</string>
+    <string name="flow_collapse_task_details">Aufgabendetails ausblenden</string>
+    <string name="flow_agent_result_destination_summary">In %1$s speichern, ab Seite %2$d</string>
 </resources>

@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">Résultat enregistré. Rouvrez la note pour le voir.</string>
     <string name="flow_agent_result_save_uncertain">L’état de l’enregistrement est incertain. Rouvrez la note et vérifiez avant de réessayer.</string>
     <string name="flow_agent_result_save_failed">Impossible d’enregistrer le résultat. La note n’a pas été modifiée.</string>
+    <string name="flow_expand_task_details">Afficher les détails de la tâche</string>
+    <string name="flow_collapse_task_details">Masquer les détails de la tâche</string>
+    <string name="flow_agent_result_destination_summary">Enregistrer dans %1$s, à partir de la page %2$d</string>
 </resources>

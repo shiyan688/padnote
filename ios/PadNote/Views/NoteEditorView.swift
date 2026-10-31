@@ -79,16 +79,19 @@ struct NoteEditorView: View {
     private let videoConnectionStore: AgentConnectionStore
     private let videoTaskStore: AgentTaskStore
     private let videoTaskService: AgentTaskService?
+    private let showsShelfBackButton: Bool
 
     init(note: NoteDocument, session: NoteGroupEditorSession? = nil, initialPage: Int? = nil,
          videoConnectionStore: AgentConnectionStore = AgentConnectionStore(),
-         videoTaskStore: AgentTaskStore = AgentTaskStore(), videoTaskService: AgentTaskService? = nil) {
+         videoTaskStore: AgentTaskStore = AgentTaskStore(), videoTaskService: AgentTaskService? = nil,
+         showsShelfBackButton: Bool = true) {
         _document = State(initialValue: session?.document ?? note)
         _groupSession = State(initialValue: session)
         _initialPage = State(initialValue: initialPage)
         self.videoConnectionStore = videoConnectionStore
         self.videoTaskStore = videoTaskStore
         self.videoTaskService = videoTaskService
+        self.showsShelfBackButton = showsShelfBackButton
     }
 
     private var pdfURL: URL? {
@@ -162,8 +165,10 @@ struct NoteEditorView: View {
             .navigationTitle(document.title).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { requestClose() } label: { Label("书架", systemImage: "chevron.left") }
-                        .accessibilityIdentifier("backToShelf")
+                    Button { requestClose() } label: {
+                        Label(showsShelfBackButton ? "书架" : "返回结果", systemImage: "chevron.left")
+                    }
+                    .accessibilityIdentifier(showsShelfBackButton ? "backToShelf" : "backToAgentResult")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { canvas.undo() } label: { Image(systemName: "arrow.uturn.backward") }
@@ -193,6 +198,7 @@ struct NoteEditorView: View {
                 }
             }
         }
+        .navigationBarBackButtonHidden(!showsShelfBackButton)
         .onAppear(perform: configureInitialSaveState)
         .onChange(of: document) { _, _ in documentChanged() }
         .onChange(of: scenePhase) { _, phase in

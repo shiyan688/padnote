@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">The result was saved. Reopen the note to see it.</string>
     <string name="flow_agent_result_save_uncertain">The save result is uncertain. Reopen the note and check before trying again.</string>
     <string name="flow_agent_result_save_failed">Could not save the result. The note was not changed.</string>
+    <string name="flow_expand_task_details">Show task details</string>
+    <string name="flow_collapse_task_details">Hide task details</string>
+    <string name="flow_agent_result_destination_summary">Save to %1$s, starting on page %2$d</string>
 </resources>

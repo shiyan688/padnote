@@ -1,0 +1,6 @@
+<resources>
+    <string name="core_open_sample_note">Open sample note</string>
+    <string name="core_sample_note_title">Getting started with PadNote</string>
+    <string name="core_sample_note_body">This locally written example is never sent automatically to AI or a computer.\n\n## 1 Write and ask\nWrite in a blank area, select a clear region, and ask the model you choose.\n\n## 2 Share\nExport a PDF from the Share menu to let others read the current page.\n\n## 3 Send to a computer\nFirst connect an Agent and scan the pairing code in the desktop assistant. Then choose Send to Agent from a note. You can keep writing after submission and check the result later in Computer Tasks.</string>
+    <string name="core_sample_open_failed">Unable to open the sample note. Please try again.</string>
+</resources>

@@ -23,6 +23,9 @@ public enum PaperTaskPreset: String, CaseIterable, Identifiable {
     case shareableHandout = "shareable_handout"
     case findGapsAndPractice = "find_gaps_and_practice"
     case explainerVideo = "explain_video"
+    case shortAnnotation = "short_annotation"
+    case fullDerivation = "full_derivation"
+    case revisionCards = "revision_cards"
 
     public var id: String { rawValue }
     public var title: String {
@@ -31,6 +34,9 @@ public enum PaperTaskPreset: String, CaseIterable, Identifiable {
         case .shareableHandout: return "整理成可分享讲义"
         case .findGapsAndPractice: return "找理解漏洞并出练习"
         case .explainerVideo: return "生成可分享讲解视频"
+        case .shortAnnotation: return "简短批注"
+        case .fullDerivation: return "完整推导"
+        case .revisionCards: return "复习卡片"
         }
     }
     public var instruction: String {
@@ -39,6 +45,9 @@ public enum PaperTaskPreset: String, CaseIterable, Identifiable {
         case .shareableHandout: return "基于整份纸面整理一份准确、便于分享的讲义，保留关键公式和步骤。"
         case .findGapsAndPractice: return "指出纸面中可能存在的理解漏洞，并据此设计有答案的练习。"
         case .explainerVideo: return "基于整份纸面制作可分享讲解视频；模型与配音工具由你或所选 Agent 决定，并按你已授权的范围和既有审阅流程完成。"
+        case .shortAnnotation: return "结合相关材料，为关键内容补充简短、准确的批注。"
+        case .fullDerivation: return "结合相关材料，列明完整前提并逐步推导，保留公式、符号定义和单位。"
+        case .revisionCards: return "结合相关材料制作问答式复习卡片，并加入常见误区与纠正说明。"
         }
     }
 }

@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">结果已保存，重新打开笔记即可查看。</string>
     <string name="flow_agent_result_save_uncertain">保存结果状态不确定。请重新打开笔记检查，再决定是否重试。</string>
     <string name="flow_agent_result_save_failed">无法保存结果，笔记未更改。</string>
+    <string name="flow_expand_task_details">查看任务详情</string>
+    <string name="flow_collapse_task_details">收起任务详情</string>
+    <string name="flow_agent_result_destination_summary">保存到《%1$s》，从第 %2$d 页开始</string>
 </resources>

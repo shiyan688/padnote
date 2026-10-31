@@ -1,0 +1,6 @@
+<resources>
+    <string name="core_open_sample_note">Beispielnotiz öffnen</string>
+    <string name="core_sample_note_title">Erste Schritte mit PadNote</string>
+    <string name="core_sample_note_body">Dieses lokal verfasste Beispiel wird niemals automatisch an eine KI oder einen Computer gesendet.\n\n## 1 Schreiben und fragen\nSchreibe in einen freien Bereich, wähle einen klar abgegrenzten Abschnitt aus und frage das Modell deiner Wahl.\n\n## 2 Teilen\nExportiere über das Menü „Teilen“ ein PDF, damit andere die aktuelle Seite lesen können.\n\n## 3 An einen Computer senden\nVerbinde zuerst im Desktop-Assistenten einen Agent und scanne den Kopplungscode. Wähle anschließend in einer Notiz „An Agent senden“. Nach dem Absenden kannst du weiterschreiben und das Ergebnis später unter Computeraufgaben ansehen.</string>
+    <string name="core_sample_open_failed">Die Beispielnotiz kann gerade nicht geöffnet werden. Bitte versuche es später erneut.</string>
+</resources>

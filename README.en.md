@@ -21,6 +21,23 @@ The demos use synthetic learning content and real-device screenshots to show the
 [Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 
+## Start with a sample
+
+Choose **Open sample note** on the bookshelf to try writing, selection, and sharing. When you want to hand work to a computer, follow the assistant through checks, pairing, approval, and the first task. Brief annotations, full derivations, and review cards are editable instructions. [Steps and details](BETA35_TESTING.md).
+
+<details>
+<summary>See the sample and connection guide</summary>
+
+<img src="docs/media/2026-10-31/android-sample-note.png" alt="An editable local sample in Android" width="960">
+
+Desktop interface example with synthetic service state.
+
+<img src="docs/media/2026-10-31/desktop-first-use-guide.png" alt="Four-step desktop guide with synthetic service state" width="960">
+
+[Media notes](docs/media/2026-10-31/README.md).
+
+</details>
+
 ## Computer connection guide
 
 Keep writing after you send. Use “View progress” at the top to return to this task anytime. If receipt is unclear, tap “Check whether the computer received it” in the details to keep tracking the same task—no need to prepare the materials again. The Connection Assistant explains WSL or Hermes configuration issues in place and provides retry and installation guidance.
@@ -111,8 +128,8 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 ## Platforms and connections
 
-- **Android tablets:** beta.34 APK (versionCode 67).
-- **Windows:** The beta.33 connection assistant has a Setup installer and a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
+- **Android tablets:** beta.35 APK (versionCode 68).
+- **Windows:** The beta.35 connection assistant has a Setup installer and a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
 - **iPad:** Source includes this round of changes; there is no installable signed IPA.
 
 Computer tasks use the Agent you explicitly choose and pair, when it supports PadNote note tasks. Multiple Hermes configurations keep separate Agent identities, credentials, and task ownership. The assistant uses your own configuration and keeps keys in process memory; reopening it requires an explicit reconnect. When gateway mode is unknown, the flow starts with the default configuration and then lets you choose a named configuration. It does not change the provider automatically or restart a gateway managed by another tool. OpenClaw has discovery and setup guidance, but PadNote note tasks are not integrated with OpenClaw; Codex note tasks are not connected.
@@ -121,7 +138,7 @@ See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android is beta.34 and the Windows assistant remains beta.33. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android and the Windows assistant both update to beta.35. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

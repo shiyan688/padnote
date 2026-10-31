@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">간단한 주석</string>
+    <string name="core_preset_derivation">전체 유도 과정</string>
+    <string name="core_preset_cards">복습 카드</string>
+    <string name="core_instruction_annotation">자료에 간단한 주석을 달고 원문과 연결하며 불확실한 점을 밝혀 주세요.</string>
+    <string name="core_instruction_derivation">전제를 나열하고 단계별로 유도해 주세요. 수식, 조건, 단위를 보존하고 정보가 부족하면 명시해 주세요.</string>
+    <string name="core_instruction_cards">질문과 답변 카드 및 흔한 오개념 카드를 만들어 주세요.</string>
+</resources>

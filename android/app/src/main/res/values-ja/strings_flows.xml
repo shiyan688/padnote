@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">結果を保存しました。ノートを開き直すと表示されます。</string>
     <string name="flow_agent_result_save_uncertain">保存状態を確認できません。再試行する前にノートを開き直して確認してください。</string>
     <string name="flow_agent_result_save_failed">結果を保存できませんでした。ノートは変更されていません。</string>
+    <string name="flow_expand_task_details">タスクの詳細を表示</string>
+    <string name="flow_collapse_task_details">タスクの詳細を閉じる</string>
+    <string name="flow_agent_result_destination_summary">%1$s に保存（%2$d ページ目から）</string>
 </resources>

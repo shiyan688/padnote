@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">簡潔な注釈</string>
+    <string name="core_preset_derivation">詳細な導出</string>
+    <string name="core_preset_cards">復習カード</string>
+    <string name="core_instruction_annotation">資料に簡潔な注釈を加え、原文と関連付け、不確かな点を明示してください。</string>
+    <string name="core_instruction_derivation">前提を列挙して段階的に導出してください。数式、条件、単位を保ち、情報が不足している場合は明示してください。</string>
+    <string name="core_instruction_cards">一問一答カードと、よくある誤解を扱うカードを作成してください。</string>
+</resources>

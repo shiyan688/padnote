@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">Anotación breve</string>
+    <string name="core_preset_derivation">Derivación completa</string>
+    <string name="core_preset_cards">Tarjetas de repaso</string>
+    <string name="core_instruction_annotation">Añade anotaciones breves al material, relaciónalas con el texto original e indica la incertidumbre.</string>
+    <string name="core_instruction_derivation">Enumera las premisas y deriva paso a paso. Conserva fórmulas, condiciones y unidades; indica cuando falte información.</string>
+    <string name="core_instruction_cards">Crea tarjetas de preguntas y respuestas, y tarjetas sobre errores comunes.</string>
+</resources>

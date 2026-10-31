@@ -2085,6 +2085,16 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(open.isHittable, "saved-note action should be surfaced in the visible result status")
         open.tap()
         XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["backToShelf"].exists)
+        let noteBack = app.buttons["backToAgentResult"]
+        XCTAssertEqual(app.buttons.matching(identifier: "backToAgentResult").count, 1,
+                       "the nested editor must expose one save-aware return action")
+        noteBack.tap()
+        XCTAssertTrue(app.navigationBars["预览并添加"].waitForExistence(timeout: 10), "back must return to result confirmation")
+        XCTAssertTrue(app.buttons["agentResultOpenSavedNote"].exists)
+        app.buttons["agentResultOpenSavedNote"].tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["backToAgentResult"].waitForExistence(timeout: 5))
         let openedPaperState = app.staticTexts["agentResultPaperFixtureState"]
         XCTAssertTrue(openedPaperState.label.contains("schema=9; flows=1; receipts=1"), openedPaperState.label)
 

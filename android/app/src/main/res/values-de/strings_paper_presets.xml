@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">Kurze Anmerkungen</string>
+    <string name="core_preset_derivation">Vollständige Herleitung</string>
+    <string name="core_preset_cards">Lernkarten</string>
+    <string name="core_instruction_annotation">Füge dem Material kurze Anmerkungen hinzu, verknüpfe sie mit dem Originaltext und kennzeichne Unsicherheiten.</string>
+    <string name="core_instruction_derivation">Liste die Voraussetzungen auf und leite Schritt für Schritt her. Bewahre Formeln, Bedingungen und Einheiten; weise auf fehlende Informationen hin.</string>
+    <string name="core_instruction_cards">Erstelle Frage-Antwort-Karten und Karten zu häufigen Irrtümern.</string>
+</resources>

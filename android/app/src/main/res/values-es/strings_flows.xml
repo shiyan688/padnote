@@ -455,4 +455,7 @@
     <string name="flow_agent_result_saved_reopen">El resultado se guardó. Vuelve a abrir la nota para verlo.</string>
     <string name="flow_agent_result_save_uncertain">No se pudo confirmar el guardado. Vuelve a abrir la nota y compruébalo antes de intentarlo otra vez.</string>
     <string name="flow_agent_result_save_failed">No se pudo guardar el resultado. La nota no cambió.</string>
+    <string name="flow_expand_task_details">Ver detalles de la tarea</string>
+    <string name="flow_collapse_task_details">Ocultar detalles de la tarea</string>
+    <string name="flow_agent_result_destination_summary">Guardar en %1$s, desde la página %2$d</string>
 </resources>

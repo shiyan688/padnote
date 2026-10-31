@@ -288,21 +288,26 @@ public struct AgentTaskDetailView: View {
                 if let task {
                     Section("任务") {
                         LabeledContent("状态", value: label(task.status))
+                        Text(taskProgress(task))
+                            .font(.subheadline).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("agentTaskProgressExplanation")
                         VStack(alignment: .leading, spacing: 6) {
                             Text("电脑")
                                 .font(.headline)
                             Text(task.connection.connectionName)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .accessibilityIdentifier("agentTaskDetailConnectionName")
-                            Text("已保存连接目标")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Text(AgentTaskHistoryDestinationLabel.make(task.connection))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                                .accessibilityIdentifier("agentTaskDetailDestinationIdentity")
+                            Text("任务目标")
+                                .font(.subheadline).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        DisclosureGroup("连接身份与技术详情") {
+                            Text(AgentTaskHistoryDestinationLabel.make(task.connection))
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                .accessibilityIdentifier("agentTaskDetailDestinationIdentity")
+                            Text("任务 ID：\(task.id.uuidString.lowercased())")
+                                .font(.caption).textSelection(.enabled)
+                        }
                         LabeledContent("创建", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
                         if task.payload.parentTaskID != nil {
                             Text("本轮沿用原任务的内容快照；每轮结果单独保存。")
@@ -341,7 +346,12 @@ public struct AgentTaskDetailView: View {
                         }
                     }
                     if let remoteError = task.error, !remoteError.isEmpty {
-                        Section("电脑返回的错误") { Text(remoteError).foregroundStyle(.red).textSelection(.enabled) }
+                        Section("需要处理") {
+                            Text(taskErrorNextStep(task.status)).font(.subheadline)
+                            DisclosureGroup("查看错误详情") {
+                                Text(remoteError).foregroundStyle(.red).textSelection(.enabled)
+                            }
+                        }
                     }
                     if let approval = task.approval, task.status == .waitingForApproval {
                         Section(approval.title) {
@@ -425,6 +435,10 @@ public struct AgentTaskDetailView: View {
                         }
                     }
                     Section {
+                        if !task.status.terminal {
+                            Button("继续写笔记，稍后查看任务") { dismiss() }
+                                .accessibilityIdentifier("agentTaskContinueWriting")
+                        }
                         if task.status == .submitting
                             && (task.connection.transport == .bridge || task.remoteTaskID == nil) {
                             Button("重试同一任务") { retry() }.disabled(working)
@@ -700,7 +714,8 @@ private struct AgentResultToPaperView: View {
                     Section(saved.already ? "结果已在笔记中" : "已添加到笔记") {
                         Text("《\(saved.document.title)》· 第 \(saved.page + 1) 页")
                         NavigationLink("打开并定位到结果") {
-                            NoteEditorView(note: saved.document, session: saved.session, initialPage: saved.page)
+                            NoteEditorView(note: saved.document, session: saved.session, initialPage: saved.page,
+                                           showsShelfBackButton: false)
                                 .environmentObject(noteLibrary)
                         }
                         .accessibilityIdentifier("agentResultOpenSavedNote")
@@ -1203,6 +1218,36 @@ private func label(_ status: AgentTaskStatus) -> String {
     case .failed: return "失败"
     case .cancelled: return "已取消"
     case .interrupted: return "已中断"
+    }
+}
+
+private func taskProgress(_ task: AgentTaskRecord) -> String {
+    guard task.remoteTaskID != nil else {
+        switch task.status {
+        case .submitting: return "正在准备或发送任务；电脑尚未确认收到。离开此页不会停止发送，可稍后回到任务列表查看。"
+        case .failed: return "尚未取得电脑的接收确认。请检查连接并查看原任务状态，避免重复发送。"
+        default: return "尚无电脑确认记录；请刷新或检查原任务状态。"
+        }
+    }
+    switch task.status {
+    case .submitting: return "电脑已确认任务；正在等待执行状态。"
+    case .running: return "电脑正在执行任务。你可以继续写笔记，稍后回来看结果。"
+    case .waitingForApproval: return "任务正在等待批准。查看可用的审批入口；信息不完整时请到电脑处理。"
+    case .stopping: return "正在请求电脑停止任务；确认前任务仍可能继续运行。"
+    case .completed: return "电脑已返回结果；可以查看、保存或分享。"
+    case .failed: return "电脑报告任务失败。查看错误详情，修正原因后可明确新建任务。"
+    case .cancelled: return "电脑确认任务已取消。"
+    case .interrupted: return "任务中断；刷新原任务以确认电脑上的最终状态。"
+    }
+}
+
+private func taskErrorNextStep(_ status: AgentTaskStatus) -> String {
+    switch status {
+    case .submitting: return "尚未确认送达。检查连接后可重试同一任务；重试会沿用原任务 ID。"
+    case .running, .waitingForApproval, .stopping: return "保留原任务并刷新状态，按需处理可用的批准或停止请求。"
+    case .failed: return "查看错误详情，修正原因后可明确新建任务。"
+    case .interrupted: return "先刷新原任务，确认电脑上的最终状态；不要直接重新发送。"
+    case .completed, .cancelled: return "任务已结束；错误详情可帮助解释电脑返回的信息。"
     }
 }
 

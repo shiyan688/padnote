@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">简短批注</string>
+    <string name="core_preset_derivation">完整推导</string>
+    <string name="core_preset_cards">复习卡片</string>
+    <string name="core_instruction_annotation">针对材料添加简短批注，关联原文，并说明不确定性。</string>
+    <string name="core_instruction_derivation">列出前提并逐步推导，保留公式、条件和单位；信息不足时请明确说明。</string>
+    <string name="core_instruction_cards">制作问答卡片，并整理常见误区卡片。</string>
+</resources>

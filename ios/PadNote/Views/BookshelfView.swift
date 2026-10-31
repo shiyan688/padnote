@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: NoteLibrary
+    @AppStorage("padnote.sampleNoteID") private var sampleNoteID = ""
     @State private var section: String? = "notes"
     @State private var search = ""
     @State private var creating = false
@@ -43,6 +44,8 @@ struct BookshelfView: View {
                 Section {
                     Button { settings = true } label: { Label("AI 设置", systemImage: "slider.horizontal.3") }
                     Button { agentSettings = true } label: { Label("电脑 Agent", systemImage: "desktopcomputer") }
+                    Button(action: openSampleNote) { Label("打开示例笔记", systemImage: "sparkles.rectangle.stack") }
+                        .accessibilityIdentifier("openSampleNoteButton")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -303,6 +306,24 @@ struct BookshelfView: View {
             let session = try library.openEditorSession(noteID: note.id)
             openedSession = session.groupToken == nil ? nil : session
             openedNote = session.document
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func openSampleNote() {
+        if !sampleNoteID.isEmpty, let existing = library.notes.first(where: { $0.id == sampleNoteID }) {
+            openedSession = nil
+            openNote(existing)
+            return
+        }
+        var note = NoteDocument(title: "PadNote 示例：从纸面到电脑")
+        note.textFlows = [NoteTextFlow(format: "markdown", source: "# 人工本地示例\n\n这是一份可编辑的示例笔记，不会自动请求模型或 Agent。\n\n## 手写与提问\n\n用 Apple Pencil 写下思路，再圈选一段内容并提出问题。\n\n## PDF 与分享\n\n导入 PDF 后可以在纸面查看，也可以分享完整笔记。\n\n## 交给电脑 Agent\n\n先明确配对并检查连接，再由你确认要发送的内容；发送后可回到任务页查看。", fontSizeSp: 16, width: 640)]
+        note.pageCount = max(note.pageCount, NoteTextLayout.requiredPageCount(note))
+        do {
+            try note.validated()
+            try library.save(note)
+            sampleNoteID = note.id
+            openedSession = nil
+            openedNote = note
         } catch { self.error = error.localizedDescription }
     }
 

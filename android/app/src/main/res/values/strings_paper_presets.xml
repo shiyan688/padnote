@@ -1,0 +1,8 @@
+<resources>
+    <string name="core_preset_annotation">Brief annotation</string>
+    <string name="core_preset_derivation">Full derivation</string>
+    <string name="core_preset_cards">Review cards</string>
+    <string name="core_instruction_annotation">Add brief annotations to the material, link them to the original text, and state uncertainty.</string>
+    <string name="core_instruction_derivation">List assumptions and derive step by step. Preserve formulas, conditions, and units; explain when information is insufficient.</string>
+    <string name="core_instruction_cards">Create question-and-answer cards and cards about common misconceptions.</string>
+</resources>

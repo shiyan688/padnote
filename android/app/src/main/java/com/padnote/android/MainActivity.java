@@ -146,6 +146,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
+    private boolean sampleOpenInFlight;
     private final ExecutorService manualDraftRecoveryExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService removedNotesExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
@@ -1554,6 +1555,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         shelfSectionTitle.setText(entries.isEmpty() ? getString(R.string.core_recent_notes)
                 : getString(R.string.core_recent_count, entries.size()));
         addFirstRunGuideCard();
+        Button sampleButton = pillButton(getString(R.string.core_open_sample_note), BUTTON_QUIET);
+        sampleButton.setContentDescription(getString(R.string.core_open_sample_note));
+        sampleButton.setMinHeight(dp(48));
+        LinearLayout.LayoutParams sampleParams = matchWrap();
+        sampleParams.setMargins(dp(0), dp(4), dp(0), dp(8));
+        bookshelfList.addView(sampleButton, sampleParams);
+        sampleButton.setOnClickListener(view -> openSampleNote());
         if (entries.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
@@ -1616,6 +1624,46 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
         renderRecoverySection(recoveryEntries);
         renderVaultSection();
+    }
+
+    private void openSampleNote() {
+        if (sampleOpenInFlight) return;
+        sampleOpenInFlight = true;
+        storageExecutor.execute(() -> {
+            NoteStore.Entry entry = null;
+            boolean created = false;
+            String failure = null;
+            try {
+                String sampleId = preferences.getString("padnoteSampleNoteId", "");
+                if (!sampleId.isEmpty()) {
+                    for (NoteStore.Entry candidate : NoteStore.list(this)) {
+                        if (sampleId.equals(candidate.id)) { entry = candidate; break; }
+                    }
+                }
+                if (entry == null) {
+                    JSONObject document = WelcomeNoteFactory.create(
+                            getString(R.string.core_sample_note_title),
+                            getString(R.string.core_sample_note_body), System.currentTimeMillis());
+                    entry = NoteStore.importDocument(this, document,
+                            getString(R.string.core_sample_note_title));
+                    created = true;
+                }
+            } catch (Exception error) {
+                failure = error.getMessage();
+            }
+            NoteStore.Entry result = entry;
+            boolean wasCreated = created;
+            String errorMessage = failure;
+            runOnUiThread(() -> {
+                sampleOpenInFlight = false;
+                if (errorMessage != null || result == null) {
+                    Toast.makeText(this, getString(R.string.core_sample_open_failed), Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (wasCreated) preferences.edit().putString("padnoteSampleNoteId", result.id).apply();
+                openNote(result);
+            });
+        });
     }
 
     private void renderRecoverySection(List<NoteStore.RecoveryEntry> entries) {
@@ -2034,8 +2082,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         if(source==null){pdf.delete();Toast.makeText(this,getString(R.string.core_paper_source_missing),Toast.LENGTH_LONG).show();return;}
         final long capturedSourceRevision=capture.sourceRevision;
         final long capturedDocumentRevision=capture.documentRevision;
-        String[] presets={getString(R.string.core_preset_continue),getString(R.string.core_preset_lecture),getString(R.string.core_preset_gaps),getString(R.string.core_preset_video)};
-        String[] ids={"continue","shareable_handout","find_gaps_and_practice","explain_video"};
+        String[] presets={getString(R.string.core_preset_continue),getString(R.string.core_preset_lecture),getString(R.string.core_preset_gaps),getString(R.string.core_preset_video),getString(R.string.core_preset_annotation),getString(R.string.core_preset_derivation),getString(R.string.core_preset_cards)};
+        String[] ids={"continue","shareable_handout","find_gaps_and_practice","explain_video","short_annotation","full_derivation","revision_cards"};
         String[] styles={getString(R.string.core_style_lecture),getString(R.string.core_style_whiteboard),getString(R.string.core_style_analogy),getString(R.string.core_style_derivation),getString(R.string.core_style_review)};
         String[] stylePrompts={
                 getString(R.string.core_style_prompt_lecture),getString(R.string.core_style_prompt_whiteboard),
@@ -2093,7 +2141,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 if(position==0)instruction.setText(R.string.core_instruction_continue);
                 else if(position==1)instruction.setText(R.string.core_instruction_lecture);
                 else if(position==2)instruction.setText(R.string.core_instruction_gaps);
-                else instruction.setText(R.string.core_instruction_video);
+                else if(position==3)instruction.setText(R.string.core_instruction_video);
+                else if(position==4)instruction.setText(R.string.core_instruction_annotation);
+                else if(position==5)instruction.setText(R.string.core_instruction_derivation);
+                else instruction.setText(R.string.core_instruction_cards);
             }
             @Override public void onNothingSelected(AdapterView<?> parent){}
         });
@@ -2358,14 +2409,16 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_source_missing_title))
                 .setMessage(getString(R.string.flow_agent_result_source_missing_body))
                 .setNegativeButton(getString(R.string.core_cancel),null)
-                .setPositiveButton(getString(R.string.flow_agent_result_create_note),(dialog,which)->{
-                    EditText title=createNoteTitleInput(task.title,getString(R.string.core_note_title_hint));
-                    new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_create_note))
-                            .setMessage(getString(R.string.flow_agent_result_create_note_body)).setView(title)
-                            .setNegativeButton(getString(R.string.core_cancel),null)
-                            .setPositiveButton(getString(R.string.core_create),(d,w)->createAgentResultTarget(task,
-                                    title.getText().toString())).show();
-                }).show();
+                .setPositiveButton(getString(R.string.flow_agent_result_create_note),(dialog,which)->showAgentResultNewNoteForm(task)).show();
+    }
+
+    private void showAgentResultNewNoteForm(AgentTaskStore.Task task) {
+        EditText title=createNoteTitleInput(task.title,getString(R.string.core_note_title_hint));
+        new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_create_note))
+                .setMessage(getString(R.string.flow_agent_result_create_note_body)).setView(title)
+                .setNegativeButton(getString(R.string.core_cancel),null)
+                .setPositiveButton(getString(R.string.core_create),(d,w)->createAgentResultTarget(task,
+                        title.getText().toString())).show();
     }
 
     private void createAgentResultTarget(AgentTaskStore.Task task,String requestedTitle) {
@@ -2430,12 +2483,29 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 preview.append(getString(R.string.flow_agent_result_older_snapshot)).append("\n\n");
             else if(source==null)preview.append(getString(R.string.flow_agent_result_new_target_notice)).append("\n\n");
         }
-        preview.append(task.output);
+        int destinationPage = -1;
+        org.json.JSONArray candidateFlows = candidate.document.optJSONArray("textFlows");
+        if (candidateFlows != null) {
+            for (int i = 0; i < candidateFlows.length(); i++) {
+                JSONObject flow = candidateFlows.optJSONObject(i);
+                if (flow != null && candidate.flowId.equals(flow.optString("id"))) {
+                    int anchor = flow.optInt("anchorPageIndex", -1);
+                    if (anchor >= 0) destinationPage = anchor + 1;
+                    break;
+                }
+            }
+        }
+        if (destinationPage < 1) {
+            Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
+        }
+        preview.append(getString(R.string.flow_agent_result_destination_summary,
+                currentNoteTitle, destinationPage)).append("\n\n").append(task.output);
         TextView output=new TextView(this);output.setText(preview.toString());output.setTextIsSelectable(true);
         output.setTextSize(15);output.setTextColor(INK_COLOR);output.setPadding(dp(20),dp(16),dp(20),dp(16));
         ScrollView scroll=new ScrollView(this);scroll.addView(output);
-        new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_preview_title))
+        AlertDialog previewDialog = new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_preview_title))
                 .setView(scroll).setNegativeButton(getString(R.string.core_cancel),null)
+                .setNeutralButton(getString(R.string.flow_agent_result_create_note),(dialog,which)->showAgentResultNewNoteForm(task))
                 .setPositiveButton(getString(R.string.flow_agent_result_append_confirm),(dialog,which)->{
                     AgentTaskStore.Task latest=tasks.get(taskId);
                     if(!sameAgentResultTask(task,latest)||!editorVisible||!restoreCompleted||canvasView==null
@@ -2466,7 +2536,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     startAgentResultAppend(latest,confirmedCandidate,targetNoteId,
                             capturedDocumentRevision,capturedSession,capturedLineage,capturedGroupRevision,
                             capturedGroupDigest,capturedLegacySha);
-                }).show();
+                }).create();
+        previewDialog.show();
     }
 
     private static boolean sameAgentResultTask(AgentTaskStore.Task expected,AgentTaskStore.Task actual) {

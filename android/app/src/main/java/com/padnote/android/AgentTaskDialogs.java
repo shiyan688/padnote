@@ -293,14 +293,28 @@ final class AgentTaskDialogs {
         statusText.setTextSize(15);statusText.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
         statusCard.addView(statusText,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
         body.addView(statusCard,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView resultText=new TextView(activity);resultText.setTextIsSelectable(true);
+        LinearLayout resultCard=paperCard();resultCard.addView(resultText,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        body.addView(resultCard);
         TextView content=new TextView(activity);
         LinearLayout detailCard=paperCard();detailCard.addView(content,new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));body.addView(detailCard);
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        detailCard.setVisibility(View.GONE);
+        Button toggleDetail=button(activity.getString(R.string.flow_expand_task_details));
+        toggleDetail.setOnClickListener(v->{boolean show=detailCard.getVisibility()!=View.VISIBLE;
+            detailCard.setVisibility(show?View.VISIBLE:View.GONE);
+            toggleDetail.setText(activity.getString(show?R.string.flow_collapse_task_details:R.string.flow_expand_task_details));});
+        body.addView(toggleDetail);body.addView(detailCard);
         content.setTextIsSelectable(true);
         LinearLayout actions=new LinearLayout(activity);actions.setOrientation(LinearLayout.VERTICAL);
         Button openSource=button(activity.getString(R.string.flow_return_to_note));
         if(initial.noteId.isEmpty()||sourceNoteOpener==null)openSource.setVisibility(View.GONE);
         addAction(actions,openSource);
+        Button continueWriting=button(activity.getString(R.string.flow_return_to_note));
+        if(initial.noteId.isEmpty()||sourceNoteOpener==null)continueWriting.setVisibility(View.VISIBLE);
+        else continueWriting.setVisibility(View.GONE);
+        addAction(actions,continueWriting);
         Button openTaskList=button(activity.getString(R.string.flow_open_task_list));addAction(actions,openTaskList);
         Button copyDiagnostic=button(activity.getString(R.string.flow_copy_diagnostic));addAction(actions,copyDiagnostic);
         Button appendResult=primaryButton(activity.getString(R.string.flow_append_result_to_note));
@@ -317,9 +331,12 @@ final class AgentTaskDialogs {
         AlertDialog dialog=ChoiceRows.builder(activity).setTitle(initial.title).setView(scroll(body))
                 .setNegativeButton(activity.getString(R.string.flow_close),null).create();
         AgentTaskStore.Task[] latestTask={initial};
+        continueWriting.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];
+            if(t!=null&&!t.status.terminal())dialog.dismiss();});
         String[] displayInput={inputText(initial)};
         long[] observedVersion={AgentTaskSubmissionExecutor.stateVersion(clientId)};
         statusText.setText(statusCardText(initial));content.setText(detail(initial,displayInput[0]));
+        updateResult(resultText,resultCard,initial);
         for(AgentTaskStore.Task child:tasks.children(clientId)){
             String input=inputText(child);String summary=input.length()>48?input.substring(0,48)+"…":input;
             Button open=button(activity.getString(R.string.flow_open_followup_round,status(child.status))+" · "+summary);
@@ -330,9 +347,13 @@ final class AgentTaskDialogs {
         Runnable[] update=new Runnable[1];
         update[0]=()->{
             long version=AgentTaskSubmissionExecutor.stateVersion(clientId);
-            if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));observedVersion[0]=version;}}
+            if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));updateResult(resultText,resultCard,reloaded);observedVersion[0]=version;}}
             AgentTaskStore.Task task=latestTask[0];if(task==null||!dialog.isShowing())return;
+            boolean canReturnToWriting=(task.noteId==null||task.noteId.isEmpty()||sourceNoteOpener==null)
+                    &&!task.status.terminal();
+            continueWriting.setVisibility(canReturnToWriting?View.VISIBLE:View.GONE);
             statusText.setText(statusCardText(task));
+            updateResult(resultText,resultCard,task);
             appendResult.setVisibility(task.status==AgentTaskStore.Status.COMPLETED
                     &&task.output!=null&&!task.output.trim().isEmpty()&&resultAppender!=null
                     ?View.VISIBLE:View.GONE);
@@ -462,8 +483,14 @@ final class AgentTaskDialogs {
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);lp.bottomMargin=dp(12);card.setLayoutParams(lp);return card;
     }
 
+    private void updateResult(TextView resultText,View resultCard,AgentTaskStore.Task task){
+        String output=task.output==null?"":task.output;
+        resultCard.setVisibility(output.trim().isEmpty()?View.GONE:View.VISIBLE);
+        resultText.setText(output.isEmpty()?"":activity.getString(R.string.flow_result_label)+"\n"+output);
+    }
+
     private String statusCardText(AgentTaskStore.Task task){AgentTaskSubmissionExecutor.ProgressInfo progress=AgentTaskSubmissionExecutor.progressInfo(task.clientTaskId);long updated=Math.max(task.updatedAt,progress==null?tasks.submissionAttemptTime(task.clientTaskId):progress.updatedAt);long age=Math.max(0,(System.currentTimeMillis()-updated)/1000L);return taskStatus(task)+"\n"+
-            activity.getString(R.string.flow_target)+": "+AgentTaskDestinationLabel.forTask(activity,task)+"\n"+
+            task.connectionName+"\n"+
             activity.getString(R.string.flow_stage_updated_ago,age);}
 
     private boolean refresh(AgentTaskStore.Task task) {

@@ -1,0 +1,6 @@
+<resources>
+    <string name="core_open_sample_note">打开示例笔记</string>
+    <string name="core_sample_note_title">PadNote 使用示例</string>
+    <string name="core_sample_note_body">这是人工编写的本地示例，不会自动发送给 AI 或电脑。\n\n## 1 写与问\n在空白处手写，圈选明确范围后向你选择的模型提问。\n\n## 2 分享\n从分享菜单导出 PDF，把当前纸面交给别人阅读。\n\n## 3 交给电脑\n先在电脑助手完成 Agent 连接与扫码配对，再从笔记选择交给 Agent。任务提交后可继续写，稍后在电脑任务查看结果。</string>
+    <string name="core_sample_open_failed">示例笔记暂时无法打开，请稍后重试</string>
+</resources>

@@ -1,0 +1,6 @@
+<resources>
+    <string name="core_open_sample_note">サンプルノートを開く</string>
+    <string name="core_sample_note_title">PadNote の使い方</string>
+    <string name="core_sample_note_body">これは人が作成したローカルのサンプルです。AI やコンピューターに自動送信されることはありません。\n\n## 1 書いて質問する\n空白の場所に手書きし、範囲を明確に選択して、選んだモデルに質問します。\n\n## 2 共有する\n共有メニューから PDF を書き出し、現在のページをほかの人に見せます。\n\n## 3 コンピューターに送る\nまずデスクトップアシスタントで Agent に接続し、QR コードを読み取ってペアリングします。その後、ノートから Agent に送信します。送信後も書き続けられ、結果は後でコンピュータータスクから確認できます。</string>
+    <string name="core_sample_open_failed">サンプルノートを開けません。しばらくしてからもう一度お試しください。</string>
+</resources>
