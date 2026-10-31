@@ -12,8 +12,13 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.junit.Assert.*;
 
 import android.content.Context;
+import android.os.SystemClock;
+import android.view.MotionEvent;
+import android.view.View;
 
 import androidx.test.core.app.ActivityScenario;
+import androidx.test.espresso.UiController;
+import androidx.test.espresso.ViewAction;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
@@ -21,6 +26,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.hamcrest.Matcher;
 
 import java.io.File;
 import java.util.Arrays;
@@ -172,6 +178,97 @@ public final class AgentResultActivityInstrumentedTest {
                 } catch(Exception restoring){return false;}
             },"cold reopened note lost the point anchor");
         }
+    }
+
+    @Test public void pointChooserZoomPanTapPreservesKnownPaperCoordinateAfterReopen() throws Exception {
+        try(Fixture fixture=Fixture.create();
+            ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+            scenario.onActivity(activity->activity.showCachedAgentTaskForTest(
+                    fixture.task.clientTaskId,fixture.tasks));
+            await(()->{
+                try{onView(withText(R.string.flow_append_result_to_note)).check(matches(isDisplayed()));return true;}
+                catch(RuntimeException|AssertionError unavailable){return false;}
+            },"result action did not become visible");
+            onView(withText(R.string.flow_append_result_to_note)).perform(scrollTo(),click());
+            onView(withText(R.string.flow_agent_result_choose_page)).perform(click());
+            await(()->{
+                try{onView(withContentDescription(R.string.flow_agent_result_tap_placement))
+                        .check(matches(isDisplayed())).check(matches(isEnabled()));return true;}
+                catch(RuntimeException|AssertionError rendering){return false;}
+            },"paper page was not rendered for coordinate selection");
+            onView(withContentDescription(R.string.paper_view_zoom_in)).perform(click());
+            onView(withContentDescription(R.string.flow_agent_result_tap_placement))
+                    .perform(panThenTapPaperPoint(0.31f,0.37f));
+            onView(withText(R.string.flow_agent_result_preview_at_point)).perform(click());
+            await(()->{
+                try{onView(withText(R.string.flow_agent_result_append_confirm)).check(matches(isEnabled()));return true;}
+                catch(RuntimeException|AssertionError preparing){return false;}
+            },"compiled zoomed point preview did not become confirmable");
+            onView(withText(R.string.flow_agent_result_append_confirm)).perform(click());
+            await(()->{
+                try{
+                    JSONObject saved=NoteStore.load(fixture.context,fixture.note.id);
+                    JSONArray flows=saved.optJSONArray("textFlows");
+                    if(flows==null||countOrigin(flows,fixture.applicationId)!=1)return false;
+                    final boolean[] idle={false};scenario.onActivity(a->idle[0]=a.agentResultAppendIdleForTest());
+                    return idle[0];
+                }catch(Exception pending){return false;}
+            },"zoomed point candidate was not durably saved");
+            JSONObject saved=NoteStore.load(fixture.context,fixture.note.id);
+            JSONObject stored=findOrigin(saved.getJSONArray("textFlows"),fixture.applicationId);
+            assertNotNull(stored);
+            assertEquals(0,stored.getInt("anchorPageIndex"));
+            assertEquals(saved.getDouble("pageWidth")*0.31d,stored.getDouble("anchorXInPage"),1.5d);
+            assertEquals(saved.getDouble("pageHeight")*0.37d,stored.getDouble("anchorYInPage"),1.5d);
+            assertEquals(fixture.task.output,stored.getString("source"));
+            assertEquals(AgentResultProvenance.sha256(fixture.task.output.getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8)),stored.getJSONObject("agentResult").getString("resultSha256"));
+
+            onView(withText(R.string.flow_close)).perform(click());
+            onView(withContentDescription(R.string.core_back_shelf)).perform(click());
+            clickNoteWhenVisible(fixture.context,fixture.note.title);
+            await(()->{
+                try{
+                    JSONObject reopened=findOrigin(scenarioNote(scenario,fixture).getJSONArray("textFlows"),fixture.applicationId);
+                    return reopened!=null&&Math.abs(reopened.getDouble("anchorXInPage")-stored.getDouble("anchorXInPage"))<0.01d
+                            &&Math.abs(reopened.getDouble("anchorYInPage")-stored.getDouble("anchorYInPage"))<0.01d;
+                }catch(Exception restoring){return false;}
+            },"cold reopened note changed the zoomed paper-space anchor");
+        }
+    }
+
+    private static ViewAction panThenTapPaperPoint(float xFraction,float yFraction){
+        return new ViewAction(){
+            @Override public Matcher<View> getConstraints(){return isDisplayed();}
+            @Override public String getDescription(){return "pan zoomed paper viewport then tap a known paper point";}
+            @Override public void perform(UiController ui,View target){
+                assertTrue(target instanceof PaperBitmapViewport);
+                PaperBitmapViewport paper=(PaperBitmapViewport)target;
+                assertTrue("zoom control must change only viewport scale",paper.currentScale()>paper.fitPageScale());
+                float oldLeft=paper.paperToViewX(paper.paperWidth()/2f),oldTop=paper.paperToViewY(paper.paperHeight()/2f);
+                float cx=target.getWidth()/2f,cy=target.getHeight()/2f;
+                float density=target.getResources().getDisplayMetrics().density;
+                boolean overflowX=paper.paperWidth()*paper.currentScale()>target.getWidth()+2f;
+                boolean overflowY=paper.paperHeight()*paper.currentScale()>target.getHeight()+2f;
+                assertTrue("zoomed page must overflow at least one axis",overflowX||overflowY);
+                float dx=overflowX?48*density:0f,dy=overflowY?26*density:0f;
+                long t=SystemClock.uptimeMillis();
+                target.dispatchTouchEvent(MotionEvent.obtain(t,t,MotionEvent.ACTION_DOWN,cx,cy,0));
+                target.dispatchTouchEvent(MotionEvent.obtain(t,t+40,MotionEvent.ACTION_MOVE,cx+dx,cy+dy,0));
+                target.dispatchTouchEvent(MotionEvent.obtain(t,t+80,MotionEvent.ACTION_UP,cx+dx,cy+dy,0));
+                float newLeft=paper.paperToViewX(paper.paperWidth()/2f),newTop=paper.paperToViewY(paper.paperHeight()/2f);
+                assertTrue("one-finger movement must pan the displayed page",
+                        Math.abs(newLeft-oldLeft)>8f||Math.abs(newTop-oldTop)>8f);
+                float pageX=paper.paperWidth()*xFraction,pageY=paper.paperHeight()*yFraction;
+                float tapX=paper.paperToViewX(pageX),tapY=paper.paperToViewY(pageY);
+                assertTrue("known tap remains inside the visible viewport",tapX>0&&tapX<target.getWidth()
+                        &&tapY>0&&tapY<target.getHeight());
+                long tap=SystemClock.uptimeMillis();
+                target.dispatchTouchEvent(MotionEvent.obtain(tap,tap,MotionEvent.ACTION_DOWN,tapX,tapY,0));
+                target.dispatchTouchEvent(MotionEvent.obtain(tap,tap+60,MotionEvent.ACTION_UP,tapX,tapY,0));
+                ui.loopMainThreadUntilIdle();
+            }
+        };
     }
 
     private static void openResultPreview() throws Exception {

@@ -42,6 +42,11 @@ class _RequestDeadline:
     def check(self) -> None:
         self.remaining()
 
+    @property
+    def expired(self) -> bool:
+        with self._lock:
+            return self._expired or time.monotonic() >= self.ends_at
+
     def register_socket(self, active: socket.socket) -> None:
         try:
             active.settimeout(self.remaining())
@@ -132,11 +137,19 @@ class _BoundedResolver:
 _RESOLVER = _BoundedResolver()
 
 
+class _TransportState:
+    """Per-request marker set only after HTTP can be exchanged with the peer."""
+
+    def __init__(self) -> None:
+        self.http_established = False
+
+
 class _ResolvedConnectionMixin:
     def _configure_deadline(self, deadline: _RequestDeadline,
-                            addresses: list[tuple]) -> None:
+                            addresses: list[tuple], transport_state: _TransportState) -> None:
         self._padnote_deadline = deadline
         self._padnote_addresses = addresses
+        self._padnote_transport_state = transport_state
         self._create_connection = self._open_resolved_connection
 
     def _open_resolved_connection(self, _address, _timeout=None,
@@ -161,24 +174,25 @@ class _ResolvedConnectionMixin:
 
 class _DeadlineHTTPConnection(_ResolvedConnectionMixin, http.client.HTTPConnection):
     def __init__(self, host: str, *, deadline: _RequestDeadline,
-                 addresses: list[tuple], **kwargs: Any) -> None:
+                 addresses: list[tuple], transport_state: _TransportState, **kwargs: Any) -> None:
         kwargs["timeout"] = deadline.remaining()
         super().__init__(host, **kwargs)
-        self._configure_deadline(deadline, addresses)
+        self._configure_deadline(deadline, addresses, transport_state)
 
     def connect(self) -> None:
         super().connect()
         if self.sock is None:
             raise OSError("Hermes connection did not create a socket")
         self._padnote_deadline.register_socket(self.sock)
+        self._padnote_transport_state.http_established = True
 
 
 class _DeadlineHTTPSConnection(_ResolvedConnectionMixin, http.client.HTTPSConnection):
     def __init__(self, host: str, *, deadline: _RequestDeadline,
-                 addresses: list[tuple], **kwargs: Any) -> None:
+                 addresses: list[tuple], transport_state: _TransportState, **kwargs: Any) -> None:
         kwargs["timeout"] = deadline.remaining()
         super().__init__(host, **kwargs)
-        self._configure_deadline(deadline, addresses)
+        self._configure_deadline(deadline, addresses, transport_state)
 
     def connect(self) -> None:
         # Establish TCP through the pre-resolved address list. Wrapping without
@@ -194,31 +208,38 @@ class _DeadlineHTTPSConnection(_ResolvedConnectionMixin, http.client.HTTPSConnec
         self._padnote_deadline.register_socket(wrapped)
         wrapped.do_handshake()
         wrapped.settimeout(self._padnote_deadline.remaining())
+        self._padnote_transport_state.http_established = True
 
 
 class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, deadline: _RequestDeadline, addresses: list[tuple]) -> None:
+    def __init__(self, deadline: _RequestDeadline, addresses: list[tuple],
+                 transport_state: _TransportState) -> None:
         super().__init__()
         self._deadline = deadline
         self._addresses = addresses
+        self._transport_state = transport_state
 
     def http_open(self, request):
         def factory(host, **kwargs):
             return _DeadlineHTTPConnection(
-                host, deadline=self._deadline, addresses=self._addresses, **kwargs)
+                host, deadline=self._deadline, addresses=self._addresses,
+                transport_state=self._transport_state, **kwargs)
         return self.do_open(factory, request)
 
 
 class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
-    def __init__(self, deadline: _RequestDeadline, addresses: list[tuple]) -> None:
+    def __init__(self, deadline: _RequestDeadline, addresses: list[tuple],
+                 transport_state: _TransportState) -> None:
         super().__init__(context=ssl.create_default_context())
         self._deadline = deadline
         self._addresses = addresses
+        self._transport_state = transport_state
 
     def https_open(self, request):
         def factory(host, **kwargs):
             return _DeadlineHTTPSConnection(
-                host, deadline=self._deadline, addresses=self._addresses, **kwargs)
+                host, deadline=self._deadline, addresses=self._addresses,
+                transport_state=self._transport_state, **kwargs)
         return self.do_open(factory, request, context=self._context)
 
 
@@ -449,6 +470,7 @@ class HermesClient:
         request_timeout = (self.submission_timeout if method.upper() == "POST" and path == "/v1/runs"
                            else self.timeout)
         deadline = _RequestDeadline(request_timeout)
+        transport_state = _TransportState()
         deadline.start()
         try:
             addresses = _RESOLVER.resolve(self._host, self._port, deadline)
@@ -465,9 +487,9 @@ class HermesClient:
                         "upstream_unreachable", "Hermes loopback hostname resolved outside this computer",
                         status=503)
             handlers: list[Any] = [urllib.request.ProxyHandler({}), _RejectRedirects()]
-            handlers.append(_DeadlineHTTPSHandler(deadline, addresses)
+            handlers.append(_DeadlineHTTPSHandler(deadline, addresses, transport_state)
                             if self._scheme == "https"
-                            else _DeadlineHTTPHandler(deadline, addresses))
+                            else _DeadlineHTTPHandler(deadline, addresses, transport_state))
             opener = urllib.request.build_opener(*handlers)
             with opener.open(request, timeout=deadline.remaining()) as response:
                 active = self._response_socket(response)
@@ -517,9 +539,15 @@ class HermesClient:
             reason = getattr(error, "reason", error)
             if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
                 message = "Hermes API Server is not running or is not reachable"
+                code = "upstream_unreachable"
+            elif transport_state.http_established and (
+                    isinstance(reason, (socket.timeout, TimeoutError)) or deadline.expired):
+                code = "upstream_unresponsive"
+                message = "Hermes accepted the connection but did not return an HTTP response in time"
             else:
+                code = "upstream_unreachable"
                 message = "Hermes request timed out or the connection failed"
-            raise HermesError("upstream_unreachable", message, status=503, uncertain=method == "POST") from error
+            raise HermesError(code, message, status=503, uncertain=method == "POST") from error
         finally:
             deadline.finish()
         if not isinstance(parsed, dict):
@@ -640,6 +668,8 @@ class HermesClient:
                 return CapabilityResult("api_not_enabled", str(error), {}, False)
             if error.code == "upstream_unreachable":
                 return CapabilityResult("not_running", str(error), {}, False)
+            if error.code == "upstream_unresponsive":
+                return CapabilityResult("unresponsive", str(error), {}, False)
             return CapabilityResult("error", str(error), {}, False)
 
         if value.get("object") != "hermes.api_server.capabilities" or value.get("platform") != "hermes-agent":

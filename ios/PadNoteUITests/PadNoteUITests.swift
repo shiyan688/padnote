@@ -2074,8 +2074,28 @@ final class AgentResultToPaperUITests: XCTestCase {
 
         let confirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        let form = app.descendants(matching: .any).matching(identifier: "agentResultAppendForm").firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 8))
         let rawAnswer = app.descendants(matching: .any).matching(identifier: "agentResultRawAnswerDisclosure").firstMatch
-        for _ in 0..<6 where !rawAnswer.isHittable { app.swipeUp() }
+        // The paper candidate owns an inner UIScrollView. Drag in the Form's far-left
+        // gutter so the gesture scrolls the form toward the offscreen disclosure row.
+        for _ in 0..<8 where !rawAnswer.isHittable {
+            let start = form.coordinate(withNormalizedOffset: CGVector(dx: 0.015, dy: 0.88))
+            let end = form.coordinate(withNormalizedOffset: CGVector(dx: 0.015, dy: 0.18))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        if !rawAnswer.isHittable {
+            attachResultPaperFailureDiagnostics("raw-answer-disclosure-not-hittable")
+            let status = """
+            form.exists=\(form.exists); form.frame=\(String(describing: form.frame)); form.hittable=\(form.isHittable)
+            disclosure.exists=\(rawAnswer.exists); disclosure.frame=\(String(describing: rawAnswer.frame)); disclosure.hittable=\(rawAnswer.isHittable)
+            confirm.exists=\(confirm.exists); confirm.enabled=\(confirm.isEnabled)
+            """
+            let attachment = XCTAttachment(string: status)
+            attachment.name = "raw-answer-disclosure-not-hittable-state"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
         XCTAssertTrue(rawAnswer.isHittable)
         rawAnswer.tap()
         XCTAssertTrue(app.staticTexts["Synthetic result for the isolated result-to-paper UI test."].exists)
@@ -2146,21 +2166,47 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertEqual(placementState.label, "已选第 1 页的位置")
         XCTAssertTrue((placementState.value as? String)?.contains("point=1; page=0;") == true,
                       "a11y diagnostic should expose selected page and coordinates: \(String(describing: placementState.value))")
-        waitUntilEnabled(app.buttons["agentResultConfirmAppend"])
-        let paper = app.images["agentResultPaperPreviewImage"]
+        waitUntilEnabledWithPaperDiagnostics(app.buttons["agentResultConfirmAppend"])
+        let paper = app.descendants(matching: .any)["agentResultPaperViewport"]
         XCTAssertTrue(paper.waitForExistence(timeout: 20), "point mode must show a raster paper candidate")
         for _ in 0..<6 where !paper.isHittable { app.swipeUp() }
         XCTAssertTrue(paper.isHittable)
+        let zoomIn = app.buttons["agentResultPaperZoomIn"]
+        XCTAssertTrue(zoomIn.waitForExistence(timeout: 8))
+        zoomIn.tap()
+        let dragStart = paper.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.80))
+        let dragEnd = paper.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.64))
+        dragStart.press(forDuration: 0.1, thenDragTo: dragEnd)
         let priorCoordinates = placementState.value as? String ?? ""
-        paper.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let pageFit = min((paper.frame.width - 32) / 768, (paper.frame.height - 24) / 1086)
+        let displayedPageWidth = 768 * pageFit * 1.35
+        let paperInteriorX = min(0.95, max(0.05, 0.5 + 0.10 * displayedPageWidth / paper.frame.width))
+        paper.coordinate(withNormalizedOffset: CGVector(dx: paperInteriorX, dy: 0.50)).tap()
         let confirm = app.buttons["agentResultConfirmAppend"]
         let changedPoint = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", priorCoordinates), object: placementState)
-        XCTAssertEqual(XCTWaiter.wait(for: [changedPoint], timeout: 8), .completed)
+        let pointChangeResult = XCTWaiter.wait(for: [changedPoint], timeout: 8)
+        if pointChangeResult != .completed {
+            attachResultPaperFailureDiagnostics("agent-result-paper-point-not-changed")
+            let pointState = """
+            waiter=\(pointChangeResult)
+            placement.label=\(placementState.label)
+            placement.value=\(String(describing: placementState.value))
+            viewport.label=\(paper.label)
+            viewport.value=\(String(describing: paper.value))
+            viewport.frame=\(String(describing: paper.frame))
+            confirm.exists=\(confirm.exists); confirm.enabled=\(confirm.isEnabled)
+            """
+            let stateAttachment = XCTAttachment(string: pointState)
+            stateAttachment.name = "agent-result-paper-point-not-changed-state"
+            stateAttachment.lifetime = .keepAlways
+            add(stateAttachment)
+        }
+        XCTAssertEqual(pointChangeResult, .completed)
         let selectedPlacement = placementState.value as? String ?? ""
         XCTAssertTrue(selectedPlacement.contains("point=1; page=0;"), selectedPlacement)
-        XCTAssertFalse(selectedPlacement.contains("x=24; y=60"), "the paper tap must change the selected paper position: \(selectedPlacement)")
+        XCTAssertFalse(selectedPlacement.contains("x=24.000; y=60.000"), "the paper tap must change the selected paper position: \(selectedPlacement)")
         let pointScreenshot = XCTAttachment(screenshot: app.screenshot())
-        pointScreenshot.name = "agent-result-paper-point-selection-r2"
+        pointScreenshot.name = "agent-result-paper-zoom-pan-point-selection-c37"
         pointScreenshot.lifetime = .keepAlways
         add(pointScreenshot)
         waitUntilEnabled(confirm)
@@ -2172,11 +2218,19 @@ final class AgentResultToPaperUITests: XCTestCase {
         let state = app.staticTexts["agentResultPaperFixtureState"]
         XCTAssertTrue(state.waitForExistence(timeout: 8))
         XCTAssertTrue(state.label.contains("schema=9; flows=1; receipts=1"), state.label)
+        XCTAssertTrue(state.label.contains("sourceExact=true; sourceDigestMatches=true; taskMatches=true"), state.label)
         XCTAssertTrue(state.label.contains("anchor=0,"), "point placement must stay on the selected first page: \(state.label)")
         XCTAssertFalse(state.label.contains("anchor=1,16,40"), "point placement must not silently fall back to append")
-        let coords = selectedPlacement.split(separator: ";").suffix(2).compactMap { Int($0.split(separator: "=").last ?? "") }
-        if coords.count == 2 {
-            XCTAssertTrue(state.label.contains("anchor=0,\(coords[0]),\(coords[1])"),
+        let x = selectedPlacement.split(separator: ";").first(where: { $0.contains("x=") })
+            .flatMap { Double($0.split(separator: "=").last ?? "") }
+        let y = selectedPlacement.split(separator: ";").first(where: { $0.contains("y=") })
+            .flatMap { Double($0.split(separator: "=").last ?? "") }
+        if let x, let y {
+            XCTAssertTrue(abs(x - 384) > 20 || abs(y - 543) > 20,
+                          "the viewport flow must persist a known non-center paper selection: \(selectedPlacement)")
+            let exactX = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), x)
+            let exactY = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), y)
+            XCTAssertTrue(state.label.contains("exactAnchor=0,\(exactX),\(exactY)"),
                           "persisted anchor must equal the clicked paper coordinates: \(state.label); \(selectedPlacement)")
         } else { XCTFail("Could not parse confirmed point from \(selectedPlacement)") }
     }
@@ -2188,18 +2242,34 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(app.buttons["agentResultPreviewToPaper"].waitForExistence(timeout: 10))
         app.buttons["agentResultPreviewToPaper"].tap()
 
+        let confirm = app.buttons["agentResultConfirmAppend"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        // Let the captured candidate become ready before injecting the deliberate
+        // concurrent edit; this test is for the save-time CAS rejection, not a
+        // mutation racing initial preview compilation.
+        waitUntilEnabledWithPaperDiagnostics(confirm)
         let change = app.buttons["agentResultUITestChangeTarget"]
         XCTAssertTrue(change.waitForExistence(timeout: 8))
         XCTAssertTrue(change.isHittable)
         change.tap()
-        let confirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(confirm.exists)
+        XCTAssertTrue(confirm.isEnabled, "the ready candidate should remain confirmable so save exercises CAS")
         waitUntilEnabled(confirm)
         confirm.tap()
 
         let error = app.staticTexts["agentResultAppendError"]
         if !error.waitForExistence(timeout: 20) {
             attachResultPaperFailureDiagnostics("stale-preview-error-missing")
+            let state = app.staticTexts["agentResultPaperFixtureState"]
+            let status = """
+            confirm.exists=\(confirm.exists); confirm.enabled=\(confirm.isEnabled)
+            error.exists=\(error.exists); error.label=\(error.label); error.value=\(String(describing: error.value))
+            fixture.exists=\(state.exists); fixture.label=\(state.label)
+            """
+            let attachment = XCTAttachment(string: status)
+            attachment.name = "stale-preview-error-missing-state"
+            attachment.lifetime = .keepAlways
+            add(attachment)
             XCTFail("stale preview must return an error instead of overwriting the newer target")
             return
         }
@@ -2220,6 +2290,36 @@ final class AgentResultToPaperUITests: XCTestCase {
         hierarchy.name = "\(name)-accessibility-hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
+    }
+
+    private func waitUntilEnabledWithPaperDiagnostics(_ element: XCUIElement, timeout: TimeInterval = 30,
+                                                       file: StaticString = #filePath, line: UInt = #line) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
+        let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
+        if result != .completed {
+            let errorElement = app.staticTexts["agentResultAppendError"]
+            let placementElement = app.staticTexts["agentResultPlacementState"]
+            let paperElement = app.descendants(matching: .any)["agentResultPaperViewport"]
+            let status = """
+            result=\(result); confirm.exists=\(element.exists); confirm.enabled=\(element.isEnabled)
+            appendError.exists=\(errorElement.exists); appendError.label=\(errorElement.label); appendError.value=\(String(describing: errorElement.value))
+            placement.exists=\(placementElement.exists); placement.label=\(placementElement.label); placement.value=\(String(describing: placementElement.value))
+            paper.exists=\(paperElement.exists); paper.hittable=\(paperElement.isHittable); paper.frame=\(String(describing: paperElement.frame))
+            """
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "agent-result-paper-preview-not-ready-screenshot"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "agent-result-paper-preview-not-ready-accessibility-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            let state = XCTAttachment(string: status)
+            state.name = "agent-result-paper-preview-not-ready-state"
+            state.lifetime = .keepAlways
+            add(state)
+        }
+        XCTAssertEqual(result, .completed, "paper candidate should become ready before confirmation", file: file, line: line)
     }
 
     private func waitUntilEnabled(_ element: XCUIElement, timeout: TimeInterval = 30,

@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">下一页</string>
     <string name="flow_agent_result_rechecking">正在重新核对同一落点…</string>
     <string name="flow_agent_result_preview_changed">实测排版发生变化，请重新打开预览并检查页面。</string>
+    <string name="paper_view_fit_page">整页</string><string name="paper_view_fit_width">适合页宽</string>
+    <string name="paper_view_fit_page_short">整页</string><string name="paper_view_fit_width_short">页宽</string>
+    <string name="paper_view_zoom_out">缩小</string><string name="paper_view_zoom_in">放大</string>
 </resources>

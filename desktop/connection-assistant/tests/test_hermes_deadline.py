@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from padnote_assistant.bridge import BridgeService
+from padnote_assistant import admin_ui
 from padnote_assistant.lan import load_or_create_identity
 from padnote_assistant.hermes import (
     HermesClient,
@@ -38,7 +39,19 @@ class _HermesFixtureHandler(BaseHTTPRequestHandler):
         self.server.request_count += 1
         self.server.request_started.set()
         self.server.get_paths.append(self.path)
-        if self.path.startswith("/v1/runs/"):
+        if self.path == "/v1/capabilities" and self.server.mode == "valid-capabilities":
+            self._respond({
+                "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
+                "features": {"run_submission": True, "run_status": True,
+                              "run_stop": True, "run_approval_response": True},
+                "endpoints": {
+                    "runs": {"method": "POST", "path": "/v1/runs"},
+                    "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+                    "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                    "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                },
+            })
+        elif self.path.startswith("/v1/runs/"):
             run_id = self.path.rsplit("/", 1)[-1]
             value = {"run_id": run_id, "status": self.server.get_run_status}
             if self.server.get_run_error is not None:
@@ -71,6 +84,9 @@ class _HermesFixtureHandler(BaseHTTPRequestHandler):
 
     def _respond(self, value: dict, *, status: int = 200) -> None:
         mode = self.server.mode
+        if mode == "no-response":
+            time.sleep(2)
+            return
         data = json.dumps(value, separators=(",", ":")).encode("utf-8")
         if mode == "nonfinite-number":
             data = b'{"value":1e999}'
@@ -222,11 +238,51 @@ class HermesDeadlineTests(unittest.TestCase):
         return caught.exception
 
     def test_total_deadline_interrupts_slow_headers_and_trickle_body(self) -> None:
-        self.assertEqual("upstream_unreachable",
+        self.assertEqual("upstream_unresponsive",
                          self.assert_deadline_error("slow-header", method="GET").code)
         self.server.request_started.clear()
-        self.assertEqual("upstream_unreachable",
-                         self.assert_deadline_error("slow-body").code)
+        error = self.assert_deadline_error("slow-body")
+        self.assertEqual("upstream_unresponsive", error.code)
+        self.assertTrue(error.uncertain)
+
+    def test_listener_without_http_bytes_is_unresponsive_not_ready(self) -> None:
+        self.server.mode = "no-response"
+        result = self.client(timeout=0.25).check_capabilities()
+        self.assertEqual("unresponsive", result.health)
+        self.assertFalse(result.executable)
+        self.assertIn("accepted the connection", result.detail)
+
+    def test_refused_wrong_service_and_valid_capabilities_keep_distinct_states(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            refused_port = probe.getsockname()[1]
+        refused = HermesClient(f"http://127.0.0.1:{refused_port}", None, timeout=0.5).check_capabilities()
+        self.assertEqual("not_running", refused.health)
+        self.assertFalse(refused.executable)
+
+        self.server.mode = "normal"
+        wrong = self.client(timeout=1).check_capabilities()
+        self.assertEqual("wrong_service", wrong.health)
+        self.assertFalse(wrong.executable)
+
+        self.server.mode = "valid-capabilities"
+        valid = self.client(timeout=1).check_capabilities()
+        self.assertEqual("ready", valid.health)
+        self.assertTrue(valid.executable)
+
+    def test_new_health_is_safe_in_admin_and_readiness_mappings(self) -> None:
+        label, tone = admin_ui._health("unresponsive")
+        self.assertEqual("服务已连接但无响应", label)
+        self.assertEqual("bad", tone)
+        self.assertIn("不会自动重启", admin_ui._health_guidance("unresponsive"))
+        with tempfile.TemporaryDirectory() as directory:
+            with BridgeService(Path(directory)) as service:
+                value = service._readiness_snapshot({
+                    "health": "unresponsive", "checked_at": int(service.clock()),
+                    "executable": False,
+                }, key_present=True)
+        self.assertEqual("unavailable", value["agent_status"])
+        self.assertEqual("unresponsive", value["reason"])
 
     def test_content_length_and_truncation_are_safely_classified(self) -> None:
         for mode in ("invalid-length", "duplicate-length", "truncated"):

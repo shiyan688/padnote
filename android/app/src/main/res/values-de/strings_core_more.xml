@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">Weiter</string>
     <string name="flow_agent_result_rechecking">Dieselbe Position wird erneut geprüft…</string>
     <string name="flow_agent_result_preview_changed">Das gemessene Layout hat sich geändert. Öffne die Vorschau erneut.</string>
+    <string name="paper_view_fit_page">Ganze Seite</string><string name="paper_view_fit_width">Seitenbreite</string>
+    <string name="paper_view_fit_page_short">Seite</string><string name="paper_view_fit_width_short">Breite</string>
+    <string name="paper_view_zoom_out">Verkleinern</string><string name="paper_view_zoom_in">Vergrößern</string>
 </resources>

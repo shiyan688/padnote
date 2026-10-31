@@ -15,6 +15,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.RectF;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -537,6 +538,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private NoteCanvasView.PdfExportSnapshot activeAgentPreviewSnapshot;
     private NoteCanvasView.AgentPreviewHandle activeAgentPreviewPreparation;
     private Bitmap activeAgentPreviewBitmap;
+    private PaperBitmapViewport activeAgentPreviewViewport;
     private AlertDialog activeAgentPreviewDialog;
     private FrameLayout activeAgentPreviewHost;
     private String groupEditorSessionId = java.util.UUID.randomUUID().toString();
@@ -2510,23 +2512,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         nav.addView(pageLabel,new LinearLayout.LayoutParams(0,-2,2));
         nav.addView(next,new LinearLayout.LayoutParams(0,-2,1));
         root.addView(nav);
-        FrameLayout pageFrame=new FrameLayout(this);
-        final float[] pendingAccessibleTap={Float.NaN,Float.NaN};
-        final Runnable[] applyPointSelection={null};
-        ImageView paperImage=new ImageView(this){
-            @Override public boolean performClick(){
-                super.performClick();
-                if(applyPointSelection[0]!=null)applyPointSelection[0].run();
-                return true;
-            }
-        };
-        paperImage.setScaleType(ImageView.ScaleType.FIT_CENTER);paperImage.setEnabled(false);
-        paperImage.setClickable(true);paperImage.setFocusable(true);
-        paperImage.setContentDescription(getString(R.string.flow_agent_result_tap_placement));
-        pageFrame.addView(paperImage,new FrameLayout.LayoutParams(-1,-1));
-        TextView marker=text("●",22,Color.rgb(220,40,40));marker.setVisibility(View.GONE);
-        pageFrame.addView(marker,new FrameLayout.LayoutParams(dp(40),dp(40)));
-        root.addView(pageFrame,new LinearLayout.LayoutParams(-1,dp(320)));
+        PaperBitmapViewport paperView=new PaperBitmapViewport(this);
+        paperView.setContentDescription(getString(R.string.flow_agent_result_tap_placement));
+        LinearLayout viewportControls=addPaperViewportControls(root,paperView);
+        setPaperViewportControlsEnabled(viewportControls,false);
+        paperView.setEnabled(false);
+        root.addView(paperView,new LinearLayout.LayoutParams(-1,0,1f));
         TextView widthLabel=text("",13,SECONDARY_TEXT);
         root.addView(widthLabel);
         SeekBar widthSeek=new SeekBar(this);widthSeek.setMax(100);widthSeek.setProgress(100);root.addView(widthSeek);
@@ -2556,12 +2547,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if(generation!=agentResultPreviewGeneration||paper.isClosed())return;
             final int request=++pickerRenderSerial[0];
             pageLabel.setText(getString(R.string.flow_agent_result_page_of,page[0]+1,paper.getPageCount()));
-            marker.setVisibility(View.GONE);tap[0]=Float.NaN;tap[1]=Float.NaN;paperImage.setEnabled(false);
+            tap[0]=Float.NaN;tap[1]=Float.NaN;paperView.clearMarker();paperView.setEnabled(false);
+            setPaperViewportControlsEnabled(viewportControls,false);
             previous.setEnabled(false);next.setEnabled(false);
             paper.renderPageWithTextAsync(page[0],1000,host,new NoteCanvasView.PdfExportSnapshot.PageCallback(){
                 public void onRendered(Bitmap bitmap){
                     if(generation!=agentResultPreviewGeneration||request!=pickerRenderSerial[0]||!dialog.isShowing()){bitmap.recycle();return;}
-                    replaceAgentPreviewBitmap(paperImage,bitmap);paperImage.setEnabled(true);
+                    replaceAgentPreviewBitmap(paperView,bitmap,page[0],paper.getPageWidth(),paper.getPageHeight());
+                    setPaperViewportControlsEnabled(viewportControls,paperView.isReadyForInteraction());
                     previous.setEnabled(page[0]>0);next.setEnabled(page[0]+1<paper.getPageCount());
                 }
                 public void onFailure(Exception e){if(generation==agentResultPreviewGeneration){
@@ -2571,44 +2564,28 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         };
         previous.setOnClickListener(v->{if(page[0]>0){page[0]--;renderPage[0].run();}});
         next.setOnClickListener(v->{if(page[0]+1<paper.getPageCount()){page[0]++;renderPage[0].run();}});
-        applyPointSelection[0]=()->{
-            float px=Float.isFinite(pendingAccessibleTap[0])?pendingAccessibleTap[0]:paper.getPageWidth()/2f;
-            float py=Float.isFinite(pendingAccessibleTap[1])?pendingAccessibleTap[1]:paper.getPageHeight()/2f;
-            pendingAccessibleTap[0]=Float.NaN;pendingAccessibleTap[1]=Float.NaN;
+        paperView.setListener((selectedPage,px,py)->{
+            if(selectedPage!=page[0]||generation!=agentResultPreviewGeneration)return;
             if(px<margin||py<margin||px>paper.getPageWidth()-margin||py>paper.getPageHeight()-margin){
                 hint.setText(getString(R.string.flow_agent_result_tap_inside));return;
             }
             float available=paper.getPageWidth()-margin-px;
             if(available<dp(180)){hint.setText(getString(R.string.flow_agent_result_width_too_small));return;}
             tap[0]=px;tap[1]=py;
-            float markerScale=Math.min(paperImage.getWidth()/paper.getPageWidth(),paperImage.getHeight()/paper.getPageHeight());
-            float markerLeft=(paperImage.getWidth()-paper.getPageWidth()*markerScale)/2f+px*markerScale-dp(20);
-            float markerTop=(paperImage.getHeight()-paper.getPageHeight()*markerScale)/2f+py*markerScale-dp(20);
-            marker.setTranslationX(markerLeft);marker.setTranslationY(markerTop);marker.setVisibility(View.VISIBLE);
+            paperView.setMarker(px,py);
             hint.setText(getString(R.string.flow_agent_result_point_selected,page[0]+1,
                     Math.round(px/getResources().getDisplayMetrics().density),Math.round(py/getResources().getDisplayMetrics().density)));
             updateWidth.run();
-            paperImage.announceForAccessibility(hint.getText());
-        };
-        paperImage.setOnTouchListener((v,event)->{
-            if(event.getAction()!=MotionEvent.ACTION_UP||!paperImage.isEnabled()||paperImage.getDrawable()==null)return true;
-            float viewW=paperImage.getWidth(),viewH=paperImage.getHeight();
-            float scale=Math.min(viewW/paper.getPageWidth(),viewH/paper.getPageHeight());
-            float drawW=paper.getPageWidth()*scale,drawH=paper.getPageHeight()*scale;
-            float left=(viewW-drawW)/2f,top=(viewH-drawH)/2f;
-            float px=(event.getX()-left)/scale,py=(event.getY()-top)/scale;
-            pendingAccessibleTap[0]=px;pendingAccessibleTap[1]=py;
-            paperImage.performClick();
-            return true;
+            paperView.announceForAccessibility(hint.getText());
         });
         updateWidth.run();
         dialog.setOnDismissListener(d->{if(generation==agentResultPreviewGeneration)agentResultPreviewGeneration++;
             paper.close();if(activeAgentPreviewSnapshot==paper)activeAgentPreviewSnapshot=null;
             if(activeAgentPreviewDialog==dialog)activeAgentPreviewDialog=null;
             if(activeAgentPreviewHost==host)activeAgentPreviewHost=null;
-            releaseAgentPreviewBitmap(paperImage);});
+            releaseAgentPreviewBitmap(paperView);});
         dialog.setButton(AlertDialog.BUTTON_POSITIVE,getString(R.string.flow_agent_result_preview_at_point),(d,w)->{});
-        dialog.show();activeAgentPreviewSnapshot=paper;activeAgentPreviewDialog=dialog;activeAgentPreviewHost=host;
+        dialog.show();sizePaperViewportDialog(dialog,root);activeAgentPreviewSnapshot=paper;activeAgentPreviewDialog=dialog;activeAgentPreviewHost=host;
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
             if(!Float.isFinite(tap[0])||!Float.isFinite(tap[1])){
                 hint.setText(getString(R.string.flow_agent_result_tap_placement));return;
@@ -2668,8 +2645,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         nav.addView(previous,new LinearLayout.LayoutParams(0,-2,1));
         nav.addView(pageLabel,new LinearLayout.LayoutParams(0,-2,2));
         nav.addView(next,new LinearLayout.LayoutParams(0,-2,1));root.addView(nav);
-        ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        root.addView(image,new LinearLayout.LayoutParams(-1,dp(360)));
+        PaperBitmapViewport paperView=new PaperBitmapViewport(this);
+        paperView.setContentDescription(getString(R.string.flow_agent_result_preview_title));
+        LinearLayout viewportControls=addPaperViewportControls(root,paperView);
+        setPaperViewportControlsEnabled(viewportControls,false);
+        paperView.setEnabled(false);
+        root.addView(paperView,new LinearLayout.LayoutParams(-1,0,1f));
         FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);
         host.setClipChildren(false);host.setClipToPadding(false);
         host.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
@@ -2687,6 +2668,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if(snap==null||generation!=agentResultPreviewGeneration)return;
             ready[0]=false;
             if(dialog.isShowing())dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            setPaperViewportControlsEnabled(viewportControls,false);paperView.setEnabled(false);
             final int request=++previewRenderSerial[0];
             previous.setEnabled(false);next.setEnabled(false);
             pageLabel.setText(getString(R.string.flow_agent_result_page_of,
@@ -2694,7 +2676,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             snap.renderPageWithTextAsync(shownPage[0],1200,host,new NoteCanvasView.PdfExportSnapshot.PageCallback(){
                 public void onRendered(Bitmap bitmap){
                     if(generation!=agentResultPreviewGeneration||request!=previewRenderSerial[0]||!dialog.isShowing()){bitmap.recycle();return;}
-                    replaceAgentPreviewBitmap(image,bitmap);
+                    replaceAgentPreviewBitmap(paperView,bitmap,shownPage[0],snap.getPageWidth(),snap.getPageHeight());
+                    setPaperViewportControlsEnabled(viewportControls,paperView.isReadyForInteraction());
                     ready[0]=candidate.previewLayoutStable;
                     previous.setEnabled(shownPage[0]>candidate.firstPageIndex);
                     next.setEnabled(shownPage[0]<candidate.lastPageIndex);
@@ -2715,9 +2698,9 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if(snapshot[0]!=null)snapshot[0].close();
             if(activeAgentPreviewDialog==dialog)activeAgentPreviewDialog=null;
             if(activeAgentPreviewHost==host){if(host.getParent() instanceof ViewGroup)((ViewGroup)host.getParent()).removeView(host);activeAgentPreviewHost=null;}
-            releaseAgentPreviewBitmap(image);});
+            releaseAgentPreviewBitmap(paperView);});
         dialog.setButton(AlertDialog.BUTTON_POSITIVE,getString(R.string.flow_agent_result_append_confirm),(d,w)->{});
-        dialog.show();
+        dialog.show();sizePaperViewportDialog(dialog,root);
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{
             dialog.dismiss();showAgentPointPicker(task,targetNoteId,provenance);
         });
@@ -2831,10 +2814,67 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         return message;
     }
 
+    private LinearLayout addPaperViewportControls(LinearLayout root,PaperBitmapViewport paperView) {
+        LinearLayout controls=new LinearLayout(this);controls.setGravity(Gravity.CENTER_VERTICAL);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        addPaperViewportButton(controls,R.string.paper_view_fit_page_short,
+                R.string.paper_view_fit_page,paperView::fitPage);
+        addPaperViewportButton(controls,R.string.paper_view_fit_width_short,
+                R.string.paper_view_fit_width,paperView::fitWidth);
+        addPaperViewportButton(controls,"−",R.string.paper_view_zoom_out,paperView::zoomOut);
+        addPaperViewportButton(controls,"+",R.string.paper_view_zoom_in,paperView::zoomIn);
+        root.addView(controls,new LinearLayout.LayoutParams(-1,dp(42)));
+        return controls;
+    }
+
+    private void setPaperViewportControlsEnabled(LinearLayout controls,boolean enabled){
+        if(controls==null)return;
+        for(int i=0;i<controls.getChildCount();i++)controls.getChildAt(i).setEnabled(enabled);
+    }
+
+    private void sizePaperViewportDialog(AlertDialog dialog,View root){
+        if(dialog==null||dialog.getWindow()==null)return;
+        Rect available=new Rect();getWindow().getDecorView().getWindowVisibleDisplayFrame(available);
+        int height=Math.max(dp(1),available.height());
+        ViewGroup.LayoutParams rootParams=root.getLayoutParams();
+        if(rootParams==null)rootParams=new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+        rootParams.width=ViewGroup.LayoutParams.MATCH_PARENT;
+        rootParams.height=Math.max(dp(1),height-dp(132));
+        root.setLayoutParams(rootParams);
+        dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT,height);
+        root.requestLayout();
+    }
+
+    private void addPaperViewportButton(LinearLayout row,int label,int description,Runnable action) {
+        addPaperViewportButton(row,getString(label),description,action);
+    }
+
+    private void addPaperViewportButton(LinearLayout row,String visibleLabel,int description,Runnable action) {
+        Button button=new Button(this);button.setText(visibleLabel);button.setContentDescription(getString(description));
+        button.setMinHeight(dp(38));button.setPadding(dp(4),0,dp(4),0);
+        button.setOnClickListener(v->action.run());
+        row.addView(button,new LinearLayout.LayoutParams(0,-1,1f));
+    }
+
+    private void replaceAgentPreviewBitmap(PaperBitmapViewport view,Bitmap bitmap,int page,
+                                            float paperWidth,float paperHeight) {
+        Bitmap old=activeAgentPreviewBitmap;
+        view.setPaper(page,paperWidth,paperHeight,bitmap);
+        activeAgentPreviewBitmap=bitmap;activeAgentPreviewViewport=view;
+        if(old!=null&&old!=bitmap&&!old.isRecycled())old.recycle();
+    }
+
     private void replaceAgentPreviewBitmap(ImageView view,Bitmap bitmap) {
         releaseAgentPreviewBitmap(view);
         view.setImageBitmap(bitmap);
         activeAgentPreviewBitmap=bitmap;
+    }
+
+    private void releaseAgentPreviewBitmap(PaperBitmapViewport view) {
+        Bitmap old=activeAgentPreviewBitmap;activeAgentPreviewBitmap=null;
+        if(view!=null)view.clearPaper();
+        if(activeAgentPreviewViewport==view)activeAgentPreviewViewport=null;
+        if(old!=null&&!old.isRecycled())old.recycle();
     }
 
     private void releaseAgentPreviewBitmap(ImageView view) {
@@ -2847,6 +2887,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         agentResultPreviewGeneration++;
         if(activeAgentPreviewPreparation!=null){activeAgentPreviewPreparation.cancel();activeAgentPreviewPreparation=null;}
         if(activeAgentPreviewSnapshot!=null){activeAgentPreviewSnapshot.close();activeAgentPreviewSnapshot=null;}
+        if(activeAgentPreviewViewport!=null)activeAgentPreviewViewport.clearPaper();
+        activeAgentPreviewViewport=null;
         if(activeAgentPreviewBitmap!=null&&!activeAgentPreviewBitmap.isRecycled())activeAgentPreviewBitmap.recycle();
         activeAgentPreviewBitmap=null;
         if(activeAgentPreviewDialog!=null&&activeAgentPreviewDialog.isShowing())activeAgentPreviewDialog.dismiss();

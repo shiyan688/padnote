@@ -524,4 +524,7 @@
     <string name="flow_agent_result_next_page">Next</string>
     <string name="flow_agent_result_rechecking">Rechecking the same placement…</string>
     <string name="flow_agent_result_preview_changed">The measured layout changed. Reopen the preview and review the updated pages.</string>
+    <string name="paper_view_fit_page">Fit page</string><string name="paper_view_fit_width">Fit width</string>
+    <string name="paper_view_fit_page_short">Page</string><string name="paper_view_fit_width_short">Width</string>
+    <string name="paper_view_zoom_out">Zoom out</string><string name="paper_view_zoom_in">Zoom in</string>
 </resources>

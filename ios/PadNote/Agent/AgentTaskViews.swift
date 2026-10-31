@@ -711,6 +711,7 @@ private struct AgentResultToPaperView: View {
     }
 
     var body: some View {
+        GeometryReader { container in
         NavigationStack {
             ScrollViewReader { statusProxy in
                 Form {
@@ -785,35 +786,24 @@ private struct AgentResultToPaperView: View {
                         }
                         if let paperPreview {
                             paperPageStepper
-                            GeometryReader { proxy in
-                                Image(uiImage: paperPreview).resizable().aspectRatio(contentMode: .fit)
-                                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
-                                    .accessibilityIdentifier("agentResultPaperPreviewImage")
-                                    .contentShape(Rectangle())
-                                    .gesture(SpatialTapGesture().onEnded { value in
-                                        guard pointPlacementEnabled else { return }
-                                        placementPage = paperShownPage
-                                        let scale = min(proxy.size.width / CGFloat(previewSession.document.pageWidth),
-                                                        proxy.size.height / CGFloat(previewSession.document.pageHeight))
-                                        guard scale > 0 else { return }
-                                        let imageWidth = CGFloat(previewSession.document.pageWidth) * scale
-                                        let imageHeight = CGFloat(previewSession.document.pageHeight) * scale
-                                        let insetX = (proxy.size.width - imageWidth) / 2
-                                        let insetY = (proxy.size.height - imageHeight) / 2
-                                        guard CGRect(x: insetX, y: insetY, width: imageWidth, height: imageHeight).contains(value.location) else { return }
-                                        placementX = max(0, min(previewSession.document.pageWidth - 96, Double((value.location.x - insetX) / scale)))
-                                        placementY = max(0, min(previewSession.document.pageHeight - 40, Double((value.location.y - insetY) / scale)))
-                                        placementWidth = min(placementWidth, previewSession.document.pageWidth - placementX - 16)
-                                        refreshPaperCandidate()
-                                    })
-                            }.frame(height: 340)
+                            PaperPreviewViewport(
+                                image: paperPreview,
+                                paperSize: CGSize(width: previewSession.document.pageWidth,
+                                                  height: previewSession.document.pageHeight),
+                                viewportHeight: max(260, min(600, container.size.height * 0.50)),
+                                pageIdentity: "\(previewSession.document.id):\(paperShownPage)",
+                                selectionEnabled: pointPlacementEnabled,
+                                selectedPoint: pointPlacementEnabled && paperShownPage == placementPage
+                                    ? CGPoint(x: placementX, y: placementY) : nil,
+                                onSelectPaperPoint: selectPaperPoint
+                            )
                         } else {
                             Button("生成纸面预览") { refreshPaperCandidate() }.disabled(working)
                         }
                         if pointPlacementEnabled {
                             Text("已选第 \(placementPage + 1) 页的位置")
                                 .accessibilityIdentifier("agentResultPlacementState")
-                                .accessibilityValue("point=1; page=\(placementPage); x=\(Int(placementX)); y=\(Int(placementY))")
+                                .accessibilityValue("point=1; page=\(placementPage); x=\(String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), placementX)); y=\(String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), placementY))")
                             Text("结果文字宽度")
                             Slider(value: $placementWidth,
                                    in: 80...max(80, previewSession.document.pageWidth - placementX - 16), step: 20)
@@ -827,7 +817,17 @@ private struct AgentResultToPaperView: View {
                 } else if targetNoteID == nil {
                     Section("新笔记纸面预览") {
                         paperPageStepper
-                        if let paperPreview { Image(uiImage: paperPreview).resizable().aspectRatio(contentMode: .fit).frame(maxHeight: 340) }
+                        if let paperPreview {
+                            PaperPreviewViewport(
+                                image: paperPreview,
+                                paperSize: CGSize(width: newNoteBase.pageWidth, height: newNoteBase.pageHeight),
+                                viewportHeight: max(260, min(600, container.size.height * 0.50)),
+                                pageIdentity: "\(newNoteBase.id):\(paperShownPage)",
+                                selectionEnabled: false,
+                                selectedPoint: nil,
+                                onSelectPaperPoint: { _ in }
+                            )
+                        }
                         else { Button("生成纸面预览") { refreshPaperCandidate() }.disabled(working) }
                     }
                 }
@@ -881,6 +881,7 @@ private struct AgentResultToPaperView: View {
                     }
                 }
                 }
+                .accessibilityIdentifier("agentResultAppendForm")
                 .onChange(of: error) { _, newError in
                     if newError != nil { statusProxy.scrollTo("agentResultStatus", anchor: .top) }
                 }
@@ -913,6 +914,8 @@ private struct AgentResultToPaperView: View {
                 if targetNoteID == nil { newNoteBase.title = String(title.prefix(200)); refreshPaperCandidate() }
             }
             .onDisappear { previewGeneration += 1; previewTask?.cancel(); previewTask = nil; paperPreview = nil; paperCandidate = nil }
+        }
+        .frame(width: container.size.width, height: container.size.height)
         }
     }
 
@@ -1056,6 +1059,15 @@ private struct AgentResultToPaperView: View {
         guard let candidate = paperCandidate, page >= 0, page < candidate.pageCount else { return }
         paperPreview = NoteRenderer.renderPage(document: candidate, page: page,
             pdfURL: previewPDFURL)
+    }
+
+    private func selectPaperPoint(_ point: CGPoint) {
+        guard pointPlacementEnabled, let session = previewSession else { return }
+        placementPage = paperShownPage
+        placementX = max(0, min(session.document.pageWidth - 96, Double(point.x)))
+        placementY = max(0, min(session.document.pageHeight - 40, Double(point.y)))
+        placementWidth = min(placementWidth, session.document.pageWidth - placementX - 16)
+        refreshPaperCandidate()
     }
 
     @ViewBuilder

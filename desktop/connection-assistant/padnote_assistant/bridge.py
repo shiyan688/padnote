@@ -848,7 +848,7 @@ class BridgeService:
                 or not instance.get("executable") or instance.get("retired_at") or not key_present)
             else "unknown")
         known_health = {"ready", "authentication_failed", "api_not_enabled", "not_running",
-                        "wrong_service", "error", "needs_configuration", "credential_missing",
+                        "unresponsive", "wrong_service", "error", "needs_configuration", "credential_missing",
                         "unsupported"}
         reason = instance.get("health") if instance.get("health") in known_health else None
         return {"bridge_reachable": True, "agent_status": status, "reason": reason,

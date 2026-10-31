@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 @main
 struct PadNoteApp: App {
@@ -835,7 +836,15 @@ private struct AgentResultPaperUITestHost: View {
         }
         let receiptCount = note.textFlows.filter { $0.agentResult != nil }.count
         let first = note.textFlows.first
-        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1))"
+        let expectedSource = "Synthetic result for the isolated result-to-paper UI test."
+        let expectedDigest = SHA256.hash(data: Data(expectedSource.utf8)).map { String(format: "%02x", $0) }.joined()
+        let receipt = first?.agentResult
+        let sourceExact = first?.source == expectedSource
+        let sourceDigestMatches = receipt?.resultSha256 == expectedDigest
+        let taskMatches = receipt?.taskId == fixture.taskID.uuidString.lowercased()
+        let exactX = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorXInPage ?? -1)
+        let exactY = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), first?.anchorYInPage ?? -1)
+        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); sourceExact=\(sourceExact); sourceDigestMatches=\(sourceDigestMatches); taskMatches=\(taskMatches); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1)); exactAnchor=\(first?.anchorPageIndex ?? -1),\(exactX),\(exactY)"
     }
 
     var body: some View {

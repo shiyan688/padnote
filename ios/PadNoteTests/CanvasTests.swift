@@ -6,6 +6,24 @@ import UIKit
 
 @MainActor
 final class CanvasTests: XCTestCase {
+    func testPaperPreviewCoordinateMapperInvertsZoomedAndTranslatedPageView() {
+        let viewport = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 300))
+        let pageSize = CGSize(width: 768, height: 1086)
+        let pageView = UIView(frame: CGRect(origin: .zero, size: pageSize))
+        viewport.addSubview(pageView)
+        pageView.center = CGPoint(x: 200, y: 250)
+        pageView.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
+
+        let knownPaperPoint = CGPoint(x: 500, y: 400)
+        let viewportPoint = pageView.convert(knownPaperPoint, to: viewport)
+        let mapped = PaperPreviewCoordinateMapper.paperPoint(at: viewportPoint, from: viewport,
+                                                            pageView: pageView, paperSize: pageSize)
+        XCTAssertEqual(mapped?.x ?? .nan, knownPaperPoint.x, accuracy: 0.0001)
+        XCTAssertEqual(mapped?.y ?? .nan, knownPaperPoint.y, accuracy: 0.0001)
+        XCTAssertNil(PaperPreviewCoordinateMapper.paperPoint(at: CGPoint(x: -20, y: -20), from: viewport,
+                                                              pageView: pageView, paperSize: pageSize))
+    }
+
     func testTwoPagesRenderAtDifferentWorldContent() throws {
         var note = NoteDocument(pageCount: 2)
         note.strokes = [

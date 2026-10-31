@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">次へ</string>
     <string name="flow_agent_result_rechecking">同じ配置を再確認しています…</string>
     <string name="flow_agent_result_preview_changed">実測レイアウトが変わりました。プレビューを開き直して確認してください。</string>
+    <string name="paper_view_fit_page">全体表示</string><string name="paper_view_fit_width">幅に合わせる</string>
+    <string name="paper_view_fit_page_short">全体</string><string name="paper_view_fit_width_short">幅</string>
+    <string name="paper_view_zoom_out">縮小</string><string name="paper_view_zoom_in">拡大</string>
 </resources>

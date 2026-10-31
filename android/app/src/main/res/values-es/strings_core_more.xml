@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">Siguiente</string>
     <string name="flow_agent_result_rechecking">Volviendo a comprobar la misma ubicación…</string>
     <string name="flow_agent_result_preview_changed">El diseño medido cambió. Abre de nuevo la vista previa y revisa las páginas.</string>
+    <string name="paper_view_fit_page">Ajustar página</string><string name="paper_view_fit_width">Ajustar ancho</string>
+    <string name="paper_view_fit_page_short">Página</string><string name="paper_view_fit_width_short">Ancho</string>
+    <string name="paper_view_zoom_out">Alejar</string><string name="paper_view_zoom_in">Acercar</string>
 </resources>

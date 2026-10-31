@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">Suivant</string>
     <string name="flow_agent_result_rechecking">Nouvelle vérification du même emplacement…</string>
     <string name="flow_agent_result_preview_changed">La mise en page mesurée a changé. Rouvrez l’aperçu.</string>
+    <string name="paper_view_fit_page">Page entière</string><string name="paper_view_fit_width">Ajuster la largeur</string>
+    <string name="paper_view_fit_page_short">Page</string><string name="paper_view_fit_width_short">Largeur</string>
+    <string name="paper_view_zoom_out">Réduire</string><string name="paper_view_zoom_in">Agrandir</string>
 </resources>

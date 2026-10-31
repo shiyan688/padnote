@@ -512,4 +512,7 @@
     <string name="flow_agent_result_next_page">다음</string>
     <string name="flow_agent_result_rechecking">같은 배치를 다시 확인하는 중…</string>
     <string name="flow_agent_result_preview_changed">측정된 레이아웃이 변경되었습니다. 미리보기를 다시 열어 확인하세요.</string>
+    <string name="paper_view_fit_page">페이지 맞춤</string><string name="paper_view_fit_width">너비 맞춤</string>
+    <string name="paper_view_fit_page_short">페이지</string><string name="paper_view_fit_width_short">너비</string>
+    <string name="paper_view_zoom_out">축소</string><string name="paper_view_zoom_in">확대</string>
 </resources>
