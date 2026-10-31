@@ -6,6 +6,12 @@
 
 PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推导，画出关系，围绕同一张纸面交流。整理好的内容可以直接导出 PDF 分享，也可以连同上下文发送给同网络中已配对的电脑 Agent，接着执行任务；完成的文字结果可先预览，再添加回笔记。模型与服务由你选择。
 
+## 从一行真实手写开始
+
+![PadNote 中真实手写的函数问题，原始 Android 平板截图](docs/media/2026-10-31/real-handwriting-note.png)
+
+在平板上写下一道函数题，再围绕同一张纸继续讨论。需要绘图或运行代码时，把纸面和任务说明一起交给电脑 Agent。上图保留作者的原始笔迹，已授权公开。[素材来源](docs/media/2026-10-31/README.md)。
+
 [![30 秒看一份学习笔记](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
 
 [观看学习笔记导览（30 秒）](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4) · [下载应用与电脑助手](https://github.com/shiyan688/padnote/releases) · [English](README.en.md)
@@ -61,6 +67,8 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 纸面工具按书写、配色、撤销和页面操作分组；AI 对话、任务与分享入口保持可见。电脑助手把 Agent 检查、扫码配对与设备批准放在同一页，检测过期时会提示重新检查。下图使用合成数据展示电脑助手的管理页布局。[素材说明](docs/media/2026-10-29/README.md)。
 
 ![电脑助手检测与配对界面（合成演示数据）](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+图中二维码为演示配对配置，目标地址是 `demo.invalid`，不含真实设备的有效配对码。
 
 WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看不含密钥值的变更预览。
 

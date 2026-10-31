@@ -6,6 +6,12 @@
 
 PadNote is an open-source AI notebook for tablets. Read a document, write out a derivation, draw the connections, and discuss them on the same page. Share your work as a PDF, or send the note and its context to a paired computer Agent on your network to continue the task. Review the completed text result before adding it back to a note. You choose the model and service.
 
+## Start with a real handwritten question
+
+![A handwritten function problem in PadNote, captured on an Android tablet](docs/media/2026-10-31/real-handwriting-note.png)
+
+Write a question on the tablet and continue the discussion on the same page. When you need a plot or code, send the page and instructions to your computer Agent. This screenshot preserves the author's original handwriting and is shared with permission. [Media provenance](docs/media/2026-10-31/README.md).
+
 [![A learning note in 30 seconds](docs/media/2026-10-28/paper-learning-tour-preview.png)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4)
 
 [Watch the learning-note tour (30 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4) · [Download the app and computer assistant](https://github.com/shiyan688/padnote/releases) · [中文](README.md)
@@ -61,6 +67,8 @@ Preview completed text on the actual note page, then append it or choose a start
 Paper tools are grouped by writing, color, history, and page actions, with AI, tasks, and sharing kept visible. The computer assistant puts Agent checks, QR pairing, and device approval on one page, and prompts for a new check when results expire. The image below shows the management UI with synthetic data. [Media notes](docs/media/2026-10-29/README.md).
 
 ![Desktop assistant checks and pairing, with synthetic demo data](docs/media/2026-10-29/beta28-desktop-ui.png)
+
+The pictured QR code contains a demo pairing configuration for `demo.invalid`, with no valid pairing code for a real device.
 
 The WSL wizard lets you choose a distribution and Hermes configuration, then review connection changes without exposing key values.
 
