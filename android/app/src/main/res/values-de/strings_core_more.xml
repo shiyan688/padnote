@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">Nach Beginn des endgültigen Commits kann die Wiederherstellung auch beim Verlassen dieses Bildschirms abgeschlossen werden.</string>
     <string name="core_delete_cleanup_pending">Die Notiz wurde aus der Liste entfernt. Einige lokale Materialien bleiben bis zur sicheren Bereinigung erhalten.</string>
     <string name="core_viewport_save_failed">Die Seitenposition konnte nicht gespeichert werden. Der Notizinhalt ist unverändert.</string>
+    <string name="flow_agent_result_placement_choice">Wähle die Position. Standardmäßig wird die Antwort am Ende eingefügt.</string>
+    <string name="flow_agent_result_choose_page">Seite auswählen</string>
+    <string name="flow_agent_result_tap_placement">Tippe auf einen freien Punkt oben links. Passe die Breite an und tippe erneut.</string>
+    <string name="flow_agent_result_tap_inside">Tippe innerhalb der Seitenränder.</string>
+    <string name="flow_agent_result_point_selected">Seite %1$d · Punkt %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">Textbreite: %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">Der Platz reicht nicht für die Mindestbreite.</string>
+    <string name="flow_agent_result_preview_preparing">Alle Seiten werden geprüft und die Vorschau wird erstellt…</string>
+    <string name="flow_agent_result_preview_ready">Vorschau Seiten %1$d–%2$d · alle Seiten geprüft</string>
+    <string name="flow_agent_result_page_render_failed">Diese Seite konnte nicht sicher gerendert werden; Bestätigung nicht möglich.</string>
+    <string name="flow_agent_result_preview_at_point">An diesem Punkt anzeigen</string>
+    <string name="flow_agent_result_page_of">Seite %1$d von %2$d</string>
+    <string name="flow_agent_result_previous_page">Zurück</string>
+    <string name="flow_agent_result_next_page">Weiter</string>
+    <string name="flow_agent_result_rechecking">Dieselbe Position wird erneut geprüft…</string>
+    <string name="flow_agent_result_preview_changed">Das gemessene Layout hat sich geändert. Öffne die Vorschau erneut.</string>
 </resources>

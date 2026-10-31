@@ -508,4 +508,20 @@
     <string name="core_removed_notes_commit_boundary">Once the final commit starts, leaving the screen may not stop the restore.</string>
     <string name="core_delete_cleanup_pending">The note was removed from the shelf. Some local materials were retained for safe cleanup later.</string>
     <string name="core_viewport_save_failed">The page position could not be saved. Note content is unchanged.</string>
+    <string name="flow_agent_result_placement_choice">Choose where to place this answer. By default it is added at the end.</string>
+    <string name="flow_agent_result_choose_page">Choose a page</string>
+    <string name="flow_agent_result_tap_placement">Tap a clear top-left point on the page. Adjust width, then tap.</string>
+    <string name="flow_agent_result_tap_inside">Tap inside the page margins.</string>
+    <string name="flow_agent_result_point_selected">Page %1$d · point %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">Text width: %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">There is not enough room for the minimum text width.</string>
+    <string name="flow_agent_result_preview_preparing">Checking every page and compiling the paper preview…</string>
+    <string name="flow_agent_result_preview_ready">Preview pages %1$d–%2$d · every page checked</string>
+    <string name="flow_agent_result_page_render_failed">This page could not be rendered safely; confirmation is unavailable.</string>
+    <string name="flow_agent_result_preview_at_point">Preview at this point</string>
+    <string name="flow_agent_result_page_of">Page %1$d of %2$d</string>
+    <string name="flow_agent_result_previous_page">Previous</string>
+    <string name="flow_agent_result_next_page">Next</string>
+    <string name="flow_agent_result_rechecking">Rechecking the same placement…</string>
+    <string name="flow_agent_result_preview_changed">The measured layout changed. Reopen the preview and review the updated pages.</string>
 </resources>

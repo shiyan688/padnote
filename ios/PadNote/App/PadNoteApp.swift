@@ -834,7 +834,8 @@ private struct AgentResultPaperUITestHost: View {
             return "synthetic=true; note=missing"
         }
         let receiptCount = note.textFlows.filter { $0.agentResult != nil }.count
-        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount)"
+        let first = note.textFlows.first
+        return "synthetic=true; schema=\(note.schemaVersion); flows=\(note.textFlows.count); receipts=\(receiptCount); anchor=\(first?.anchorPageIndex ?? -1),\(Int(first?.anchorXInPage ?? -1)),\(Int(first?.anchorYInPage ?? -1))"
     }
 
     var body: some View {

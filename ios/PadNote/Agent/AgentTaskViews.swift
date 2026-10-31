@@ -690,6 +690,17 @@ private struct AgentResultToPaperView: View {
     @State private var working = false
     @State private var error: String?
     @State private var saved: (document: NoteDocument, session: NoteGroupEditorSession, page: Int, already: Bool)?
+    @State private var pointPlacementEnabled = false
+    @State private var placementPage = 0
+    @State private var paperShownPage = 0
+    @State private var placementX = 24.0
+    @State private var placementY = 60.0
+    @State private var placementWidth = 600.0
+    @State private var paperCandidate: NoteDocument?
+    @State private var paperPreview: UIImage?
+    @State private var previewGeneration = 0
+    @State private var previewTask: Task<Void, Never>?
+    @State private var newNoteBase = NoteDocument(title: "Agent 任务结果")
 
     private let newNoteTag = "__padnote_new_agent_result_note__"
 
@@ -723,13 +734,111 @@ private struct AgentResultToPaperView: View {
                     }
                     .id("agentResultStatus")
                 }
-                Section("结果预览") {
-                    Text(output)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("agentResultPlainTextPreview")
-                    Text("预览按原文显示。添加后会使用笔记已有的安全排版，不执行返回内容中的代码或链接。")
-                        .font(.footnote).foregroundStyle(.secondary)
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper-stale") {
+                    Section("隔离回归") {
+                        Button("测试：更改预览中的合成笔记") { mutateSyntheticPreviewTarget() }
+                            .accessibilityIdentifier("agentResultUITestChangeTarget")
+                    }
+                }
+#endif
+                if let previewSession {
+                    Section("纸面预览") {
+                        HStack(spacing: 12) {
+                            Button { pointPlacementEnabled = false } label: {
+                                HStack {
+                                    Text("放在末尾")
+                                    Spacer(minLength: 8)
+                                    if !pointPlacementEnabled { Image(systemName: "checkmark.circle.fill") }
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(pointPlacementEnabled ? .secondary : .accentColor)
+                            .accessibilityIdentifier("agentResultAppendMode")
+                            .accessibilityValue(pointPlacementEnabled ? "未选" : "已选")
+                            .accessibilityAddTraits(pointPlacementEnabled ? [] : .isSelected)
+                            .disabled(working)
+                            Button { pointPlacementEnabled = true } label: {
+                                HStack {
+                                    Text("选择位置")
+                                    Spacer(minLength: 8)
+                                    if pointPlacementEnabled { Image(systemName: "checkmark.circle.fill") }
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(pointPlacementEnabled ? .accentColor : .secondary)
+                            .accessibilityIdentifier("agentResultPointPlacementToggle")
+                            .accessibilityValue(pointPlacementEnabled ? "已选" : "未选")
+                            .accessibilityAddTraits(pointPlacementEnabled ? .isSelected : [])
+                            .disabled(working)
+                        }
+                        if pointPlacementEnabled {
+                            Picker("目标页", selection: $placementPage) {
+                                ForEach(0..<previewSession.document.pageCount, id: \.self) { page in
+                                    Text("第 \(page + 1) 页").tag(page)
+                                }
+                            }
+                            Text("点按纸张选择结果开始位置。发生重叠时，可换个位置或调整文字宽度。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        if let paperPreview {
+                            paperPageStepper
+                            GeometryReader { proxy in
+                                Image(uiImage: paperPreview).resizable().aspectRatio(contentMode: .fit)
+                                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+                                    .accessibilityIdentifier("agentResultPaperPreviewImage")
+                                    .contentShape(Rectangle())
+                                    .gesture(SpatialTapGesture().onEnded { value in
+                                        guard pointPlacementEnabled else { return }
+                                        placementPage = paperShownPage
+                                        let scale = min(proxy.size.width / CGFloat(previewSession.document.pageWidth),
+                                                        proxy.size.height / CGFloat(previewSession.document.pageHeight))
+                                        guard scale > 0 else { return }
+                                        let imageWidth = CGFloat(previewSession.document.pageWidth) * scale
+                                        let imageHeight = CGFloat(previewSession.document.pageHeight) * scale
+                                        let insetX = (proxy.size.width - imageWidth) / 2
+                                        let insetY = (proxy.size.height - imageHeight) / 2
+                                        guard CGRect(x: insetX, y: insetY, width: imageWidth, height: imageHeight).contains(value.location) else { return }
+                                        placementX = max(0, min(previewSession.document.pageWidth - 96, Double((value.location.x - insetX) / scale)))
+                                        placementY = max(0, min(previewSession.document.pageHeight - 40, Double((value.location.y - insetY) / scale)))
+                                        placementWidth = min(placementWidth, previewSession.document.pageWidth - placementX - 16)
+                                        refreshPaperCandidate()
+                                    })
+                            }.frame(height: 340)
+                        } else {
+                            Button("生成纸面预览") { refreshPaperCandidate() }.disabled(working)
+                        }
+                        if pointPlacementEnabled {
+                            Text("已选第 \(placementPage + 1) 页的位置")
+                                .accessibilityIdentifier("agentResultPlacementState")
+                                .accessibilityValue("point=1; page=\(placementPage); x=\(Int(placementX)); y=\(Int(placementY))")
+                            Text("结果文字宽度")
+                            Slider(value: $placementWidth,
+                                   in: 80...max(80, previewSession.document.pageWidth - placementX - 16), step: 20)
+                                .accessibilityIdentifier("agentResultPlacementWidth")
+                                .onChange(of: placementWidth) { _, _ in refreshPaperCandidate() }
+                            let available = max(80, previewSession.document.pageWidth - placementX - 16)
+                            Text("约占可用纸宽的 \(Int(min(1, placementWidth / available) * 100))%")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else if targetNoteID == nil {
+                    Section("新笔记纸面预览") {
+                        paperPageStepper
+                        if let paperPreview { Image(uiImage: paperPreview).resizable().aspectRatio(contentMode: .fit).frame(maxHeight: 340) }
+                        else { Button("生成纸面预览") { refreshPaperCandidate() }.disabled(working) }
+                    }
+                }
+                Section {
+                    DisclosureGroup("查看原始回答") {
+                        Text(output)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("agentResultPlainTextPreview")
+                    }
+                    .accessibilityIdentifier("agentResultRawAnswerDisclosure")
                 }
                 Section("任务来源") {
                     LabeledContent("连接", value: task.connection.connectionName)
@@ -771,14 +880,6 @@ private struct AgentResultToPaperView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-#if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-paper-stale") {
-                    Section("隔离回归") {
-                        Button("测试：更改预览中的合成笔记") { mutateSyntheticPreviewTarget() }
-                            .accessibilityIdentifier("agentResultUITestChangeTarget")
-                    }
-                }
-#endif
                 }
                 .onChange(of: error) { _, newError in
                     if newError != nil { statusProxy.scrollTo("agentResultStatus", anchor: .top) }
@@ -793,7 +894,7 @@ private struct AgentResultToPaperView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(working) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(working ? "正在保存…" : "确认添加") { confirmAppend() }
-                        .disabled(working || !resultIsWithinLimits || saved != nil)
+                        .disabled(working || !resultIsWithinLimits || saved != nil || paperCandidate == nil)
                         .accessibilityIdentifier("agentResultConfirmAppend")
                 }
             }
@@ -803,8 +904,15 @@ private struct AgentResultToPaperView: View {
                     targetNoteID = task.payload.source.noteID
                 }
                 capturePreviewTarget(targetNoteID)
+                if targetNoteID == nil { refreshPaperCandidate() }
             }
             .onChange(of: targetNoteID) { _, selection in capturePreviewTarget(selection) }
+            .onChange(of: pointPlacementEnabled) { _, _ in paperPreview = nil; paperCandidate = nil; refreshPaperCandidate() }
+            .onChange(of: placementPage) { _, _ in paperPreview = nil; paperCandidate = nil; refreshPaperCandidate() }
+            .onChange(of: newNoteTitle) { _, title in
+                if targetNoteID == nil { newNoteBase.title = String(title.prefix(200)); refreshPaperCandidate() }
+            }
+            .onDisappear { previewGeneration += 1; previewTask?.cancel(); previewTask = nil; paperPreview = nil; paperCandidate = nil }
         }
     }
 
@@ -838,17 +946,32 @@ private struct AgentResultToPaperView: View {
                     if session.document.textFlows.contains(where: { $0.id == flow.id }) {
                         throw NoteGroupStoreError.compareAndSwapConflict
                     }
-                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document, addFinalPage: true)
-                    try await CompiledTextRenderer.shared.prepareAndWait(document: candidate.document)
+                    let placement = pointPlacementEnabled ? AgentResultPlacement(mode: .point, pageIndex: placementPage,
+                        xInPage: placementX, yInPage: placementY, width: placementWidth) : nil
+                    let pdf = previewPDFURL
+                    let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document,
+                        addFinalPage: true, placement: placement, pdfURL: pdf,
+                        checkPointConflicts: false, preparingRenderer: true)
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
+                    let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: session.document,
+                        addFinalPage: true, placement: placement, pdfURL: pdf)
+                    guard let paperCandidate, Self.samePaperGeometry(candidate.document, paperCandidate) else {
+                        throw NoteDocumentError.malformed("预览布局已变化，请重新生成纸面预览后再确认。")
+                    }
                     try verifyUnchangedTaskSnapshot(current)
-                    let outcome = try noteLibrary.appendAgentResult(flow, basedOn: session)
+                    let outcome = try noteLibrary.appendAgentResult(flow, basedOn: session, placement: placement)
                     saved = (outcome.document, outcome.session, outcome.pageIndex, outcome.alreadyApplied)
                 } else {
                     let title = newNoteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !title.isEmpty else { throw NoteDocumentError.malformed("请填写新笔记名称。") }
-                    let base = NoteDocument(title: String(title.prefix(200)))
+                    newNoteBase.title = String(title.prefix(200))
+                    let base = newNoteBase
+                    let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: base, addFinalPage: false)
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
                     let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: base, addFinalPage: false)
-                    try await CompiledTextRenderer.shared.prepareAndWait(document: candidate.document)
+                    guard let paperCandidate, Self.samePaperGeometry(candidate.document, paperCandidate) else {
+                        throw NoteDocumentError.malformed("预览布局已变化，请重新生成纸面预览后再确认。")
+                    }
                     try verifyUnchangedTaskSnapshot(current)
                     let outcome = try noteLibrary.createNoteWithAgentResult(candidate, flow: flow)
                     saved = (outcome.document, outcome.session, outcome.pageIndex, outcome.alreadyApplied)
@@ -870,14 +993,108 @@ private struct AgentResultToPaperView: View {
     }
 
     private func capturePreviewTarget(_ noteID: String?) {
-        guard let noteID else { previewSession = nil; return }
+        previewTask?.cancel(); previewTask = nil
+        previewGeneration += 1; paperPreview = nil; paperCandidate = nil
+        guard let noteID else { previewSession = nil; refreshPaperCandidate(); return }
         do {
             previewSession = try noteLibrary.captureAgentResultTarget(noteID: noteID)
             error = nil
+            placementPage = min(max(0, previewSession?.document.pdfPageCount ?? 0), max(0, (previewSession?.document.pageCount ?? 1) - 1))
+            refreshPaperCandidate()
         } catch {
             previewSession = nil
             self.error = "无法读取所选笔记的当前版本。请返回笔记列表后重新打开预览。"
         }
+    }
+
+    private func refreshPaperCandidate() {
+        guard !working, let flow = try? makeFlow(for: task, exactOutput: output) else { return }
+        previewTask?.cancel()
+        previewGeneration += 1
+        paperCandidate = nil
+        error = nil
+        let generation = previewGeneration
+        let base = previewSession?.document ?? newNoteBase
+        let request: AgentResultPlacement? = pointPlacementEnabled && previewSession != nil
+            ? AgentResultPlacement(mode: .point, pageIndex: placementPage, xInPage: placementX, yInPage: placementY,
+                                   width: placementWidth) : nil
+        previewTask = Task { @MainActor in
+            do {
+                if let existing = base.textFlows.first(where: { $0.agentResult?.applicationId == flow.agentResult?.applicationId }) {
+                    try await CompiledTextRenderer.shared.prepareAndWait(document: base)
+                    try Task.checkCancellation()
+                    guard generation == previewGeneration else { return }
+                    paperCandidate = base
+                    paperShownPage = existing.anchorPageIndex
+                    renderPaperPage(existing.anchorPageIndex)
+                    return
+                }
+                let provisional = try NoteLibrary.candidateAppendingAgentResult(flow, to: base,
+                    addFinalPage: previewSession != nil, placement: request,
+                    pdfURL: previewPDFURL, checkPointConflicts: false, preparingRenderer: true)
+                try await CompiledTextRenderer.shared.prepareAndWait(document: provisional.document)
+                let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: base,
+                    addFinalPage: previewSession != nil, placement: request,
+                    pdfURL: previewPDFURL)
+                try Task.checkCancellation()
+                guard generation == previewGeneration else { return }
+                paperCandidate = candidate.document
+                paperShownPage = candidate.pageIndex
+                renderPaperPage(candidate.pageIndex)
+            } catch {
+                if Task.isCancelled { return }
+                guard generation == previewGeneration else { return }
+                let displayPage = min(max(0, placementPage), max(0, base.pageCount - 1))
+                paperPreview = NoteRenderer.renderPage(document: base, page: displayPage,
+                    pdfURL: previewPDFURL)
+                self.error = (error as? LocalizedError)?.errorDescription ?? "无法生成完整纸面预览。"
+            }
+        }
+    }
+
+    private func renderPaperPage(_ page: Int) {
+        guard let candidate = paperCandidate, page >= 0, page < candidate.pageCount else { return }
+        paperPreview = NoteRenderer.renderPage(document: candidate, page: page,
+            pdfURL: previewPDFURL)
+    }
+
+    @ViewBuilder
+    private var paperPageStepper: some View {
+        if let paperCandidate, paperCandidate.pageCount > 1 {
+            Stepper("预览第 \(paperShownPage + 1) / \(paperCandidate.pageCount) 页",
+                    value: $paperShownPage, in: 0...(paperCandidate.pageCount - 1))
+                .accessibilityIdentifier("agentResultPaperPageStepper")
+                .onChange(of: paperShownPage) { _, page in renderPaperPage(page) }
+        }
+    }
+
+    private var previewPDFURL: URL? {
+        guard let session = previewSession, session.document.pdfPageCount > 0 else { return nil }
+        return session.members.first(where: { $0.record.role == .pdf })?.url ?? noteLibrary.pdfURL(for: session.document)
+    }
+
+    private static func samePaperGeometry(_ lhs: NoteDocument, _ rhs: NoteDocument) -> Bool {
+        guard lhs.id == rhs.id, lhs.pageWidth == rhs.pageWidth, lhs.pageHeight == rhs.pageHeight,
+              lhs.pageGap == rhs.pageGap, lhs.pageCount == rhs.pageCount, lhs.pdfPageCount == rhs.pdfPageCount,
+              lhs.pageStyle == rhs.pageStyle, lhs.strokes == rhs.strokes, lhs.images == rhs.images,
+              lhs.textFlows.count == rhs.textFlows.count else { return false }
+        for (a, b) in zip(lhs.textFlows, rhs.textFlows) {
+            guard a.id == b.id, a.format == b.format, a.source == b.source, a.fontSizeSp == b.fontSizeSp,
+                  a.lineHeight == b.lineHeight, a.width == b.width, a.anchorPageIndex == b.anchorPageIndex,
+                  a.anchorXInPage == b.anchorXInPage, a.anchorYInPage == b.anchorYInPage else { return false }
+            switch (a.agentResult, b.agentResult) {
+            case (nil, nil): break
+            case let (left?, right?): guard left.hasSameStableMetadata(as: right) else { return false }
+            default: return false
+            }
+            let af = NoteTextLayout.fragments(a, pageHeight: lhs.pageHeight)
+            let bf = NoteTextLayout.fragments(b, pageHeight: rhs.pageHeight)
+            guard af.count == bf.count else { return false }
+            for (x, y) in zip(af, bf) where x.page != y.page || x.rect != y.rect || x.text.string != y.text.string || x.image?.size != y.image?.size {
+                return false
+            }
+        }
+        return true
     }
 
 #if DEBUG

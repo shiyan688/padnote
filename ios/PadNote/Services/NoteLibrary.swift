@@ -315,7 +315,8 @@ public final class NoteLibrary: ObservableObject {
     /// Appends one independent result flow to a newly added final page and commits it
     /// against the revision captured by the preview. The caller must finish renderer
     /// preflight before calling this durable mutation.
-    public func appendAgentResult(_ flow: NoteTextFlow, basedOn session: NoteGroupEditorSession) throws -> NoteAgentResultAppendOutcome {
+    public func appendAgentResult(_ flow: NoteTextFlow, basedOn session: NoteGroupEditorSession,
+                                  placement: AgentResultPlacement? = nil) throws -> NoteAgentResultAppendOutcome {
         guard let receipt = flow.agentResult else { throw NoteDocumentError.malformed("Agent result receipt is required") }
         if let existing = session.document.textFlows.first(where: {
             $0.agentResult?.applicationId == receipt.applicationId
@@ -331,7 +332,9 @@ public final class NoteLibrary: ObservableObject {
            collision.agentResult?.hasSameStableMetadata(as: receipt) != true {
             throw NoteGroupStoreError.compareAndSwapConflict
         }
-        let prepared = try Self.candidateAppendingAgentResult(flow, to: session.document, addFinalPage: true)
+        let pdf = session.members.first(where: { $0.record.role == .pdf })?.url ?? pdfURL(for: session.document)
+        let prepared = try Self.candidateAppendingAgentResult(flow, to: session.document, addFinalPage: true,
+                                                              placement: placement, pdfURL: pdf)
         let candidate = prepared.document
 
         let savedSession: NoteGroupEditorSession
@@ -408,7 +411,11 @@ public final class NoteLibrary: ObservableObject {
     }
 
     public static func candidateAppendingAgentResult(_ flow: NoteTextFlow, to original: NoteDocument,
-                                                      addFinalPage: Bool) throws -> NoteAgentResultCandidate {
+                                                      addFinalPage: Bool,
+                                                      placement: AgentResultPlacement? = nil,
+                                                      pdfURL: URL? = nil,
+                                                      checkPointConflicts: Bool = true,
+                                                      preparingRenderer: Bool = false) throws -> NoteAgentResultCandidate {
         guard let receipt = flow.agentResult else { throw NoteDocumentError.malformed("Agent result receipt is required") }
         try receipt.validate()
         guard flow.id == "flow-agent-\(receipt.applicationId)", flow.format == "markdown",
@@ -424,27 +431,47 @@ public final class NoteLibrary: ObservableObject {
         }
         guard original.textFlows.count < 2_000 else { throw NoteDocumentError.tooLarge("Note has too many text flows") }
         var candidate = original
+        let selected = placement ?? .append(for: candidate)
+        try selected.validate(in: candidate)
         let page: Int
-        if addFinalPage {
+        if selected.mode == .append && addFinalPage {
             guard NotePageOperations.appendBlankPage(in: &candidate) else {
                 throw NoteDocumentError.tooLarge("Note has reached its page limit")
             }
             page = original.pageCount
-        } else { page = 0 }
+        } else { page = selected.mode == .append ? 0 : selected.pageIndex }
         var appended = flow
         appended.anchorPageIndex = page
-        appended.anchorXInPage = 16
-        appended.anchorYInPage = 40
-        appended.width = max(120, candidate.pageWidth - 32)
+        appended.anchorXInPage = selected.xInPage
+        appended.anchorYInPage = selected.yInPage
+        appended.width = selected.width
+        if selected.mode == .point {
+            let right = candidate.pageWidth - 16
+            guard right - appended.anchorXInPage >= 80 else {
+                throw NoteDocumentError.malformed("所选位置剩余宽度不足 80 pt，请重新选择。")
+            }
+            appended.width = min(appended.width, right - appended.anchorXInPage)
+        }
         candidate.textFlows.append(appended)
         candidate.schemaVersion = 9
         candidate.updatedAt = NoteDocument.nowMillis()
-        let requiredPages = NoteTextLayout.requiredPageCount(candidate)
-        guard requiredPages <= NotePageOperations.maximumPageCount,
-              NoteTextLayout.canFullyLayout(appended, pageHeight: candidate.pageHeight) else {
-            throw NoteDocumentError.tooLarge("Agent result cannot be fully laid out within the note page limit")
+        if !preparingRenderer {
+            let requiredPages = NoteTextLayout.requiredPageCount(candidate)
+            guard requiredPages <= NotePageOperations.maximumPageCount,
+                  NoteTextLayout.canFullyLayout(appended, pageHeight: candidate.pageHeight) else {
+                throw NoteDocumentError.tooLarge("Agent result cannot be fully laid out within the note page limit")
+            }
+            if selected.mode == .point {
+                guard NoteTextLayout.fragments(appended, pageHeight: candidate.pageHeight).first?.page == page else {
+                    throw NoteDocumentError.malformed("当前位置无法容纳结果开头，请选择更高的落点或改用末尾添加。")
+                }
+                if checkPointConflicts,
+                   let conflict = try AgentResultPlacementCheck.firstConflict(candidate: appended, in: original, pdfURL: pdfURL) {
+                    throw NoteDocumentError.malformed("结果与第 \(conflict + 1) 页已有内容重叠。请重新选择位置或宽度。")
+                }
+            }
+            candidate.pageCount = max(candidate.pageCount, requiredPages)
         }
-        candidate.pageCount = max(candidate.pageCount, requiredPages)
         _ = try candidate.validated()
         return NoteAgentResultCandidate(document: candidate, flowID: appended.id, pageIndex: page)
     }

@@ -533,6 +533,12 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private boolean agentResultTargetCreationInFlight;
     private boolean agentResultAppendInFlight;
     private long agentResultAppendSerial;
+    private int agentResultPreviewGeneration;
+    private NoteCanvasView.PdfExportSnapshot activeAgentPreviewSnapshot;
+    private NoteCanvasView.AgentPreviewHandle activeAgentPreviewPreparation;
+    private Bitmap activeAgentPreviewBitmap;
+    private AlertDialog activeAgentPreviewDialog;
+    private FrameLayout activeAgentPreviewHost;
     private String groupEditorSessionId = java.util.UUID.randomUUID().toString();
     private long editorSessionGeneration;
     private long groupDraftCaptureSequence;
@@ -697,6 +703,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         cancelRemovedNotesUi();
         cancelManualDraftRecoveryForContextChange();
         cancelAiSelectionRender();
+        cancelAgentResultPreview();
         if (aiSelectionRenderer != null) {
             aiSelectionRenderer.close();
             aiSelectionRenderer = null;
@@ -2456,88 +2463,394 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 ||saveInFlight||agentResultAppendInFlight||documentRevision!=lastSavedRevision){
             Toast.makeText(this,getString(R.string.flow_agent_result_wait_for_save),Toast.LENGTH_LONG).show();return;
         }
-        AgentTaskStore tasks=agentResultTaskStore();
-        AgentTaskStore.Task task=tasks.get(taskId);
+        AgentTaskStore.Task task=agentResultTaskStore().get(taskId);
         if(!validAgentResultTask(task)){
             Toast.makeText(this,getString(R.string.flow_agent_result_unavailable),Toast.LENGTH_LONG).show();return;
         }
         final AgentResultProvenance provenance;
-        final NoteCanvasView.AgentResultAppendCandidate candidate;
-        try{
-            provenance=AgentResultProvenance.create(task,task.noteId,task.noteRevision,task.output);
-            candidate=canvasView.prepareAgentResultAppend(targetNoteId,currentNoteTitle,task.output,provenance);
-            if(candidate.alreadyApplied){
+        try { provenance=AgentResultProvenance.create(task,task.noteId,task.noteRevision,task.output); }
+        catch(Exception invalid){Toast.makeText(this,getString(R.string.flow_agent_result_unavailable),Toast.LENGTH_LONG).show();return;}
+        try {
+            if(canvasView.hasAgentResultApplication(provenance)){
                 Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;
             }
-        }catch(Exception error){
-            Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
+        } catch(Exception collision){Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;}
+        LinearLayout choices=new LinearLayout(this);choices.setOrientation(LinearLayout.VERTICAL);
+        TextView placementHint=text(getString(R.string.flow_agent_result_placement_choice),14,SECONDARY_TEXT);
+        placementHint.setPadding(dp(20),dp(12),dp(20),dp(12));choices.addView(placementHint);
+        Button appendChoice=new Button(this);appendChoice.setText(getString(R.string.flow_agent_result_append_confirm));
+        Button pointChoice=new Button(this);pointChoice.setText(getString(R.string.flow_agent_result_choose_page));
+        Button newNoteChoice=new Button(this);newNoteChoice.setText(getString(R.string.flow_agent_result_create_note));
+        choices.addView(appendChoice);choices.addView(pointChoice);choices.addView(newNoteChoice);
+        AlertDialog choiceDialog=new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.flow_agent_result_preview_title)).setView(choices)
+                .setNegativeButton(getString(R.string.core_cancel),null).create();
+        appendChoice.setOnClickListener(v->{choiceDialog.dismiss();
+            startAgentPlacementPreview(task,targetNoteId,provenance,AgentResultPlacement.append());});
+        pointChoice.setOnClickListener(v->{choiceDialog.dismiss();showAgentPointPicker(task,targetNoteId,provenance);});
+        newNoteChoice.setOnClickListener(v->{choiceDialog.dismiss();showAgentResultNewNoteForm(task);});
+        choiceDialog.show();
+    }
+
+    private void showAgentPointPicker(AgentTaskStore.Task task,String targetNoteId,
+                                     AgentResultProvenance provenance) {
+        if(canvasView==null||!targetNoteId.equals(currentNoteId))return;
+        final NoteCanvasView.PdfExportSnapshot paper;
+        try { paper=canvasView.createPdfExportSnapshot(); }
+        catch(Exception failure){Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;}
+        final int generation=++agentResultPreviewGeneration;
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
+        TextView hint=text(getString(R.string.flow_agent_result_tap_placement),13,SECONDARY_TEXT);
+        root.addView(hint,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout nav=new LinearLayout(this);nav.setGravity(Gravity.CENTER_VERTICAL);
+        Button previous=new Button(this);previous.setText(getString(R.string.flow_agent_result_previous_page));
+        Button next=new Button(this);next.setText(getString(R.string.flow_agent_result_next_page));
+        TextView pageLabel=text("",13,SECONDARY_TEXT);pageLabel.setGravity(Gravity.CENTER);
+        nav.addView(previous,new LinearLayout.LayoutParams(0,-2,1));
+        nav.addView(pageLabel,new LinearLayout.LayoutParams(0,-2,2));
+        nav.addView(next,new LinearLayout.LayoutParams(0,-2,1));
+        root.addView(nav);
+        FrameLayout pageFrame=new FrameLayout(this);
+        final float[] pendingAccessibleTap={Float.NaN,Float.NaN};
+        final Runnable[] applyPointSelection={null};
+        ImageView paperImage=new ImageView(this){
+            @Override public boolean performClick(){
+                super.performClick();
+                if(applyPointSelection[0]!=null)applyPointSelection[0].run();
+                return true;
+            }
+        };
+        paperImage.setScaleType(ImageView.ScaleType.FIT_CENTER);paperImage.setEnabled(false);
+        paperImage.setClickable(true);paperImage.setFocusable(true);
+        paperImage.setContentDescription(getString(R.string.flow_agent_result_tap_placement));
+        pageFrame.addView(paperImage,new FrameLayout.LayoutParams(-1,-1));
+        TextView marker=text("●",22,Color.rgb(220,40,40));marker.setVisibility(View.GONE);
+        pageFrame.addView(marker,new FrameLayout.LayoutParams(dp(40),dp(40)));
+        root.addView(pageFrame,new LinearLayout.LayoutParams(-1,dp(320)));
+        TextView widthLabel=text("",13,SECONDARY_TEXT);
+        root.addView(widthLabel);
+        SeekBar widthSeek=new SeekBar(this);widthSeek.setMax(100);widthSeek.setProgress(100);root.addView(widthSeek);
+        FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);
+        host.setClipChildren(false);host.setClipToPadding(false);
+        host.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        root.addView(host,new LinearLayout.LayoutParams(1,1));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_choose_page))
+                .setView(root).setNegativeButton(getString(R.string.core_cancel),null).create();
+        final int[] page={Math.max(0,Math.min(paper.getPageCount()-1,canvasView.getCurrentPageIndexForUi()))};
+        final float[] tap={Float.NaN,Float.NaN};
+        final int margin=dp(16);
+        Runnable updateWidth=()->{
+            float anchorX=Float.isFinite(tap[0])?tap[0]:margin;
+            float max=Math.max(dp(180),paper.getPageWidth()-margin-anchorX);
+            float selected=dp(180)+(max-dp(180))*widthSeek.getProgress()/100f;
+            widthLabel.setText(getString(R.string.flow_agent_result_width_value,Math.round(selected/getResources().getDisplayMetrics().density)));
+        };
+        widthSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar b,int p,boolean user){updateWidth.run();}
+            public void onStartTrackingTouch(SeekBar b){}
+            public void onStopTrackingTouch(SeekBar b){}
+        });
+        final int[] pickerRenderSerial={0};
+        final Runnable[] renderPage={null};
+        renderPage[0]=()->{
+            if(generation!=agentResultPreviewGeneration||paper.isClosed())return;
+            final int request=++pickerRenderSerial[0];
+            pageLabel.setText(getString(R.string.flow_agent_result_page_of,page[0]+1,paper.getPageCount()));
+            marker.setVisibility(View.GONE);tap[0]=Float.NaN;tap[1]=Float.NaN;paperImage.setEnabled(false);
+            previous.setEnabled(false);next.setEnabled(false);
+            paper.renderPageWithTextAsync(page[0],1000,host,new NoteCanvasView.PdfExportSnapshot.PageCallback(){
+                public void onRendered(Bitmap bitmap){
+                    if(generation!=agentResultPreviewGeneration||request!=pickerRenderSerial[0]||!dialog.isShowing()){bitmap.recycle();return;}
+                    replaceAgentPreviewBitmap(paperImage,bitmap);paperImage.setEnabled(true);
+                    previous.setEnabled(page[0]>0);next.setEnabled(page[0]+1<paper.getPageCount());
+                }
+                public void onFailure(Exception e){if(generation==agentResultPreviewGeneration){
+                    hint.setText(getString(R.string.flow_agent_result_page_render_failed));
+                    previous.setEnabled(false);next.setEnabled(false);}}
+            });
+        };
+        previous.setOnClickListener(v->{if(page[0]>0){page[0]--;renderPage[0].run();}});
+        next.setOnClickListener(v->{if(page[0]+1<paper.getPageCount()){page[0]++;renderPage[0].run();}});
+        applyPointSelection[0]=()->{
+            float px=Float.isFinite(pendingAccessibleTap[0])?pendingAccessibleTap[0]:paper.getPageWidth()/2f;
+            float py=Float.isFinite(pendingAccessibleTap[1])?pendingAccessibleTap[1]:paper.getPageHeight()/2f;
+            pendingAccessibleTap[0]=Float.NaN;pendingAccessibleTap[1]=Float.NaN;
+            if(px<margin||py<margin||px>paper.getPageWidth()-margin||py>paper.getPageHeight()-margin){
+                hint.setText(getString(R.string.flow_agent_result_tap_inside));return;
+            }
+            float available=paper.getPageWidth()-margin-px;
+            if(available<dp(180)){hint.setText(getString(R.string.flow_agent_result_width_too_small));return;}
+            tap[0]=px;tap[1]=py;
+            float markerScale=Math.min(paperImage.getWidth()/paper.getPageWidth(),paperImage.getHeight()/paper.getPageHeight());
+            float markerLeft=(paperImage.getWidth()-paper.getPageWidth()*markerScale)/2f+px*markerScale-dp(20);
+            float markerTop=(paperImage.getHeight()-paper.getPageHeight()*markerScale)/2f+py*markerScale-dp(20);
+            marker.setTranslationX(markerLeft);marker.setTranslationY(markerTop);marker.setVisibility(View.VISIBLE);
+            hint.setText(getString(R.string.flow_agent_result_point_selected,page[0]+1,
+                    Math.round(px/getResources().getDisplayMetrics().density),Math.round(py/getResources().getDisplayMetrics().density)));
+            updateWidth.run();
+            paperImage.announceForAccessibility(hint.getText());
+        };
+        paperImage.setOnTouchListener((v,event)->{
+            if(event.getAction()!=MotionEvent.ACTION_UP||!paperImage.isEnabled()||paperImage.getDrawable()==null)return true;
+            float viewW=paperImage.getWidth(),viewH=paperImage.getHeight();
+            float scale=Math.min(viewW/paper.getPageWidth(),viewH/paper.getPageHeight());
+            float drawW=paper.getPageWidth()*scale,drawH=paper.getPageHeight()*scale;
+            float left=(viewW-drawW)/2f,top=(viewH-drawH)/2f;
+            float px=(event.getX()-left)/scale,py=(event.getY()-top)/scale;
+            pendingAccessibleTap[0]=px;pendingAccessibleTap[1]=py;
+            paperImage.performClick();
+            return true;
+        });
+        updateWidth.run();
+        dialog.setOnDismissListener(d->{if(generation==agentResultPreviewGeneration)agentResultPreviewGeneration++;
+            paper.close();if(activeAgentPreviewSnapshot==paper)activeAgentPreviewSnapshot=null;
+            if(activeAgentPreviewDialog==dialog)activeAgentPreviewDialog=null;
+            if(activeAgentPreviewHost==host)activeAgentPreviewHost=null;
+            releaseAgentPreviewBitmap(paperImage);});
+        dialog.setButton(AlertDialog.BUTTON_POSITIVE,getString(R.string.flow_agent_result_preview_at_point),(d,w)->{});
+        dialog.show();activeAgentPreviewSnapshot=paper;activeAgentPreviewDialog=dialog;activeAgentPreviewHost=host;
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            if(!Float.isFinite(tap[0])||!Float.isFinite(tap[1])){
+                hint.setText(getString(R.string.flow_agent_result_tap_placement));return;
+            }
+            float max=Math.max(dp(180),paper.getPageWidth()-margin-tap[0]);
+            float width=dp(180)+(max-dp(180))*widthSeek.getProgress()/100f;
+            AgentResultPlacement placement;
+            try{placement=AgentResultPlacement.point(page[0],tap[0],tap[1],width);}
+            catch(Exception invalid){hint.setText(getString(R.string.flow_agent_result_width_too_small));return;}
+            final NoteCanvasView.AgentResultAppendCandidate pickedCandidate;
+            try {
+                pickedCandidate=canvasView.prepareAgentResultAppend(targetNoteId,currentNoteTitle,
+                        task.output,provenance,placement);
+                if(pickedCandidate.alreadyApplied){hint.setText(getString(R.string.flow_agent_result_already_added));return;}
+            } catch(Exception collisionOrInvalid) {
+                hint.setText(safeAgentPlacementError(collisionOrInvalid));return;
+            }
+            dialog.dismiss();
+            showAgentPlacementPreviewCandidate(task,targetNoteId,provenance,placement,pickedCandidate);
+        });
+        renderPage[0].run();
+    }
+
+    private void startAgentPlacementPreview(AgentTaskStore.Task task,String targetNoteId,
+                                            AgentResultProvenance provenance,
+                                            AgentResultPlacement placement) {
+        if(!editorVisible||!restoreCompleted||canvasView==null||!targetNoteId.equals(currentNoteId)
+                ||saveInFlight||agentResultAppendInFlight||documentRevision!=lastSavedRevision){
+            Toast.makeText(this,getString(R.string.flow_agent_result_wait_for_save),Toast.LENGTH_LONG).show();return;
         }
-        final long capturedDocumentRevision=documentRevision;
-        final long capturedSession=editorSessionGeneration;
+        final NoteCanvasView.AgentResultAppendCandidate candidate;
+        try{
+            candidate=canvasView.prepareAgentResultAppend(targetNoteId,currentNoteTitle,task.output,provenance,placement);
+            if(candidate.alreadyApplied){Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;}
+        }catch(Exception error){Toast.makeText(this,safeAgentPlacementError(error),Toast.LENGTH_LONG).show();return;}
+        showAgentPlacementPreviewCandidate(task,targetNoteId,provenance,placement,candidate);
+    }
+
+    private void showAgentPlacementPreviewCandidate(AgentTaskStore.Task task,String targetNoteId,
+            AgentResultProvenance provenance,AgentResultPlacement placement,
+            NoteCanvasView.AgentResultAppendCandidate candidate) {
+        if(!editorVisible||!restoreCompleted||canvasView==null||!targetNoteId.equals(currentNoteId)
+                ||saveInFlight||agentResultAppendInFlight||documentRevision!=lastSavedRevision){
+            Toast.makeText(this,getString(R.string.flow_agent_result_wait_for_save),Toast.LENGTH_LONG).show();return;
+        }
+        final long capturedDocumentRevision=documentRevision,capturedSession=editorSessionGeneration;
         final String capturedLineage=currentGroupLineage,capturedGroupRevision=currentGroupRevision,
                 capturedGroupDigest=currentGroupDigest,capturedLegacySha=currentLegacyBodySha256;
-        StringBuilder preview=new StringBuilder();
-        if(!task.noteId.isEmpty()){
-            NoteStore.Entry source=findNoteEntry(task.noteId);
-            if(source!=null&&source.updatedAt>task.noteRevision)
-                preview.append(getString(R.string.flow_agent_result_older_snapshot)).append("\n\n");
-            else if(source==null)preview.append(getString(R.string.flow_agent_result_new_target_notice)).append("\n\n");
-        }
-        int destinationPage = -1;
-        org.json.JSONArray candidateFlows = candidate.document.optJSONArray("textFlows");
-        if (candidateFlows != null) {
-            for (int i = 0; i < candidateFlows.length(); i++) {
-                JSONObject flow = candidateFlows.optJSONObject(i);
-                if (flow != null && candidate.flowId.equals(flow.optString("id"))) {
-                    int anchor = flow.optInt("anchorPageIndex", -1);
-                    if (anchor >= 0) destinationPage = anchor + 1;
-                    break;
+        final int generation=++agentResultPreviewGeneration;
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
+        TextView status=text(getString(R.string.flow_agent_result_preview_preparing),13,SECONDARY_TEXT);
+        root.addView(status);
+        LinearLayout nav=new LinearLayout(this);nav.setGravity(Gravity.CENTER_VERTICAL);
+        Button previous=new Button(this);previous.setText(getString(R.string.flow_agent_result_previous_page));
+        TextView pageLabel=text("",13,SECONDARY_TEXT);pageLabel.setGravity(Gravity.CENTER);
+        Button next=new Button(this);next.setText(getString(R.string.flow_agent_result_next_page));
+        nav.addView(previous,new LinearLayout.LayoutParams(0,-2,1));
+        nav.addView(pageLabel,new LinearLayout.LayoutParams(0,-2,2));
+        nav.addView(next,new LinearLayout.LayoutParams(0,-2,1));root.addView(nav);
+        ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        root.addView(image,new LinearLayout.LayoutParams(-1,dp(360)));
+        FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);
+        host.setClipChildren(false);host.setClipToPadding(false);
+        host.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        root.addView(host,new LinearLayout.LayoutParams(1,1));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_preview_title))
+                .setView(root).setNegativeButton(getString(R.string.core_cancel),null)
+                .setNeutralButton(getString(R.string.flow_agent_result_choose_page),(d,w)->{}).create();
+        final int[] shownPage={candidate.firstPageIndex};
+        final int[] previewRenderSerial={0};
+        final boolean[] ready={false};
+        final NoteCanvasView.PdfExportSnapshot[] snapshot={null};
+        final NoteCanvasView.AgentPreviewHandle[] prepHandle={null};
+        Runnable renderShownPage=()->{
+            NoteCanvasView.PdfExportSnapshot snap=snapshot[0];
+            if(snap==null||generation!=agentResultPreviewGeneration)return;
+            ready[0]=false;
+            if(dialog.isShowing())dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            final int request=++previewRenderSerial[0];
+            previous.setEnabled(false);next.setEnabled(false);
+            pageLabel.setText(getString(R.string.flow_agent_result_page_of,
+                    shownPage[0]+1,snap.getPageCount()));
+            snap.renderPageWithTextAsync(shownPage[0],1200,host,new NoteCanvasView.PdfExportSnapshot.PageCallback(){
+                public void onRendered(Bitmap bitmap){
+                    if(generation!=agentResultPreviewGeneration||request!=previewRenderSerial[0]||!dialog.isShowing()){bitmap.recycle();return;}
+                    replaceAgentPreviewBitmap(image,bitmap);
+                    ready[0]=candidate.previewLayoutStable;
+                    previous.setEnabled(shownPage[0]>candidate.firstPageIndex);
+                    next.setEnabled(shownPage[0]<candidate.lastPageIndex);
+                    if(dialog.isShowing())dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(ready[0]);
                 }
+                public void onFailure(Exception error){if(generation==agentResultPreviewGeneration){
+                    ready[0]=false;previous.setEnabled(false);next.setEnabled(false);
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    status.setText(getString(R.string.flow_agent_result_page_render_failed));}}
+            });
+        };
+        previous.setOnClickListener(v->{if(shownPage[0]>candidate.firstPageIndex){shownPage[0]--;renderShownPage.run();}});
+        next.setOnClickListener(v->{if(shownPage[0]<candidate.lastPageIndex){shownPage[0]++;renderShownPage.run();}});
+        dialog.setOnDismissListener(d->{if(generation==agentResultPreviewGeneration)agentResultPreviewGeneration++;
+            if(prepHandle[0]!=null)prepHandle[0].cancel();
+            if(activeAgentPreviewPreparation==prepHandle[0])activeAgentPreviewPreparation=null;
+            if(activeAgentPreviewSnapshot==snapshot[0])activeAgentPreviewSnapshot=null;
+            if(snapshot[0]!=null)snapshot[0].close();
+            if(activeAgentPreviewDialog==dialog)activeAgentPreviewDialog=null;
+            if(activeAgentPreviewHost==host){if(host.getParent() instanceof ViewGroup)((ViewGroup)host.getParent()).removeView(host);activeAgentPreviewHost=null;}
+            releaseAgentPreviewBitmap(image);});
+        dialog.setButton(AlertDialog.BUTTON_POSITIVE,getString(R.string.flow_agent_result_append_confirm),(d,w)->{});
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{
+            dialog.dismiss();showAgentPointPicker(task,targetNoteId,provenance);
+        });
+        activeAgentPreviewDialog=dialog;activeAgentPreviewHost=host;
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            if(!ready[0]||candidate.previewLayoutStable!=true)return;
+            AgentTaskStore.Task latest=agentResultTaskStore().get(task.clientTaskId);
+            if(!sameAgentResultTask(task,latest)||!agentResultTargetRevisionCurrent(targetNoteId,
+                    capturedDocumentRevision,capturedSession,capturedLineage,capturedGroupRevision,
+                    capturedGroupDigest,capturedLegacySha)){
+                Toast.makeText(this,getString(R.string.flow_agent_result_target_changed),Toast.LENGTH_LONG).show();return;
             }
-        }
-        if (destinationPage < 1) {
-            Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
-        }
-        preview.append(getString(R.string.flow_agent_result_destination_summary,
-                currentNoteTitle, destinationPage)).append("\n\n").append(task.output);
-        TextView output=new TextView(this);output.setText(preview.toString());output.setTextIsSelectable(true);
-        output.setTextSize(15);output.setTextColor(INK_COLOR);output.setPadding(dp(20),dp(16),dp(20),dp(16));
-        ScrollView scroll=new ScrollView(this);scroll.addView(output);
-        AlertDialog previewDialog = new AlertDialog.Builder(this).setTitle(getString(R.string.flow_agent_result_preview_title))
-                .setView(scroll).setNegativeButton(getString(R.string.core_cancel),null)
-                .setNeutralButton(getString(R.string.flow_agent_result_create_note),(dialog,which)->showAgentResultNewNoteForm(task))
-                .setPositiveButton(getString(R.string.flow_agent_result_append_confirm),(dialog,which)->{
-                    AgentTaskStore.Task latest=tasks.get(taskId);
-                    if(!sameAgentResultTask(task,latest)||!editorVisible||!restoreCompleted||canvasView==null
-                            ||!targetNoteId.equals(currentNoteId)||capturedSession!=editorSessionGeneration
-                            ||capturedDocumentRevision!=documentRevision||saveInFlight
-                            ||!same(capturedLineage,currentGroupLineage)
-                            ||!same(capturedGroupRevision,currentGroupRevision)
-                            ||!same(capturedGroupDigest,currentGroupDigest)
-                            ||!same(capturedLegacySha,currentLegacyBodySha256)){
-                        Toast.makeText(this,getString(R.string.flow_agent_result_target_changed),Toast.LENGTH_LONG).show();return;
-                    }
-                    // addedAt is the first confirmed append attempt, not the time the
-                    // preview was opened. Rebuild the candidate from the still-pinned
-                    // live canvas after the confirmation gate.
-                    final AgentResultProvenance confirmedProvenance;
-                    final NoteCanvasView.AgentResultAppendCandidate confirmedCandidate;
-                    try {
-                        confirmedProvenance=AgentResultProvenance.create(latest,latest.noteId,
-                                latest.noteRevision,latest.output);
-                        confirmedCandidate=canvasView.prepareAgentResultAppend(targetNoteId,
-                                currentNoteTitle,latest.output,confirmedProvenance);
-                        if(confirmedCandidate.alreadyApplied){
-                            Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;
+            final NoteCanvasView.AgentResultAppendCandidate confirmed;
+            try {
+                confirmed=canvasView.prepareAgentResultAppend(targetNoteId,currentNoteTitle,
+                        latest.output,provenance,placement);
+                if(confirmed.alreadyApplied){Toast.makeText(this,getString(R.string.flow_agent_result_already_added),Toast.LENGTH_LONG).show();return;}
+            } catch(Exception invalidated) {
+                status.setText(safeAgentPlacementError(invalidated));return;
+            }
+            ready[0]=false;dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            status.setText(getString(R.string.flow_agent_result_rechecking));
+            prepHandle[0]=canvasView.prepareAgentResultPreviewAsync(confirmed,host,
+                    new NoteCanvasView.AgentPreviewPreparationCallback(){
+                        public void onReady(NoteCanvasView.AgentResultAppendCandidate measured,
+                                            NoteCanvasView.PdfExportSnapshot checkSnapshot){
+                            checkSnapshot.close();
+                            prepHandle[0]=null;activeAgentPreviewPreparation=null;
+                            if(generation!=agentResultPreviewGeneration||!dialog.isShowing())return;
+                            AgentTaskStore.Task latestAgain=agentResultTaskStore().get(task.clientTaskId);
+                            if(!sameAgentResultTask(task,latestAgain)||!agentResultTargetRevisionCurrent(
+                                    targetNoteId,capturedDocumentRevision,capturedSession,capturedLineage,
+                                    capturedGroupRevision,capturedGroupDigest,capturedLegacySha)){
+                                status.setText(getString(R.string.flow_agent_result_target_changed));return;
+                            }
+                            if(!sameAgentPlacementGeometry(candidate,measured)){
+                                status.setText(getString(R.string.flow_agent_result_preview_changed));return;
+                            }
+                            dialog.dismiss();
+                            startAgentResultAppend(latestAgain,measured,targetNoteId,capturedDocumentRevision,
+                                    capturedSession,capturedLineage,capturedGroupRevision,
+                                    capturedGroupDigest,capturedLegacySha);
                         }
-                    } catch(Exception invalidated){
-                        Toast.makeText(this,getString(R.string.flow_agent_result_prepare_failed),Toast.LENGTH_LONG).show();return;
+                        public void onFailure(Exception error){
+                            prepHandle[0]=null;activeAgentPreviewPreparation=null;
+                            if(generation!=agentResultPreviewGeneration||!dialog.isShowing())return;
+                            status.setText(safeAgentPlacementError(error));
+                        }
+                    });
+            activeAgentPreviewPreparation=prepHandle[0];
+        });
+        prepHandle[0]=canvasView.prepareAgentResultPreviewAsync(candidate,host,
+                new NoteCanvasView.AgentPreviewPreparationCallback(){
+                    public void onReady(NoteCanvasView.AgentResultAppendCandidate stable,
+                                       NoteCanvasView.PdfExportSnapshot frozen){
+                        if(generation!=agentResultPreviewGeneration||!dialog.isShowing()){
+                            frozen.close();return;
+                        }
+                        prepHandle[0]=null;activeAgentPreviewPreparation=null;
+                        snapshot[0]=frozen;activeAgentPreviewSnapshot=frozen;
+                        status.setText(getString(R.string.flow_agent_result_preview_ready,
+                                stable.firstPageIndex+1,stable.lastPageIndex+1));
+                        ready[0]=false;dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                        renderShownPage.run();
                     }
-                    startAgentResultAppend(latest,confirmedCandidate,targetNoteId,
-                            capturedDocumentRevision,capturedSession,capturedLineage,capturedGroupRevision,
-                            capturedGroupDigest,capturedLegacySha);
-                }).create();
-        previewDialog.show();
+                    public void onFailure(Exception error){
+                        prepHandle[0]=null;activeAgentPreviewPreparation=null;
+                        if(generation!=agentResultPreviewGeneration||!dialog.isShowing())return;
+                        ready[0]=false;status.setText(safeAgentPlacementError(error));
+                    }
+                });
+        activeAgentPreviewPreparation=prepHandle[0];
+    }
+
+    private boolean agentResultTargetRevisionCurrent(String noteId,long expectedRevision,long expectedSession,
+            String lineage,String groupRevision,String groupDigest,String legacySha) {
+        return editorVisible&&restoreCompleted&&canvasView!=null&&noteId.equals(currentNoteId)
+                &&editorSessionGeneration==expectedSession&&documentRevision==expectedRevision
+                &&!saveInFlight&&documentRevision==lastSavedRevision
+                &&same(lineage,currentGroupLineage)&&same(groupRevision,currentGroupRevision)
+                &&same(groupDigest,currentGroupDigest)&&same(legacySha,currentLegacyBodySha256);
+    }
+
+    private static boolean sameAgentPlacementGeometry(
+            NoteCanvasView.AgentResultAppendCandidate expected,
+            NoteCanvasView.AgentResultAppendCandidate actual) {
+        if(expected==null||actual==null||!actual.previewLayoutStable
+                ||!same(expected.flowId,actual.flowId)
+                ||expected.firstPageIndex!=actual.firstPageIndex
+                ||expected.lastPageIndex!=actual.lastPageIndex
+                ||expected.layouts.size()!=actual.layouts.size()
+                ||expected.document.optInt("pageCount",-1)!=actual.document.optInt("pageCount",-2)
+                ||expected.placement.mode!=actual.placement.mode
+                ||expected.placement.pageIndex!=actual.placement.pageIndex
+                ||Math.abs(expected.placement.xInPage-actual.placement.xInPage)>0.01d
+                ||Math.abs(expected.placement.yInPage-actual.placement.yInPage)>0.01d
+                ||Math.abs(expected.placement.width-actual.placement.width)>0.01d)return false;
+        for(int i=0;i<expected.layouts.size();i++) {
+            NoteCanvasView.TextFragmentLayout a=expected.layouts.get(i),b=actual.layouts.get(i);
+            if(a.pageIndex!=b.pageIndex||Math.abs(a.x-b.x)>0.5f||Math.abs(a.y-b.y)>0.5f
+                    ||Math.abs(a.width-b.width)>0.5f||Math.abs(a.height-b.height)>1f
+                    ||!same(a.source,b.source))return false;
+        }
+        return true;
+    }
+
+    private String safeAgentPlacementError(Exception error) {
+        String message=error==null?"":error.getMessage();
+        if(message==null||message.trim().isEmpty())return getString(R.string.flow_agent_result_prepare_failed);
+        return message;
+    }
+
+    private void replaceAgentPreviewBitmap(ImageView view,Bitmap bitmap) {
+        releaseAgentPreviewBitmap(view);
+        view.setImageBitmap(bitmap);
+        activeAgentPreviewBitmap=bitmap;
+    }
+
+    private void releaseAgentPreviewBitmap(ImageView view) {
+        Bitmap old=activeAgentPreviewBitmap;activeAgentPreviewBitmap=null;
+        if(view!=null)view.setImageDrawable(null);
+        if(old!=null&&!old.isRecycled())old.recycle();
+    }
+
+    private void cancelAgentResultPreview() {
+        agentResultPreviewGeneration++;
+        if(activeAgentPreviewPreparation!=null){activeAgentPreviewPreparation.cancel();activeAgentPreviewPreparation=null;}
+        if(activeAgentPreviewSnapshot!=null){activeAgentPreviewSnapshot.close();activeAgentPreviewSnapshot=null;}
+        if(activeAgentPreviewBitmap!=null&&!activeAgentPreviewBitmap.isRecycled())activeAgentPreviewBitmap.recycle();
+        activeAgentPreviewBitmap=null;
+        if(activeAgentPreviewDialog!=null&&activeAgentPreviewDialog.isShowing())activeAgentPreviewDialog.dismiss();
+        activeAgentPreviewDialog=null;activeAgentPreviewHost=null;
     }
 
     private static boolean sameAgentResultTask(AgentTaskStore.Task expected,AgentTaskStore.Task actual) {

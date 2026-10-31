@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">最終コミット開始後は、画面を離れても復元が完了する場合があります。</string>
     <string name="core_delete_cleanup_pending">ノートを一覧から削除しました。一部のローカル資料は安全な整理のため保持しています。</string>
     <string name="core_viewport_save_failed">ページ位置を保存できませんでした。ノートの内容は変更されていません。</string>
+    <string name="flow_agent_result_placement_choice">回答の配置場所を選択します。既定では末尾に追加します。</string>
+    <string name="flow_agent_result_choose_page">ページを選択</string>
+    <string name="flow_agent_result_tap_placement">ページ左上の空き位置をタップし、幅を調整して再度タップします。</string>
+    <string name="flow_agent_result_tap_inside">ページの余白内をタップしてください。</string>
+    <string name="flow_agent_result_point_selected">%1$dページ · 位置 %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">文字幅: %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">最小幅を確保できません。</string>
+    <string name="flow_agent_result_preview_preparing">全ページを確認し、紙面プレビューを作成しています…</string>
+    <string name="flow_agent_result_preview_ready">プレビュー %1$d～%2$dページ · 全ページ確認済み</string>
+    <string name="flow_agent_result_page_render_failed">ページを安全に描画できないため、確定できません。</string>
+    <string name="flow_agent_result_preview_at_point">この位置でプレビュー</string>
+    <string name="flow_agent_result_page_of">%1$d / %2$dページ</string>
+    <string name="flow_agent_result_previous_page">前へ</string>
+    <string name="flow_agent_result_next_page">次へ</string>
+    <string name="flow_agent_result_rechecking">同じ配置を再確認しています…</string>
+    <string name="flow_agent_result_preview_changed">実測レイアウトが変わりました。プレビューを開き直して確認してください。</string>
 </resources>

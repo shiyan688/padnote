@@ -6,6 +6,7 @@ import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.junit.Assert.*;
@@ -113,6 +114,66 @@ public final class AgentResultActivityInstrumentedTest {
         }
     }
 
+    @Test public void pointChooserCenterTapPreviewsSavesAndReopensAtPoint() throws Exception {
+        try (Fixture fixture=Fixture.create();
+             ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity->activity.showCachedAgentTaskForTest(
+                    fixture.task.clientTaskId,fixture.tasks));
+            await(() -> {
+                try { onView(withText(R.string.flow_append_result_to_note)).check(matches(isDisplayed())); return true; }
+                catch(RuntimeException|AssertionError unavailable){return false;}
+            },"result action did not become visible");
+            onView(withText(R.string.flow_append_result_to_note)).perform(scrollTo(),click());
+            onView(withText(R.string.flow_agent_result_choose_page)).perform(click());
+            await(() -> {
+                try { onView(withContentDescription(R.string.flow_agent_result_tap_placement))
+                        .check(matches(isDisplayed())).check(matches(isEnabled())); return true; }
+                catch(RuntimeException|AssertionError rendering){return false;}
+            },"paper page was not rendered for point selection");
+            // Espresso tap selects a valid point through the same click handler used by accessibility.
+            onView(withContentDescription(R.string.flow_agent_result_tap_placement)).perform(click());
+            onView(withText(R.string.flow_agent_result_preview_at_point)).perform(click());
+            await(() -> {
+                try { onView(withText(R.string.flow_agent_result_append_confirm))
+                        .check(matches(isEnabled())); return true; }
+                catch(RuntimeException|AssertionError preparing){return false;}
+            },"compiled point candidate preview did not become confirmable");
+            onView(withText(R.string.flow_agent_result_append_confirm)).perform(click());
+            await(() -> {
+                try {
+                    JSONObject saved=NoteStore.load(fixture.context,fixture.note.id);
+                    JSONArray flows=saved.optJSONArray("textFlows");
+                    if(flows==null||countOrigin(flows,fixture.applicationId)!=1)return false;
+                    final boolean[] idle={false};scenario.onActivity(a->idle[0]=a.agentResultAppendIdleForTest());
+                    return idle[0];
+                } catch(Exception pending){return false;}
+            },"point candidate was not durably saved");
+            JSONObject saved=NoteStore.load(fixture.context,fixture.note.id);
+            JSONObject stored=findOrigin(saved.getJSONArray("textFlows"),fixture.applicationId);
+            assertNotNull(stored);
+            assertEquals(0,stored.getInt("anchorPageIndex"));
+            assertEquals(saved.getDouble("pageWidth")/2d,stored.getDouble("anchorXInPage"),2d);
+            assertEquals(saved.getDouble("pageHeight")/2d,stored.getDouble("anchorYInPage"),2d);
+            assertEquals(fixture.task.output,stored.getString("source"));
+            assertEquals(AgentResultProvenance.sha256(
+                    fixture.task.output.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                    stored.getJSONObject("agentResult").getString("resultSha256"));
+
+            onView(withText(R.string.flow_close)).perform(click());
+            onView(withContentDescription(R.string.core_back_shelf)).perform(click());
+            clickNoteWhenVisible(fixture.context,fixture.note.title);
+            await(() -> {
+                try {
+                    JSONObject live=scenarioNote(scenario,fixture);
+                    JSONObject reopened=findOrigin(live.getJSONArray("textFlows"),fixture.applicationId);
+                    return reopened!=null&&reopened.getInt("anchorPageIndex")==0
+                            &&Math.abs(reopened.getDouble("anchorXInPage")-stored.getDouble("anchorXInPage"))<0.01d
+                            &&Math.abs(reopened.getDouble("anchorYInPage")-stored.getDouble("anchorYInPage"))<0.01d;
+                } catch(Exception restoring){return false;}
+            },"cold reopened note lost the point anchor");
+        }
+    }
+
     private static void openResultPreview() throws Exception {
         await(() -> {
             try {
@@ -122,10 +183,18 @@ public final class AgentResultActivityInstrumentedTest {
         }, "task result action did not become visible");
         onView(withText(R.string.flow_append_result_to_note)).perform(scrollTo(), click());
         onView(withText(R.string.flow_agent_result_preview_title)).check(matches(isDisplayed()));
+        // The chooser keeps append as the default, then the actual paper preview gates confirmation.
+        onView(withText(R.string.flow_agent_result_append_confirm)).perform(click());
+        await(() -> {
+            try {
+                onView(withText(R.string.flow_agent_result_append_confirm)).check(matches(isEnabled()));
+                return true;
+            } catch (RuntimeException | AssertionError preparing) { return false; }
+        }, "compiled paper preview did not become confirmable");
     }
 
     private static void confirmResult() {
-        onView(withText(R.string.flow_agent_result_append_confirm)).perform(click());
+        onView(withText(R.string.flow_agent_result_append_confirm)).check(matches(isEnabled())).perform(click());
     }
 
     private static int countOrigin(JSONArray flows, String applicationId) throws Exception {
@@ -135,6 +204,21 @@ public final class AgentResultActivityInstrumentedTest {
             if (receipt != null && applicationId.equals(receipt.optString("applicationId"))) count++;
         }
         return count;
+    }
+
+    private static JSONObject findOrigin(JSONArray flows,String applicationId)throws Exception{
+        for(int i=0;i<flows.length();i++){
+            JSONObject flow=flows.getJSONObject(i);JSONObject receipt=flow.optJSONObject("agentResult");
+            if(receipt!=null&&applicationId.equals(receipt.optString("applicationId")))return flow;
+        }
+        return null;
+    }
+
+    private static JSONObject scenarioNote(ActivityScenario<MainActivity> scenario,Fixture fixture){
+        JSONObject[] result={null};
+        scenario.onActivity(activity->{try{result[0]=activity.canvasForTest().toJsonDocument(
+                fixture.note.id,fixture.note.title);}catch(Exception ignored){}});
+        return result[0];
     }
 
     private static void clickNoteWhenVisible(Context context, String title) throws Exception {

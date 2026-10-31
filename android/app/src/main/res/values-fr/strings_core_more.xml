@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">Une fois la validation finale commencée, la restauration peut aboutir même si vous quittez cet écran.</string>
     <string name="core_delete_cleanup_pending">La note a été retirée de la liste. Certains éléments locaux sont conservés en attendant un nettoyage sûr.</string>
     <string name="core_viewport_save_failed">La position de la page n’a pas pu être enregistrée. Le contenu de la note est inchangé.</string>
+    <string name="flow_agent_result_placement_choice">Choisissez où placer la réponse. Par défaut, elle est ajoutée à la fin.</string>
+    <string name="flow_agent_result_choose_page">Choisir une page</string>
+    <string name="flow_agent_result_tap_placement">Touchez un point libre en haut à gauche. Réglez la largeur puis touchez.</string>
+    <string name="flow_agent_result_tap_inside">Touchez à l’intérieur des marges de la page.</string>
+    <string name="flow_agent_result_point_selected">Page %1$d · point %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">Largeur du texte : %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">L’espace est insuffisant pour la largeur minimale.</string>
+    <string name="flow_agent_result_preview_preparing">Vérification de toutes les pages et création de l’aperçu…</string>
+    <string name="flow_agent_result_preview_ready">Aperçu pages %1$d–%2$d · toutes vérifiées</string>
+    <string name="flow_agent_result_page_render_failed">Impossible de rendre cette page en toute sécurité ; confirmation indisponible.</string>
+    <string name="flow_agent_result_preview_at_point">Aperçu à cet emplacement</string>
+    <string name="flow_agent_result_page_of">Page %1$d sur %2$d</string>
+    <string name="flow_agent_result_previous_page">Précédent</string>
+    <string name="flow_agent_result_next_page">Suivant</string>
+    <string name="flow_agent_result_rechecking">Nouvelle vérification du même emplacement…</string>
+    <string name="flow_agent_result_preview_changed">La mise en page mesurée a changé. Rouvrez l’aperçu.</string>
 </resources>

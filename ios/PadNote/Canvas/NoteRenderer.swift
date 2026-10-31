@@ -19,6 +19,68 @@ public enum NoteRenderer {
     private static var cachedPDFURL: URL?
     private static var cachedPDF: PDFDocument?
 
+    enum PDFROIError: Error { case missing, unreadable, invalidROI }
+
+    /// Conservative occupancy test against only the source PDF page. The same
+    /// media-box transform as drawPDF is used; any unavailable geometry fails closed.
+    static func pdfHasInk(in rect: CGRect, document: NoteDocument, page: Int,
+                          pdfURL: URL?, padding: CGFloat = 8) throws -> Bool {
+        guard let pdfURL, let pdf = pdfDocument(for: pdfURL), !pdf.isLocked,
+              page >= 0, page < document.pdfPageCount, pdf.pageCount == document.pdfPageCount,
+              let sourcePage = pdf.page(at: page), let pageRef = sourcePage.pageRef else { throw PDFROIError.missing }
+        guard rect.minX.isFinite, rect.minY.isFinite, rect.width.isFinite, rect.height.isFinite,
+              padding.isFinite, padding >= 0 else { throw PDFROIError.invalidROI }
+        let paperBounds = CGRect(x: 0, y: 0, width: document.pageWidth, height: document.pageHeight)
+        guard rect.width > 0, rect.height > 0, paperBounds.contains(rect) else { throw PDFROIError.invalidROI }
+        let roi = rect.insetBy(dx: -padding, dy: -padding).intersection(paperBounds)
+        guard !roi.isNull, roi.width > 0, roi.height > 0 else { throw PDFROIError.invalidROI }
+        // Keep at least one raster pixel per paper point so thin PDF marks are
+        // not averaged away and mistaken for blank space.
+        let scale: CGFloat = 1
+        let size = CGSize(width: max(1, CGFloat(document.pageWidth) * scale), height: max(1, CGFloat(document.pageHeight) * scale))
+        guard size.width * size.height <= 16_777_216 else { throw PDFROIError.unreadable }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true; format.preferredRange = .standard
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { output in
+            let context = output.cgContext
+            context.setFillColor(UIColor.white.cgColor); context.fill(CGRect(origin: .zero, size: size))
+            context.scaleBy(x: scale, y: scale)
+            context.saveGState()
+            context.translateBy(x: 0, y: CGFloat(document.pageHeight))
+            context.scaleBy(x: 1, y: -1)
+            context.concatenate(pageRef.getDrawingTransform(.mediaBox,
+                rect: CGRect(x: 0, y: 0, width: CGFloat(document.pageWidth), height: CGFloat(document.pageHeight)),
+                rotate: 0, preserveAspectRatio: true))
+            context.drawPDFPage(pageRef)
+            context.restoreGState()
+        }
+        guard let cg = image.cgImage, let raw = cg.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(raw), cg.bitsPerPixel == 32, cg.bitsPerComponent == 8 else { throw PDFROIError.unreadable }
+        let order = cg.bitmapInfo.intersection(.byteOrderMask)
+        let alpha = cg.alphaInfo
+        let rgbOffsets: (Int, Int, Int)
+        switch (alpha, order) {
+        case (.first, .byteOrder32Big), (.premultipliedFirst, .byteOrder32Big), (.noneSkipFirst, .byteOrder32Big): rgbOffsets = (1, 2, 3)
+        case (.first, .byteOrder32Little), (.premultipliedFirst, .byteOrder32Little), (.noneSkipFirst, .byteOrder32Little): rgbOffsets = (2, 1, 0)
+        case (.last, .byteOrder32Big), (.premultipliedLast, .byteOrder32Big), (.noneSkipLast, .byteOrder32Big): rgbOffsets = (0, 1, 2)
+        case (.last, .byteOrder32Little), (.premultipliedLast, .byteOrder32Little), (.noneSkipLast, .byteOrder32Little): rgbOffsets = (3, 2, 1)
+        default: throw PDFROIError.unreadable
+        }
+        let (requiredLength, overflow) = cg.bytesPerRow.multipliedReportingOverflow(by: cg.height)
+        guard !overflow, CFDataGetLength(raw) >= requiredLength, cg.bytesPerRow >= cg.width * 4 else { throw PDFROIError.unreadable }
+        let x0 = max(0, Int(floor(roi.minX * scale))), x1 = min(cg.width - 1, Int(ceil(roi.maxX * scale)))
+        let y0 = max(0, Int(floor(roi.minY * scale))), y1 = min(cg.height - 1, Int(ceil(roi.maxY * scale)))
+        guard x1 >= x0, y1 >= y0 else { throw PDFROIError.invalidROI }
+        for y in y0...y1 { for x in x0...x1 {
+            let offset = y * cg.bytesPerRow + x * 4
+            guard offset >= 0, offset + 3 < requiredLength else { throw PDFROIError.unreadable }
+            let r = Double(bytes[offset + rgbOffsets.0]) / 255
+            let g = Double(bytes[offset + rgbOffsets.1]) / 255
+            let b = Double(bytes[offset + rgbOffsets.2]) / 255
+            if min(r, g, b) < 0.965 { return true }
+        } }
+        return false
+    }
+
     public static func renderPage(document: NoteDocument, page: Int, pdfURL: URL?, maxEdge: CGFloat = 1600) -> UIImage {
         guard page >= 0, page < max(1, document.pageCount) else { return UIImage() }
         let scale = min(1, Double(maxEdge) / max(document.pageWidth, document.pageHeight))

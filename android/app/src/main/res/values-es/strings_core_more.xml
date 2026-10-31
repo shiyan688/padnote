@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">Cuando empiece la confirmación final, la restauración puede terminar aunque salgas de esta pantalla.</string>
     <string name="core_delete_cleanup_pending">La nota se quitó de la lista. Algunos materiales locales se conservaron para limpiarlos de forma segura más adelante.</string>
     <string name="core_viewport_save_failed">No se pudo guardar la posición de la página. El contenido de la nota no cambió.</string>
+    <string name="flow_agent_result_placement_choice">Elige dónde colocar la respuesta. De forma predeterminada se añade al final.</string>
+    <string name="flow_agent_result_choose_page">Elegir página</string>
+    <string name="flow_agent_result_tap_placement">Toca un punto libre arriba a la izquierda. Ajusta el ancho y vuelve a tocar.</string>
+    <string name="flow_agent_result_tap_inside">Toca dentro de los márgenes de la página.</string>
+    <string name="flow_agent_result_point_selected">Página %1$d · punto %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">Ancho del texto: %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">No hay espacio para el ancho mínimo.</string>
+    <string name="flow_agent_result_preview_preparing">Comprobando todas las páginas y preparando la vista…</string>
+    <string name="flow_agent_result_preview_ready">Vista previa páginas %1$d–%2$d · todas comprobadas</string>
+    <string name="flow_agent_result_page_render_failed">No se pudo renderizar esta página de forma segura; no se puede confirmar.</string>
+    <string name="flow_agent_result_preview_at_point">Previsualizar en este punto</string>
+    <string name="flow_agent_result_page_of">Página %1$d de %2$d</string>
+    <string name="flow_agent_result_previous_page">Anterior</string>
+    <string name="flow_agent_result_next_page">Siguiente</string>
+    <string name="flow_agent_result_rechecking">Volviendo a comprobar la misma ubicación…</string>
+    <string name="flow_agent_result_preview_changed">El diseño medido cambió. Abre de nuevo la vista previa y revisa las páginas.</string>
 </resources>

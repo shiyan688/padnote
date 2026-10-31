@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">최종 커밋이 시작되면 화면을 나가도 복원이 완료될 수 있습니다.</string>
     <string name="core_delete_cleanup_pending">노트가 목록에서 제거되었습니다. 일부 로컬 자료는 안전한 정리를 위해 보관되었습니다.</string>
     <string name="core_viewport_save_failed">페이지 위치를 저장하지 못했습니다. 노트 내용은 변경되지 않았습니다.</string>
+    <string name="flow_agent_result_placement_choice">답변을 배치할 위치를 선택하세요. 기본값은 끝에 추가입니다.</string>
+    <string name="flow_agent_result_choose_page">페이지 선택</string>
+    <string name="flow_agent_result_tap_placement">페이지의 빈 왼쪽 위 지점을 누르고 너비를 조정한 뒤 다시 누르세요.</string>
+    <string name="flow_agent_result_tap_inside">페이지 여백 안을 누르세요.</string>
+    <string name="flow_agent_result_point_selected">페이지 %1$d · 지점 %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">텍스트 너비: %1$d dp</string>
+    <string name="flow_agent_result_width_too_small">최소 텍스트 너비를 확보할 공간이 없습니다.</string>
+    <string name="flow_agent_result_preview_preparing">모든 페이지를 확인하고 미리보기를 만드는 중…</string>
+    <string name="flow_agent_result_preview_ready">미리보기 페이지 %1$d–%2$d · 모두 확인됨</string>
+    <string name="flow_agent_result_page_render_failed">페이지를 안전하게 렌더링할 수 없어 확인할 수 없습니다.</string>
+    <string name="flow_agent_result_preview_at_point">이 지점에서 미리보기</string>
+    <string name="flow_agent_result_page_of">%1$d / %2$d 페이지</string>
+    <string name="flow_agent_result_previous_page">이전</string>
+    <string name="flow_agent_result_next_page">다음</string>
+    <string name="flow_agent_result_rechecking">같은 배치를 다시 확인하는 중…</string>
+    <string name="flow_agent_result_preview_changed">측정된 레이아웃이 변경되었습니다. 미리보기를 다시 열어 확인하세요.</string>
 </resources>

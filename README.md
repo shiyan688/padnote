@@ -50,11 +50,11 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 
 ## 任务结果回到纸面
 
-完成的文字结果可先预览，再添加到原笔记或另存为新笔记。
+完成的文字结果可以先看真实纸面预览，再放在笔记末尾，或在目标页点选起点、调整文字宽度。长回答会继续分页；遇到已有文字、手写、图片或 PDF 正文重叠时，先换个落点或调整宽度，再确认添加。原稿保留在原位。
 
 <a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="合成 iPad 示例：任务结果已保存到笔记" width="480"></a>
 
-[观看 10 秒示例](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [使用步骤与边界](BETA34_TESTING.md)。演示使用合成任务和笔记内容。[素材说明](docs/media/2026-10-30/README.md)。
+[观看结果添加示例](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [纸面落点使用步骤](BETA36_TESTING.md)。视频使用较早版本的合成任务与笔记内容，展示末尾添加流程。[素材说明](docs/media/2026-10-30/README.md)。
 
 ## 演示画面
 
@@ -128,7 +128,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 平台与连接
 
-- **Android 平板：**beta.35 APK（versionCode 68）。
+- **Android 平板：**beta.36 APK（versionCode 69）。
 - **Windows：**beta.35 连接助手提供 Setup 安装包和便携包，不附带 Hermes、模型或 API 密钥。WSL 向导支持从启动器进入、查看不确定操作状态并返回选择。
 - **iPad：**提供包含本轮改动的源码，暂无可安装的签名 IPA。
 
@@ -138,7 +138,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 ## 下载与校验
 
-Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：Android 与 Windows 助手本轮均为 beta.35。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
+Android APK、Windows 连接助手、完整源码和许可文件从[GitHub Releases](https://github.com/shiyan688/padnote/releases)进入。Android 与电脑助手分别更新：Android 本轮更新为 beta.36，Windows 助手沿用 beta.35。下载后可用 `shasum -a 256 <文件>`（macOS/Linux）或 `Get-FileHash <文件> -Algorithm SHA256`（Windows）核对 `SHA256SUMS.txt`。
 
 ## 从源码构建
 

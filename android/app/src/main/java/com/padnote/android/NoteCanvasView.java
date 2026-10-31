@@ -42,6 +42,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class NoteCanvasView extends View {
     enum Tool {
@@ -136,6 +138,12 @@ public final class NoteCanvasView extends View {
 
             void onFailure(Exception error);
         }
+        interface PageSequenceCallback {
+            /** Bitmap ownership transfers to caller; validation callers should recycle it before returning. */
+            void onPageRendered(int pageIndex, Bitmap page);
+            void onComplete();
+            void onFailure(Exception error);
+        }
 
         private final NoteCanvasView owner;
         private final int pageCount;
@@ -149,7 +157,12 @@ public final class NoteCanvasView extends View {
         private final List<NoteImage> images;
         private final List<NoteTextBox> textBoxes;
         private final PdfBackground pdfBackground;
+        private final String candidateFlowId;
+        /** Canvas-world/native height values, directly comparable to NoteTextBox.height. */
+        private final Map<String, Float> candidateMeasuredWorldHeights = new LinkedHashMap<>();
+        private final Set<String> candidateFragmentsSkippedFromRaster = new LinkedHashSet<>();
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private final ExecutorService pageRenderExecutor = Executors.newSingleThreadExecutor();
         private volatile boolean closed;
         private boolean resourcesClosed;
         private CompiledTextWebView activeTextView;
@@ -161,7 +174,7 @@ public final class NoteCanvasView extends View {
                           PageStyle pageStyle, PdfPageGeometry pdfPageGeometry,
                           List<InkStroke> strokes,
                           List<NoteImage> images, List<NoteTextBox> textBoxes,
-                          PdfBackground pdfBackground) {
+                          PdfBackground pdfBackground, String candidateFlowId) {
             this.owner = owner;
             this.pageCount = pageCount;
             this.pageWidth = pageWidth;
@@ -174,11 +187,24 @@ public final class NoteCanvasView extends View {
             this.images = images;
             this.textBoxes = textBoxes;
             this.pdfBackground = pdfBackground;
+            this.candidateFlowId = candidateFlowId;
+        }
+
+        Map<String, Float> candidateMeasuredWorldHeights() {
+            synchronized (candidateMeasuredWorldHeights) {
+                return new LinkedHashMap<>(candidateMeasuredWorldHeights);
+            }
+        }
+        boolean wasCandidateFragmentSkipped(String fragmentId) {
+            synchronized (candidateMeasuredWorldHeights) {
+                return candidateFragmentsSkippedFromRaster.contains(fragmentId);
+            }
         }
 
         int getPageCount() {
             return pageCount;
         }
+        boolean isClosed() { return closed; }
 
         float getPageWidth() { return pageWidth; }
 
@@ -190,6 +216,74 @@ public final class NoteCanvasView extends View {
                         R.string.canvas_pdf_page_size_invalid));
             }
             return pdfPageGeometry;
+        }
+
+        /** Sequentially renders a bounded page range; never retains a multi-page bitmap set. */
+        void renderPagesWithTextAsync(int firstPage, int lastPage, int maxDimensionPx,
+                                      FrameLayout attachedHost, PageSequenceCallback callback) {
+            if (callback == null) throw new IllegalArgumentException("callback required");
+            if (firstPage < 0 || lastPage < firstPage || lastPage >= pageCount) {
+                mainHandler.post(() -> callback.onFailure(new IOException("预览页范围无效")));
+                return;
+            }
+            renderNextPage(firstPage,lastPage,maxDimensionPx,attachedHost,callback);
+        }
+
+        private void renderNextPage(int pageIndex, int lastPage, int maxDimensionPx,
+                                    FrameLayout attachedHost, PageSequenceCallback callback) {
+            if (closed) {
+                mainHandler.post(() -> callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled))));
+                return;
+            }
+            renderPageWithTextAsync(pageIndex,maxDimensionPx,attachedHost,new PageCallback() {
+                @Override public void onRendered(Bitmap page) {
+                    try { callback.onPageRendered(pageIndex,page); }
+                    catch (RuntimeException failure) {
+                        if (!page.isRecycled()) page.recycle();
+                        callback.onFailure(new IOException("预览页处理失败",failure));
+                        return;
+                    }
+                    if (!page.isRecycled()) page.recycle();
+                    if (pageIndex >= lastPage) callback.onComplete();
+                    else renderNextPage(pageIndex+1,lastPage,maxDimensionPx,attachedHost,callback);
+                }
+                @Override public void onFailure(Exception failure) { callback.onFailure(failure); }
+            });
+        }
+
+        /** Renders base layers off-thread, then compiles/composites every saved text fragment on UI. */
+        void renderPageWithTextAsync(int pageIndex, int maxDimensionPx, FrameLayout attachedHost,
+                                     PageCallback callback) {
+            if (callback == null) throw new IllegalArgumentException("callback required");
+            if (closed) {
+                mainHandler.post(() -> callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled))));
+                return;
+            }
+            try { pageRenderExecutor.execute(() -> {
+                final Bitmap page;
+                try { page=renderBasePage(pageIndex,maxDimensionPx); }
+                catch (Exception failure) {
+                    mainHandler.post(() -> callback.onFailure(failure));
+                    return;
+                }
+                mainHandler.post(() -> {
+                    if (closed || page.isRecycled()) {
+                        if (!page.isRecycled()) page.recycle();
+                        callback.onFailure(new IOException(owner.getContext().getString(R.string.canvas_pdf_cancelled)));
+                        return;
+                    }
+                    renderTextForPage(pageIndex,page,attachedHost,new PageCallback() {
+                        @Override public void onRendered(Bitmap rendered) { callback.onRendered(rendered); }
+                        @Override public void onFailure(Exception failure) {
+                            if (!page.isRecycled()) page.recycle();
+                            callback.onFailure(failure);
+                        }
+                    });
+                });
+            }); } catch (java.util.concurrent.RejectedExecutionException closedExecutor) {
+                mainHandler.post(() -> callback.onFailure(new IOException(
+                        owner.getContext().getString(R.string.canvas_pdf_cancelled), closedExecutor)));
+            }
         }
 
         /** Draws everything except compiled text. Called by the export worker. */
@@ -415,6 +509,23 @@ public final class NoteCanvasView extends View {
                             try {
                                 float localY = box.y - pageIndex * (pageHeight + pageGap);
                                 float reservedHeight = Math.max(1f, box.height);
+                                if (candidateFlowId != null && candidateFlowId.equals(box.flowId)) {
+                                    // Export validation compares this native canvas-space value directly
+                                    // with box.height; do not divide by display density here.
+                                    synchronized (candidateMeasuredWorldHeights) {
+                                        candidateMeasuredWorldHeights.put(box.id, visualNativeHeight);
+                                    }
+                                    if (!exportFragmentMayScale(box)
+                                            && visualNativeHeight > reservedHeight + 2f) {
+                                        synchronized (candidateMeasuredWorldHeights) {
+                                            candidateFragmentsSkippedFromRaster.add(box.id);
+                                        }
+                                        disposeTextView(host, view);
+                                        startTextFragment(pageIndex, page, host, pageText,
+                                                index + 1, callback);
+                                        return;
+                                    }
+                                }
                                 boolean atomic = exportFragmentMayScale(box);
                                 if (!atomic && visualNativeHeight > reservedHeight + density * 2f) {
                                     disposeTextView(host, view);
@@ -477,6 +588,7 @@ public final class NoteCanvasView extends View {
         @Override
         public void close() {
             closed = true;
+            pageRenderExecutor.shutdownNow();
             if (Looper.myLooper() != Looper.getMainLooper()) {
                 mainHandler.post(this::disposeResources);
             } else {
@@ -582,7 +694,7 @@ public final class NoteCanvasView extends View {
         }
     }
 
-    private static final class TextFragmentLayout {
+    static final class TextFragmentLayout {
         final String source;
         final int pageIndex;
         final float x;
@@ -627,8 +739,25 @@ public final class NoteCanvasView extends View {
         final JSONObject document;
         final String flowId;
         final boolean alreadyApplied;
+        final AgentResultPlacement placement;
+        final TextFlow candidateFlow;
+        List<TextFragmentLayout> layouts;
+        int firstPageIndex;
+        int lastPageIndex;
+        int measuredPasses;
+        boolean previewLayoutStable;
         AgentResultAppendCandidate(JSONObject document, String flowId, boolean alreadyApplied) {
+            this(document, flowId, alreadyApplied, AgentResultPlacement.append(),
+                    null, Collections.emptyList(), -1, -1);
+        }
+        AgentResultAppendCandidate(JSONObject document, String flowId, boolean alreadyApplied,
+                                   AgentResultPlacement placement, TextFlow candidateFlow,
+                                   List<TextFragmentLayout> layouts, int firstPageIndex, int lastPageIndex) {
             this.document=document; this.flowId=flowId; this.alreadyApplied=alreadyApplied;
+            this.placement=placement;
+            this.candidateFlow=candidateFlow;
+            this.layouts=new ArrayList<>(layouts);
+            this.firstPageIndex=firstPageIndex; this.lastPageIndex=lastPageIndex;
         }
     }
 
@@ -1260,10 +1389,31 @@ public final class NoteCanvasView extends View {
                 : laidOutFlow.get(laidOutFlow.size() - 1).copy();
     }
 
+    boolean hasAgentResultApplication(AgentResultProvenance provenance) throws java.io.IOException {
+        if(provenance==null)return false;
+        String flowId="flow-agent-"+provenance.applicationId;
+        for(TextFlow existing:textFlows.values()) {
+            if(existing.agentResult!=null
+                    &&existing.agentResult.applicationId.equals(provenance.applicationId)
+                    &&existing.agentResult.sameMetadata(provenance))return true;
+            if(flowId.equals(existing.id))throw new java.io.IOException("AGENT_RESULT_IDENTITY_COLLISION");
+        }
+        return false;
+    }
+
     /** Builds and layout-checks a new result flow at the document end without mutating live state. */
     AgentResultAppendCandidate prepareAgentResultAppend(String noteId, String title,
                                                         String result, AgentResultProvenance provenance)
             throws Exception {
+        return prepareAgentResultAppend(noteId, title, result, provenance,
+                AgentResultPlacement.append());
+    }
+
+    AgentResultAppendCandidate prepareAgentResultAppend(String noteId, String title,
+                                                        String result, AgentResultProvenance provenance,
+                                                        AgentResultPlacement placement)
+            throws Exception {
+        if (placement == null) throw new IllegalArgumentException("placement required");
         if (provenance == null || result == null || result.trim().isEmpty()
                 || result.length() > AgentResultProvenance.MAX_UTF16_UNITS
                 || !AgentResultProvenance.wellFormedUtf16(result)
@@ -1282,13 +1432,26 @@ public final class NoteCanvasView extends View {
         }
         ensurePageGeometry();
         int originalPageCount=pageCount;
-        int anchorPage=Math.max(pageCount,pdfPageCount);
+        boolean emptyFirstPaperPage=pageCount==1&&pdfPageCount==0&&strokes.isEmpty()
+                &&images.isEmpty()&&textBoxes.isEmpty()&&textFlows.isEmpty();
+        int anchorPage=placement.mode == AgentResultPlacement.Mode.APPEND
+                ? (emptyFirstPaperPage?0:Math.max(pageCount,pdfPageCount)) : placement.pageIndex;
         if(anchorPage>=500)throw new TextFlowCapacity.Rejection(TextFlowCapacity.Failure.PAGE_LIMIT,
                 localizedLayoutFailureMessage(TextFlowCapacity.Failure.PAGE_LIMIT));
+        if (placement.mode == AgentResultPlacement.Mode.POINT && anchorPage >= pageCount)
+            throw new IllegalArgumentException("选择页已不存在");
         float margin=dp(16);
-        float width=Math.max(dp(180),pageWidth-margin*2f);
+        float requestedX = placement.mode == AgentResultPlacement.Mode.POINT
+                ? (float) placement.xInPage : margin;
+        float requestedY = placement.mode == AgentResultPlacement.Mode.POINT
+                ? (float) placement.yInPage : margin;
+        float width = placement.mode == AgentResultPlacement.Mode.POINT
+                ? (float) placement.width : Math.max(dp(180), pageWidth-margin*2f);
+        if (width < dp(180) || requestedX < margin || requestedY < margin
+                || requestedX + width > pageWidth - margin || requestedY >= pageHeight - margin)
+            throw new IllegalArgumentException("落点或文字宽度超出纸面安全边距");
         TextFlow flow=new TextFlow(flowId,NoteTextBox.Format.MARKDOWN,result,16f,
-                TextFlow.DEFAULT_LINE_HEIGHT,width,anchorPage,margin,margin,provenance);
+                TextFlow.DEFAULT_LINE_HEIGHT,width,anchorPage,requestedX,requestedY,provenance);
         List<TextFragmentLayout> layouts;
         try {
             layouts=layoutFlow(flow);
@@ -1302,6 +1465,13 @@ public final class NoteCanvasView extends View {
         if(layouts.isEmpty()||flow.lastLayoutPageCount>500)
             throw new TextFlowCapacity.Rejection(TextFlowCapacity.Failure.PAGE_LIMIT,
                     localizedLayoutFailureMessage(TextFlowCapacity.Failure.PAGE_LIMIT));
+        if (placement.mode == AgentResultPlacement.Mode.POINT) {
+            if (layouts.get(0).pageIndex != placement.pageIndex
+                    || Math.abs(layouts.get(0).x - requestedX) > 0.5f
+                    || Math.abs((layouts.get(0).y - pageTop(placement.pageIndex)) - requestedY) > 0.5f)
+                throw new IllegalArgumentException("所选位置无法容纳首段，请选择其他位置");
+            checkAgentPlacementCollisions(layouts, flow.id);
+        }
         JSONObject document=toJsonDocument(noteId,title);
         JSONArray flows=document.optJSONArray("textFlows");
         if(flows==null)flows=new JSONArray();
@@ -1309,7 +1479,82 @@ public final class NoteCanvasView extends View {
         document.put("textFlows",flows).put("schemaVersion",9)
                 .put("pageCount",Math.max(originalPageCount,flow.lastLayoutPageCount));
         NoteStore.validateDocument(document);
-        return new AgentResultAppendCandidate(document,flowId,false);
+        return new AgentResultAppendCandidate(document,flowId,false,placement,flow,layouts,
+                layouts.get(0).pageIndex,layouts.get(layouts.size()-1).pageIndex);
+    }
+
+    private void checkAgentPlacementCollisions(List<TextFragmentLayout> layouts, String incomingFlowId)
+            throws java.io.IOException {
+        final float safety = dp(4f);
+        for (TextFragmentLayout layout : layouts) {
+            RectF candidate = new RectF(layout.x, layout.y, layout.x + layout.width,
+                    layout.y + layout.height);
+            for (NoteTextBox old : textBoxes) {
+                if (incomingFlowId.equals(old.flowId) || old.pageIndex != layout.pageIndex) continue;
+                RectF occupied = new RectF(old.x, old.y, old.x + old.width, old.y + old.height);
+                if (AgentResultPlacement.intersects(candidate, occupied, safety))
+                    throw new java.io.IOException("回答与第" + (layout.pageIndex + 1) + "页已有文字重叠");
+            }
+            for (InkStroke stroke : strokes) {
+                if (stroke.points.isEmpty()) continue;
+                float top = pageTop(layout.pageIndex), minX=Float.POSITIVE_INFINITY,
+                        minY=Float.POSITIVE_INFINITY, maxX=Float.NEGATIVE_INFINITY,
+                        maxY=Float.NEGATIVE_INFINITY;
+                for (InkPoint point : stroke.points) {
+                    float px=point.x, py=point.y;
+                    if (py < top || py > top + pageHeight) continue;
+                    minX=Math.min(minX,px); maxX=Math.max(maxX,px);
+                    minY=Math.min(minY,py); maxY=Math.max(maxY,py);
+                }
+                if (minX != Float.POSITIVE_INFINITY) {
+                    float half=Math.max(dp(1), stroke.baseWidth * 0.5f);
+                    RectF occupied=new RectF(minX-half,minY-half,maxX+half,maxY+half);
+                    if (AgentResultPlacement.intersects(candidate,occupied,safety))
+                        throw new java.io.IOException("回答与第"+(layout.pageIndex+1)+"页手写内容重叠");
+                }
+            }
+            for (NoteImage image : images) {
+                if (image.page != layout.pageIndex) continue;
+                RectF occupied=new RectF(image.x,pageTop(layout.pageIndex)+image.y,
+                        image.x+image.width,pageTop(layout.pageIndex)+image.y+image.height);
+                if (AgentResultPlacement.intersects(candidate,occupied,safety))
+                    throw new java.io.IOException("回答与第"+(layout.pageIndex+1)+"页图片重叠");
+            }
+            if (layout.pageIndex < pdfPageCount) checkPdfPlacementRoi(candidate, layout.pageIndex, safety);
+        }
+    }
+
+    private void checkPdfPlacementRoi(RectF candidate, int pageIndex, float safety)
+            throws java.io.IOException {
+        if (pdfBackground == null || !pdfBackground.hasPage(pageIndex)
+                || pageWidth <= 0f || pageHeight <= 0f)
+            throw new java.io.IOException("PDF页面资源不可用，无法安全检查落点");
+        int scale=1;
+        int width=Math.max(1, (int)Math.ceil(pageWidth*scale));
+        int height=Math.max(1, (int)Math.ceil(pageHeight*scale));
+        Bitmap bitmap=null;
+        try {
+            bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);
+            Canvas canvas=new Canvas(bitmap);
+            canvas.drawColor(Color.WHITE);
+            pdfBackground.draw(canvas,pageIndex,new RectF(0,0,pageWidth,pageHeight),true);
+            RectF roi=new RectF(candidate);
+            roi.inset(-safety,-safety);
+            int left=Math.max(0,(int)Math.floor(roi.left)), top=Math.max(0,(int)Math.floor(roi.top));
+            int right=Math.min(width,(int)Math.ceil(roi.right)), bottom=Math.min(height,(int)Math.ceil(roi.bottom));
+            if (right<=left || bottom<=top) throw new java.io.IOException("PDF落点ROI无效");
+            int[] row=new int[right-left];
+            for(int y=top;y<bottom;y++) {
+                bitmap.getPixels(row,0,row.length,left,y,row.length,1);
+                for(int pixel:row) {
+                    int r=Color.red(pixel),g=Color.green(pixel),b=Color.blue(pixel),a=Color.alpha(pixel);
+                    if(a<250 || r<245 || g<245 || b<245)
+                        throw new java.io.IOException("回答与第"+(pageIndex+1)+"页PDF内容重叠");
+                }
+            }
+        } catch (RuntimeException | OutOfMemoryError error) {
+            throw new java.io.IOException("无法渲染PDF页面以检查落点",error);
+        } finally { if(bitmap!=null&&!bitmap.isRecycled())bitmap.recycle(); }
     }
 
     /** Applies a candidate only after its durable note write has been verified. */
@@ -1319,17 +1564,40 @@ public final class NoteCanvasView extends View {
         JSONArray flows=document.optJSONArray("textFlows");
         if(flows==null)return null;
         try {
-            TextFlow incoming=null;
+            TextFlow persisted=null;
             for(int i=0;i<flows.length();i++){
                 TextFlow parsed=TextFlow.fromJson(flows.getJSONObject(i));
-                if(candidate.flowId.equals(parsed.id)){incoming=parsed;break;}
+                if(candidate.flowId.equals(parsed.id)){persisted=parsed;break;}
             }
-            if(incoming==null||textFlows.containsKey(incoming.id))return null;
+            if(persisted==null||textFlows.containsKey(persisted.id))return null;
+            boolean measured=candidate.previewLayoutStable && candidate.candidateFlow!=null
+                    && !candidate.layouts.isEmpty();
+            if(candidate.placement.mode==AgentResultPlacement.Mode.POINT && !measured)return null;
+            TextFlow incoming=measured?candidate.candidateFlow.copy():persisted;
+            if(!incoming.id.equals(persisted.id)||!incoming.source.equals(persisted.source)
+                    ||incoming.format!=persisted.format
+                    ||incoming.anchorPageIndex!=persisted.anchorPageIndex
+                    ||Math.abs(incoming.anchorXInPage64-persisted.anchorXInPage64)>0.01d
+                    ||Math.abs(incoming.anchorYInPage64-persisted.anchorYInPage64)>0.01d
+                    ||Math.abs(incoming.width64-persisted.width64)>0.01d
+                    ||Math.abs(incoming.fontSizeSp64-persisted.fontSizeSp64)>0.01d
+                    ||Math.abs(incoming.lineHeight64-persisted.lineHeight64)>0.01d
+                    ||(incoming.agentResult==null?persisted.agentResult!=null
+                        :persisted.agentResult==null||!incoming.agentResult.sameMetadata(persisted.agentResult)))return null;
             int oldPageCount=pageCount;
-            List<TextFragmentLayout> layouts=layoutFlow(incoming);
-            TextFlowCapacity.Failure failure=TextFlowCapacity.checkLayout(incoming.source,
-                    incoming.lastLayoutPageCount,incoming.lastLayoutComplete,incoming.lastLayoutFailureReason);
-            if(failure!=TextFlowCapacity.Failure.NONE){pageCount=oldPageCount;return null;}
+            List<TextFragmentLayout> layouts;
+            if(measured) {
+                layouts=new ArrayList<>(candidate.layouts);
+                incoming.lastLayoutPageCount=Math.max(pageCount,document.optInt("pageCount",candidate.lastPageIndex+1));
+                incoming.lastLayoutComplete=true;
+                if(candidate.placement.mode==AgentResultPlacement.Mode.POINT)
+                    checkAgentPlacementCollisions(layouts,incoming.id);
+            } else {
+                layouts=layoutFlow(incoming);
+                TextFlowCapacity.Failure failure=TextFlowCapacity.checkLayout(incoming.source,
+                        incoming.lastLayoutPageCount,incoming.lastLayoutComplete,incoming.lastLayoutFailureReason);
+                if(failure!=TextFlowCapacity.Failure.NONE){pageCount=oldPageCount;return null;}
+            }
             pageCount=oldPageCount;
             pushUndoSnapshot();
             textFlows.put(incoming.id,incoming);
@@ -3127,6 +3395,137 @@ public final class NoteCanvasView extends View {
 
     private PdfExportSnapshot createPaperSnapshot(boolean requirePhysicalPdfGeometry)
             throws IOException {
+        return createPaperSnapshot(requirePhysicalPdfGeometry, null);
+    }
+
+    /** Freezes live paper plus the candidate Agent flow without mutating the editor canvas. */
+    PdfExportSnapshot createAgentResultPreviewSnapshot(AgentResultAppendCandidate candidate)
+            throws IOException {
+        if (candidate == null || candidate.alreadyApplied || candidate.layouts.isEmpty())
+            throw new IOException("Agent预览候选不可用");
+        return createPaperSnapshot(true, candidate);
+    }
+
+    static final class AgentPreviewHandle {
+        private volatile boolean cancelled;
+        private volatile PdfExportSnapshot activeSnapshot;
+        void cancel() {
+            cancelled=true;
+            PdfExportSnapshot snapshot=activeSnapshot;
+            if(snapshot!=null)snapshot.close();
+        }
+        boolean isCancelled() { return cancelled; }
+    }
+
+    interface AgentPreviewPreparationCallback {
+        void onReady(AgentResultAppendCandidate candidate, PdfExportSnapshot snapshot);
+        void onFailure(Exception error);
+    }
+
+    /** Candidate-owned measure/reflow loop; no live flow or pageCount is changed. */
+    AgentPreviewHandle prepareAgentResultPreviewAsync(AgentResultAppendCandidate candidate, FrameLayout host,
+                                        AgentPreviewPreparationCallback callback) {
+        if (Looper.myLooper() != Looper.getMainLooper())
+            throw new IllegalStateException("Agent预览准备必须从主线程启动");
+        if (candidate == null || candidate.alreadyApplied || candidate.candidateFlow == null
+                || host == null || callback == null) {
+            if (callback != null) callback.onFailure(new IOException("Agent预览候选不可用"));
+            return new AgentPreviewHandle();
+        }
+        AgentPreviewHandle handle=new AgentPreviewHandle();
+        prepareAgentResultPreviewPass(candidate,host,callback,handle,0);
+        return handle;
+    }
+
+    private void prepareAgentResultPreviewPass(AgentResultAppendCandidate candidate, FrameLayout host,
+                                               AgentPreviewPreparationCallback callback,
+                                               AgentPreviewHandle handle, int pass) {
+        if(handle.isCancelled())return;
+        final PdfExportSnapshot snapshot;
+        try { snapshot=createAgentResultPreviewSnapshot(candidate); handle.activeSnapshot=snapshot; }
+        catch (Exception error) { if(!handle.isCancelled())callback.onFailure(error); return; }
+        snapshot.renderPagesWithTextAsync(candidate.firstPageIndex,candidate.lastPageIndex,1200,host,
+                new PdfExportSnapshot.PageSequenceCallback() {
+                    @Override public void onPageRendered(int pageIndex, Bitmap bitmap) { /* validation pass */ }
+                    @Override public void onFailure(Exception error) {
+                        snapshot.close();handle.activeSnapshot=null;
+                        if(!handle.isCancelled())callback.onFailure(error);
+                    }
+                    @Override public void onComplete() {
+                        if(handle.isCancelled()){snapshot.close();handle.activeSnapshot=null;return;}
+                        Map<String,Float> measured=snapshot.candidateMeasuredWorldHeights();
+                        boolean needsReflow=false;
+                        float requiredMultiplier=1f;
+                        for(int i=0;i<candidate.layouts.size();i++) {
+                            TextFragmentLayout layout=candidate.layouts.get(i);
+                            Float actual=measured.get(candidate.flowId+"-preview-"+i);
+                            if(actual==null||!Float.isFinite(actual)||actual<=0f) {
+                                snapshot.close();handle.activeSnapshot=null;
+                                callback.onFailure(new IOException("Agent回答第"+(layout.pageIndex+1)+"页未完成实测"));
+                                return;
+                            }
+                            if(PdfExportSnapshot.exportFragmentMayScale(new NoteTextBox("x",candidate.flowId,
+                                    i,candidate.layouts.size(),candidate.candidateFlow.format,
+                                    candidate.candidateFlow.source,layout.source,candidate.candidateFlow.fontSizeSp,
+                                    candidate.candidateFlow.lineHeight,layout.pageIndex,layout.x,layout.y,
+                                    layout.width,layout.height))) continue;
+                            boolean skipped=snapshot.wasCandidateFragmentSkipped(
+                                    candidate.flowId+"-preview-"+i);
+                            if(skipped || actual > layout.height * 1.01f) {
+                                needsReflow=true;
+                                requiredMultiplier=Math.max(requiredMultiplier,actual/layout.height*1.04f);
+                            }
+                        }
+                        if(!needsReflow) {
+                            candidate.previewLayoutStable=true;
+                            candidate.measuredPasses=pass;
+                            handle.activeSnapshot=null;
+                            callback.onReady(candidate,snapshot);
+                            return;
+                        }
+                        snapshot.close();handle.activeSnapshot=null;
+                        if(pass>=3) {
+                            callback.onFailure(new IOException("回答排版测高未能稳定，请缩短内容或重选位置"));
+                            return;
+                        }
+                        TextFlow flow=candidate.candidateFlow;
+                        flow.heightCorrection=Math.min(MAX_HEIGHT_CORRECTION,
+                                flow.heightCorrection*Math.max(1.02f,requiredMultiplier));
+                        flow.heightCorrectionPasses=pass+1;
+                        flow.clearMeasuredMermaidHeights();
+                        try {
+                            int savedPageCount=pageCount;
+                            List<TextFragmentLayout> relaid;
+                            try { relaid=layoutFlow(flow); }
+                            finally { pageCount=savedPageCount; }
+                            TextFlowCapacity.Failure failure=TextFlowCapacity.checkLayout(flow.source,
+                                    flow.lastLayoutPageCount,flow.lastLayoutComplete,flow.lastLayoutFailureReason);
+                            if(failure!=TextFlowCapacity.Failure.NONE||relaid.isEmpty()
+                                    ||flow.lastLayoutPageCount>500)
+                                throw new IOException("测高重排超过纸面容量");
+                            if(candidate.placement.mode==AgentResultPlacement.Mode.POINT
+                                    && (relaid.get(0).pageIndex!=candidate.placement.pageIndex
+                                    ||Math.abs(relaid.get(0).x-(float)candidate.placement.xInPage)>0.5f
+                                    ||Math.abs((relaid.get(0).y-pageTop(candidate.placement.pageIndex))
+                                        -(float)candidate.placement.yInPage)>0.5f))
+                                throw new IOException("测高重排后无法从所选位置开始，请重选落点");
+                            if(candidate.placement.mode==AgentResultPlacement.Mode.POINT)
+                                checkAgentPlacementCollisions(relaid,flow.id);
+                            candidate.layouts=new ArrayList<>(relaid);
+                            candidate.firstPageIndex=relaid.get(0).pageIndex;
+                            candidate.lastPageIndex=relaid.get(relaid.size()-1).pageIndex;
+                            candidate.previewLayoutStable=false;
+                            candidate.document.put("pageCount",Math.max(pageCount,flow.lastLayoutPageCount));
+                            NoteStore.validateDocument(candidate.document);
+                        } catch(Exception error) { if(!handle.isCancelled())callback.onFailure(error); return; }
+                        prepareAgentResultPreviewPass(candidate,host,callback,handle,pass+1);
+                    }
+                });
+    }
+
+    private PdfExportSnapshot createPaperSnapshot(boolean requirePhysicalPdfGeometry,
+                                                   AgentResultAppendCandidate candidate)
+            throws IOException {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             throw new IllegalStateException("PDF 导出快照必须在主线程创建");
         }
@@ -3156,14 +3555,40 @@ public final class NoteCanvasView extends View {
         List<NoteImage> imageCopies = new ArrayList<>(images.size());
         for (NoteImage image : images) imageCopies.add(image.copy(false));
         List<NoteTextBox> textCopies = copyTextBoxes(textBoxes);
+        int snapshotPageCount = pageCount;
+        if (candidate != null) {
+            JSONArray candidateFlows = candidate.document.optJSONArray("textFlows");
+            TextFlow incoming = candidate.candidateFlow;
+            if (incoming == null) {
+                if (candidateFlows != null) for (int i=0;i<candidateFlows.length();i++) {
+                    JSONObject value=candidateFlows.optJSONObject(i);
+                    if (value!=null && candidate.flowId.equals(value.optString("id"))) {
+                        try { incoming=TextFlow.fromJson(value); }
+                        catch (org.json.JSONException invalid) { throw new IOException("Agent预览文字流无效",invalid); }
+                        break;
+                    }
+                }
+            }
+            if (incoming == null) throw new IOException("Agent预览缺少候选文字流");
+            for (int i=0;i<candidate.layouts.size();i++) {
+                TextFragmentLayout layout=candidate.layouts.get(i);
+                textCopies.add(new NoteTextBox(incoming.id+"-preview-"+i, incoming.id, i,
+                        candidate.layouts.size(), incoming.format, incoming.source, layout.source,
+                        incoming.fontSizeSp, incoming.lineHeight, layout.pageIndex, layout.x,
+                        layout.y, layout.width, layout.height));
+            }
+            snapshotPageCount=Math.max(snapshotPageCount,candidate.lastPageIndex+1);
+            if (candidate.lastPageIndex >= 500) throw new IOException("Agent预览超过最大页数");
+        }
         PdfBackground backgroundCopy = pdfBackground == null
                 ? null : pdfBackground.copyFor(this);
         try {
             PdfPageGeometry physicalGeometry = requirePhysicalPdfGeometry
                     ? resolvePdfPageGeometry(backgroundCopy) : null;
-            return new PdfExportSnapshot(this, pageCount, pageWidth, pageHeight, pageGap,
+            return new PdfExportSnapshot(this, snapshotPageCount, pageWidth, pageHeight, pageGap,
                     getResources().getDisplayMetrics().density, pageStyle,
-                    physicalGeometry, strokeCopies, imageCopies, textCopies, backgroundCopy);
+                    physicalGeometry, strokeCopies, imageCopies, textCopies, backgroundCopy,
+                    candidate == null ? null : candidate.flowId);
         } catch (IOException | RuntimeException failure) {
             if (backgroundCopy != null) backgroundCopy.close();
             throw failure;
@@ -3350,7 +3775,7 @@ public final class NoteCanvasView extends View {
         // physical-page export limits must not restrict this unrelated renderer.
         PdfExportSnapshot snapshot = new PdfExportSnapshot(this, pageCount, pageWidth,
                 pageHeight, pageGap, getResources().getDisplayMetrics().density,
-                pageStyle, null, strokeCopies, imageCopies, textCopies, backgroundCopy);
+                pageStyle, null, strokeCopies, imageCopies, textCopies, backgroundCopy, null);
         return new AiSelectionRenderRequest(snapshot, pageIndex, sourceCopy, cropLocal,
                 localMask, new ArrayList<>(aiSelectedTextFragmentIds), aiSelectionRevision,
                 Math.min(1600, maxDimensionPx), strokeCopies.size(),
@@ -6073,6 +6498,8 @@ public final class NoteCanvasView extends View {
         }
         return pageIndexForWorldY(screenToWorldY(getHeight() / 2f));
     }
+
+    int getCurrentPageIndexForUi() { return currentPageIndex(); }
 
     private float screenToWorldX(float screenX) {
         return (screenX - viewportPanX) / Math.max(0.001f, viewportScale);

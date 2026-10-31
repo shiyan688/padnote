@@ -2074,7 +2074,12 @@ final class AgentResultToPaperUITests: XCTestCase {
 
         let confirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        let rawAnswer = app.descendants(matching: .any).matching(identifier: "agentResultRawAnswerDisclosure").firstMatch
+        for _ in 0..<6 where !rawAnswer.isHittable { app.swipeUp() }
+        XCTAssertTrue(rawAnswer.isHittable)
+        rawAnswer.tap()
         XCTAssertTrue(app.staticTexts["Synthetic result for the isolated result-to-paper UI test."].exists)
+        waitUntilEnabled(confirm)
         confirm.tap()
         let open = app.buttons["agentResultOpenSavedNote"]
         if !open.waitForExistence(timeout: 30) {
@@ -2110,6 +2115,7 @@ final class AgentResultToPaperUITests: XCTestCase {
         app.buttons["agentResultPreviewToPaper"].tap()
         let retryConfirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(retryConfirm.waitForExistence(timeout: 8))
+        waitUntilEnabled(retryConfirm)
         retryConfirm.tap()
         XCTAssertTrue(app.staticTexts["结果已在笔记中"].waitForExistence(timeout: 20))
         let reopen = app.buttons["agentResultOpenSavedNote"]
@@ -2121,6 +2127,60 @@ final class AgentResultToPaperUITests: XCTestCase {
         XCTAssertTrue(afterRetry.label.contains("schema=9; flows=1; receipts=1"), afterRetry.label)
     }
 
+    func testSyntheticTaskPointPreviewConfirmAndReopenPreservesTappedAnchor() throws {
+        app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Synthetic completed task"].waitForExistence(timeout: 10))
+        app.buttons["agentResultPreviewToPaper"].tap()
+        let appendMode = app.buttons["agentResultAppendMode"]
+        let pointMode = app.buttons["agentResultPointPlacementToggle"]
+        XCTAssertTrue(appendMode.waitForExistence(timeout: 10))
+        XCTAssertTrue(pointMode.waitForExistence(timeout: 10))
+        XCTAssertTrue(appendMode.isSelected, "fixture begins in compatibility append mode")
+        XCTAssertFalse(pointMode.isSelected)
+        pointMode.tap()
+        XCTAssertTrue(pointMode.isSelected, "the explicit point mode action must select point placement")
+        XCTAssertFalse(appendMode.isSelected)
+        let placementState = app.staticTexts["agentResultPlacementState"]
+        XCTAssertTrue(placementState.waitForExistence(timeout: 8))
+        XCTAssertEqual(placementState.label, "已选第 1 页的位置")
+        XCTAssertTrue((placementState.value as? String)?.contains("point=1; page=0;") == true,
+                      "a11y diagnostic should expose selected page and coordinates: \(String(describing: placementState.value))")
+        waitUntilEnabled(app.buttons["agentResultConfirmAppend"])
+        let paper = app.images["agentResultPaperPreviewImage"]
+        XCTAssertTrue(paper.waitForExistence(timeout: 20), "point mode must show a raster paper candidate")
+        for _ in 0..<6 where !paper.isHittable { app.swipeUp() }
+        XCTAssertTrue(paper.isHittable)
+        let priorCoordinates = placementState.value as? String ?? ""
+        paper.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let confirm = app.buttons["agentResultConfirmAppend"]
+        let changedPoint = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", priorCoordinates), object: placementState)
+        XCTAssertEqual(XCTWaiter.wait(for: [changedPoint], timeout: 8), .completed)
+        let selectedPlacement = placementState.value as? String ?? ""
+        XCTAssertTrue(selectedPlacement.contains("point=1; page=0;"), selectedPlacement)
+        XCTAssertFalse(selectedPlacement.contains("x=24; y=60"), "the paper tap must change the selected paper position: \(selectedPlacement)")
+        let pointScreenshot = XCTAttachment(screenshot: app.screenshot())
+        pointScreenshot.name = "agent-result-paper-point-selection-r2"
+        pointScreenshot.lifetime = .keepAlways
+        add(pointScreenshot)
+        waitUntilEnabled(confirm)
+        confirm.tap()
+        let open = app.buttons["agentResultOpenSavedNote"]
+        XCTAssertTrue(open.waitForExistence(timeout: 30))
+        open.tap()
+        XCTAssertTrue(app.navigationBars["Synthetic result-to-paper note"].waitForExistence(timeout: 15))
+        let state = app.staticTexts["agentResultPaperFixtureState"]
+        XCTAssertTrue(state.waitForExistence(timeout: 8))
+        XCTAssertTrue(state.label.contains("schema=9; flows=1; receipts=1"), state.label)
+        XCTAssertTrue(state.label.contains("anchor=0,"), "point placement must stay on the selected first page: \(state.label)")
+        XCTAssertFalse(state.label.contains("anchor=1,16,40"), "point placement must not silently fall back to append")
+        let coords = selectedPlacement.split(separator: ";").suffix(2).compactMap { Int($0.split(separator: "=").last ?? "") }
+        if coords.count == 2 {
+            XCTAssertTrue(state.label.contains("anchor=0,\(coords[0]),\(coords[1])"),
+                          "persisted anchor must equal the clicked paper coordinates: \(state.label); \(selectedPlacement)")
+        } else { XCTFail("Could not parse confirmed point from \(selectedPlacement)") }
+    }
+
     func testStalePreviewCannotAppendAfterSyntheticTargetChanges() throws {
         app = makeApp(stale: true)
         app.launch()
@@ -2129,12 +2189,12 @@ final class AgentResultToPaperUITests: XCTestCase {
         app.buttons["agentResultPreviewToPaper"].tap()
 
         let change = app.buttons["agentResultUITestChangeTarget"]
-        for _ in 0..<6 where !change.isHittable { app.swipeUp() }
         XCTAssertTrue(change.waitForExistence(timeout: 8))
         XCTAssertTrue(change.isHittable)
         change.tap()
         let confirm = app.buttons["agentResultConfirmAppend"]
         XCTAssertTrue(confirm.exists)
+        waitUntilEnabled(confirm)
         confirm.tap()
 
         let error = app.staticTexts["agentResultAppendError"]
@@ -2160,6 +2220,13 @@ final class AgentResultToPaperUITests: XCTestCase {
         hierarchy.name = "\(name)-accessibility-hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
+    }
+
+    private func waitUntilEnabled(_ element: XCUIElement, timeout: TimeInterval = 30,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed,
+                       "paper candidate should become ready before confirmation", file: file, line: line)
     }
 
     private func makeApp(cleanup: Bool = false, stale: Bool = false) -> XCUIApplication {

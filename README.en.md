@@ -48,13 +48,13 @@ Keep writing after you send. Use “View progress” at the top to return to thi
 
 Synthetic interface and example state. See the [media provenance and scope](docs/media/2026-10-29/README.md).
 
-## Bring a task result back to the page
+## Bring task results onto the page
 
-Preview completed text, then add it to the original note or save it as a new note.
+Preview completed text on the actual note page, then append it or choose a starting point and text width on the target page. Long answers continue across pages. If the result overlaps existing text, ink, images, or PDF content, choose another position or width before adding it. Existing material stays in place.
 
-<a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="Synthetic iPad example: task result saved to a note" width="480"></a>
+<a href="https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4"><img src="docs/media/2026-10-30/result-to-paper-saved.png" alt="Synthetic iPad example: a task result saved to a note" width="480"></a>
 
-[Watch the 10-second example](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [Steps and limits](BETA34_TESTING.md). The demo uses synthetic task and note content. [Media notes](docs/media/2026-10-30/README.md).
+[Watch the result-to-paper example](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.34/PadNote-Result-to-Paper.mp4) · [Page placement guide](BETA36_TESTING.md). The video uses synthetic tasks and notes from an earlier version and demonstrates appending to the end. [Media provenance](docs/media/2026-10-30/README.md).
 
 ## Demo frames
 
@@ -128,7 +128,7 @@ These images are from an earlier Android emulator build and show the beta.13 int
 
 ## Platforms and connections
 
-- **Android tablets:** beta.35 APK (versionCode 68).
+- **Android tablets:** beta.36 APK (versionCode 69).
 - **Windows:** The beta.35 connection assistant has a Setup installer and a portable package. It does not include Hermes, a model, or API credentials. The WSL wizard can be opened from the launcher and lets you review an uncertain operation without resending it.
 - **iPad:** Source includes this round of changes; there is no installable signed IPA.
 
@@ -138,7 +138,7 @@ See the [development status and next steps](docs/DEVELOPMENT_STATUS.md) for more
 
 ## Downloads and verification
 
-Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android and the Windows assistant both update to beta.35. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
+Get the Android APK, Windows connection assistant, full source, and license files from [GitHub Releases](https://github.com/shiyan688/padnote/releases). Android and the desktop assistant update independently: Android updates to beta.36; the Windows assistant remains on beta.35. Verify downloads with `shasum -a 256 <file>` on macOS/Linux or `Get-FileHash <file> -Algorithm SHA256` on Windows using `SHA256SUMS.txt`.
 
 ## Build from source
 

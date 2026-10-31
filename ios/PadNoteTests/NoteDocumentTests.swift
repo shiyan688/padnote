@@ -1,5 +1,6 @@
 import XCTest
 import PDFKit
+import UIKit
 import zlib
 import CryptoKit
 @testable import PadNote
@@ -231,6 +232,153 @@ final class NoteDocumentTests: XCTestCase {
         XCTAssertTrue(repeated.alreadyApplied)
         XCTAssertEqual(repeated.document.id, first.document.id)
         XCTAssertEqual(NoteLibrary(directory: root).notes.count, 1)
+    }
+
+    func testPointPlacementPersistsAnchorAndPreservesExactSourceAndReceipt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-point-roundtrip-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NoteLibrary(directory: root)
+        let original = NoteDocument(title: "Point target")
+        try library.save(original)
+        let session = try library.captureAgentResultTarget(noteID: original.id)
+        let flow = try makeAgentResultFlow(output: "Exact output ✅\nsecond line")
+        let request = AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 64, yInPage: 144, width: 500)
+        let outcome = try library.appendAgentResult(flow, basedOn: session, placement: request)
+        XCTAssertEqual(outcome.document.textFlows.last?.anchorPageIndex, 0)
+        XCTAssertEqual(outcome.document.textFlows.last?.anchorXInPage, 64)
+        XCTAssertEqual(outcome.document.textFlows.last?.anchorYInPage, 144)
+        XCTAssertEqual(outcome.document.textFlows.last?.source, flow.source)
+        XCTAssertEqual(outcome.document.textFlows.last?.agentResult, flow.agentResult)
+        let reopened = try NoteLibrary(directory: root).captureAgentResultTarget(noteID: original.id).document
+        XCTAssertEqual(reopened.textFlows.last?.source, flow.source)
+        XCTAssertEqual(reopened.textFlows.last?.agentResult?.resultSha256, flow.agentResult?.resultSha256)
+        XCTAssertEqual(reopened.textFlows.last?.anchorXInPage, 64)
+        XCTAssertEqual(reopened.textFlows.last?.anchorYInPage, 144)
+        let repeated = try library.appendAgentResult(flow, basedOn: outcome.session, placement: request)
+        XCTAssertTrue(repeated.alreadyApplied)
+        XCTAssertEqual(repeated.document.textFlows.count, 1)
+        XCTAssertThrowsError(try library.appendAgentResult(flow, basedOn: session, placement: request),
+                             "A stale snapshot without the receipt must fail CAS rather than replay over a newer revision")
+    }
+
+    func testPointPlacementRejectsAllContinuationCollisionsAndPreservesOriginalBytes() throws {
+        let flow = try makeAgentResultFlow(output: String(repeating: "Continuation paragraph with enough words to wrap.\n", count: 500))
+        let empty = NoteDocument(title: "Occupied later pages")
+        let request = AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 32, yInPage: 40, width: 240)
+        let candidate = try NoteLibrary.candidateAppendingAgentResult(flow, to: empty, addFinalPage: false,
+            placement: request, checkPointConflicts: false)
+        let fragments = NoteTextLayout.fragments(candidate.document.textFlows[0], pageHeight: candidate.document.pageHeight)
+        let later = try XCTUnwrap(fragments.first(where: { $0.page > 0 }))
+        XCTAssertGreaterThan(later.page, 0)
+
+        for obstruction in 0..<3 {
+            var note = empty
+            note.pageCount = later.page + 1
+            let targetRect = later.rect.insetBy(dx: 1, dy: 1)
+            switch obstruction {
+            case 0:
+                note.textFlows = [NoteTextFlow(id: "occupied-flow", format: "markdown", source: String(repeating: "old words ", count: 400),
+                    fontSizeSp: 18, width: 240, anchorPageIndex: later.page, anchorXInPage: targetRect.minX,
+                    anchorYInPage: targetRect.minY)]
+            case 1:
+                let bitmap = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+                    context.cgContext.setFillColor(UIColor.black.cgColor); context.cgContext.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+                }
+                note.images = [NoteImage(id: "occupied-image", png: try XCTUnwrap(bitmap.pngData()).base64EncodedString(), page: later.page, x: targetRect.minX,
+                    y: targetRect.minY, width: targetRect.width, height: targetRect.height)]
+            default:
+                let y = Double(later.page) * (note.pageHeight + note.pageGap) + Double(targetRect.midY)
+                note.strokes = [InkStroke(id: "occupied-ink", baseWidth: 4,
+                    points: [InkPoint(x: Double(targetRect.minX), y: y, pressure: 1),
+                             InkPoint(x: Double(targetRect.maxX), y: y, pressure: 1)])]
+            }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-point-collision-\(obstruction)-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let library = NoteLibrary(directory: root); try library.save(note)
+            let session = try library.captureAgentResultTarget(noteID: note.id)
+            let before = try Data(contentsOf: root.appendingPathComponent("\(note.id).json"))
+            XCTAssertThrowsError(try library.appendAgentResult(flow, basedOn: session, placement: request),
+                                 "Every continuation page must be checked against flow/image/ink")
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(note.id).json")), before)
+        }
+    }
+
+    func testPDFPointPlacementAllowsWhiteROIRejectsInkAndFailsClosedWithoutSource() throws {
+        var note = NoteDocument(title: "PDF point")
+        note.pdfPageCount = 1; note.pageCount = 1
+        func savePDF(mark: UIColor?, name: String, rotation: Int = 0) throws -> URL {
+            let bounds = CGRect(x: 0, y: 0, width: note.pageWidth, height: note.pageHeight)
+            let bytes = NSMutableData()
+            UIGraphicsBeginPDFContextToData(bytes, bounds, nil)
+            UIGraphicsBeginPDFPageWithInfo(bounds, nil)
+            if let context = UIGraphicsGetCurrentContext() {
+                context.setFillColor(UIColor.white.cgColor); context.fill(bounds)
+                if let mark {
+                    context.setFillColor(mark.cgColor)
+                    context.fill(CGRect(x: 150, y: 100, width: 120, height: 80))
+                }
+            }
+            UIGraphicsEndPDFContext()
+            let pdf = try XCTUnwrap(PDFDocument(data: bytes as Data))
+            if rotation != 0 { pdf.page(at: 0)?.rotation = rotation }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).pdf")
+            try XCTUnwrap(pdf.dataRepresentation()).write(to: url)
+            return url
+        }
+        let whiteURL = try savePDF(mark: nil, name: "agent-point-white")
+        let blackURL = try savePDF(mark: .black, name: "agent-point-black")
+        let yellowRotatedURL = try savePDF(mark: .yellow, name: "agent-point-yellow-rotated", rotation: 90)
+        defer {
+            try? FileManager.default.removeItem(at: whiteURL)
+            try? FileManager.default.removeItem(at: blackURL)
+            try? FileManager.default.removeItem(at: yellowRotatedURL)
+        }
+        XCTAssertFalse(try NoteRenderer.pdfHasInk(in: CGRect(x: 500, y: 400, width: 100, height: 100),
+            document: note, page: 0, pdfURL: whiteURL))
+        XCTAssertTrue(try NoteRenderer.pdfHasInk(in: CGRect(x: 150, y: 100, width: 20, height: 20),
+            document: note, page: 0, pdfURL: blackURL))
+        XCTAssertTrue(try NoteRenderer.pdfHasInk(in: CGRect(x: 0, y: 0, width: note.pageWidth, height: note.pageHeight),
+            document: note, page: 0, pdfURL: yellowRotatedURL), "colored and rotated PDF marks cannot be interpreted as white")
+        XCTAssertThrowsError(try NoteRenderer.pdfHasInk(in: CGRect(x: 500, y: 400, width: 100, height: 100),
+            document: note, page: 0, pdfURL: nil))
+        let flow = try makeAgentResultFlow(output: "PDF white-space result")
+        let point = AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 500, yInPage: 400, width: 180)
+        XCTAssertNoThrow(try NoteLibrary.candidateAppendingAgentResult(flow, to: note, addFinalPage: false,
+            placement: point, pdfURL: whiteURL))
+        let blackPoint = AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 150, yInPage: 100, width: 180)
+        XCTAssertThrowsError(try NoteLibrary.candidateAppendingAgentResult(flow, to: note, addFinalPage: false,
+            placement: blackPoint, pdfURL: blackURL))
+        XCTAssertThrowsError(try NoteLibrary.candidateAppendingAgentResult(flow, to: note, addFinalPage: false,
+            placement: point, pdfURL: nil), "Missing PDF must not be interpreted as blank paper")
+    }
+
+    func testPointPlacementRejectsNonFiniteOutOfBoundsAndTooNarrowRequests() throws {
+        let note = NoteDocument(title: "Invalid placement")
+        let flow = try makeAgentResultFlow(output: "Valid output")
+        let invalid = [
+            AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: .nan, yInPage: 30, width: 400),
+            AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 780, yInPage: 30, width: 40),
+            AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 10, yInPage: 30, width: 79),
+            AgentResultPlacement(mode: .point, pageIndex: 0, xInPage: 10, yInPage: 30, width: .infinity),
+            AgentResultPlacement(mode: .point, pageIndex: 500, xInPage: 10, yInPage: 30, width: 400)
+        ]
+        for request in invalid {
+            XCTAssertThrowsError(try NoteLibrary.candidateAppendingAgentResult(flow, to: note, addFinalPage: false, placement: request))
+        }
+    }
+
+    func testDefaultAppendAndNewNoteCandidateKeepLegacyPageSemantics() throws {
+        let flow = try makeAgentResultFlow(output: "Compatibility output")
+        let existing = NoteDocument(title: "Existing")
+        let appended = try NoteLibrary.candidateAppendingAgentResult(flow, to: existing, addFinalPage: true)
+        XCTAssertEqual(appended.pageIndex, existing.pageCount)
+        XCTAssertEqual(appended.document.textFlows.last?.anchorXInPage, 16)
+        XCTAssertEqual(appended.document.textFlows.last?.anchorYInPage, 40)
+        let fresh = NoteDocument(title: "Fresh")
+        let created = try NoteLibrary.candidateAppendingAgentResult(flow, to: fresh, addFinalPage: false)
+        XCTAssertEqual(created.pageIndex, 0)
+        XCTAssertEqual(created.document.textFlows.last?.anchorPageIndex, 0)
+        XCTAssertEqual(created.document.textFlows.last?.source, flow.source)
     }
 
     func testAgentResultFlowIDCollisionDoesNotOverwriteExistingFlow() throws {

@@ -496,4 +496,20 @@
     <string name="core_removed_notes_commit_boundary">最终提交开始后，即使离开页面，恢复也可能继续完成。</string>
     <string name="core_delete_cleanup_pending">笔记已从书架移除。部分本地材料已保留，等待安全清理。</string>
     <string name="core_viewport_save_failed">页面位置未能保存，笔记内容未受影响。</string>
+    <string name="flow_agent_result_placement_choice">选择回答放置位置。默认追加到末尾。</string>
+    <string name="flow_agent_result_choose_page">选择页面</string>
+    <string name="flow_agent_result_tap_placement">点击页面左上方的空白落点，调整宽度后再次点击。</string>
+    <string name="flow_agent_result_tap_inside">请点击纸张边距以内。</string>
+    <string name="flow_agent_result_point_selected">第 %1$d 页 · 落点 %2$d, %3$d</string>
+    <string name="flow_agent_result_width_value">文字宽度：%1$d dp</string>
+    <string name="flow_agent_result_width_too_small">空间不足，无法满足最小文字宽度。</string>
+    <string name="flow_agent_result_preview_preparing">正在检查全部页面并编译纸面预览…</string>
+    <string name="flow_agent_result_preview_ready">预览第 %1$d–%2$d 页 · 全部页面已检查</string>
+    <string name="flow_agent_result_page_render_failed">无法安全渲染此页，不能确认插入。</string>
+    <string name="flow_agent_result_preview_at_point">预览此落点</string>
+    <string name="flow_agent_result_page_of">第 %1$d / %2$d 页</string>
+    <string name="flow_agent_result_previous_page">上一页</string>
+    <string name="flow_agent_result_next_page">下一页</string>
+    <string name="flow_agent_result_rechecking">正在重新核对同一落点…</string>
+    <string name="flow_agent_result_preview_changed">实测排版发生变化，请重新打开预览并检查页面。</string>
 </resources>
