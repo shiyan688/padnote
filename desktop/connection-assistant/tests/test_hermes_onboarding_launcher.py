@@ -39,6 +39,64 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             helper.normalize_status_payload({"status": "unknown"})
 
+    def test_timeout_statuses_are_accepted_and_have_actionable_chinese_labels(self):
+        for status in ("check_timeout", "unresponsive"):
+            normalized = helper.normalize_status_payload({"status": status, "phase": status})
+            self.assertEqual(normalized["status"], status)
+            self.assertTrue(helper.should_probe_hermes(status))
+        timeout = helper.message_label("check_timeout", "check_timeout", "English timeout")
+        self.assertIn("当前状态未确认", timeout)
+        self.assertIn("本机日志", timeout)
+        unresponsive = helper.message_label("unresponsive", "unresponsive", "English timeout")
+        self.assertIn("没有及时返回 HTTP", unresponsive)
+        self.assertIn("不会自动重启", unresponsive)
+
+    def test_connect_consumes_structured_json_result_when_available(self):
+        class Response:
+            status = 200
+            headers = {"Content-Type": "application/json; charset=utf-8"}
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, _limit):
+                return b'{"status":"check_timeout","phase":"check_timeout","message":"localized","launched":true}'
+
+        class Opener:
+            request = None
+            def open(self, request, timeout):
+                self.request = request
+                return Response()
+
+        opener = Opener()
+        with mock.patch.object(helper, "_local_opener", return_value=opener), \
+                mock.patch.object(helper, "_read_csrf", return_value="csrf-token"):
+            value = helper.connect(timeout=5)
+
+        self.assertEqual(value["status"], "check_timeout")
+        self.assertEqual(value["message"], "localized")
+        self.assertTrue(value["launched"])
+        self.assertEqual(opener.request.get_header("Accept"), "application/json")
+
+    def test_connect_observes_cancellation_after_response_body_read(self):
+        event = threading.Event()
+
+        class Response:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, _limit):
+                event.set()
+                return b'{"status":"check_timeout","phase":"check_timeout","message":"bounded"}'
+
+        class Opener:
+            def open(self, _request, timeout):
+                return Response()
+
+        with mock.patch.object(helper, "_local_opener", return_value=Opener()), \
+                mock.patch.object(helper, "_read_csrf", return_value="csrf-token"):
+            with self.assertRaisesRegex(RuntimeError, "已取消"):
+                helper.connect(timeout=5, cancel_event=event)
+
     def test_cancel_event_stops_before_sending_connection_request(self):
         import threading
         event = threading.Event(); event.set()

@@ -24,7 +24,7 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 在电脑任务列表查看进度；完成后预览结果并可添加回笔记 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 39 图像回纸面与兼容检查](BETA39_TESTING.md) · [Beta 38 排版历史](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 40 连接检查改进](BETA40_TESTING.md) · [Beta 39 图像回纸面与兼容检查](BETA39_TESTING.md) · [Beta 38 排版历史](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
 ## 从一份示例开始
@@ -142,7 +142,7 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 只有确认添加图像的笔记才升级到 schema 11，较早版本无法打开这类笔记。普通笔记不变；详见[图像放置与兼容说明](docs/AGENT_IMAGE_TO_PAPER.md)及[Beta 39 检查说明](BETA39_TESTING.md)。
 
-Android beta.39 使用 versionCode 72。iPad 提供源码，不含签名 IPA；Windows 连接助手沿用 beta.37。
+Android beta.40 使用 versionCode 73。iPad 提供源码，不含签名 IPA；Windows 连接助手为 beta.40。Portable 包已通过隔离启动检查，Setup 图形安装流程未验收。
 
 ## Beta 38：纸面排版切换
 
@@ -176,3 +176,12 @@ Windows 连接助手的源码与构建前提见[`Windows 安装说明`](desktop/
 ## 许可与反馈
 
 Android 与 iPad 自研客户端采用 MIT；视频 Agent 子项目采用 Apache-2.0。第三方组件许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 [`LICENSING.md`](LICENSING.md)。反馈时请提供版本、设备、步骤和界面提示；不要附上 API 密钥、配对令牌、密码或私人笔记。
+
+
+## Beta 40：长文分页与连接检查
+
+Android 的 Markdown profile 2 让长篇内容回到纸面时延续粗体、斜体、代码、数学公式和链接等样式，并按词边界分页。排版依据可见内容测量，减少标记语法造成的空白；稳定后的文字布局也会纳入 PDF 页面余量检查。旧笔记不会自动切换到新排版；先预览，再由你确认切换。
+
+电脑助手会分别说明“检查超时”和“已连接但服务没有返回 HTTP 响应”，并提示检查本机 API 状态或日志。同一配置并发检查时共用一次 Gateway 启动。
+
+[Beta 40 功能与验证范围](BETA40_TESTING.md) · [GitHub Releases](https://github.com/shiyan688/padnote/releases)

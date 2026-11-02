@@ -229,10 +229,16 @@ def get_hermes_status(service=None) -> dict:
                              and not item.get("retired_at")), None)
         except Exception:
             pass
-    result = _result("ready" if instance and instance.get("health") == "ready" else "starting",
-                     "Hermes API configuration is available." if instance else "Hermes API is configured. Select Check and start to verify it.",
-                     phase="config", instance_id=instance.get("instance_id") if instance else None,
-                     base_url=profile.base_url)
+    if instance and instance.get("health") == "unresponsive":
+        result = _result("unresponsive",
+                         "Hermes accepted the connection but did not return an HTTP response in time.",
+                         phase="unresponsive", instance_id=instance.get("instance_id"),
+                         base_url=profile.base_url)
+    else:
+        result = _result("ready" if instance and instance.get("health") == "ready" else "starting",
+                         "Hermes API configuration is available." if instance else "Hermes API is configured. Select Check and start to verify it.",
+                         phase="config", instance_id=instance.get("instance_id") if instance else None,
+                         base_url=profile.base_url)
     _status_cache[cache_key] = (now, result)
     if len(_status_cache) > 32:
         oldest = min(_status_cache, key=lambda key: _status_cache[key][0])
@@ -294,8 +300,7 @@ def _write_redacted_log(pipe, log_path: Path, secrets: tuple[str, ...]) -> None:
             pass
 
 
-def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None, str | None]:
-    log_path = Path(service.store.state_dir) / "logs" / "hermes-gateway.log"
+def _spawn_gateway(service, executable: Path, profile) -> tuple[subprocess.Popen | None, str | None]:
     kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                               "stderr": subprocess.STDOUT, "shell": False, "cwd": str(executable.parent),
                               "env": {**os.environ, "HERMES_HOME": str(Path(profile.path).parent)}}
@@ -305,9 +310,11 @@ def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None
         proc = subprocess.Popen([str(executable), "gateway"], **kwargs)
     except OSError as error:
         return None, _safe_message(error, (profile.api_key,))
-    key = profile.path
-    with _process_lock:
-        _started_processes[key] = proc
+    return proc, None
+
+
+def _write_launch_note(service) -> None:
+    log_path = Path(service.store.state_dir) / "logs" / "hermes-gateway.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("Hermes Gateway launch requested; process output is not captured. Check Hermes native diagnostics if needed.\n", encoding="utf-8")
@@ -317,7 +324,29 @@ def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None
             pass
     except OSError:
         pass
-    return proc, None
+
+
+def _launch_or_reuse(service, executable: Path, profile):
+    """Atomically reuse or create the one owned Gateway for this profile."""
+    key = str(Path(profile.path).resolve())
+    with _process_lock:
+        existing = _started_processes.get(key)
+        if existing is not None and existing.poll() is None:
+            return existing, None, False
+        if existing is not None:
+            _started_processes.pop(key, None)
+        proc, error = _spawn_gateway(service, executable, profile)
+        if error:
+            return None, error, False
+        _started_processes[key] = proc
+    _write_launch_note(service)
+    return proc, None, True
+
+
+def _launch(service, executable: Path, profile) -> tuple[subprocess.Popen | None, str | None]:
+    """Compatibility wrapper used by focused tests and owned callers."""
+    proc, error, _launched = _launch_or_reuse(service, executable, profile)
+    return proc, error
 
 
 def connect_hermes(service) -> dict:
@@ -346,7 +375,8 @@ def connect_hermes(service) -> dict:
         return _result("ready", "Hermes API is already running and responding.", phase="check", instance_id=instance["instance_id"], base_url=instance.get("base_url"))
     if phase != "not_running":
         message = error or "Hermes API did not report that the service is stopped. No duplicate Gateway was started."
-        return _result("error", _safe_message(message, (profile.api_key,)), phase=phase or "check",
+        status = "unresponsive" if phase == "unresponsive" else "check_timeout" if phase == "check_timeout" else "error"
+        return _result(status, _safe_message(message, (profile.api_key,)), phase=phase or "check",
                        instance_id=instance.get("instance_id") if instance else None,
                        base_url=profile.base_url)
 
@@ -356,20 +386,9 @@ def connect_hermes(service) -> dict:
                        phase="command", instance_id=instance.get("instance_id") if instance else None,
                        base_url=profile.base_url, candidates=[str(p) for p in commands])
     executable = commands[0]
-    key = profile.path
-    with _process_lock:
-        existing = _started_processes.get(key)
-        if existing is not None and existing.poll() is not None:
-            _started_processes.pop(key, None)
-            existing = None
-    if existing is not None:
-        proc = existing
-        launched = False
-    else:
-        proc, launch_error = _launch(service, executable, profile)
-        if launch_error:
-            return _result("error", f"Could not start Hermes Gateway: {launch_error}", phase="start", instance_id=instance.get("instance_id") if instance else None, base_url=profile.base_url)
-        launched = True
+    proc, launch_error, launched = _launch_or_reuse(service, executable, profile)
+    if launch_error:
+        return _result("error", f"Could not start Hermes Gateway: {launch_error}", phase="start", instance_id=instance.get("instance_id") if instance else None, base_url=profile.base_url)
     deadline = time.monotonic() + STARTUP_TIMEOUT
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -382,7 +401,11 @@ def connect_hermes(service) -> dict:
         if instance and not error:
             return _result("ready", "Hermes Gateway started and its API is responding.", phase="check", instance_id=instance["instance_id"], base_url=instance.get("base_url"), launched=launched)
         if phase == "check_timeout":
-            break
+            return _result("check_timeout",
+                           "Hermes API check timed out; the service state is unknown. Inspect Hermes API status and local logs, then retry manually. No additional Gateway was started.",
+                           phase="check_timeout", instance_id=instance.get("instance_id") if instance else None,
+                           base_url=profile.base_url, launched=launched)
         if phase != "not_running":
-            return _result("error", _safe_message(error or "Hermes API responded with an unexpected service state.", (profile.api_key,)), phase=phase or "api", instance_id=instance.get("instance_id") if instance else None, base_url=profile.base_url, launched=launched)
+            status = "unresponsive" if phase == "unresponsive" else "error"
+            return _result(status, _safe_message(error or "Hermes API responded with an unexpected service state.", (profile.api_key,)), phase=phase or "api", instance_id=instance.get("instance_id") if instance else None, base_url=profile.base_url, launched=launched)
     return _result("starting", "Hermes Gateway was started and is still initializing. Retry the check shortly.", phase=phase or "api", instance_id=instance.get("instance_id") if instance else None, base_url=profile.base_url, launched=launched)

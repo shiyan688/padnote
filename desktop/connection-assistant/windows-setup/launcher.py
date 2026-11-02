@@ -347,7 +347,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.37", "构建：2026-10-31-beta37-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.40", "构建：2026-10-31-beta40-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -817,7 +817,7 @@ def finish_hermes_action():
         status_text(summary)
         if hermes_info_hwnd:
             user32.SetWindowTextW(hermes_info_hwnd, hermes_message_label(hermes_status, str(result.get("phase", "")), message))
-        last_error = message if hermes_status == "error" else ""
+        last_error = message if hermes_status in {"error", "unresponsive", "check_timeout"} else ""
     else:
         last_error = "Hermes 连接操作失败：" + str(result)
         if "已取消" in str(result):
@@ -828,7 +828,7 @@ def finish_hermes_action():
     update_buttons(); refresh_diagnostics(force=True)
 
 def hermes_label(status):
-    return {"ready": "已连接", "needs_setup": "需要配置", "not_installed": "常见位置未找到", "ambiguous": "发现多个实例", "starting": "正在启动", "error": "检查失败"}.get(status, "状态未知")
+    return {"ready": "已连接", "needs_setup": "需要配置", "not_installed": "常见位置未找到", "ambiguous": "发现多个实例", "starting": "正在启动", "check_timeout": "检查超时，状态未确认", "unresponsive": "已连接但无 HTTP 响应", "error": "检查失败"}.get(status, "状态未知")
 
 def set_clipboard_text(text):
     if not user32.OpenClipboard(main_hwnd): return False, "Windows 剪贴板当前不可用。"

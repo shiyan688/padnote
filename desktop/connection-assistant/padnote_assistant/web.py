@@ -521,6 +521,19 @@ class AdminHandler(_DeadlineRequestHandler):
         if not secrets.compare_digest(csrf, self.server.csrf_token):  # type: ignore[attr-defined]
             self._deny()
             return
+        if path == "/admin/hermes/connect" and "application/json" in self.headers.get("Accept", "").lower():
+            result, message = self._hermes_connect_result()
+            status = result.get("status") if isinstance(result.get("status"), str) else "error"
+            phase = result.get("phase") if isinstance(result.get("phase"), str) else ""
+            payload = {"status": status, "phase": phase[:80], "message": message[:500],
+                       "launched": result.get("launched") if isinstance(result.get("launched"), bool) else False}
+            instance_id = result.get("instance_id")
+            if isinstance(instance_id, str):
+                payload["instance_id"] = "".join(
+                    character for character in instance_id
+                    if character >= " " and character not in "\x7f\u2028\u2029")[:128]
+            self._wsl_json(200, payload)
+            return
         if path.startswith("/admin/wsl/"):
             if urllib.parse.urlsplit(self.path).query or urllib.parse.urlsplit(self.path).fragment:
                 self._deny(400)
@@ -561,6 +574,33 @@ class AdminHandler(_DeadlineRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _hermes_connect_result(self) -> tuple[dict[str, Any], str]:
+        try:
+            from . import hermes_onboarding
+            result = hermes_onboarding.connect_hermes(self.service)
+        except Exception:
+            return {"status": "error", "phase": "connect"}, "Hermes 连接未完成。请检查安装与配置后重试。"
+        if not isinstance(result, dict):
+            return {"status": "error", "phase": "connect"}, "Hermes 连接未完成。请检查安装与配置后重试。"
+        status = result.get("status")
+        messages = {
+            "ready": "Hermes 已连接，可以继续生成配对二维码。",
+            "needs_setup": "Hermes 本机 API Server 需要配置。请分别完成 API 设置和模型供应商登录后重试。",
+            "not_installed": "未在常见安装位置或 PATH 中找到 Hermes。可查看官方安装指南，或在 Agent 区域手动填写可访问的本机 API 地址。",
+            "ambiguous": "发现多个 Hermes 配置，请先选择要使用的实例。",
+            "starting": "Hermes 正在启动，请稍候再检查。",
+            "check_timeout": "Hermes 检查超时，当前状态未确认。请检查 Hermes API 状态和本机日志，再手动重试；助手不会自动启动或重启服务。",
+            "unresponsive": "Hermes 已接受连接，但没有及时返回 HTTP 响应。请检查 Hermes API 状态和本机日志，确认恢复后再手动重试；助手不会自动重启服务。",
+            "error": "Hermes 连接未完成。请检查安装与配置后重试。",
+        }
+        if status in {"check_timeout", "unresponsive", "not_installed"}:
+            return result, messages[status]
+        if status != "ready":
+            detail = result.get("message")
+            if isinstance(detail, str) and detail.strip():
+                return result, detail[:300]
+        return result, messages.get(status, messages["error"])
+
     def _dispatch_post(self, path: str, form: dict[str, str]) -> str:
         if path == "/admin/hermes/setup":
             try:
@@ -576,27 +616,8 @@ class AdminHandler(_DeadlineRequestHandler):
                 return "已打开 Hermes 配置向导。请完成配置后回到此页运行连接检查。"
             return "Hermes 配置向导未能打开。请查看官方安装与配置指南。"
         if path == "/admin/hermes/connect":
-            try:
-                from . import hermes_onboarding
-                result = hermes_onboarding.connect_hermes(self.service)
-            except Exception:
-                return "Hermes 连接未完成。请检查安装与配置后重试。"
-            status = result.get("status") if isinstance(result, dict) else "error"
-            messages = {
-                "ready": "Hermes 已连接，可以继续生成配对二维码。",
-                "needs_setup": "Hermes 本机 API Server 需要配置。请分别完成 API 设置和模型供应商登录后重试。",
-                "not_installed": "未在常见安装位置或 PATH 中找到 Hermes。可查看官方安装指南，或在 Agent 区域手动填写可访问的本机 API 地址。",
-                "ambiguous": "发现多个 Hermes 配置，请先选择要使用的实例。",
-                "starting": "Hermes 正在启动，请稍候再检查。",
-                "error": "Hermes 连接未完成。请检查安装与配置后重试。",
-            }
-            if status == "not_installed":
-                return messages[status]
-            if status != "ready" and isinstance(result, dict):
-                detail = result.get("message")
-                if isinstance(detail, str) and detail.strip():
-                    return detail[:300]
-            return messages.get(status, messages["error"])
+            _result, message = self._hermes_connect_result()
+            return message
         if path == "/admin/discovery/refresh":
             self.service.refresh_discovery()
             return "已刷新本机候选项；只检查已知路径和命令元信息。"

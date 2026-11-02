@@ -1,5 +1,7 @@
-# Development status · beta.39
+# Development status · beta.40
 
-Beta.39 lets you preview supported PNG/JPEG task attachments, adjust their placement and size, then confirm adding an image to the original or a new note. Cancelling leaves no empty entry; saved notes can be reopened from their original task. Only a confirmed image note upgrades to schema 11, which earlier app versions cannot open.
+Beta.40 improves Android long-form Markdown profile 2 pagination and the computer assistant's connection-check guidance. Long pages preserve formatting across word-boundary breaks; visible-content measurement reduces blank space from markup, and settled layout is included in PDF page-fit checks. Existing notes do not switch profiles automatically; the user previews and confirms. The desktop assistant distinguishes a timed-out check from a connected service that returned no HTTP response. Same-profile concurrent checks share one Gateway launch.
 
-Android beta.39 is versionCode 72. iPad source is included without a signed IPA. The Windows Connection Assistant remains beta.37. See `BETA39_TESTING.md` for compatibility and verification scope.
+The Android beta.40 build contains 436 source files. All 440 JVM tests passed; lint reports zero errors and 172 warnings. Both focused native checks passed: real-renderer pagination/PDF export for long Markdown, and multi-page flow stability through zoom and page recreation. All five synthetic PDF pages were inspected; the four content pages had whole-word breaks, consistent formatting, and no clipping. Settled geometry matched after save and reopen, and all fragments fit the existing PDF height guard. Synthetic test content is used for layout verification.
+
+The Windows Portable package passed isolated ordinary-user startup, identity and ACL, HTTP/TLS, repeat-identity, and normal-shutdown checks. Setup installation, upgrade, uninstall, and launcher GUI are outside this verification. The release includes iPad source and no signed IPA. See `BETA40_TESTING.md` for feature and verification details.

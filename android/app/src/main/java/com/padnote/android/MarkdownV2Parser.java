@@ -222,6 +222,39 @@ final class MarkdownV2Parser {
         return contents;
     }
 
+    /** Width-only proxy for KaTeX inline math in the paper paginator's estimator. */
+    static String mathWidthProxy(String tex) {
+        float atoms = 0f;
+        StringBuilder rest = new StringBuilder();
+        for (int index = 0; index < tex.length(); ) {
+            char value = tex.charAt(index);
+            if (value == '\\' && index + 1 < tex.length()
+                    && Character.isLetter(tex.charAt(index + 1))) {
+                int end = index + 1;
+                while (end < tex.length() && Character.isLetter(tex.charAt(end))) end++;
+                atoms += 1.2f;
+                index = end;
+                continue;
+            }
+            if (value == '{' || value == '}') {
+                index++;
+                continue;
+            }
+            if ((value == '_' || value == '^') && index + 1 < tex.length()) {
+                atoms += 0.6f;
+                index += 2;
+                continue;
+            }
+            if (!Character.isWhitespace(value)) rest.append(value);
+            index++;
+        }
+        atoms += rest.length();
+        int width = Math.max(1, Math.round(atoms * 1.1f));
+        StringBuilder proxy = new StringBuilder(width);
+        for (int index = 0; index < width; index++) proxy.append('x');
+        return proxy.toString();
+    }
+
     private static int markerRun(String text, int index, char marker) {
         int end = index;
         while (end < text.length() && text.charAt(end) == marker) end++;

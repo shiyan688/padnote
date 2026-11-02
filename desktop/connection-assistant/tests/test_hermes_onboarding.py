@@ -6,6 +6,7 @@ import io
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -196,6 +197,155 @@ class HermesOnboardingTests(unittest.TestCase):
             self.assertEqual(result["status"], "error")
             self.assertEqual(result["phase"], "wrong_service")
 
+    def test_gateway_started_then_bounded_http_timeout_is_unknown_not_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            executable = Path(directory) / "hermes"
+            executable.touch()
+
+            class Proc:
+                returncode = None
+                def poll(self):
+                    return None
+
+            service = FakeService([config], [executable])
+            with patch.object(onboarding, "_bounded_check", side_effect=[
+                    ({"instance_id": "instance-safe-id"}, "API is not running", "not_running"),
+                    (None, "bounded wait expired", "check_timeout")]), \
+                    patch.object(onboarding.subprocess, "Popen", return_value=Proc()) as popen, \
+                    patch.object(onboarding.time, "sleep"):
+                result = onboarding.connect_hermes(service)
+
+            popen.assert_called_once()
+            self.assertEqual(result["status"], "check_timeout")
+            self.assertEqual(result["phase"], "check_timeout")
+            self.assertTrue(result["launched"])
+            self.assertIn("state is unknown", result["message"])
+            self.assertIn("No additional Gateway was started", result["message"])
+
+    def test_lower_level_unresponsive_health_is_preserved_without_duplicate_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env", key="private-test-key")
+            executable = Path(directory) / "hermes"
+            executable.touch()
+            service = FakeService([config], [executable])
+            with patch.object(onboarding, "_bounded_check", return_value=(
+                    {"instance_id": "instance-safe-id"}, "listener gave no HTTP response", "unresponsive")), \
+                    patch.object(onboarding.subprocess, "Popen") as popen:
+                result = onboarding.connect_hermes(service)
+
+            popen.assert_not_called()
+            self.assertEqual(result["status"], "unresponsive")
+            self.assertEqual(result["phase"], "unresponsive")
+            self.assertNotIn("private-test-key", str(result))
+
+    def test_simultaneous_connects_share_one_gateway_for_the_same_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            executable = Path(directory) / "hermes"
+            executable.touch()
+            service = FakeService([config], [executable])
+            first_checks = threading.Barrier(2)
+            local = threading.local()
+            spawn_entered = threading.Event()
+            release_spawn = threading.Event()
+            competing_reservation = threading.Event()
+
+            class ReservationLock:
+                def __init__(self):
+                    self.lock = threading.Lock()
+                    self.spawn_thread = None
+                def __enter__(self):
+                    if (spawn_entered.is_set()
+                            and threading.current_thread() is not self.spawn_thread):
+                        competing_reservation.set()
+                    self.lock.acquire()
+                    return self
+                def __exit__(self, _kind, _value, _traceback):
+                    self.lock.release()
+
+            reservation_lock = ReservationLock()
+
+            def bounded_check(_service, _path, _timeout):
+                if not getattr(local, "did_initial", False):
+                    local.did_initial = True
+                    first_checks.wait(timeout=2)
+                    return {"instance_id": "instance-safe-id"}, "API is not running", "not_running"
+                return {"instance_id": "instance-safe-id"}, None, "ready"
+
+            class Proc:
+                returncode = None
+                def poll(self):
+                    return None
+
+            def blocked_popen(*_args, **_kwargs):
+                reservation_lock.spawn_thread = threading.current_thread()
+                spawn_entered.set()
+                if not release_spawn.wait(timeout=2):
+                    raise RuntimeError("test spawn release timed out")
+                return Proc()
+
+            results = []
+            failures = []
+            def run_connect():
+                try:
+                    results.append(onboarding.connect_hermes(service))
+                except BaseException as error:
+                    failures.append(error)
+
+            with patch.object(onboarding, "_bounded_check", side_effect=bounded_check), \
+                    patch.object(onboarding, "_process_lock", reservation_lock), \
+                    patch.object(onboarding.subprocess, "Popen", side_effect=blocked_popen) as popen, \
+                    patch.object(onboarding.time, "sleep"):
+                workers = [threading.Thread(target=run_connect, name=f"connect-{index}")
+                           for index in range(2)]
+                for worker in workers:
+                    worker.start()
+                did_enter_spawn = spawn_entered.wait(timeout=2)
+                competing_reached_reservation = (
+                    competing_reservation.wait(timeout=2) if did_enter_spawn else False)
+                release_spawn.set()
+                for worker in workers:
+                    worker.join(timeout=3)
+
+            self.assertTrue(competing_reached_reservation,
+                            "second connect did not reach the per-profile reservation while Popen was held")
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual(failures, [])
+            self.assertEqual(len(results), 2)
+            self.assertEqual([result["status"] for result in results], ["ready", "ready"])
+            self.assertEqual(sum(bool(result["launched"]) for result in results), 1)
+            popen.assert_called_once()
+
+    def test_gateway_registry_is_scoped_to_each_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first_config = write_env(Path(directory) / "one" / ".env")
+            second_config = write_env(Path(directory) / "two" / ".env", key="other-profile-key")
+            first_exe = Path(directory) / "one" / "hermes"
+            second_exe = Path(directory) / "two" / "hermes"
+            first_exe.touch(); second_exe.touch()
+
+            class Proc:
+                def __init__(self, identity): self.identity = identity
+                returncode = None
+                def poll(self): return None
+
+            procs = [Proc("first"), Proc("second")]
+            with patch.object(onboarding.subprocess, "Popen", side_effect=procs) as popen:
+                first, first_error, first_launched = onboarding._launch_or_reuse(
+                    FakeService([first_config], [first_exe]), first_exe,
+                    onboarding.read_hermes_profile(first_config))
+                second, second_error, second_launched = onboarding._launch_or_reuse(
+                    FakeService([second_config], [second_exe]), second_exe,
+                    onboarding.read_hermes_profile(second_config))
+
+            self.assertIsNone(first_error)
+            self.assertIsNone(second_error)
+            self.assertTrue(first_launched)
+            self.assertTrue(second_launched)
+            self.assertIsNot(first, second)
+            self.assertEqual(popen.call_count, 2)
+
     def test_retry_reuses_gateway_process_started_by_this_module(self):
         with tempfile.TemporaryDirectory() as directory:
             config = write_env(Path(directory) / ".env")
@@ -272,6 +422,19 @@ class HermesOnboardingTests(unittest.TestCase):
             self.assertLess(__import__("time").monotonic() - started, 0.08)
             self.assertIsNone(instance)
             self.assertEqual(phase, "check_timeout")
+
+    def test_cached_unresponsive_instance_is_not_rendered_as_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            service.store.list_instances = lambda: [{
+                "kind": "hermes", "config_ref": str(config.resolve()),
+                "instance_id": "instance-safe-id", "health": "unresponsive",
+            }]
+            value = onboarding.get_hermes_status(service)
+            self.assertEqual(value["status"], "unresponsive")
+            self.assertEqual(value["phase"], "unresponsive")
+            self.assertNotIn("API_SERVER_KEY", value["message"])
 
     def test_setup_opens_visible_windows_console_without_changing_env(self):
         with tempfile.TemporaryDirectory() as directory:

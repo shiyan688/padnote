@@ -2556,8 +2556,9 @@ public final class NoteCanvasView extends View {
                 String block = paginationBlock.source;
                 boolean mermaid = flow.format == NoteTextBox.Format.MARKDOWN
                         && block.trim().matches("(?is)^```mermaid\\s.*");
-                float blockHeight = estimateTextBlockHeight(flow.format, block, width,
-                        flow.fontSizeSp, flow.lineHeight, previousKind, markdownProfileVersion)
+                float blockHeight = estimatePaginationBlockHeight(flow.format,
+                        paginationBlock, width, flow.fontSizeSp, flow.lineHeight,
+                        previousKind, markdownProfileVersion)
                         * flow.heightCorrection;
                 float measuredMermaid = mermaid ? flow.measuredMermaidHeight(block) : 0f;
                 if (measuredMermaid > 0f) {
@@ -2574,14 +2575,16 @@ public final class NoteCanvasView extends View {
                 }
                 // A heading is part of the section it introduces. If the first
                 // paragraph/formula cannot follow it, move both to the next page.
-                if (blockKindOf(flow.format, block, markdownProfileVersion) == BlockKind.HEADING
+                if (blockKindOf(flow.format, paginationBlock.classificationSource,
+                        markdownProfileVersion) == BlockKind.HEADING
                         && blockIndex + 1 < blocks.size()) {
-                    float followingHeight = estimateTextBlockHeight(flow.format,
-                            blocks.get(blockIndex + 1).source, width, flow.fontSizeSp,
-                            flow.lineHeight, BlockKind.HEADING, markdownProfileVersion) * flow.heightCorrection;
-                    if (isMermaidBlock(flow.format, blocks.get(blockIndex + 1).source)) {
+                    PaginationBlock followingBlock = blocks.get(blockIndex + 1);
+                    float followingHeight = estimatePaginationBlockHeight(flow.format,
+                            followingBlock, width, flow.fontSizeSp, flow.lineHeight,
+                            BlockKind.HEADING, markdownProfileVersion) * flow.heightCorrection;
+                    if (isMermaidBlock(flow.format, followingBlock.source)) {
                         float measuredFollowing = flow.measuredMermaidHeight(
-                                blocks.get(blockIndex + 1).source);
+                                followingBlock.source);
                         if (measuredFollowing > 0f) {
                             followingHeight = measuredFollowing;
                         }
@@ -2631,10 +2634,11 @@ public final class NoteCanvasView extends View {
                             blocks.get(blockIndex + 2).sourceBlock != paginationBlock.sourceBlock;
                     if (paginationBlock.sourceBlock == nextBlock.sourceBlock &&
                             nextEndsSourceBlock) {
-                        float nextHeight = estimateTextBlockHeight(flow.format,
-                                nextBlock.source, width, flow.fontSizeSp, flow.lineHeight,
-                                blockKindOf(flow.format, block, markdownProfileVersion),
-                                markdownProfileVersion) * flow.heightCorrection;
+                        float nextHeight = estimatePaginationBlockHeight(flow.format,
+                                nextBlock, width, flow.fontSizeSp, flow.lineHeight,
+                                blockKindOf(flow.format, paginationBlock.classificationSource,
+                                        markdownProfileVersion), markdownProfileVersion)
+                                * flow.heightCorrection;
                         if (shouldMovePenultimateForWidow(true, usedHeight, blockHeight,
                                 nextHeight, capacity)) {
                             // Move the final two readable units together instead
@@ -2656,7 +2660,8 @@ public final class NoteCanvasView extends View {
                 }
                 fragment.append(block);
                 usedHeight += blockHeight;
-                previousKind = blockKindOf(flow.format, block, markdownProfileVersion);
+                previousKind = blockKindOf(flow.format, paginationBlock.classificationSource,
+                        markdownProfileVersion);
                 blockIndex += 1;
                 if (mermaid && blockIndex < blocks.size() && !finalAllowedPage) {
                     // End immediately after the diagram so its ready measurement
@@ -2882,9 +2887,9 @@ public final class NoteCanvasView extends View {
         float height = dp(20);
         BlockKind previous = null;
         for (PaginationBlock block : blocks) {
-            height += estimateTextBlockHeight(format, block.source, width, fontSizeSp,
+            height += estimatePaginationBlockHeight(format, block, width, fontSizeSp,
                     lineHeight, previous, markdownProfileVersion);
-            previous = blockKindOf(format, block.source, markdownProfileVersion);
+            previous = blockKindOf(format, block.classificationSource, markdownProfileVersion);
         }
         return Math.max(dp(72), height);
     }
@@ -3004,7 +3009,8 @@ public final class NoteCanvasView extends View {
         if (kind == BlockKind.MATH) {
             String tex = stripMathDelimiters(trimmed);
             float usable = Math.max(dp(48), width - dp(32));
-            float renderedWidth = dp(mathWidthProxy(tex).length() * fontSizeSp * 0.58f);
+            float renderedWidth = dp(MarkdownV2Parser.mathWidthProxy(tex).length()
+                    * fontSizeSp * 0.58f);
             int wrappedLines = Math.max(1, (int) Math.ceil(renderedWidth / usable));
             float em = Math.max(displayMathEm(tex), wrappedLines * 1.35f);
             return dp(em * fontSizeSp + 2f * fontSizeSp + (blockGap + 2f) * 2f);
@@ -3052,6 +3058,59 @@ public final class NoteCanvasView extends View {
         if (kind == BlockKind.LIST_ITEM) {
             height += dp(4);
         }
+        return collapsedTopMargin(kind, previous, blockGap) + height;
+    }
+
+    private float estimateVisibleMarkdownFragmentHeight(String visibleSource,
+                                                         String classificationSource,
+                                                         float width, float fontSizeSp,
+                                                         float flowLineHeight, BlockKind previous,
+                                                         int markdownProfileVersion) {
+        BlockKind kind = blockKindOf(NoteTextBox.Format.MARKDOWN,
+                classificationSource, markdownProfileVersion);
+        if (kind == BlockKind.THEMATIC_BREAK || kind == BlockKind.MATH
+                || (kind == BlockKind.CODE && classificationSource.trim().startsWith("```"))) {
+            return estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN, classificationSource,
+                    width, fontSizeSp, flowLineHeight, previous, markdownProfileVersion);
+        }
+        float blockGap = Math.max(2f,
+                Math.round(fontSizeSp * (flowLineHeight - 1f) * 0.55f));
+        float fontSize = fontSizeSp;
+        float lineHeightRatio = flowLineHeight;
+        float extra = 0f;
+        float indent = 0f;
+        String classification = classificationSource == null ? "" : classificationSource.trim();
+        String body = visibleSource == null ? "" : visibleSource;
+        switch (kind) {
+            case HEADING:
+                int level = 1;
+                while (level < classification.length() && classification.charAt(level) == '#'
+                        && level < 6) level++;
+                fontSize = fontSizeSp * headingScale(level);
+                lineHeightRatio = 1.2f;
+                body = body.replaceFirst("^#{1,6}\\s+", "");
+                break;
+            case LIST_ITEM:
+                indent = dp(Math.round(fontSizeSp * 1.5f));
+                body = body.replaceFirst("^([-*+]|\\d+[.)])\\s+", "");
+                break;
+            case QUOTE:
+                extra = dp(blockGap * 2f);
+                body = body.replaceFirst("^>\\s*", "");
+                break;
+            case CODE:
+                extra = dp(16);
+                fontSize = fontSizeSp * 1.2f;
+                lineHeightRatio = Math.min(flowLineHeight, 1.35f);
+                break;
+            default:
+                break;
+        }
+        int visualLines = countVisualLines(body,
+                width - dp(24) - indent, fontSize, false);
+        float height = visualLines * fontSize * lineHeightRatio * BLOCK_HEIGHT_SAFETY;
+        height = dp(height) + extra * BLOCK_HEIGHT_SAFETY;
+        if (kind == BlockKind.LIST_ITEM) height += dp(4);
         return collapsedTopMargin(kind, previous, blockGap) + height;
     }
 
@@ -3163,10 +3222,15 @@ public final class NoteCanvasView extends View {
      * because rendered KaTeX is far narrower than its LaTeX source.
      */
     private int countVisualLines(String block, float usableWidthPx, float fontSizeSp) {
+        return countVisualLines(block, usableWidthPx, fontSizeSp, true);
+    }
+
+    private int countVisualLines(String block, float usableWidthPx, float fontSizeSp,
+                                 boolean compressInlineMath) {
         float usable = Math.max(dp(24), usableWidthPx);
         int lines = 0;
         for (String raw : (block == null ? "" : block).split("\n", -1)) {
-            String line = compressInlineMath(raw);
+            String line = compressInlineMath ? compressInlineMath(raw) : raw;
             float used = 0f;
             for (int index = 0; index < line.length(); ) {
                 int codePoint = line.codePointAt(index);
@@ -3223,48 +3287,10 @@ public final class NoteCanvasView extends View {
                 break;
             }
             out.append(line, cursor, open);
-            out.append(mathWidthProxy(line.substring(contentStart, close)));
+            out.append(MarkdownV2Parser.mathWidthProxy(line.substring(contentStart, close)));
             cursor = close + closeToken.length();
         }
         return out.toString();
-    }
-
-    private static String mathWidthProxy(String tex) {
-        float atoms = 0f;
-        StringBuilder rest = new StringBuilder();
-        for (int index = 0; index < tex.length(); ) {
-            char value = tex.charAt(index);
-            if (value == '\\' && index + 1 < tex.length() &&
-                    Character.isLetter(tex.charAt(index + 1))) {
-                int end = index + 1;
-                while (end < tex.length() && Character.isLetter(tex.charAt(end))) {
-                    end += 1;
-                }
-                atoms += 1.2f;
-                index = end;
-                continue;
-            }
-            if (value == '{' || value == '}') {
-                index += 1;
-                continue;
-            }
-            if ((value == '_' || value == '^') && index + 1 < tex.length()) {
-                atoms += 0.6f;
-                index += 2;
-                continue;
-            }
-            if (!Character.isWhitespace(value)) {
-                rest.append(value);
-            }
-            index += 1;
-        }
-        atoms += rest.length();
-        int width = Math.max(1, Math.round(atoms * 1.1f));
-        StringBuilder proxy = new StringBuilder(width);
-        for (int index = 0; index < width; index++) {
-            proxy.append('x');
-        }
-        return proxy.toString();
     }
 
     /** Mean glyph advance of a block, in em, weighting CJK as full width. */
@@ -3295,22 +3321,56 @@ public final class NoteCanvasView extends View {
 
     private static final class PaginationBlock {
         final String source;
+        final String measurementSource;
+        final String classificationSource;
+        final boolean visibleMarkdownProxy;
         final boolean softContinuation;
         final int sourceBlock;
         final TextFlow.LayoutFailureReason failureReason;
 
         PaginationBlock(String source, boolean softContinuation, int sourceBlock) {
-            this(source, softContinuation, sourceBlock, TextFlow.LayoutFailureReason.NONE);
+            this(source, source, softContinuation, sourceBlock,
+                    TextFlow.LayoutFailureReason.NONE);
         }
 
         PaginationBlock(String source, boolean softContinuation, int sourceBlock,
                         TextFlow.LayoutFailureReason failureReason) {
+            this(source, source, softContinuation, sourceBlock, failureReason);
+        }
+
+        PaginationBlock(String source, String measurementSource, boolean softContinuation,
+                        int sourceBlock, TextFlow.LayoutFailureReason failureReason) {
+            this(source, measurementSource, source, false, softContinuation, sourceBlock,
+                    failureReason);
+        }
+
+        PaginationBlock(String source, String measurementSource, String classificationSource,
+                        boolean visibleMarkdownProxy, boolean softContinuation, int sourceBlock,
+                        TextFlow.LayoutFailureReason failureReason) {
             this.source = source;
+            this.measurementSource = measurementSource == null ? source : measurementSource;
+            this.classificationSource = classificationSource == null ? source : classificationSource;
+            this.visibleMarkdownProxy = visibleMarkdownProxy;
             this.softContinuation = softContinuation;
             this.sourceBlock = sourceBlock;
             this.failureReason = failureReason == null
                     ? TextFlow.LayoutFailureReason.NONE : failureReason;
         }
+    }
+
+    private float estimatePaginationBlockHeight(NoteTextBox.Format format,
+                                                PaginationBlock block,
+                                                float width, float fontSizeSp,
+                                                float flowLineHeight, BlockKind previous,
+                                                int markdownProfileVersion) {
+        if (block.visibleMarkdownProxy && format == NoteTextBox.Format.MARKDOWN
+                && markdownProfileVersion == 2) {
+            return estimateVisibleMarkdownFragmentHeight(block.measurementSource,
+                    block.classificationSource, width, fontSizeSp, flowLineHeight, previous,
+                    markdownProfileVersion);
+        }
+        return estimateTextBlockHeight(format, block.measurementSource, width, fontSizeSp,
+                flowLineHeight, previous, markdownProfileVersion);
     }
 
     private List<PaginationBlock> expandOversizedTextBlocks(NoteTextBox.Format format,
@@ -3371,9 +3431,13 @@ public final class NoteCanvasView extends View {
             boolean atomic = format == NoteTextBox.Format.LATEX ||
                     trimmed.startsWith("\\[") || trimmed.startsWith("$$") ||
                     trimmed.startsWith("```") || trimmed.contains("\n|");
-            if (atomic || estimateTextBlockHeight(format, block, width, fontSizeSp,
+            PaginationBlock fullBlock = atomic
+                    ? new PaginationBlock(block, false, sourceBlock)
+                    : paginationBlockForSource(block, false, sourceBlock,
+                            TextFlow.LayoutFailureReason.NONE, format, markdownProfileVersion);
+            if (atomic || estimatePaginationBlockHeight(format, fullBlock, width, fontSizeSp,
                     lineHeight, null, markdownProfileVersion) <= capacity) {
-                expanded.add(new PaginationBlock(block, false, sourceBlock));
+                expanded.add(fullBlock);
                 continue;
             }
             // A long Markdown paragraph may contain authored line or sentence
@@ -3384,10 +3448,13 @@ public final class NoteCanvasView extends View {
             for (String line : block.split("\n", -1)) {
                 String readable = line.trim();
                 if (readable.isEmpty()) continue;
-                List<String> pieces = splitReadableLineToFit(readable, width, fontSizeSp,
-                        lineHeight, capacity, markdownProfileVersion);
-                for (String piece : pieces) {
-                    expanded.add(new PaginationBlock(piece, continuation, sourceBlock));
+                List<MarkdownInlineFragmenter.Fragment> pieces = splitReadableLineToFit(readable,
+                        block, width, fontSizeSp, lineHeight, capacity,
+                        markdownProfileVersion);
+                for (MarkdownInlineFragmenter.Fragment piece : pieces) {
+                    expanded.add(new PaginationBlock(piece.renderedSource, piece.measurementSource,
+                            block, markdownProfileVersion == 2, continuation, sourceBlock,
+                            TextFlow.LayoutFailureReason.NONE));
                     continuation = true;
                 }
             }
@@ -3400,47 +3467,74 @@ public final class NoteCanvasView extends View {
         return expanded;
     }
 
-    /** Splits only when one authored line itself is taller than a printable page. */
-    private List<String> splitReadableLineToFit(String line, float width, float fontSizeSp,
-                                                float lineHeight, float capacity) {
-        return splitReadableLineToFit(line, width, fontSizeSp, lineHeight, capacity, 1);
+    private PaginationBlock paginationBlockForSource(String source, boolean softContinuation,
+                                                       int sourceBlock,
+                                                       TextFlow.LayoutFailureReason failureReason,
+                                                       NoteTextBox.Format format,
+                                                       int markdownProfileVersion) {
+        if (format == NoteTextBox.Format.MARKDOWN && markdownProfileVersion == 2) {
+            MarkdownInlineFragmenter.Plan plan = MarkdownInlineFragmenter.plan(source,
+                    markdownProfileVersion);
+            MarkdownInlineFragmenter.Fragment full = MarkdownInlineFragmenter.fragment(plan,
+                    0, source.length());
+            return new PaginationBlock(full.renderedSource, full.measurementSource, source,
+                    true, softContinuation, sourceBlock, failureReason);
+        }
+        return new PaginationBlock(source, softContinuation, sourceBlock, failureReason);
     }
 
-    private List<String> splitReadableLineToFit(String line, float width, float fontSizeSp,
-                                                float lineHeight, float capacity,
-                                                int markdownProfileVersion) {
-        List<String> pieces = new ArrayList<>();
-        if (estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN, line, width,
-                fontSizeSp, lineHeight, null, markdownProfileVersion) <= capacity) {
-            pieces.add(line);
+    private List<MarkdownInlineFragmenter.Fragment> splitReadableLineToFit(
+            String line, String classificationSource, float width, float fontSizeSp,
+            float lineHeight, float capacity,
+            int markdownProfileVersion) {
+        List<MarkdownInlineFragmenter.Fragment> pieces = new ArrayList<>();
+        MarkdownInlineFragmenter.Plan fragmentPlan = MarkdownInlineFragmenter.plan(
+                line, markdownProfileVersion);
+        String fullMeasurement = MarkdownInlineFragmenter.fragment(fragmentPlan, 0,
+                line.length()).measurementSource;
+        float wholeHeight = markdownProfileVersion == 2
+                ? estimateVisibleMarkdownFragmentHeight(fullMeasurement, classificationSource,
+                        width, fontSizeSp, lineHeight, null, markdownProfileVersion)
+                : estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN, line, width,
+                        fontSizeSp, lineHeight, null, markdownProfileVersion);
+        if (wholeHeight <= capacity) {
+            pieces.add(new MarkdownInlineFragmenter.Fragment(line, line, fullMeasurement));
             return pieces;
         }
         // Leave enough room for a heading before the first piece. Subsequent
         // pieces are packed together by layoutFlow, so this does not reserve a
         // fixed empty quarter-page on every sheet.
         float pieceCapacity = Math.max(dp(72), capacity * 0.74f);
+        // A line may produce many paper fragments. Build its syntax/opaque-span
+        // index once, then reuse it while slicing; never retain authored text in
+        // a process-wide cache.
         int cursor = 0;
         while (cursor < line.length()) {
             int maximum = largestFittingTextEnd(line, cursor, width, fontSizeSp,
-                    lineHeight, pieceCapacity, markdownProfileVersion);
-            int end = preferredReadableBoundary(line, cursor, maximum);
+                    lineHeight, pieceCapacity, markdownProfileVersion, fragmentPlan,
+                    classificationSource);
+            int end = MarkdownInlineFragmenter.preferredReadableBoundary(fragmentPlan,
+                    cursor, maximum);
             if (end <= cursor) end = maximum;
             if (end <= cursor) end = cursor + Character.charCount(line.codePointAt(cursor));
-            String piece = line.substring(cursor, Math.min(end, line.length())).trim();
-            if (!piece.isEmpty()) pieces.add(piece);
-            cursor = Math.min(end, line.length());
+            int boundedEnd = Math.min(end, line.length());
+            MarkdownInlineFragmenter.Fragment fragment =
+                    MarkdownInlineFragmenter.fragment(fragmentPlan, cursor, boundedEnd);
+            String raw = fragment.source.trim();
+            String rendered = fragment.renderedSource.trim();
+            String measurement = fragment.measurementSource.trim();
+            if (!raw.isEmpty()) pieces.add(new MarkdownInlineFragmenter.Fragment(raw,
+                    rendered, measurement));
+            cursor = boundedEnd;
             while (cursor < line.length() && Character.isWhitespace(line.charAt(cursor))) cursor++;
         }
         return pieces;
     }
 
     private int largestFittingTextEnd(String source, int start, float width, float fontSizeSp,
-                                      float lineHeight, float capacity) {
-        return largestFittingTextEnd(source, start, width, fontSizeSp, lineHeight, capacity, 1);
-    }
-
-    private int largestFittingTextEnd(String source, int start, float width, float fontSizeSp,
-                                      float lineHeight, float capacity, int markdownProfileVersion) {
+                                      float lineHeight, float capacity, int markdownProfileVersion,
+                                      MarkdownInlineFragmenter.Plan fragmentPlan,
+                                      String classificationSource) {
         int low = start + 1;
         int high = source.length();
         int best = start;
@@ -3449,9 +3543,15 @@ public final class NoteCanvasView extends View {
             int boundary = probed;
             if (boundary < source.length() && Character.isLowSurrogate(source.charAt(boundary)) &&
                     boundary > start) boundary--;
-            String candidate = source.substring(start, boundary).trim();
-            float height = estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
-                    candidate, width, fontSizeSp, lineHeight, null, markdownProfileVersion);
+            MarkdownInlineFragmenter.Fragment candidate = MarkdownInlineFragmenter.fragment(
+                    fragmentPlan, start, boundary);
+            float height = markdownProfileVersion == 2
+                    ? estimateVisibleMarkdownFragmentHeight(candidate.measurementSource,
+                            classificationSource, width, fontSizeSp, lineHeight, null,
+                            markdownProfileVersion)
+                    : estimateTextBlockHeight(NoteTextBox.Format.MARKDOWN,
+                            candidate.measurementSource, width, fontSizeSp, lineHeight,
+                            null, markdownProfileVersion);
             if (height <= capacity) {
                 best = boundary;
                 low = probed + 1;
@@ -3460,21 +3560,6 @@ public final class NoteCanvasView extends View {
             }
         }
         return best;
-    }
-
-    private static int preferredReadableBoundary(String source, int start, int maximum) {
-        int minimum = start + Math.max(1, (maximum - start) / 2);
-        for (int index = maximum; index > minimum; index--) {
-            char value = source.charAt(index - 1);
-            if (value == '。' || value == '！' || value == '？' || value == '.' ||
-                    value == '!' || value == '?' || value == '；' || value == ';') {
-                return index;
-            }
-        }
-        for (int index = maximum; index > minimum; index--) {
-            if (Character.isWhitespace(source.charAt(index - 1))) return index;
-        }
-        return maximum;
     }
 
     void addPage() {
@@ -8669,7 +8754,13 @@ public final class NoteCanvasView extends View {
                     : getContext().getString(R.string.canvas_font_space_tightened));
             return;
         }
-        if (measured <= reserved * MEASURED_HEIGHT_TOLERANCE) {
+        // A live fragment is settled only when it fits both the existing 1% UI
+        // tolerance and the same absolute 2dp allowance enforced by PDF export.
+        // Keep the stricter boundary so a settled overlay cannot later fail export.
+        float ordinaryAcceptedHeight = Math.min(
+                reserved * MEASURED_HEIGHT_TOLERANCE,
+                Math.max(1f, reserved) + dp(2f));
+        if (measured <= ordinaryAcceptedHeight) {
             flow.recordRenderFragmentHeight(fragment.id, false);
             return;
         }

@@ -40,14 +40,17 @@ class AdminUIHTTPTests(unittest.TestCase):
         connection.close()
         return result
 
-    def post_form(self, path: str, *, origin: str, csrf: str):
+    def post_form(self, path: str, *, origin: str, csrf: str, accept: str | None = None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=4)
         body = urllib.parse.urlencode({"csrf": csrf}).encode("utf-8")
-        connection.request("POST", path, body=body, headers={
+        headers = {
             "Host": self.host,
             "Origin": origin,
             "Content-Type": "application/x-www-form-urlencoded",
-        })
+        }
+        if accept:
+            headers["Accept"] = accept
+        connection.request("POST", path, body=body, headers=headers)
         response = connection.getresponse()
         result = response.status, dict(response.getheaders()), response.read()
         connection.close()
@@ -152,6 +155,44 @@ class AdminUIHTTPTests(unittest.TestCase):
         self.assertIn("未在常见安装位置或 PATH 中找到 Hermes", message)
         self.assertIn("手动填写可访问的本机 API 地址", message)
         self.assertNotIn("尚未安装", message)
+
+    def test_native_connect_json_preserves_timeout_status_and_bounded_instance(self) -> None:
+        csrf = self.group.admin.csrf_token
+        cases = (
+            ("check_timeout", "当前状态未确认"),
+            ("unresponsive", "没有及时返回 HTTP 响应"),
+        )
+        for status_name, expected_message in cases:
+            with self.subTest(status=status_name), patch(
+                    "padnote_assistant.hermes_onboarding.connect_hermes", return_value={
+                        "status": status_name, "phase": status_name,
+                        "instance_id": "instance-safe-" + "x" * 200,
+                        "base_url": "http://127.0.0.1:8642", "launched": True,
+                        "message": "raw English detail", "api_key": "never-return",
+                    }) as connect:
+                status, headers, body = self.post_form(
+                    "/admin/hermes/connect", origin=f"http://{self.host}", csrf=csrf,
+                    accept="application/json")
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", headers.get("Content-Type", ""))
+            value = json.loads(body)
+            self.assertEqual(value["status"], status_name)
+            self.assertEqual(value["phase"], status_name)
+            self.assertIn(expected_message, value["message"])
+            self.assertEqual(len(value["instance_id"]), 128)
+            self.assertTrue(value["launched"])
+            self.assertNotIn("base_url", value)
+            self.assertNotIn("api_key", value)
+            self.assertNotIn(b"never-return", body)
+            self.assertNotIn(b"raw English detail", body)
+            connect.assert_called_once_with(self.service)
+
+        with patch("padnote_assistant.hermes_onboarding.connect_hermes") as connect:
+            status, _headers, _body = self.post_form(
+                "/admin/hermes/connect", origin=f"http://{self.host}", csrf="wrong-token",
+                accept="application/json")
+        self.assertEqual(status, 403)
+        connect.assert_not_called()
 
     def test_hermes_setup_post_uses_origin_csrf(self) -> None:
         csrf = self.group.admin.csrf_token

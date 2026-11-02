@@ -63,6 +63,8 @@ _HERMES_STATUS_TEXT = {
     "not_installed": ("常见位置未找到 Hermes", "只检查了已知安装位置和 PATH。若 Hermes 位于 WSL 或自定义目录，可手动填写可访问的本机 API 地址；否则查看官方安装指南。"),
     "ambiguous": ("发现多个 Hermes 配置", "请在“发现已有配置”中选择要使用的配置；如果列表里没有，可手动填写本机 API 地址。"),
     "starting": ("Hermes 正在启动", "请稍候片刻，再检查连接状态。"),
+    "check_timeout": ("Hermes 检查超时", "当前状态未确认。请检查 API 服务状态和本机日志，再手动重试；助手不会自动启动或重启服务。"),
+    "unresponsive": ("Hermes 服务已连接但无 HTTP 响应", "请检查 Hermes API 服务状态和本机日志；确认恢复后再手动重试。助手不会自动重启服务。"),
     "error": ("暂时无法检查 Hermes", "请确认 Hermes 已安装并完成配置，然后重试。"),
 }
 

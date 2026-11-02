@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from padnote_assistant.admin_ui import render_admin_page
+from padnote_assistant.web import AdminHandler
 
 
 class Store:
@@ -224,6 +225,33 @@ class AdminUiTests(unittest.TestCase):
         details = page.split('<details class="onboarding-detail">', 1)[1].split('</details>', 1)[0]
         self.assertIn("Hermes was not found on this computer.", details)
         self.assertNotIn("Hermes was not found on this computer.</p><a", page)
+
+    def test_hermes_timeout_states_have_actionable_prominent_copy(self):
+        for status, title, guidance in (
+                ("check_timeout", "Hermes 检查超时", "当前状态未确认"),
+                ("unresponsive", "Hermes 服务已连接但无 HTTP 响应", "本机日志")):
+            with self.subTest(status=status), patch(
+                    "padnote_assistant.admin_ui.hermes_onboarding_status",
+                    return_value={"status": status}):
+                page = self.render(service([]))
+            self.assertIn(title, page)
+            self.assertIn(guidance, page)
+            self.assertIn("不会自动", page)
+
+    def test_connect_result_has_localized_timeout_and_unresponsive_copy(self):
+        class HandlerStub:
+            service = object()
+
+        for status, phrase in (("check_timeout", "当前状态未确认"),
+                               ("unresponsive", "没有及时返回 HTTP 响应")):
+            with self.subTest(status=status), patch(
+                    "padnote_assistant.hermes_onboarding.connect_hermes",
+                    return_value={"status": status, "phase": status,
+                                  "message": "raw English diagnostic", "launched": False}):
+                result, message = AdminHandler._hermes_connect_result(HandlerStub())
+            self.assertEqual(result["status"], status)
+            self.assertIn(phrase, message)
+            self.assertNotIn("raw English diagnostic", message)
 
 
 if __name__ == "__main__":

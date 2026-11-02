@@ -15,8 +15,8 @@ import threading
 BASE_URL = "http://127.0.0.1:8766"
 STATUS_PATH = "/admin/onboarding/status"
 CONNECT_PATH = "/admin/hermes/connect"
-VALID_STATUSES = {"ready", "needs_setup", "not_installed", "ambiguous", "starting", "error"}
-CONNECT_PROBE_STATUSES = {"ready", "needs_setup", "starting"}
+VALID_STATUSES = {"ready", "needs_setup", "not_installed", "ambiguous", "starting", "check_timeout", "unresponsive", "error"}
+CONNECT_PROBE_STATUSES = {"ready", "needs_setup", "starting", "check_timeout", "unresponsive"}
 INSTALLER_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/bf0203a794a07aac3ff764972ab9087baa4e4f4e/scripts/install.ps1"
 INSTALLER_COMMIT = "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
 INSTALLER_GIT_BLOB = "7fb6316fb5a8421cb1dc5836692860b871a3984c"
@@ -42,6 +42,7 @@ def phase_label(phase: str) -> str:
         "check": "检查 Hermes API",
         "not_running": "等待本机服务启动",
         "check_timeout": "等待 API 响应超时",
+        "unresponsive": "API 已连接但无 HTTP 响应",
         "api": "检查 API 状态",
         "start": "启动 Hermes Gateway",
     }
@@ -50,6 +51,10 @@ def phase_label(phase: str) -> str:
 
 def message_label(status: str, phase: str, message: str) -> str:
     text = message.casefold()
+    if status == "check_timeout":
+        return "Hermes 检查超时，当前状态未确认。请检查 API 服务状态和本机日志，再手动重试；助手不会自动启动或重启服务。"
+    if status == "unresponsive":
+        return "Hermes 已接受连接，但没有及时返回 HTTP 响应。请检查 API 服务状态和本机日志，确认恢复后再手动重试；助手不会自动重启服务。"
     if "multiple" in text or "ambigu" in text:
         return "发现多个 Hermes；请在管理页选择目标实例。"
     if "not found" in text or "was not found" in text:
@@ -276,12 +281,18 @@ def connect(timeout: float = 30.0, cancel_event: threading.Event | None = None) 
     body = urllib.parse.urlencode({"csrf": token}).encode("ascii")
     request = urllib.request.Request(BASE_URL + CONNECT_PATH, data=body, method="POST", headers={
         "Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL,
-        "Referer": BASE_URL + "/", "Accept": "text/html",
+        "Referer": BASE_URL + "/", "Accept": "application/json",
     })
     try:
         with opener.open(request, timeout=timeout) as response:
             if response.status not in (200, 303):
                 raise RuntimeError(f"connect endpoint returned HTTP {response.status}")
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "application/json" in content_type:
+                payload = json.loads(response.read(16_384).decode("utf-8", "strict"))
+                result = normalize_status_payload(payload)
+                _check_cancel(cancel_event)
+                return result
     except urllib.error.HTTPError as exc:
         if exc.code != 303:
             raise RuntimeError(f"connect endpoint returned HTTP {exc.code}") from None

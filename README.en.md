@@ -24,7 +24,7 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | Track progress in the computer task list; review the result and add it back to a note when complete |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 39 image placement and compatibility](BETA39_TESTING.md) · [Beta 38 typography history](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 40 connection-check improvements](BETA40_TESTING.md) · [Beta 39 image placement and compatibility](BETA39_TESTING.md) · [Beta 38 typography history](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 
 ## Start with a sample
@@ -142,7 +142,7 @@ When a computer task is complete, supported PNG/JPEG attachments can be previewe
 
 Only a note where you confirm adding an image moves to schema 11; earlier versions cannot open that note. Ordinary notes are unchanged. See [image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md) and the [beta.39 testing guide](BETA39_TESTING.md).
 
-Android beta.39 uses versionCode 72. iPad source is included, with no signed IPA; the Windows Connection Assistant remains beta.37.
+Android beta.40 uses versionCode 73. iPad source is included, with no signed IPA; the Windows Connection Assistant is beta.40. The Portable package passed an isolated startup check; the Setup GUI flow has not been verified.
 
 ## Beta 38: paper typography profiles
 
@@ -176,3 +176,12 @@ See the [Windows installer source and build requirements](desktop/connection-ass
 ## License and feedback
 
 Original Android/iPad client code is MIT licensed; the video Agent subproject is Apache-2.0. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSING.md`](LICENSING.md) for third-party licenses. For feedback, include the version, device, steps, and visible message. Do not include API keys, pairing tokens, passwords, or private notes.
+
+
+## Beta 40: long pages and clearer connection checks
+
+Android Markdown profile 2 keeps styles such as emphasis, code, math, and links as long content continues across pages, with page breaks at word boundaries. Layout measures visible content to reduce whitespace caused by markup, and settled text layout is included in PDF page-fit checks. Existing notes do not switch automatically; preview the new layout and confirm before changing profiles.
+
+The computer assistant distinguishes a timed-out check from a service that connected but returned no HTTP response, and suggests checking the local API status or logs. Concurrent checks for the same profile share one Gateway launch.
+
+[Beta 40 features and verification scope](BETA40_TESTING.md) · [GitHub Releases](https://github.com/shiyan688/padnote/releases)
