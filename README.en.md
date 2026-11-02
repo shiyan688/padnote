@@ -16,7 +16,17 @@ Write a question on the tablet and continue the discussion on the same page. Whe
 
 [Watch the learning-note tour (30 sec)](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4) · [Download the app and computer assistant](https://github.com/shiyan688/padnote/releases) · [中文](README.md)
 
-The demos use synthetic learning content and real-device screenshots to show the page and sharing experience. They do not record AI or computer-Agent execution. [Media provenance](docs/media/2026-10-28/README.md).
+Earlier videos use synthetic learning content and device screenshots to show the page and sharing experience; they are not recordings of a live Agent run. The static graph below is from a real Hermes Agent API response, but it is a separate `y=x²` example, not an answer to the handwritten problem. See [handwriting and Agent graph provenance](docs/REAL_HANDWRITING_AGENT_DEMO.md).
+
+## A handwritten page and a separate Agent graph
+
+The first image is the author's authorized original tablet handwriting. The second is a separate `y=x²` graph returned as SVG by a real Hermes Agent API request and rendered locally as PNG. The third shows the graph manually imported through Android's image picker, saved, and reopened beside the original handwriting. The handwriting remains on page 1 and the graph is on page 2; both pages of the exported PDF were reviewed. The graph is not a solution to the handwritten question and was not automatically fetched by Android as a task result.
+
+| Original handwriting | Separate graph returned by a real Agent | Manually imported and reopened on Android |
+| --- | --- |
+| <img src="docs/media/2026-10-31/real-handwriting-note.png" alt="Authorized original handwritten function problem" width="360"> | <img src="docs/media/2026-11-02/agent-function-example.png" alt="Separate y equals x squared example returned by Hermes Agent and rendered locally from SVG" width="360"> | <img src="docs/media/2026-11-02/agent-graph-on-paper.png" alt="Android beta.40 note after manual image import, save, and reopen; original handwriting on page one and separate graph on page two" width="360"> |
+
+[SVG source and media provenance](docs/REAL_HANDWRITING_AGENT_DEMO.md).
 
 | Step | What you do in PadNote | What you get |
 | --- | --- | --- |
@@ -24,7 +34,7 @@ The demos use synthetic learning content and real-device screenshots to show the
 | 2. Share the page | Export the current note as a PDF, then share it through the system share sheet | Recipients can read the page layout |
 | 3. Hand work to a computer Agent | Send page material to a paired Hermes Agent on the same network that supports note tasks | Track progress in the computer task list; review the result and add it back to a note when complete |
 
-[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 40 connection-check improvements](BETA40_TESTING.md) · [Beta 39 image placement and compatibility](BETA39_TESTING.md) · [Beta 38 typography history](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
+[Downloads and installers (GitHub Releases)](https://github.com/shiyan688/padnote/releases) · [Adding task results to a note](BETA34_TESTING.md) · [PDF sharing guide](docs/BETA25_TESTING.md) · [Text editing and drafts](docs/BETA26_TESTING.md) · [Removing and restoring notes](docs/BETA27_TESTING.md) · [Interface and workflow guide](docs/BETA28_TESTING.md) · [WSL tasks and connection setup](BETA32_TESTING.md) · [Beta 41 Windows assistant](BETA41_TESTING.md) · [Beta 40 connection-check improvements](BETA40_TESTING.md) · [Beta 39 image placement and compatibility](BETA39_TESTING.md) · [Beta 38 typography history](BETA38_TESTING.md) · [Selections and gestures](docs/AI_PAPER_SELECTION.md) · [Windows connection assistant notes](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [Build from source](#build-from-source) · [Report an issue](https://github.com/shiyan688/padnote/issues)
 
 
 ## Start with a sample
@@ -142,7 +152,13 @@ When a computer task is complete, supported PNG/JPEG attachments can be previewe
 
 Only a note where you confirm adding an image moves to schema 11; earlier versions cannot open that note. Ordinary notes are unchanged. See [image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md) and the [beta.39 testing guide](BETA39_TESTING.md).
 
-Android beta.40 uses versionCode 73. iPad source is included, with no signed IPA; the Windows Connection Assistant is beta.40. The Portable package passed an isolated startup check; the Setup GUI flow has not been verified.
+## Beta 41: Windows assistant status and cleanup
+
+Finding a Hermes profile does not mean the service is connected. The assistant reports ready only after a successful check within the last 60 seconds and confirmation that task execution is available. An expired result requires a user-triggered recheck; opening the interface does not probe or start a Gateway.
+
+Installer cleanup removes only known Python bytecode caches created under the install tree; it does not recursively delete unknown files. In a native beta.37-to-41 upgrade, Setup completed, all 243 installed package files were verified, and pairing state, durable records, source-directory ACL, and TLS identity were retained. No bytecode caches remained after setup. The uninstall flow was not tested. See the [beta.41 testing guide](BETA41_TESTING.md).
+
+Android remains on the beta.40 APK (versionCode 73); this release has no new Android build. iPad source is included, with no signed IPA; the Windows Connection Assistant is beta.41. The beta.37-to-41 upgrade passed with pairing and task records retained; uninstall was not tested. The graph shown above is a real Agent example, manually imported and saved in Android—not an automatic task-result fetch or an answer to the handwriting.
 
 ## Beta 38: paper typography profiles
 

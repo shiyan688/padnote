@@ -85,6 +85,70 @@ class AdminUiTests(unittest.TestCase):
         self.assertIn("平板", page)
         self.assertNotIn("iPad", page)
 
+    def test_non_hermes_health_label_is_not_reinterpreted_by_hermes_freshness_rules(self):
+        row = instance("video-a", "Video adapter", executable=False, health="ready")
+        row["kind"] = "builtin_video"
+        row["checked_at"] = 99
+        page = self.render(service([row]))
+        self.assertIn('<span class="badge good">上次检测通过</span>', page)
+
+    def test_missing_hermes_credential_has_a_label_and_direct_next_step(self):
+        card = instance("agent-credential", "Old Hermes", executable=False,
+                        health="credential_missing", credential=False)
+        card["checked_at"] = 99
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status",
+                   return_value={"status": "credential_missing"}):
+            page = self.render(service([card]))
+        self.assertIn("缺少本机 API 凭据", page)
+        self.assertIn("在“凭据与维护”中填写本机 Hermes API Key", page)
+        self.assertIn('data-open-credentials="agent-credential"', page)
+
+    def test_stale_ready_result_is_not_rendered_as_currently_ready(self):
+        stale = instance("agent-stale", "Old Hermes", executable=True, health="ready")
+        stale["checked_at"] = 39
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status", return_value={
+                "status": "check_expired", "phase": "health",
+                "message": "The last Hermes API check was 61 seconds ago and is expired."}):
+            page = self.render(service([stale]))
+        card = page.split('data-fresh-hermes-ready="false"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("上次检测：1 分钟前 · 结果已过期", card)
+        self.assertIn("检测结果已过期", page)
+        self.assertNotIn("Hermes 已就绪", page)
+        self.assertNotIn('class="onboarding-grid onboarding-ready"', page)
+
+    def test_ready_health_without_executable_capability_is_not_shown_as_passed(self):
+        incomplete = instance("agent-incomplete", "Old Hermes", executable=False, health="ready")
+        incomplete["checked_at"] = 99
+        with patch("padnote_assistant.admin_ui.hermes_onboarding_status", return_value={
+                "status": "not_executable", "phase": "health"}):
+            page = self.render(service([incomplete]))
+        card = page.split('data-fresh-hermes-ready="false"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("尚未确认可执行", card)
+        self.assertIn("最近结果未确认可执行任务", card)
+        self.assertNotIn("上次检测通过", card)
+        self.assertNotIn('class="onboarding-grid onboarding-ready"', page)
+
+    def test_not_checked_and_profile_failures_have_specific_onboarding_copy(self):
+        cases = (
+            ("not_checked", "Hermes 配置已找到，尚未检测", "运行接口检测后再继续"),
+            ("check_expired", "Hermes 检测结果已过期", "上次检查已超过 60 秒"),
+            ("not_executable", "Hermes 尚未确认可执行", "最近结果没有确认任务执行能力"),
+            ("needs_configuration", "Hermes API 配置不完整", "PadNote 不会改写配置"),
+            ("authentication_failed", "Hermes API 凭据未通过验证", "检查本机 Hermes API Key"),
+            ("api_not_enabled", "Hermes API Server 尚未启用", "PadNote 不会改写配置"),
+            ("not_running", "Hermes API 服务未运行", "PadNote 不会自动重启服务"),
+            ("wrong_service", "配置地址不是 Hermes API Server", "重新检测"),
+        )
+        for status, title, guidance in cases:
+            with self.subTest(status=status), patch(
+                    "padnote_assistant.admin_ui.hermes_onboarding_status",
+                    return_value={"status": status, "phase": "health"}):
+                page = self.render(service([]))
+            self.assertIn(title, page)
+            self.assertIn(guidance, page)
+            self.assertIn('href="#agents"', page)
+            self.assertNotIn("Hermes 正在启动", page)
+
     def test_ready_hermes_card_keeps_single_check_form_and_clear_health_label(self):
         ready = instance("agent-ready", "Ready Agent", executable=True, health="ready")
         ready["checked_at"] = 99
@@ -212,7 +276,7 @@ class AdminUiTests(unittest.TestCase):
             page = self.render(service([]))
         self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", page)
         self.assertNotIn('<img src=x', page)
-        self.assertIn("请确认 Hermes 已安装并完成配置，然后重试。", page)
+        self.assertIn("状态尚未确认。检查本机 Hermes API 服务和配置后，再运行接口检测。", page)
         self.assertIn('<details class="onboarding-detail">', page)
 
     def test_hermes_primary_help_uses_status_copy_and_folds_raw_backend_detail(self):

@@ -51,6 +51,56 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         self.assertIn("没有及时返回 HTTP", unresponsive)
         self.assertIn("不会自动重启", unresponsive)
 
+    def test_cached_health_states_are_allowed_and_explicit_connect_button_probes_them(self):
+        statuses = ("not_checked", "check_expired", "not_executable", "needs_configuration",
+                    "not_running", "api_not_enabled", "authentication_failed", "credential_missing",
+                    "wrong_service", "capability_missing", "profile_unavailable",
+                    "wsl_reconnect_required", "unsupported")
+        for status in statuses:
+            with self.subTest(status=status):
+                state = helper.normalize_status_payload({"status": status, "phase": "health"})
+                self.assertTrue(helper.should_probe_hermes(state["status"]))
+                # This is the existing Windows Connect button's guarded branch:
+                # it calls the backend only after should_probe_hermes returns true.
+                connect = mock.Mock(return_value={"status": "ready"})
+                if helper.should_probe_hermes(state["status"]):
+                    result = connect(timeout=30.0, cancel_event=None)
+                else:
+                    result = state
+                connect.assert_called_once_with(timeout=30.0, cancel_event=None)
+                self.assertEqual(result["status"], "ready")
+
+    def test_expired_status_message_never_claims_old_success_is_current(self):
+        state = helper.normalize_status_payload({"status": "check_expired", "phase": "health",
+            "message": "The Hermes API was already running and responding."})
+        self.assertEqual(helper.phase_label(state["phase"]), "确认 API 与任务执行能力")
+        label = helper.message_label(state["status"], state["phase"], state["message"])
+        self.assertIn("当前状态尚未确认", label)
+        self.assertIn("上次成功不代表现在", label)
+        self.assertNotIn("API 已响应", label)
+
+    def test_unknown_status_remains_rejected(self):
+        for status in ("healthy", "invented", "check_expired_typo"):
+            with self.subTest(status=status), self.assertRaises(RuntimeError):
+                helper.normalize_status_payload({"status": status})
+
+    def test_status_labels_cover_all_known_states_and_unknown_fallback(self):
+        self.assertEqual(set(helper.VALID_STATUSES), {
+            "ready", "not_checked", "check_expired", "not_executable", "needs_setup",
+            "needs_configuration", "not_installed", "ambiguous", "starting", "checking",
+            "not_running", "api_not_enabled", "authentication_failed", "credential_missing",
+            "wrong_service", "capability_missing", "profile_unavailable",
+            "wsl_reconnect_required", "unsupported", "check_timeout", "unresponsive", "error",
+        })
+        for status in helper.VALID_STATUSES:
+            with self.subTest(status=status):
+                self.assertTrue(helper.status_label(status))
+        self.assertEqual(helper.status_label("check_expired"), "检测已过期")
+        self.assertEqual(helper.status_label("credential_missing"), "缺少 API 凭据")
+        self.assertEqual(helper.status_label("unknown"), "状态未确认")
+        auth = helper.message_label("authentication_failed", "health", "The stored credential was rejected.")
+        self.assertIn("凭据未通过验证", auth)
+
     def test_connect_consumes_structured_json_result_when_available(self):
         class Response:
             status = 200
@@ -106,7 +156,7 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
     def test_cached_starting_status_still_runs_connect_probe(self):
         for status in ("ready", "needs_setup", "starting"):
             self.assertTrue(helper.should_probe_hermes(status))
-        for status in ("not_installed", "ambiguous", "error"):
+        for status in ("not_installed", "ambiguous"):
             self.assertFalse(helper.should_probe_hermes(status))
         self.assertEqual(helper.connect.__defaults__[0], 30.0)
 
@@ -115,7 +165,7 @@ class HermesOnboardingLauncherTests(unittest.TestCase):
         advice = helper.message_label("needs_setup", "config", "API settings are incomplete")
         self.assertIn("API Server", advice)
         self.assertIn("保留现有配置", advice)
-        self.assertIn("API 已响应", helper.message_label("ready", "check", "Hermes API is already running and responding."))
+        self.assertIn("Hermes 已连接", helper.message_label("ready", "check", "Hermes API is already running and responding."))
         missing = helper.message_label("not_installed", "discovery", "Hermes was not found in standard install locations or PATH.")
         self.assertIn("未在常见位置找到 Hermes", missing)
         self.assertIn("打开连接设置可手动填写本机 API", missing)

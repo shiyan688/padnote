@@ -17,9 +17,12 @@ def _health(value: str) -> tuple[str, str]:
     return {
         "healthy": ("上次检测通过", "good"), "ready": ("上次检测通过", "good"),
         "not_checked": ("尚未检测", "neutral"), "unsupported": ("暂不支持执行", "warn"),
+        "checking": ("正在检测", "neutral"),
+        "not_executable": ("尚未确认可执行", "warn"),
         "identity_changed": ("身份已变化", "bad"), "unhealthy": ("连接异常", "bad"),
         "error": ("连接异常", "bad"), "degraded": ("部分可用", "warn"),
         "needs_configuration": ("需要配置凭据或本机引擎", "warn"),
+        "credential_missing": ("缺少本机 API 凭据", "warn"),
         "profile_unavailable": ("配置文件不可用", "bad"),
         "not_running": ("服务未运行", "bad"), "api_not_enabled": ("API 尚未启用", "warn"),
         "unresponsive": ("服务已连接但无响应", "bad"),
@@ -36,12 +39,14 @@ def _health_guidance(value: str) -> str:
         "healthy": "接口已通过检测。可以选择此 Agent 并为平板生成配对码。",
         "ready": "接口已通过检测。可以选择此 Agent 并为平板生成配对码。",
         "not_checked": "先运行接口检测，再继续配对。",
+        "not_executable": "最近结果未确认可执行任务。重新检测后再继续配对。",
         "unsupported": "此 Agent 暂不支持执行。可查看配置说明或选择 Hermes。",
         "identity_changed": "检测到服务身份变化。请重新检测，并为设备重新配对。",
         "unhealthy": "请检查服务是否正在运行，再运行一次接口检测。",
         "error": "请检查服务地址和运行状态，然后重试检测。",
         "degraded": "部分接口可用。查看检测详情，确认所需功能后再配对。",
         "needs_configuration": "完成凭据或本机服务配置后，再运行接口检测。",
+        "credential_missing": "在“凭据与维护”中填写本机 Hermes API Key，再运行接口检测。",
         "profile_unavailable": "当前配置不可用。请重新选择或填写服务配置。",
         "not_running": "启动 Agent 服务后，再运行接口检测。",
         "unresponsive": "目标服务已接受连接，但未及时返回 HTTP 响应。请检查服务状态或日志；确认恢复后再重新检测。PadNote 不会自动重启服务。",
@@ -59,13 +64,27 @@ def _instances(service: Any) -> list[dict[str, Any]]:
 
 _HERMES_STATUS_TEXT = {
     "ready": ("Hermes 已就绪", "可继续配对平板。"),
+    "not_checked": ("Hermes 配置已找到，尚未检测", "当前连接状态未确认。运行接口检测后再继续；未检测的配置不会显示为已就绪。"),
+    "check_expired": ("Hermes 检测结果已过期", "上次检查已超过 60 秒，当前状态未确认。重新检测后再继续。"),
+    "not_executable": ("Hermes 尚未确认可执行", "最近结果没有确认任务执行能力。重新检测后再继续配对。"),
     "needs_setup": ("Hermes 需要完成配置", "请分别完成模型供应商登录和 Hermes 本机 API Server 设置。助手不会自动改写 Hermes 配置。"),
+    "needs_configuration": ("Hermes API 配置不完整", "检查现有 Hermes 本机 API Server 配置并由 Hermes 自己应用更改，然后重新检测。PadNote 不会改写配置。"),
     "not_installed": ("常见位置未找到 Hermes", "只检查了已知安装位置和 PATH。若 Hermes 位于 WSL 或自定义目录，可手动填写可访问的本机 API 地址；否则查看官方安装指南。"),
     "ambiguous": ("发现多个 Hermes 配置", "请在“发现已有配置”中选择要使用的配置；如果列表里没有，可手动填写本机 API 地址。"),
     "starting": ("Hermes 正在启动", "请稍候片刻，再检查连接状态。"),
+    "checking": ("正在检测 Hermes", "检测仍在进行，完成前不会把该配置标为已就绪。"),
+    "not_running": ("Hermes API 服务未运行", "请检查现有 Hermes 服务状态；恢复后在 Agent 卡片中重新检测。PadNote 不会自动重启服务。"),
+    "api_not_enabled": ("Hermes API Server 尚未启用", "检查现有 Hermes 配置中的 API Server 设置；保存并由 Hermes 自己应用后，再重新检测。PadNote 不会改写配置。"),
+    "authentication_failed": ("Hermes API 凭据未通过验证", "检查本机 Hermes API Key 是否与当前 Gateway 匹配；如需更换，请在 Agent 卡片的“凭据与维护”中保存，再重新检测。"),
+    "credential_missing": ("PadNote 中缺少 Hermes API 凭据", "在 Hermes Agent 卡片的“凭据与维护”中填写本机 API Key，再重新检测。"),
+    "wrong_service": ("配置地址不是 Hermes API Server", "检查本机 API 地址和端口是否指向 Hermes API Server，再重新检测。"),
+    "capability_missing": ("Hermes 缺少所需任务接口", "服务已响应，但没有提供 PadNote 所需的任务接口。检查 Hermes 版本或选择其他可用 Agent。"),
+    "profile_unavailable": ("所选 Hermes 配置不可用", "重新查找并明确选择一个仍可读取的 Hermes 配置；旧选择不会自动替换。"),
+    "wsl_reconnect_required": ("需要重新连接 WSL Hermes", "重新选择原 WSL 发行版和 Hermes 配置后再连接。PadNote 不会自动启动 WSL。"),
+    "unsupported": ("当前 Hermes 配置暂不支持任务执行", "检查 Hermes API 能力或选择支持任务接口的 Agent。"),
     "check_timeout": ("Hermes 检查超时", "当前状态未确认。请检查 API 服务状态和本机日志，再手动重试；助手不会自动启动或重启服务。"),
     "unresponsive": ("Hermes 服务已连接但无 HTTP 响应", "请检查 Hermes API 服务状态和本机日志；确认恢复后再手动重试。助手不会自动重启服务。"),
-    "error": ("暂时无法检查 Hermes", "请确认 Hermes 已安装并完成配置，然后重试。"),
+    "error": ("暂时无法确认 Hermes 状态", "状态尚未确认。检查本机 Hermes API 服务和配置后，再运行接口检测。"),
 }
 
 
@@ -154,7 +173,14 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
     cards = []
     fresh_hermes_ready = False
     for i in instances:
-        iid = _e(i.get("instance_id")); label, tone = _health(i.get("health", ""))
+        iid = _e(i.get("instance_id"))
+        display_health = i.get("health", "")
+        if i.get("kind") == "hermes":
+            if display_health == "ready" and i.get("executable") is not True:
+                display_health = "not_executable"
+            elif display_health == "healthy":
+                display_health = "not_checked"
+        label, tone = _health(display_health)
         checked_at = i.get("checked_at")
         now = int(service.clock())
         valid_check = isinstance(checked_at, int) and not isinstance(checked_at, bool) and 0 < checked_at <= now
@@ -173,7 +199,7 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
         retired = bool(i.get("retired_at"))
         actions = ''
         check_is_fresh = check_age is not None and check_age <= 60
-        health_ready = i.get("health") in {"ready", "healthy"}
+        health_ready = i.get("health") == "ready" and i.get("executable") is True
         if i.get("kind") == "hermes" and i.get("executable") and not retired and check_is_fresh and health_ready:
             fresh_hermes_ready = True
         if i.get("kind") in {"hermes", "builtin_video"} and not retired:
@@ -202,7 +228,7 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
         detail += '</details>'
         guidance = ("上次检测结果已过期。重新检测接口后，再继续配对。"
                     if check_age is not None and check_age > 60
-                    else _health_guidance(i.get("health", "")))
+                    else _health_guidance(display_health))
         fresh_marker = "true" if i.get("kind") == "hermes" and i.get("executable") and not retired and check_is_fresh and health_ready else "false"
         cards.append('<article class="agent-card" data-fresh-hermes-ready="' + fresh_marker + '"><div class="agent-heading"><div><h3>' + _e(i.get("name")) + '</h3><span class="muted">' + _e(kind) + '</span></div><span class="badge ' + tone + '">' + _e(label) + '</span></div><p class="check-age" data-check-age-label' + check_age_attr + '>' + _e(check_label) + '</p><p class="agent-guidance">' + _e(guidance) + '</p>' + actions + detail + '</article>')
     agent_content = ''.join(cards) or '<div class="empty-state"><div class="empty-icon">＋</div><h3>先添加一个 Agent</h3><p>添加 Hermes 地址与凭据后，检测连接，再为平板生成配对码。</p><a class="button" href="#add-agent">添加 Agent</a></div>'
@@ -267,6 +293,14 @@ def render_admin_page(service: Any, csrf_token: str, admin_port: int, api_port: 
         onboarding_extra = '<form method="post" action="/admin/hermes/setup" data-hermes-setup><input type="hidden" name="csrf" value="' + csrf + '"><button type="submit" class="button-quiet" data-setup-button>打开 Hermes 配置向导</button></form><a class="text-link" href="#add-agent" data-open-manual-hermes>使用其他目录中的 Hermes？手动填写本机 API</a>'
     elif onboarding["status"] == "needs_setup":
         onboarding_extra = '<a class="text-link" href="#add-agent" data-open-manual-hermes>使用其他目录中的 Hermes？手动填写本机 API</a><a class="text-link" href="https://hermes-agent.nousresearch.com/docs/getting-started/installation" target="_blank" rel="noopener noreferrer">查看 Hermes 官方配置指南 ↗</a>'
+    elif onboarding["status"] in {"not_checked", "check_expired", "not_executable", "checking",
+                                   "needs_configuration", "not_running", "api_not_enabled",
+                                   "authentication_failed", "credential_missing", "wrong_service",
+                                   "unresponsive", "capability_missing", "profile_unavailable",
+                                   "wsl_reconnect_required", "unsupported", "error"}:
+        action = ("查看 Hermes 凭据设置与重新检测" if onboarding["status"] in
+                  {"authentication_failed", "credential_missing"} else "查看 Agent 检测卡片")
+        onboarding_extra = '<a class="text-link" href="#agents">' + _e(action) + ' ↓</a>'
     onboarding_actions = ('<div class="onboarding-actions" data-onboarding-actions>' + onboarding_extra + '</div>') if onboarding_extra else ''
     hermes_status_html = '<div class="hermes-status-card"><div><span class="eyebrow">HERMES</span><h3>' + _e(onboarding_title) + '</h3><p class="muted">' + _e(onboarding_text) + '</p>' + onboarding_actions + onboarding_detail + '</div><form method="post" action="/admin/hermes/connect" data-hermes-connect><input type="hidden" name="csrf" value="' + csrf + '"><button class="hermes-connect-button" type="submit" data-connect-button>一键检查并连接 Hermes</button><span class="connect-progress" data-connect-progress role="status" aria-live="polite" hidden>正在检查并连接，请稍候…</span></form></div>'
     if onboarding_ready:

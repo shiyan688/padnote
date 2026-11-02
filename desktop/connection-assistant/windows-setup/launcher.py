@@ -10,6 +10,7 @@ import queue
 import secrets
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 import threading
 import time
 import webbrowser
@@ -26,7 +27,8 @@ from padnote_assistant.hermes_onboarding_launcher import (connect as connect_her
     message_label as hermes_message_label)
 from padnote_assistant.hermes_onboarding_launcher import (download_pinned_installer,
     hermes_installer_cache_dir, launch_verified_installer,
-    has_official_hermes_cli, has_existing_hermes_home)
+    has_official_hermes_cli, has_existing_hermes_home,
+    status_label as hermes_status_label)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -347,7 +349,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.40", "构建：2026-10-31-beta40-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.41", "构建：2026-11-02-beta41-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",
@@ -455,7 +457,7 @@ def start_service():
         shutdown_event = kernel32.CreateEventW(None, True, False, shutdown_name)
         if not shutdown_event: raise OSError(ctypes.get_last_error(), "Could not create private shutdown event")
         env = os.environ.copy(); env["PYTHONDONTWRITEBYTECODE"] = "1"
-        child = subprocess.Popen([str(executable), str(root / "start.py"), "--lan", "--no-browser",
+        child = subprocess.Popen([str(executable), "-B", str(root / "start.py"), "--lan", "--no-browser",
             "--state-dir", str(data), "--shutdown-event", shutdown_name], cwd=str(root), env=env,
             creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
             stdout=log_stream, stderr=subprocess.STDOUT, close_fds=True)
@@ -828,7 +830,7 @@ def finish_hermes_action():
     update_buttons(); refresh_diagnostics(force=True)
 
 def hermes_label(status):
-    return {"ready": "已连接", "needs_setup": "需要配置", "not_installed": "常见位置未找到", "ambiguous": "发现多个实例", "starting": "正在启动", "check_timeout": "检查超时，状态未确认", "unresponsive": "已连接但无 HTTP 响应", "error": "检查失败"}.get(status, "状态未知")
+    return hermes_status_label(status)
 
 def set_clipboard_text(text):
     if not user32.OpenClipboard(main_hwnd): return False, "Windows 剪贴板当前不可用。"

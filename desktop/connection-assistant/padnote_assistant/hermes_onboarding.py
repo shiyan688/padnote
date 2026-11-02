@@ -17,9 +17,32 @@ STARTUP_TIMEOUT = 12.0
 POLL_INTERVAL = 0.4
 INITIAL_CHECK_TIMEOUT = 8.0
 POLL_CHECK_TIMEOUT = 2.0
+HEALTH_CHECK_FRESHNESS_SECONDS = 60  # Keep aligned with BridgeService._readiness_snapshot.
 _started_processes: dict[str, subprocess.Popen] = {}
 _process_lock = threading.Lock()
 _status_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _health_check_age(instance: dict, now: int) -> tuple[int | None, int | None]:
+    """Match Bridge readiness: timestamps must be positive, integral, and not future-dated."""
+    checked_at = instance.get("checked_at")
+    if not isinstance(checked_at, int) or isinstance(checked_at, bool) \
+            or checked_at <= 0 or checked_at > now:
+        return None, None
+    return checked_at, max(0, now - checked_at)
+
+
+def _health_check_is_fresh(instance: dict, now: int) -> bool:
+    _checked_at, age = _health_check_age(instance, now)
+    return age is not None and age <= HEALTH_CHECK_FRESHNESS_SECONDS
+
+
+def _service_wall_time(service) -> int:
+    clock = getattr(service, "clock", None)
+    try:
+        return int(clock()) if callable(clock) else int(time.time())
+    except Exception:
+        return int(time.time())
 
 
 def _windows_candidates() -> tuple[list[Path], list[Path]]:
@@ -176,6 +199,7 @@ def get_hermes_status(service=None) -> dict:
     """Return cached, non-invasive discovery/configuration status (never probes the API)."""
     global _status_cache
     now = time.monotonic()
+    wall_now = _service_wall_time(service) if service is not None else int(time.time())
     if service is None:
         from . import discovery
         class _DiscoveryOnly:
@@ -195,7 +219,27 @@ def get_hermes_status(service=None) -> dict:
             profile_stats.append((str(path), metadata.st_mtime_ns, metadata.st_size))
         except OSError:
             profile_stats.append((str(path), None, None))
-    cache_key = (id(service), tuple(profile_stats), tuple(str(path) for path in commands))
+    service_instances = []
+    if configs and hasattr(service, "store"):
+        try:
+            service_instances = service.store.list_instances()
+        except Exception:
+            service_instances = []
+    config_refs = {str(path) for path in configs}
+    health_signature = tuple(sorted(
+        (str(item.get("instance_id", "")), str(item.get("config_ref", "")),
+         str(item.get("health", "")),
+         item.get("checked_at") if isinstance(item.get("checked_at"), int)
+         and not isinstance(item.get("checked_at"), bool) else None,
+         _health_check_is_fresh(item, wall_now),
+         bool(item.get("executable")), bool(item.get("retired_at")))
+        for item in service_instances
+        if isinstance(item, dict) and item.get("kind") == "hermes"
+        and isinstance(item.get("config_ref"), str)
+        and item.get("config_ref") in config_refs
+    ))
+    cache_key = (id(service), tuple(profile_stats), tuple(str(path) for path in commands),
+                 health_signature)
     cached = _status_cache.get(cache_key)
     if cached and now - cached[0] < 3.0:
         return dict(cached[1])
@@ -221,24 +265,66 @@ def get_hermes_status(service=None) -> dict:
         _status_cache[cache_key] = (now, result)
         return result
     path, profile = profiles[0]
-    instance = None
-    if hasattr(service, "store"):
-        try:
-            instance = next((item for item in service.store.list_instances()
-                             if item.get("kind") == "hermes" and item.get("config_ref") == str(path)
-                             and not item.get("retired_at")), None)
-        except Exception:
-            pass
-    if instance and instance.get("health") == "unresponsive":
-        result = _result("unresponsive",
-                         "Hermes accepted the connection but did not return an HTTP response in time.",
-                         phase="unresponsive", instance_id=instance.get("instance_id"),
-                         base_url=profile.base_url)
+    instance = next((item for item in service_instances
+                     if isinstance(item, dict) and item.get("kind") == "hermes"
+                     and item.get("config_ref") == str(path)
+                     and not item.get("retired_at")), None)
+    health_statuses = {
+        "ready": ("ready", "Hermes API was responding and supports the required task endpoints."),
+        "not_checked": ("not_checked", "A valid Hermes profile was found, but its API has not been checked."),
+        "checking": ("checking", "The Hermes API check is still in progress; its result is not confirmed yet."),
+        "not_running": ("not_running", "The configured Hermes API endpoint is not running."),
+        "api_not_enabled": ("api_not_enabled", "The endpoint reports that Hermes API Server is not enabled."),
+        "authentication_failed": ("authentication_failed", "The configured Hermes API credential was rejected."),
+        "credential_missing": ("credential_missing", "The Hermes API credential is missing from this PadNote profile."),
+        "wrong_service": ("wrong_service", "The configured endpoint is not a supported Hermes API Server."),
+        "unresponsive": ("unresponsive", "Hermes accepted the connection but did not return an HTTP response in time."),
+        "capability_missing": ("capability_missing", "Hermes responded, but required task API capabilities are missing."),
+        "needs_configuration": ("needs_configuration", "The Hermes profile needs configuration before it can be checked."),
+        "profile_unavailable": ("profile_unavailable", "The selected Hermes profile is no longer available."),
+        "wsl_reconnect_required": ("wsl_reconnect_required", "The selected WSL Hermes profile needs to be reconnected."),
+        "unsupported": ("unsupported", "This Hermes profile does not support task execution in this version."),
+        "error": ("error", "The latest Hermes API check failed without a more specific status."),
+    }
+    if instance:
+        health = instance.get("health")
+        _checked_at, check_age = _health_check_age(instance, wall_now)
+        fresh = check_age is not None and check_age <= HEALTH_CHECK_FRESHNESS_SECONDS
+        reason_status, reason_message = health_statuses.get(
+            health if isinstance(health, str) else "",
+            ("error", "The saved Hermes health status is unknown; run a fresh check."))
+        if not fresh:
+            if check_age is None:
+                status = "not_checked"
+                message = "No valid API check time is recorded; the current Hermes state is unconfirmed."
+                if isinstance(health, str) and health:
+                    message += " Last saved result: " + reason_message
+            else:
+                status = "check_expired"
+                message = (f"The last Hermes API check was {check_age} seconds ago and is expired; "
+                           "the current state is unconfirmed. Last recorded result: " + reason_message)
+        elif health == "ready":
+            if instance.get("executable") is True and not instance.get("retired_at"):
+                status = "ready"
+                message = "Hermes API passed a fresh check and supports the required task endpoints."
+            else:
+                status = "not_executable"
+                message = ("The latest check says ready, but the saved execution capability is not enabled. "
+                           "Run a fresh check before using this profile.")
+        elif health == "healthy":
+            status = "not_checked"
+            message = ("The saved legacy health label does not confirm the current executable Hermes API state. "
+                       "Run a fresh check.")
+        else:
+            status, message = reason_status, reason_message
+        result = _result(status, message, phase="health",
+                         instance_id=instance.get("instance_id"), base_url=profile.base_url)
     else:
-        result = _result("ready" if instance and instance.get("health") == "ready" else "starting",
-                         "Hermes API configuration is available." if instance else "Hermes API is configured. Select Check and start to verify it.",
-                         phase="config", instance_id=instance.get("instance_id") if instance else None,
-                         base_url=profile.base_url)
+        # A readable profile proves only that configuration exists. It does not
+        # establish that a Gateway is starting or that the API is reachable.
+        result = _result("not_checked",
+                         "A valid Hermes profile was found, but its API has not been checked.",
+                         phase="profile", base_url=profile.base_url)
     _status_cache[cache_key] = (now, result)
     if len(_status_cache) > 32:
         oldest = min(_status_cache, key=lambda key: _status_cache[key][0])

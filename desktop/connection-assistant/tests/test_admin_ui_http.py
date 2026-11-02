@@ -122,6 +122,21 @@ class AdminUIHTTPTests(unittest.TestCase):
         for secret_or_private in (b"never-return", b"/private/.env"):
             self.assertNotIn(secret_or_private, body)
 
+        with patch("padnote_assistant.hermes_onboarding.get_hermes_status", return_value={
+                "status": "check_expired", "phase": "health",
+                "message": "The last Hermes API check is expired; current state is unconfirmed.",
+                "api_key": "never-return", "candidates": ["/private/.env"]}):
+            status, headers, body = self.request("GET", "/admin/onboarding/status", headers={
+                "X-PadNote-CSRF": csrf, "Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertEqual(json.loads(body), {
+            "status": "check_expired", "phase": "health",
+            "message": "The last Hermes API check is expired; current state is unconfirmed.",
+        })
+        self.assertNotIn(b"never-return", body)
+        self.assertNotIn(b"/private/.env", body)
+
     def test_hermes_connect_post_uses_origin_csrf_and_redirects_with_safe_message(self) -> None:
         csrf = self.group.admin.csrf_token
         with patch("padnote_assistant.hermes_onboarding.connect_hermes", return_value={

@@ -72,7 +72,7 @@ def _run_once(state: Path) -> tuple[str, str]:
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         process = subprocess.Popen(
-            [str(Path(sys.executable)), str(ROOT / "start.py"), "--lan", "--no-browser",
+            [str(Path(sys.executable)), "-B", str(ROOT / "start.py"), "--lan", "--no-browser",
              "--state-dir", str(state), "--admin-port", str(admin), "--api-port", str(api),
              "--lan-port", str(lan_port), "--shutdown-event", name],
             cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

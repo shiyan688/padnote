@@ -10,10 +10,10 @@
   !define STAGE "${__FILEDIR__}build/stage"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.18.0-beta.40"
+  !define PRODUCT_VERSION "0.18.0-beta.41"
 !endif
 !ifndef FILE_VERSION
-  !define FILE_VERSION "0.18.0.40"
+  !define FILE_VERSION "0.18.0.41"
 !endif
 !ifndef OUTFILE
   !define OUTFILE "${__FILEDIR__}build/PadNote-Connection-Assistant-${PRODUCT_VERSION}-Setup-x64.exe"
@@ -59,7 +59,7 @@ VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" "PadNote"
 !include "${STAGE}\installer-payload.nsh"
 
 Function LaunchAssistant
-  Exec '"$INSTDIR\runtime\pythonw.exe" "$INSTDIR\launcher.py"'
+  Exec '"$INSTDIR\runtime\pythonw.exe" -B "$INSTDIR\launcher.py"'
 FunctionEnd
 
 !macro CLOSE_OWNED_LAUNCHER
@@ -152,10 +152,13 @@ Section "PadNote 连接助手（必需）" SEC_MAIN
   SetRegView 64
   SetOutPath "$INSTDIR"
   WriteINIStr "$INSTDIR\.padnote-owner.ini" "PadNote" "Id" "${OWNER_ID}"
+  ; Remove stale bytecode for known packaged modules before replacing code.
+  ; Unknown cache files and user data are never removed.
+  !insertmacro CLEANUP_KNOWN_BYTECODE
   File /r "${STAGE}\*"
   File "${__FILEDIR__}PadNote.ico"
   CreateDirectory "$SMPROGRAMS\PadNote"
-  CreateShortCut "$SMPROGRAMS\PadNote\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
+  CreateShortCut "$SMPROGRAMS\PadNote\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '-B "$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
   CreateShortCut "$SMPROGRAMS\PadNote\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${REGKEY}" "DisplayName" "${PRODUCT}"
@@ -169,7 +172,7 @@ SectionEnd
 
 Section /o "桌面快捷方式（可选）" SEC_DESKTOP
   SetShellVarContext current
-  CreateShortCut "$DESKTOP\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '"$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
+  CreateShortCut "$DESKTOP\PadNote Connection Assistant.lnk" "$INSTDIR\runtime\pythonw.exe" '-B "$INSTDIR\launcher.py"' "$INSTDIR\PadNote.ico"
 SectionEnd
 
 Section "Uninstall"

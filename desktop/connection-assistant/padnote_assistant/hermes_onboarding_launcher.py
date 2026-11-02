@@ -15,8 +15,21 @@ import threading
 BASE_URL = "http://127.0.0.1:8766"
 STATUS_PATH = "/admin/onboarding/status"
 CONNECT_PATH = "/admin/hermes/connect"
-VALID_STATUSES = {"ready", "needs_setup", "not_installed", "ambiguous", "starting", "check_timeout", "unresponsive", "error"}
-CONNECT_PROBE_STATUSES = {"ready", "needs_setup", "starting", "check_timeout", "unresponsive"}
+VALID_STATUSES = {
+    "ready", "not_checked", "check_expired", "not_executable", "needs_setup",
+    "needs_configuration", "not_installed", "ambiguous", "starting", "checking",
+    "not_running", "api_not_enabled", "authentication_failed", "credential_missing",
+    "wrong_service", "capability_missing", "profile_unavailable",
+    "wsl_reconnect_required", "unsupported", "check_timeout", "unresponsive", "error",
+}
+# These states are probed only after the user clicks the existing Connect/Check button.
+CONNECT_PROBE_STATUSES = {
+    "ready", "not_checked", "check_expired", "not_executable", "needs_setup",
+    "needs_configuration", "starting", "checking", "not_running", "api_not_enabled",
+    "authentication_failed", "credential_missing", "wrong_service", "capability_missing",
+    "profile_unavailable", "wsl_reconnect_required", "unsupported", "check_timeout",
+    "unresponsive", "error",
+}
 INSTALLER_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/bf0203a794a07aac3ff764972ab9087baa4e4f4e/scripts/install.ps1"
 INSTALLER_COMMIT = "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
 INSTALLER_GIT_BLOB = "7fb6316fb5a8421cb1dc5836692860b871a3984c"
@@ -32,6 +45,34 @@ def should_probe_hermes(status: str) -> bool:
     return status in CONNECT_PROBE_STATUSES
 
 
+def status_label(status: str) -> str:
+    """Return a concise Chinese heading for known launcher statuses."""
+    return {
+        "ready": "已连接并可执行",
+        "not_checked": "尚未检测",
+        "check_expired": "检测已过期",
+        "not_executable": "尚未确认可执行",
+        "needs_setup": "需要完成设置",
+        "needs_configuration": "需要补全 API 配置",
+        "not_installed": "未找到 Hermes",
+        "ambiguous": "发现多个配置",
+        "starting": "正在启动",
+        "checking": "正在检测",
+        "not_running": "API 未运行",
+        "api_not_enabled": "API Server 未启用",
+        "authentication_failed": "凭据验证失败",
+        "credential_missing": "缺少 API 凭据",
+        "wrong_service": "地址指向其他服务",
+        "capability_missing": "缺少任务执行能力",
+        "profile_unavailable": "配置文件不可用",
+        "wsl_reconnect_required": "需要重新连接 WSL",
+        "unsupported": "连接方式暂不支持",
+        "check_timeout": "检测超时，状态未确认",
+        "unresponsive": "API 无响应",
+        "error": "检测失败",
+    }.get(status, "状态未确认")
+
+
 def phase_label(phase: str) -> str:
     labels = {
         "discovery": "查找 Hermes 安装",
@@ -43,6 +84,8 @@ def phase_label(phase: str) -> str:
         "not_running": "等待本机服务启动",
         "check_timeout": "等待 API 响应超时",
         "unresponsive": "API 已连接但无 HTTP 响应",
+        "profile": "检查 Hermes 配置文件",
+        "health": "确认 API 与任务执行能力",
         "api": "检查 API 状态",
         "start": "启动 Hermes Gateway",
     }
@@ -51,6 +94,28 @@ def phase_label(phase: str) -> str:
 
 def message_label(status: str, phase: str, message: str) -> str:
     text = message.casefold()
+    status_messages = {
+        "not_checked": "Hermes 配置已找到，但当前连接状态尚未确认。点击连接或检测以检查本机 API。",
+        "check_expired": "上次 Hermes 检测已过期，当前状态尚未确认。点击连接或检测以重新检查；上次成功不代表现在仍可连接。",
+        "not_executable": "Hermes API 尚未确认具备任务执行能力。点击连接或检测以重新检查。",
+        "needs_configuration": "Hermes API 配置不完整。检查并完成本机 API Server 设置后，再点击连接或检测。",
+        "not_running": "Hermes API 当前未运行。按现有配置启动服务后，再点击连接或检测。",
+        "api_not_enabled": "Hermes API Server 尚未启用。检查现有配置并启用后，再点击连接或检测。",
+        "authentication_failed": "Hermes API 凭据未通过验证。检查凭据后，再点击连接或检测。",
+        "credential_missing": "Hermes API 凭据缺失。补齐现有凭据后，再点击连接或检测。",
+        "wrong_service": "此地址响应的不是预期 Hermes API。检查本机地址后，再点击连接或检测。",
+        "capability_missing": "Hermes API 可访问，但尚未确认任务执行能力。检查服务版本与配置后，再点击连接或检测。",
+        "profile_unavailable": "Hermes 配置文件当前不可用。检查所选配置路径后，再点击连接或检测。",
+        "wsl_reconnect_required": "WSL 中的 Hermes 需要重新连接。检查发行版状态后，再点击连接或检测。",
+        "unsupported": "此 Hermes 配置暂不支持当前连接方式。检查配置说明或手动填写本机 API 地址。",
+        "checking": "正在检查 Hermes API，请稍候。",
+        "not_installed": "未在常见位置找到 Hermes；打开连接设置可手动填写本机 API，或查看官方安装指南。",
+        "ambiguous": "发现多个 Hermes 配置；请在管理页选择目标实例。",
+        "starting": "Hermes 正在启动；请稍后再次检查。",
+        "ready": "Hermes 已连接，可以继续平板配对。",
+    }
+    if status in status_messages:
+        return status_messages[status]
     if status == "check_timeout":
         return "Hermes 检查超时，当前状态未确认。请检查 API 服务状态和本机日志，再手动重试；助手不会自动启动或重启服务。"
     if status == "unresponsive":

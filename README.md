@@ -16,7 +16,17 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 
 [观看学习笔记导览（30 秒）](https://github.com/shiyan688/padnote/releases/download/v0.18.0-beta.24/PadNote-Learning-Tour-20261028.mp4) · [下载应用与电脑助手](https://github.com/shiyan688/padnote/releases) · [English](README.en.md)
 
-演示使用合成学习内容和实机截图，展示纸面与分享效果；不是 AI 或电脑 Agent 执行过程的录像。[素材来源](docs/media/2026-10-28/README.md)。
+此前的视频使用合成学习内容和实机截图，展示纸面与分享效果，并非实时 Agent 执行录像。下方静态函数图来自一次真实 Hermes Agent API 返回，但它是与手写题分开的 `y=x²` 示例，不是原题答案。素材来源与验收状态见[手写页与 Agent 图示说明](docs/REAL_HANDWRITING_AGENT_DEMO.md)。
+
+## 一张真实手写页与独立 Agent 函数图
+
+左侧是作者授权公开的原始平板手写页；中间是一次真实 Hermes Agent 返回的独立 `y=x²` 函数图 SVG，经本地渲染成 PNG。右侧展示它通过 Android 正常图片选择器手动导入、保存并重开的纸面效果。原手写内容留在第 1 页，函数图放在第 2 页；两页 PDF 已逐页查看。函数图不是手写题答案，也不是 Android 自动取得的 Agent 任务结果。
+
+| 作者原始手写 | 真实 Agent 返回的独立图示 | Android 手动导入后重开 |
+| --- | --- |
+| <img src="docs/media/2026-10-31/real-handwriting-note.png" alt="作者授权公开的原始手写函数问题" width="360"> | <img src="docs/media/2026-11-02/agent-function-example.png" alt="真实 Hermes Agent 返回的独立 y 等于 x 平方示例图，由本地渲染 SVG" width="360"> | <img src="docs/media/2026-11-02/agent-graph-on-paper.png" alt="Android beta.40 中手动导入并保存重开的两页笔记，原手写页与独立函数图分别位于第1页和第2页" width="360"> |
+
+[查看 SVG 源文件与素材来源](docs/REAL_HANDWRITING_AGENT_DEMO.md)。
 
 | 步骤 | 在 PadNote 中做什么 | 结果 |
 | --- | --- | --- |
@@ -24,7 +34,7 @@ PadNote 是面向平板的开源 AI 笔记应用。读一份材料，写下推�
 | 2. 分享纸面 | 导出当前笔记的 PDF，再通过系统分享发送 | 收件人可阅读纸面版式 |
 | 3. 交给电脑 Agent | 将纸面材料发送给同一网络中已配对、支持笔记任务的 Hermes Agent | 在电脑任务列表查看进度；完成后预览结果并可添加回笔记 |
 
-[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 40 连接检查改进](BETA40_TESTING.md) · [Beta 39 图像回纸面与兼容检查](BETA39_TESTING.md) · [Beta 38 排版历史](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
+[下载与安装包（GitHub Releases）](https://github.com/shiyan688/padnote/releases) · [任务结果回到纸面](BETA34_TESTING.md) · [PDF 分享指南](docs/BETA25_TESTING.md) · [文字编辑与草稿](docs/BETA26_TESTING.md) · [笔记移除与恢复](docs/BETA27_TESTING.md) · [界面与操作指引](docs/BETA28_TESTING.md) · [WSL 任务与配置连接](BETA32_TESTING.md) · [Beta 41 Windows 连接助手](BETA41_TESTING.md) · [Beta 40 连接检查改进](BETA40_TESTING.md) · [Beta 39 图像回纸面与兼容检查](BETA39_TESTING.md) · [Beta 38 排版历史](BETA38_TESTING.md) · [纸面选区与手势](docs/AI_PAPER_SELECTION.md) · [Windows 连接助手说明](desktop/connection-assistant/windows-setup/README-WINDOWS.md) · [从源码构建](#从源码构建) · [反馈问题](https://github.com/shiyan688/padnote/issues)
 
 
 ## 从一份示例开始
@@ -142,7 +152,13 @@ WSL 向导让你明确选择发行版与 Hermes 配置，并在连接前查看�
 
 只有确认添加图像的笔记才升级到 schema 11，较早版本无法打开这类笔记。普通笔记不变；详见[图像放置与兼容说明](docs/AGENT_IMAGE_TO_PAPER.md)及[Beta 39 检查说明](BETA39_TESTING.md)。
 
-Android beta.40 使用 versionCode 73。iPad 提供源码，不含签名 IPA；Windows 连接助手为 beta.40。Portable 包已通过隔离启动检查，Setup 图形安装流程未验收。
+## Beta 41：Windows 连接助手状态与安装清理
+
+仅找到 Hermes 配置不代表服务已连接。助手只有在最近 60 秒内通过检查、并确认具备任务执行能力后才显示“已就绪”；结果过期后需要用户手动重新检查，不会因打开界面自动探测或启动 Gateway。
+
+安装清理只移除安装目录中已知的 Python 字节码缓存，不会递归删除未知文件。beta.37 原位升级到 beta.41 的 Windows 实机验收已完成：Setup 成功运行，243 个安装文件均通过核验，配对状态、持久记录、源码目录 ACL 与 TLS 身份均保留，安装后未发现字节码缓存。验收期间未重启 Hermes，也未重提旧任务；卸载流程未测试。详见[Beta 41 检查说明](BETA41_TESTING.md)。
+
+Android 仍提供 beta.40（versionCode 73）安装包；本版没有新的 Android 构建。iPad 提供源码，不含签名 IPA；Windows 连接助手更新至 beta.41，beta.37 到 beta.41 原位升级已通过验收，配对与任务记录保留；卸载流程未测试。上方展示的是实际手动导入并保存重开的 Android 笔记，函数图仍为独立示例，不是原题解答。
 
 ## Beta 38：纸面排版切换
 

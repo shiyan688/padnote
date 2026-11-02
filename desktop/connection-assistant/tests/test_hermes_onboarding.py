@@ -398,15 +398,158 @@ class HermesOnboardingTests(unittest.TestCase):
                 def __init__(self, health):
                     super().__init__([config])
                     self.health = health
+                    self.clock = lambda: 100
                 def store_instances(self):
                     return [{"kind": "hermes", "config_ref": str(config.resolve()),
-                             "health": self.health, "instance_id": f"id-{self.health}"}]
+                             "health": self.health, "checked_at": 99, "executable": True,
+                             "instance_id": f"id-{self.health}"}]
             first = StatusService("ready")
             second = StatusService("not_running")
             first.store.list_instances = first.store_instances
             second.store.list_instances = second.store_instances
             self.assertEqual(onboarding.get_hermes_status(first)["status"], "ready")
-            self.assertEqual(onboarding.get_hermes_status(second)["status"], "starting")
+            self.assertEqual(onboarding.get_hermes_status(second)["status"], "not_running")
+
+    def test_configured_profile_without_check_is_not_reported_as_starting_or_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            service.clock = lambda: 100
+
+            result = onboarding.get_hermes_status(service)
+
+            self.assertEqual(result["status"], "not_checked")
+            self.assertEqual(result["phase"], "profile")
+            self.assertIn("has not been checked", result["message"])
+            self.assertNotIn("starting", result["message"].lower())
+            self.assertNotIn("ready", result["message"].lower())
+            self.assertEqual(service.imported, [])
+            self.assertEqual(service.check_calls, 0)
+
+    def test_cached_profile_status_invalidates_when_saved_health_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            service.clock = lambda: 100
+            saved = {"health": "not_running", "checked_at": 90, "executable": False}
+
+            def list_instances():
+                return [{"kind": "hermes", "config_ref": str(config.resolve()),
+                         "instance_id": "instance-safe-id", **saved}]
+
+            service.store.list_instances = list_instances
+            first = onboarding.get_hermes_status(service)
+            self.assertEqual("not_running", first["status"])
+
+            saved.update(health="ready", checked_at=99, executable=True)
+            second = onboarding.get_hermes_status(service)
+
+            self.assertEqual("ready", second["status"])
+            self.assertEqual("health", second["phase"])
+
+    def test_ready_summary_requires_fresh_timestamp_and_executable_true(self):
+        cases = (
+            ({"health": "ready", "checked_at": 99, "executable": True}, "ready"),
+            ({"health": "ready", "checked_at": 39, "executable": True}, "check_expired"),
+            ({"health": "ready", "executable": True}, "not_checked"),
+            ({"health": "ready", "checked_at": True, "executable": True}, "not_checked"),
+            ({"health": "ready", "checked_at": 101, "executable": True}, "not_checked"),
+            ({"health": "ready", "checked_at": 99, "executable": False}, "not_executable"),
+            ({"health": "ready", "checked_at": 99, "executable": 1}, "not_executable"),
+            ({"health": "healthy", "checked_at": 99, "executable": True}, "not_checked"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            service.clock = lambda: 100
+            for saved_state, expected in cases:
+                with self.subTest(saved_state=saved_state):
+                    onboarding._status_cache.clear()
+                    service.store.list_instances = lambda saved_state=saved_state: [{
+                        "kind": "hermes", "config_ref": str(config.resolve()),
+                        "instance_id": "instance-safe-id", **saved_state,
+                    }]
+                    result = onboarding.get_hermes_status(service)
+                    self.assertEqual(expected, result["status"])
+                    if expected != "ready":
+                        self.assertNotEqual("ready", result["status"])
+
+    def test_cached_ready_summary_expires_at_the_bridge_61_second_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            current_time = {"value": 160}
+            service = FakeService([config])
+            service.clock = lambda: current_time["value"]
+            service.store.list_instances = lambda: [{
+                "kind": "hermes", "config_ref": str(config.resolve()),
+                "instance_id": "instance-safe-id", "health": "ready",
+                "checked_at": 100, "executable": True,
+            }]
+
+            at_sixty_seconds = onboarding.get_hermes_status(service)
+            self.assertEqual("ready", at_sixty_seconds["status"])
+            current_time["value"] = 161
+            at_sixty_one_seconds = onboarding.get_hermes_status(service)
+            self.assertEqual("check_expired", at_sixty_one_seconds["status"])
+            self.assertIn("61 seconds ago", at_sixty_one_seconds["message"])
+
+    def test_saved_hermes_health_reasons_are_not_collapsed_to_starting(self):
+        reasons = {
+            "ready": "ready",
+            "not_running": "not_running",
+            "api_not_enabled": "api_not_enabled",
+            "authentication_failed": "authentication_failed",
+            "credential_missing": "credential_missing",
+            "wrong_service": "wrong_service",
+            "unresponsive": "unresponsive",
+            "capability_missing": "capability_missing",
+            "needs_configuration": "needs_configuration",
+            "profile_unavailable": "profile_unavailable",
+            "wsl_reconnect_required": "wsl_reconnect_required",
+            "unsupported": "unsupported",
+            "error": "error",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            service.store.list_instances = lambda: [{
+                "kind": "hermes", "config_ref": str(config.resolve()),
+                "instance_id": "instance-safe-id", "health": "ready",
+                "checked_at": 99, "executable": True,
+            }]
+            service.clock = lambda: 100
+            for health, expected in reasons.items():
+                with self.subTest(health=health):
+                    onboarding._status_cache.clear()
+                    service.store.list_instances = lambda health=health: [{
+                        "kind": "hermes", "config_ref": str(config.resolve()),
+                        "instance_id": "instance-safe-id", "health": health,
+                        "checked_at": 99, "executable": health == "ready",
+                    }]
+                    service.clock = lambda: 100
+                    result = onboarding.get_hermes_status(service)
+                    self.assertEqual(expected, result["status"])
+                    self.assertEqual("health", result["phase"])
+                    self.assertNotEqual("starting", result["status"])
+
+    def test_unknown_saved_health_is_an_error_not_a_startup_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_env(Path(directory) / ".env")
+            service = FakeService([config])
+            for health in ("starting", "future-health-state", []):
+                with self.subTest(health=health):
+                    onboarding._status_cache.clear()
+                    service.store.list_instances = lambda health=health: [{
+                        "kind": "hermes", "config_ref": str(config.resolve()),
+                        "instance_id": "instance-safe-id", "health": health,
+                        "checked_at": 99, "executable": False,
+                    }]
+                    service.clock = lambda: 100
+                    result = onboarding.get_hermes_status(service)
+                    self.assertEqual(result["status"], "error")
+                    self.assertEqual(result["phase"], "health")
+                    self.assertNotIn("future-health-state", result["message"])
+                    self.assertNotIn("starting", result["message"].lower())
 
     def test_check_wait_timeout_is_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -430,10 +573,12 @@ class HermesOnboardingTests(unittest.TestCase):
             service.store.list_instances = lambda: [{
                 "kind": "hermes", "config_ref": str(config.resolve()),
                 "instance_id": "instance-safe-id", "health": "unresponsive",
+                "checked_at": 99, "executable": False,
             }]
+            service.clock = lambda: 100
             value = onboarding.get_hermes_status(service)
             self.assertEqual(value["status"], "unresponsive")
-            self.assertEqual(value["phase"], "unresponsive")
+            self.assertEqual(value["phase"], "health")
             self.assertNotIn("API_SERVER_KEY", value["message"])
 
     def test_setup_opens_visible_windows_console_without_changing_env(self):

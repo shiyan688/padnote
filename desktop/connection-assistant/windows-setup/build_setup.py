@@ -102,15 +102,35 @@ def write_uninstall_macro() -> None:
     for generated in ("PACKAGE-INVENTORY.json", "installer-payload.nsh"):
         if generated not in files:
             files.append(generated)
+    # CPython writes caches despite PYTHONDONTWRITEBYTECODE in an isolated
+    # embedded runtime. Remove only cache names derived from staged source
+    # modules; never wildcard-delete user or unknown files.
+    bytecode_files = set()
+    bytecode_dirs = set()
+    for source in STAGE.rglob("*.py"):
+        relative = source.relative_to(STAGE)
+        cache_dir = relative.parent / "__pycache__"
+        stem = relative.stem + ".cpython-313"
+        bytecode_dirs.add(cache_dir.as_posix())
+        for suffix in (".pyc", ".opt-1.pyc", ".opt-2.pyc"):
+            bytecode_files.add((cache_dir / (stem + suffix)).as_posix())
     directories = sorted((path.relative_to(STAGE).as_posix() for path in STAGE.rglob("*")
                          if path.is_dir()), key=lambda value: (value.count("/"), value), reverse=True)
+    cleanup_lines = ["!macro CLEANUP_KNOWN_BYTECODE\n"]
+    for relative in sorted(bytecode_files):
+        cleanup_lines.append(f'  Delete "$INSTDIR\\{relative.replace("/", chr(92))}"\n')
+    for relative in sorted(bytecode_dirs, key=lambda value: (value.count("/"), value), reverse=True):
+        cleanup_lines.append(f'  RMDir "$INSTDIR\\{relative.replace("/", chr(92))}"\n')
+    cleanup_lines.append("!macroend\n\n")
+
     lines = ["!macro UNINSTALL_PAYLOAD\n"]
     for relative in files:
         lines.append(f'  Delete "$INSTDIR\\{relative.replace("/", chr(92))}"\n')
+    lines.append("  !insertmacro CLEANUP_KNOWN_BYTECODE\n")
     for relative in directories:
         lines.append(f'  RMDir "$INSTDIR\\{relative.replace("/", chr(92))}"\n')
     lines.append("!macroend\n")
-    (STAGE / "installer-payload.nsh").write_text("".join(lines), encoding="utf-8")
+    (STAGE / "installer-payload.nsh").write_text("".join(cleanup_lines + lines), encoding="utf-8")
 
 def prepare(assistant_root: Path, project_root: Path) -> None:
     if STAGE.exists():
@@ -181,7 +201,7 @@ def main() -> int:
                         help="connection-assistant source directory (for integration, pass its parent)")
     parser.add_argument("--project-root", type=Path, default=ROOT,
                         help="project root containing LICENSE, LICENSING.md, and THIRD_PARTY_NOTICES.md")
-    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.40-Setup-x64.exe")
+    parser.add_argument("--output", type=Path, default=ROOT / "build" / "PadNote-Connection-Assistant-0.18.0-beta.41-Setup-x64.exe")
     args = parser.parse_args()
     if args.download_cache:
         DOWNLOAD_CACHE = args.download_cache.resolve()
