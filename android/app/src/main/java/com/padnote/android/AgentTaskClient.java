@@ -22,10 +22,26 @@ final class AgentTaskClient {
         final String remoteTaskId;
         final AgentTaskStore.Status status;
         final String conversationId, parentTaskId;
+        final List<AgentTaskStore.Artifact> artifacts;
+        final AgentDelivery.Summary delivery;
+        final RemoteStatus acceptedStatus;
         Submission(String remoteTaskId, AgentTaskStore.Status status, String conversationId,
                    String parentTaskId) {
+            this(remoteTaskId,status,conversationId,parentTaskId,Collections.emptyList(),null);
+        }
+        Submission(String remoteTaskId, AgentTaskStore.Status status, String conversationId,
+                   String parentTaskId,List<AgentTaskStore.Artifact> artifacts,
+                   AgentDelivery.Summary delivery) {
+            this(remoteTaskId,status,conversationId,parentTaskId,artifacts,delivery,null);
+        }
+        Submission(String remoteTaskId, AgentTaskStore.Status status, String conversationId,
+                   String parentTaskId,List<AgentTaskStore.Artifact> artifacts,
+                   AgentDelivery.Summary delivery,RemoteStatus acceptedStatus) {
             this.remoteTaskId = remoteTaskId; this.status = status;
             this.conversationId=conversationId;this.parentTaskId=parentTaskId;
+            this.artifacts=Collections.unmodifiableList(new ArrayList<>(artifacts));
+            this.delivery=delivery;
+            this.acceptedStatus=acceptedStatus;
         }
     }
 
@@ -36,6 +52,7 @@ final class AgentTaskClient {
         final String stopDelivery;
         final boolean followupAvailable;
         final List<AgentTaskStore.Artifact> artifacts;
+        final AgentDelivery.Summary delivery;
         RemoteStatus(AgentTaskStore.Status status, String output, String error,
                      String approvalId, String approvalTitle, String approvalDescription,
                      List<AgentTaskStore.Artifact> artifacts) {
@@ -60,6 +77,21 @@ final class AgentTaskClient {
             this.followupAvailable=followupAvailable;this.followupReason=followupReason;
             this.stopDelivery=stopDelivery;
             this.artifacts=Collections.unmodifiableList(new ArrayList<>(artifacts));
+            this.delivery=null;
+        }
+
+        RemoteStatus(AgentTaskStore.Status status, String output, String error,
+                     String approvalId, String approvalTitle, String approvalDescription,
+                     List<AgentTaskStore.Artifact> artifacts, String conversationId,
+                     String parentTaskId, boolean followupAvailable, String followupReason,
+                     String stopDelivery, AgentDelivery.Summary delivery) {
+            this.status=status;this.output=output;this.error=error;this.approvalId=approvalId;
+            this.approvalTitle=approvalTitle;this.approvalDescription=approvalDescription;
+            this.conversationId=conversationId;this.parentTaskId=parentTaskId;
+            this.followupAvailable=followupAvailable;this.followupReason=followupReason;
+            this.stopDelivery=stopDelivery;
+            this.artifacts=Collections.unmodifiableList(new ArrayList<>(artifacts));
+            this.delivery=delivery;
         }
     }
 
@@ -106,11 +138,18 @@ final class AgentTaskClient {
             throw new IllegalStateException("任务响应来自其他 Agent 实例");
         String conversationId="",parentTaskId="";
         if(task.transport==AgentConnectionStore.Transport.BRIDGE) {
-            if(json.has("conversation_id"))conversationId=required(json,"conversation_id");
-            if(json.has("parent_task_id"))parentTaskId=json.optString("parent_task_id");
-            validateLineage(task,remote,conversationId,parentTaskId);
+            conversationId=optionalString(json.opt("conversation_id"),512);
+            parentTaskId=optionalString(json.opt("parent_task_id"),512);
         }
-        return new Submission(remote,mapStatus(required(json,"status")),conversationId,parentTaskId);
+        AgentTaskStore.Status execution=mapStatus(required(json,"status"));
+        List<AgentTaskStore.Artifact> artifacts=parseArtifacts(task,json);
+        AgentDelivery.Summary delivery=task.deliveryContractSupported
+                ?AgentDelivery.fromServerOrLocal(json.optJSONObject("delivery"),task.expectedOutputs,execution,artifacts)
+                :null;
+        RemoteStatus accepted=parseAcceptedStatus(task,json,remote,execution,artifacts,delivery,
+                conversationId,parentTaskId);
+        return new Submission(remote,execution,accepted.conversationId,accepted.parentTaskId,
+                artifacts,delivery,accepted);
     }
 
     RemoteStatus status(AgentTaskStore.Task task,AgentConnectionStore.Config connection)
@@ -142,16 +181,7 @@ final class AgentTaskClient {
                         approval.optString("command",""))),1000);
             }
         }
-        List<AgentTaskStore.Artifact> artifacts=new ArrayList<>();
-        JSONArray values=json.optJSONArray("artifacts");
-        if(values!=null&&task.transport==AgentConnectionStore.Transport.BRIDGE){
-            for(int i=0;i<values.length();i++){JSONObject a=values.optJSONObject(i);if(a==null)continue;
-                String id=a.optString("id",""); long size=a.optLong("size_bytes",-1);
-                String sha=a.optString("sha256",""); if(!id.isEmpty()&&size>=0&&size<=100L*1024*1024&&sha.matches("[a-fA-F0-9]{64}"))
-                    artifacts.add(new AgentTaskStore.Artifact(id,plain(a.optString("name","artifact"),256),
-                            a.optString("media_type","application/octet-stream"),size,sha.toLowerCase()));
-            }
-        }
+        List<AgentTaskStore.Artifact> artifacts=parseArtifacts(task,json);
         String conversationId="",parentTaskId="",followupReason="电脑助手未提供继续沟通能力信息";
         boolean followupAvailable=false;
         if(task.transport==AgentConnectionStore.Transport.BRIDGE) {
@@ -188,10 +218,95 @@ final class AgentTaskClient {
             AgentApprovalIdentity.Parsed parsed=AgentApprovalIdentity.parse(json);
             if(!parsed.message.isEmpty())error=parsed.message;
         }
-        return new RemoteStatus(mapStatus(rawStatus),
+        AgentTaskStore.Status executionStatus=mapStatus(rawStatus);
+        AgentDelivery.Summary delivery=null;
+        if(task.deliveryContractSupported) {
+            delivery=AgentDelivery.fromServerOrLocal(json.optJSONObject("delivery"),
+                    task.expectedOutputs,executionStatus,artifacts);
+        }
+        return new RemoteStatus(executionStatus,
                 output(json.opt("output")),error,
                 approvalId,approvalTitle,approvalDescription,artifacts,conversationId,parentTaskId,
-                followupAvailable,followupReason,stopDelivery);
+                followupAvailable,followupReason,stopDelivery,delivery);
+    }
+
+    /** Parses additive POST response fields without making a valid task receipt disappear. */
+    private RemoteStatus parseAcceptedStatus(AgentTaskStore.Task task,JSONObject json,String remote,
+                                             AgentTaskStore.Status execution,
+                                             List<AgentTaskStore.Artifact> artifacts,
+                                             AgentDelivery.Summary delivery,
+                                             String responseConversation,String responseParent) {
+        String conversation="",parent="",followupReason="电脑助手未提供继续沟通能力信息";
+        boolean followupAvailable=false;
+        if(task.transport==AgentConnectionStore.Transport.BRIDGE) {
+            Object rawConversation=json.opt("conversation_id"),rawParent=json.opt("parent_task_id");
+            boolean hasConversationString=rawConversation instanceof String;
+            boolean hasParentString=rawParent instanceof String;
+            boolean lineageValid=hasConversationString&&hasParentString;
+            if(!task.parentTaskId.isEmpty()) {
+                // An absent/empty/malformed optional lineage field may be recovered from
+                // the immutable local parent binding. Explicit conflicting IDs still fail.
+                if((hasParentString&&!responseParent.isEmpty()&&!task.parentTaskId.equals(responseParent))||
+                        (hasConversationString&&!responseConversation.isEmpty()&&
+                                !task.conversationId.equals(responseConversation)))
+                    throw new IllegalStateException("追问响应父任务ID不匹配");
+                if(!hasParentString||responseParent.isEmpty()||!hasConversationString||responseConversation.isEmpty()) {
+                    lineageValid=false;parent=task.parentTaskId;conversation=task.conversationId;
+                } else {
+                    validateLineage(task,remote,responseConversation,responseParent);
+                    parent=responseParent;conversation=responseConversation;
+                }
+            } else {
+                if((hasParentString&&!responseParent.isEmpty())||
+                        (hasConversationString&&!responseConversation.isEmpty()&&!remote.equals(responseConversation)))
+                    throw new IllegalStateException("任务响应会话ID不匹配");
+                if(!hasParentString||!hasConversationString)lineageValid=false;
+                if(lineageValid) {
+                    validateLineage(task,remote,responseConversation,responseParent);
+                    parent=responseParent;conversation=responseConversation;
+                }
+            }
+            Object rawAvailable=json.opt("followup_available");
+            Object rawReason=json.opt("followup_reason");
+            boolean complete=json.has("conversation_id")&&json.has("parent_task_id")&&
+                    hasConversationString&&hasParentString&&
+                    rawAvailable instanceof Boolean&&rawReason instanceof String;
+            if(lineageValid&&complete) {
+                followupAvailable=(Boolean)rawAvailable;
+                followupReason=plain((String)rawReason,1000);
+                if(followupAvailable&&(conversation.isEmpty()||execution!=AgentTaskStore.Status.COMPLETED)) {
+                    followupAvailable=false;followupReason="电脑助手返回的继续沟通信息不匹配";
+                }
+            } else followupReason="暂时无法确认是否可以继续沟通";
+        } else followupReason="Hermes 直连暂不支持继续沟通";
+
+        String approvalId="",approvalTitle="",approvalDescription="";
+        if(execution==AgentTaskStore.Status.WAITING_FOR_APPROVAL) {
+            try {
+                if(task.transport==AgentConnectionStore.Transport.DIRECT) {
+                    AgentApprovalIdentity.Parsed parsed=AgentApprovalIdentity.parse(json);
+                    approvalId=parsed.id;approvalTitle=parsed.title;approvalDescription=parsed.description;
+                } else {
+                    JSONObject approval=json.optJSONObject("approval");
+                    if(approval!=null) {
+                        approvalId=optionalString(approval.opt("approval_id"),256);
+                        approvalTitle=plain(optionalString(approval.opt("title"),160),160);
+                        approvalDescription=plain(optionalString(approval.opt("description"),1000),1000);
+                    }
+                }
+            } catch(Exception malformedOptionalApproval) {
+                approvalId="";approvalTitle="";approvalDescription="";
+            }
+        }
+        String error=optionalString(json.opt("error"),4000);
+        if(task.transport==AgentConnectionStore.Transport.DIRECT&&execution==AgentTaskStore.Status.WAITING_FOR_APPROVAL&&
+                error.isEmpty())error="电脑端需要审批";
+        String stopDelivery=optionalString(json.opt("stop_delivery"),32);
+        if(!java.util.Arrays.asList("queued","sending","unknown","confirmed","rejected",
+                "not_sent","superseded").contains(stopDelivery))stopDelivery="";
+        return new RemoteStatus(execution,output(json.opt("output")),error,approvalId,approvalTitle,
+                approvalDescription,artifacts,conversation,parent,followupAvailable,followupReason,
+                stopDelivery,delivery);
     }
 
     RemoteStatus stop(AgentTaskStore.Task task,AgentConnectionStore.Config connection)throws Exception{
@@ -233,6 +348,25 @@ final class AgentTaskClient {
                 "/artifacts/"+AgentConnectionClient.path(artifactId));
     }
 
+    private static List<AgentTaskStore.Artifact> parseArtifacts(AgentTaskStore.Task task,JSONObject json){
+        List<AgentTaskStore.Artifact> artifacts=new ArrayList<>();
+        JSONArray values=json.optJSONArray("artifacts");
+        if(values!=null&&task.transport==AgentConnectionStore.Transport.BRIDGE){
+            for(int i=0;i<values.length();i++){JSONObject a=values.optJSONObject(i);if(a==null)continue;
+                Object rawId=a.opt("id"),rawName=a.opt("name"),rawMime=a.opt("media_type");
+                Object rawSize=a.opt("size_bytes"),rawSha=a.opt("sha256");
+                if(!(rawId instanceof String)||!(rawName instanceof String)||!(rawMime instanceof String)||
+                        !(rawSize instanceof Byte||rawSize instanceof Short||rawSize instanceof Integer||rawSize instanceof Long)||
+                        !(rawSha instanceof String))continue;
+                String id=(String)rawId;long size=((Number)rawSize).longValue();String sha=(String)rawSha;
+                if(!id.isEmpty()&&size>0&&size<=100L*1024*1024&&sha.matches("[a-fA-F0-9]{64}"))
+                    artifacts.add(new AgentTaskStore.Artifact(id,plain((String)rawName,256),
+                            (String)rawMime,size,sha.toLowerCase()));
+            }
+        }
+        return artifacts;
+    }
+
     private AgentHttpTransport.Response request(String method,String url,AgentConnectionStore.Config connection,
                                                  Map<String,String> headers,byte[] body,int max)throws Exception{
         return request(method,url,connection,headers,body,max,null);
@@ -267,6 +401,7 @@ final class AgentTaskClient {
     }
     private static AgentTaskStore.Status mapStatus(String raw){switch(raw){case"completed":return AgentTaskStore.Status.COMPLETED;case"failed":return AgentTaskStore.Status.FAILED;case"cancelled":return AgentTaskStore.Status.CANCELLED;case"interrupted":return AgentTaskStore.Status.INTERRUPTED;case"waiting_for_approval":return AgentTaskStore.Status.WAITING_FOR_APPROVAL;case"stopping":return AgentTaskStore.Status.STOPPING;case"submitting":return AgentTaskStore.Status.SUBMITTING;case"running":return AgentTaskStore.Status.RUNNING;default:throw new IllegalStateException("Agent响应包含未知任务状态");}}
     private static String output(Object value){if(value==null||value==JSONObject.NULL)return"";return plain(value instanceof String?(String)value:String.valueOf(value),128*1024);}
+    private static String optionalString(Object value,int max){return value instanceof String?plain((String)value,max):"";}
     private static String plain(String v,int max){if(v==null)return"";String clean=v.replace('\u0000',' ').trim();return clean.length()>max?clean.substring(0,max):clean;}
     private static String required(JSONObject j,String k){String v=j.optString(k,"");if(v.isEmpty())throw new IllegalStateException("Agent响应缺少 "+k);return v;}
     private static IllegalStateException httpError(String prefix,AgentHttpTransport.Response r){String message="";try{JSONObject e=new JSONObject(r.utf8()).optJSONObject("error");if(e!=null)message=plain(e.optString("message",""),500);}catch(Exception ignored){}return new HttpStatusException(r.status,prefix+"（HTTP "+r.status+"）"+(message.isEmpty()?"":"："+message));}

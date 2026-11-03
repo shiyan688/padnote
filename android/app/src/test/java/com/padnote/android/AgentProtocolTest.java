@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class AgentProtocolTest {
@@ -36,7 +37,8 @@ public final class AgentProtocolTest {
             String json = "{\"object\":\"padnote.agent.capabilities\",\"protocol_version\":1," +
                     "\"bridge_id\":\"bridge-a\",\"instance_id\":\"agent-a\",\"kind\":\"hermes\"," +
                     "\"features\":{\"run_submission\":true,\"run_status\":true," +
-                    "\"run_stop\":true,\"run_approval_response\":true,\"artifacts\":true}}";
+                    "\"run_stop\":true,\"run_approval_response\":true,\"artifacts\":true,"+
+                    "\"delivery_contract_v1\":true}}";
             return response(request.url, 200, json);
         };
         AgentConnectionClient.ProbeResult result = new AgentConnectionClient(transport)
@@ -45,7 +47,65 @@ public final class AgentProtocolTest {
         assertEquals("agent-a", result.instanceId);
         assertTrue(result.capabilities.contains("artifacts"));
         assertTrue(Boolean.TRUE.equals(result.featureMap.get("run_submission")));
+        assertTrue(Boolean.TRUE.equals(result.featureMap.get("delivery_contract_v1")));
         assertFalse(result.featureMap.containsKey("not_reported"));
+    }
+
+    @Test public void bridgeRunDeliverySummaryMatchesOnlyReturnedPositiveSizeArtifacts() throws Exception {
+        java.util.Map<String,Boolean> features=new java.util.LinkedHashMap<>();
+        features.put("run_submission",true);features.put("run_status",true);
+        features.put("delivery_contract_v1",true);
+        AgentConnectionStore.Config connection=new AgentConnectionStore.Config("connection-a","Bridge",
+                AgentConnectionStore.Kind.HERMES,"https://bridge.test","token","credential-a",
+                AgentConnectionStore.Transport.BRIDGE,"bridge-a","agent-a","",7L,1L,
+                Arrays.asList("run_status"),features);
+        String id="padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        String submission="{\"client_task_id\":\""+id+"\",\"input\":\"make a PDF\",\"expected_outputs\":[\"pdf\"]}";
+        AgentTaskStore.Task task=new AgentTaskStore.Task(id,connection.id,connection.revision,
+                connection.endpoint,connection.kind,connection.transport,connection.credentialRef,
+                connection.bridgeId,connection.instanceId,"PDF task",connection.name,"note-a",1L,
+                submission,AgentTaskStore.sha256(submission.getBytes(StandardCharsets.UTF_8)),
+                "remote-a",AgentTaskStore.Status.RUNNING,"","","","","",Collections.emptyList(),
+                1L,1L,"","","","",false,"",Collections.singletonList("pdf"),true,
+                AgentDelivery.initial(Collections.singletonList("pdf"),0));
+        String valid="{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"completed\","+
+                "\"output\":\"\",\"conversation_id\":\"remote-a\",\"parent_task_id\":\"\",\"followup_available\":false,\"followup_reason\":\"\","+
+                "\"artifacts\":[{\"id\":\"a\",\"name\":\"result.pdf\",\"media_type\":\"application/pdf\",\"size_bytes\":32,\"sha256\":\""+"a".repeat(64)+"\"}],"+
+                "\"delivery\":{\"status\":\"delivered\",\"expected\":[\"pdf\"],\"missing\":[],\"artifact_count\":1}}";
+        AgentTaskClient client=new AgentTaskClient(request->response(request.url,200,valid));
+        AgentTaskClient.RemoteStatus parsed=client.status(task,connection);
+        assertEquals(AgentTaskStore.Status.COMPLETED,parsed.status);
+        assertEquals(AgentDelivery.Status.DELIVERED,parsed.delivery.status);
+        assertTrue(parsed.delivery.reportedByServer);
+        assertEquals(1,parsed.artifacts.size());
+
+        String zeroByte=valid.replace("\"size_bytes\":32","\"size_bytes\":0");
+        AgentTaskClient acceptsTaskStateButRejectsZeroByteDelivery=
+                new AgentTaskClient(request->response(request.url,200,zeroByte));
+        AgentTaskClient.RemoteStatus zeroStatus=acceptsTaskStateButRejectsZeroByteDelivery.status(task,connection);
+        assertEquals(AgentTaskStore.Status.COMPLETED,zeroStatus.status);
+        assertTrue(zeroStatus.artifacts.isEmpty());
+        assertEquals(AgentDelivery.Status.MISSING,zeroStatus.delivery.status);
+        assertFalse(zeroStatus.delivery.reportedByServer);
+
+        String pendingJson="{\"client_task_id\":\""+id+"\",\"input\":\"make a PDF\",\"expected_outputs\":[\"pdf\"]}";
+        AgentTaskStore.Task pending=new AgentTaskStore.Task(id,connection.id,connection.revision,
+                connection.endpoint,connection.kind,connection.transport,connection.credentialRef,
+                connection.bridgeId,connection.instanceId,"PDF task",connection.name,"note-a",1L,
+                pendingJson,AgentTaskStore.sha256(pendingJson.getBytes(StandardCharsets.UTF_8)),"",
+                AgentTaskStore.Status.SUBMITTING,"","","","","",Collections.emptyList(),1L,1L,
+                "","","","",false,"",Collections.singletonList("pdf"),true,
+                AgentDelivery.initial(Collections.singletonList("pdf"),0));
+        String acceptedWithoutSummary="{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"running\","+
+                "\"conversation_id\":\"remote-a\",\"parent_task_id\":\"\"}";
+        AgentTaskClient.Submission accepted=new AgentTaskClient(request->{
+            assertEquals("POST",request.method);
+            return response(request.url,202,acceptedWithoutSummary);
+        }).submit(pending,connection);
+        assertEquals("remote-a",accepted.remoteTaskId);
+        assertEquals(AgentTaskStore.Status.RUNNING,accepted.status);
+        assertEquals(AgentDelivery.Status.PENDING,accepted.delivery.status);
+        assertFalse(accepted.delivery.reportedByServer);
     }
 
     @Test public void hermesBridgeReadinessReadyUsesExplicitProbeHeader() throws Exception {
@@ -69,7 +129,8 @@ public final class AgentProtocolTest {
                 response(request.url, 200, "{\"object\":\"padnote.agent.capabilities\",\"protocol_version\":1," +
                         "\"bridge_id\":\"bridge-a\",\"instance_id\":\"agent-a\",\"kind\":\"hermes\"," +
                         "\"features\":{\"run_submission\":true,\"run_status\":true,\"run_stop\":true," +
-                        "\"task_bundle\":true,\"note_context_bundle\":true,\"artifacts\":true}," +
+                        "\"task_bundle\":true,\"note_context_bundle\":true,\"artifacts\":true,"+
+                        "\"delivery_contract_v1\":true}," +
                         "\"readiness_probe_supported\":true,\"readiness\":{\"bridge_reachable\":true," +
                         "\"agent_status\":\"unavailable\",\"source\":\"live\",\"fresh\":true,\"checked_at\":123}}"))
                 .probeDetails(connection);
@@ -77,6 +138,7 @@ public final class AgentProtocolTest {
         assertFalse(Boolean.TRUE.equals(result.featureMap.get("run_submission")));
         assertFalse(Boolean.TRUE.equals(result.featureMap.get("task_bundle")));
         assertFalse(Boolean.TRUE.equals(result.featureMap.get("note_context_bundle")));
+        assertFalse(Boolean.TRUE.equals(result.featureMap.get("delivery_contract_v1")));
         assertTrue(Boolean.TRUE.equals(result.featureMap.get("run_status")));
         assertTrue(Boolean.TRUE.equals(result.featureMap.get("artifacts")));
     }
@@ -178,6 +240,55 @@ public final class AgentProtocolTest {
                 new String(captured.get().body, StandardCharsets.UTF_8));
     }
 
+    @Test public void acceptedPostReceiptSurvivesMalformedOptionalMetadata() throws Exception {
+        AgentConnectionStore.Config connection=config(Arrays.asList("run_submission"));
+        String taskId="padnote-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        String payload="{\"client_task_id\":\""+taskId+"\",\"input\":\"go\",\"expected_outputs\":[\"image\"]}";
+        AgentTaskStore.Task task=new AgentTaskStore.Task(taskId,connection.id,connection.revision,
+                connection.endpoint,connection.kind,connection.transport,connection.credentialRef,
+                connection.bridgeId,connection.instanceId,"Task",connection.name,"note-a",1L,payload,
+                AgentTaskStore.sha256(payload.getBytes(StandardCharsets.UTF_8)),"",
+                AgentTaskStore.Status.SUBMITTING,"","","","","",Collections.emptyList(),1L,1L,
+                "","","","",false,"",Collections.singletonList("image"),true,
+                AgentDelivery.initial(Collections.singletonList("image"),0));
+        java.util.concurrent.atomic.AtomicInteger requests=new java.util.concurrent.atomic.AtomicInteger();
+        String body="{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\",\"status\":\"completed\","+
+                "\"output\":\"accepted answer\",\"conversation_id\":7,\"parent_task_id\":[],"+
+                "\"followup_available\":\"true\",\"followup_reason\":5,"+
+                "\"delivery\":{\"status\":\"delivered\",\"expected\":[\"image\"],"+
+                "\"missing\":[],\"artifact_count\":0}}";
+        AgentTaskClient.Submission accepted=new AgentTaskClient(request->{
+            requests.incrementAndGet();assertEquals("POST",request.method);
+            return response(request.url,202,body);
+        }).submit(task,connection);
+        assertEquals("remote-a",accepted.remoteTaskId);
+        assertEquals(AgentTaskStore.Status.COMPLETED,accepted.status);
+        assertEquals("accepted answer",accepted.acceptedStatus.output);
+        assertFalse(accepted.acceptedStatus.followupAvailable);
+        assertEquals(AgentDelivery.Status.MISSING,accepted.delivery.status);
+        assertFalse(accepted.delivery.reportedByServer);
+        assertEquals("a valid acceptance receipt needs no recovery GET",1,requests.get());
+    }
+
+    @Test public void acceptedPostApprovalFieldsAreCarriedWithoutAnotherRequest() throws Exception {
+        AgentConnectionStore.Config connection=config(Arrays.asList("run_submission"));
+        AgentTaskStore.Task task=task(Collections.emptyList(),"",AgentTaskStore.Status.SUBMITTING);
+        java.util.concurrent.atomic.AtomicInteger requests=new java.util.concurrent.atomic.AtomicInteger();
+        AgentTaskClient.Submission accepted=new AgentTaskClient(request->{
+            requests.incrementAndGet();assertEquals("POST",request.method);
+            return response(request.url,202,"{\"task_id\":\"remote-a\",\"instance_id\":\"agent-a\","+
+                    "\"status\":\"waiting_for_approval\",\"output\":\"before approval\","+
+                    "\"approval\":{\"approval_id\":\"approval-a\",\"title\":\"Review\","+
+                    "\"description\":\"Synthetic permission check\"}}");
+        }).submit(task,connection);
+        assertEquals(AgentTaskStore.Status.WAITING_FOR_APPROVAL,accepted.acceptedStatus.status);
+        assertEquals("before approval",accepted.acceptedStatus.output);
+        assertEquals("approval-a",accepted.acceptedStatus.approvalId);
+        assertEquals("Review",accepted.acceptedStatus.approvalTitle);
+        assertEquals("Synthetic permission check",accepted.acceptedStatus.approvalDescription);
+        assertEquals("one POST acceptance was parsed",1,requests.get());
+    }
+
     @Test public void notePaperSubmissionRechecksRequiredCapabilityBeforeAnyRequest() throws Exception {
         String id="padnote-cccccccccccccccccccccccccccccccc";
         String payload="{\"client_task_id\":\""+id+"\",\"input\":\"go\",\"required_capability\":\"note_context_bundle\"}";
@@ -220,6 +331,22 @@ public final class AgentProtocolTest {
         assertEquals(payload,new String(captured.get().body,StandardCharsets.UTF_8));
         assertEquals("remote-root",result.conversationId);
         assertEquals("remote-root",result.parentTaskId);
+
+        AtomicInteger missingLineageRequests = new AtomicInteger();
+        AgentTaskClient.Submission missingOptionalLineage = new AgentTaskClient(request -> {
+            missingLineageRequests.incrementAndGet();
+            return response(request.url,202,
+                    "{\"task_id\":\"remote-child\",\"instance_id\":\"agent-a\",\"status\":\"completed\",\"output\":\"child result\"}");
+        }).submit(child,connection);
+        assertEquals("remote-child",missingOptionalLineage.remoteTaskId);
+        assertEquals(AgentTaskStore.Status.COMPLETED,missingOptionalLineage.status);
+        assertEquals("remote-root",missingOptionalLineage.conversationId);
+        assertEquals("remote-root",missingOptionalLineage.parentTaskId);
+        assertNotNull(missingOptionalLineage.acceptedStatus);
+        assertEquals("child result",missingOptionalLineage.acceptedStatus.output);
+        assertFalse(missingOptionalLineage.acceptedStatus.followupAvailable);
+        assertEquals("missing optional lineage must retain the accepted receipt without another request",
+                1,missingLineageRequests.get());
 
         AgentTaskClient bad = new AgentTaskClient(request -> response(request.url,202,
                 "{\"task_id\":\"remote-child\",\"instance_id\":\"agent-a\",\"status\":\"running\",\"conversation_id\":\"other-root\",\"parent_task_id\":\"other-parent\"}"));

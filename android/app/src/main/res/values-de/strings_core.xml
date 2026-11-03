@@ -51,7 +51,7 @@
     <string name="core_paper_handoff">Teilen / an Agent senden</string>
     <string name="core_paper_share_action">Aktuelles Blatt als PDF teilen…</string>
     <string name="core_paper_agent_action">An Computer-Agent senden…</string>
-    <string name="core_paper_agent_missing_title">Zuerst Computer-Agent verbinden</string>
+    <string name="core_paper_agent_missing_title">Computer-Agent-Verbindung prüfen</string>
     <string name="core_paper_agent_missing">Es gibt keine Computerverbindung, die diese Notiz empfangen kann. Verbinde einen Computer oder prüfe, ob die vorhandene Verbindung bestätigt ist und Notizaufgaben unterstützt. Es wurde nichts gesendet.</string>
     <string name="core_later">Später</string>
     <string name="core_connection_settings">Verbindungseinstellungen</string>

@@ -169,6 +169,18 @@ final class AgentConnectionStore {
             return verifiedAt > 0L;
         }
 
+        /**
+         * Exact locally verified connection identity/revision comparison for async UI work.
+         * Tokens are never compared or exposed; credentialRef and revision bind authorization.
+         */
+        boolean sameIdentityRevision(Config other) {
+            return other != null && id.equals(other.id) && revision == other.revision &&
+                    kind == other.kind && transport == other.transport &&
+                    endpoint.equals(other.endpoint) && credentialRef.equals(other.credentialRef) &&
+                    bridgeId.equals(other.bridgeId) && instanceId.equals(other.instanceId) &&
+                    certSha256.equals(other.certSha256);
+        }
+
         String statusLabel() {
             if (!complete()) return "配置不完整";
             if (probeFailure != null) return probeFailure.label;

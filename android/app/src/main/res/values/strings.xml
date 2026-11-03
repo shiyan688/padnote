@@ -91,7 +91,7 @@
     <string name="core_paper_handoff">Share and send to Agent</string>
     <string name="core_paper_share_action">Share current paper as PDF…</string>
     <string name="core_paper_agent_action">Send to computer Agent…</string>
-    <string name="core_paper_agent_missing_title">Connect a computer Agent first</string>
+    <string name="core_paper_agent_missing_title">Check the computer Agent connection</string>
     <string name="core_paper_agent_missing">No computer connection can receive this note. Connect a computer or check that an existing connection is verified and supports note tasks. Nothing was sent.</string>
     <string name="core_later">Later</string>
     <string name="core_connection_settings">Connection settings</string>

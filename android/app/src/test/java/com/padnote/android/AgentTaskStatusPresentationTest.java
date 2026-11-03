@@ -30,6 +30,18 @@ public final class AgentTaskStatusPresentationTest {
         assertFalse(AgentTaskDialogs.canRefreshRemoteStatus(bridge));
         assertTrue(AgentTaskDialogs.canRefreshRemoteStatus(
                 task(AgentConnectionStore.Transport.BRIDGE,"remote",AgentTaskStore.Status.RUNNING)));
+        assertTrue("a completed Bridge task with a remote receipt can be explicitly refreshed",
+                AgentTaskDialogs.canRefreshRemoteStatus(
+                        task(AgentConnectionStore.Transport.BRIDGE,"remote",AgentTaskStore.Status.COMPLETED)));
+        assertFalse("terminal direct tasks do not gain a Bridge session refresh path",
+                AgentTaskDialogs.canRefreshRemoteStatus(
+                        task(AgentConnectionStore.Transport.DIRECT,"remote",AgentTaskStore.Status.COMPLETED)));
+        assertFalse("failed Bridge tasks are not reopened by the completed-task refresh path",
+                AgentTaskDialogs.canRefreshRemoteStatus(
+                        task(AgentConnectionStore.Transport.BRIDGE,"remote",AgentTaskStore.Status.FAILED)));
+        assertFalse("cancelled Bridge tasks are not reopened by the completed-task refresh path",
+                AgentTaskDialogs.canRefreshRemoteStatus(
+                        task(AgentConnectionStore.Transport.BRIDGE,"remote",AgentTaskStore.Status.CANCELLED)));
     }
 
     @Test public void directUnknownIsNotPromisedIdempotentButSavedUnsentTaskCanBeSent() {
@@ -63,6 +75,9 @@ public final class AgentTaskStatusPresentationTest {
         assertTrue("a remote task continues status polling",
                 AgentTaskDialogs.shouldContinueObserving(
                         AgentTaskStore.Status.RUNNING,"remote-task",false));
+        assertFalse("a completed remote task remains idle until the user explicitly refreshes",
+                AgentTaskDialogs.shouldContinueObserving(
+                        AgentTaskStore.Status.COMPLETED,"remote-task",false));
     }
 
     @Test public void submissionWorkerRechecksTheConfirmedTaskBeforeNetwork() {

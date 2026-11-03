@@ -126,6 +126,13 @@ public struct AgentTaskListView: View {
                                 }
                                 Text("\(task.connection.connectionName) · \(task.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let cue = AgentTaskDeliveryCue.text(status: task.status, delivery: task.delivery) {
+                                    Text(cue)
+                                        .font(.caption)
+                                        .foregroundStyle(task.status == .completed && task.delivery.status == .missing
+                                            ? Color.orange : Color.secondary)
+                                        .accessibilityIdentifier("agentTaskDeliveryCue-\(task.payload.clientTaskID)")
+                                }
                                 Text(AgentTaskHistoryDestinationLabel.make(task.connection))
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -161,6 +168,7 @@ private struct AgentTaskComposeView: View {
     @State private var connectionID: UUID?
     @State private var title = ""
     @State private var input = ""
+    @State private var expectedOutputs = Set<AgentTaskOutputKind>()
     @State private var sending = false
     @State private var error: String?
     @State private var localTaskID: UUID?
@@ -179,6 +187,24 @@ private struct AgentTaskComposeView: View {
                     TextEditor(text: $input).frame(minHeight: 180)
                     Text("只发送这里明确填写的文本，最多 128 KiB。")
                         .font(.caption).foregroundStyle(.secondary)
+                }.disabled(localTaskID != nil)
+                Section("需要交付") {
+                    Text("默认只需要文字回答。需要文件时请明确选择；电脑会按本轮任务的输出位置保存文件。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(AgentTaskOutputKind.allCases) { kind in
+                        Toggle(kind.displayName, isOn: Binding(
+                            get: { expectedOutputs.contains(kind) },
+                            set: { selected in
+                                if selected { expectedOutputs.insert(kind) }
+                                else { expectedOutputs.remove(kind) }
+                            }))
+                            .accessibilityIdentifier("agentExpectedOutput-\(kind.rawValue)")
+                    }
+                    if let selected = connections.first(where: { $0.id == connectionID }),
+                       selected.capabilities["delivery_contract_v1"] != true, !expectedOutputs.isEmpty {
+                        Text("此电脑连接不提供交付核验；PadNote 会用返回的附件类型在本地检查。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }.disabled(localTaskID != nil)
                 if localTaskID != nil {
                     Section {
@@ -226,7 +252,8 @@ private struct AgentTaskComposeView: View {
                     let payload = try AgentTaskPayload(
                         title: title,
                         input: input,
-                        source: AgentTaskSource(noteID: "manual", noteRevision: 1)
+                        source: AgentTaskSource(noteID: "manual", noteRevision: 1),
+                        expectedOutputs: AgentTaskOutputKind.allCases.filter { expectedOutputs.contains($0) }
                     )
                     let local = try service.create(connectionID: connectionID, payload: payload)
                     taskID = local.id
@@ -273,6 +300,12 @@ private enum AgentTaskResultFlowFactory {
     }
 }
 
+private struct AgentTaskFollowupPresentation: Identifiable {
+    let id = UUID()
+    let parentTaskID: UUID
+    let initialExpected: [AgentTaskOutputKind]
+}
+
 public struct AgentTaskDetailView: View {
     let taskID: UUID
     @Environment(\.dismiss) private var dismiss
@@ -284,6 +317,7 @@ public struct AgentTaskDetailView: View {
     @State private var unavailableVideoAttachmentCount = 0
     @State private var history: [AgentTaskRecord] = []
     @State private var error: String?
+    @State private var expandedOutput = false
     @State private var showingResultToPaper = false
     @State private var imageArtifactToPlace: AgentTaskArtifact?
     @State private var savedAgentImages: [NoteSavedAgentImage] = []
@@ -292,7 +326,7 @@ public struct AgentTaskDetailView: View {
 #if DEBUG
     @State private var fixtureRetrySnapshot = AgentTaskUITestURLProtocol.Snapshot()
 #endif
-    @State private var composingFollowup = false
+    @State private var followupPresentation: AgentTaskFollowupPresentation?
     @State private var childToOpen: UUID?
     @State private var openChild: UUID?
     private let store: AgentTaskStore
@@ -321,36 +355,111 @@ public struct AgentTaskDetailView: View {
                 if let task {
                     Section("任务") {
                         LabeledContent("状态", value: label(task.status))
+                        if !(task.delivery.status == .missing && task.status == .completed),
+                           let cue = AgentTaskDeliveryCue.text(status: task.status, delivery: task.delivery) {
+                            Text(cue)
+                                .font(.caption)
+                                .foregroundStyle(task.status == .completed && task.delivery.status == .missing
+                                    ? Color.orange : Color.secondary)
+                        }
+                        if task.delivery.status == .missing, task.status == .completed {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("执行已结束，文件待补齐")
+                                    .font(.subheadline).accessibilityIdentifier("agentDeliveryMissingNotice")
+                                Text("还缺少：\(task.delivery.missing.map(\.displayName).joined(separator: "、"))")
+                                    .font(.caption).foregroundStyle(.orange)
+                                    .accessibilityIdentifier("agentDeliveryMissingKinds")
+                                if let child = (try? store.followup(of: task.id)) ?? nil {
+                                    NavigationLink {
+                                        AgentTaskDetailView(taskID: child.id, store: store, service: service)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("打开补齐轮次（\(label(child.status))）")
+                                            if let cue = AgentTaskDeliveryCue.text(status: child.status, delivery: child.delivery) {
+                                                Text(cue).font(.caption)
+                                                    .foregroundStyle(child.status == .completed && child.delivery.status == .missing
+                                                        ? Color.orange : Color.secondary)
+                                            }
+                                        }
+                                    }
+                                    .accessibilityIdentifier("agentDeliveryRepairChildLink")
+                                } else if task.followupAvailable {
+                                    Button("继续补齐文件") {
+                                        followupPresentation = AgentTaskFollowupPresentation(
+                                            parentTaskID: task.id, initialExpected: task.delivery.missing)
+                                    }.disabled(working).accessibilityIdentifier("agentDeliveryRepair")
+                                } else {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(task.followupReason?.isEmpty == false
+                                             ? task.followupReason!
+                                             : "此连接暂不能沿用本轮内容继续补齐；可以保留已完成的结果。")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        if task.connection.transport == .bridge && task.remoteTaskID != nil {
+                                            Text("如果任务刚刚完成，请先刷新任务信息。")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Text(taskProgress(task))
                             .font(.subheadline).foregroundStyle(.secondary)
                             .accessibilityIdentifier("agentTaskProgressExplanation")
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("电脑")
-                                .font(.headline)
                             Text(task.connection.connectionName)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .accessibilityIdentifier("agentTaskDetailConnectionName")
-                            Text("任务目标")
-                                .font(.subheadline).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        DisclosureGroup("连接身份与技术详情") {
+                        DisclosureGroup("连接与任务详情") {
                             Text(AgentTaskHistoryDestinationLabel.make(task.connection))
                                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                                 .accessibilityIdentifier("agentTaskDetailDestinationIdentity")
                             Text("任务 ID：\(task.id.uuidString.lowercased())")
                                 .font(.caption).textSelection(.enabled)
-                        }
-                        LabeledContent("创建", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        if task.payload.parentTaskID != nil {
-                            Text("本轮沿用原任务的内容快照；每轮结果单独保存。")
-                                .font(.caption).foregroundStyle(.secondary)
+                            LabeledContent("创建", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            if task.payload.parentTaskID != nil {
+                                Text("本轮沿用原任务的内容快照；每轮结果单独保存。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    Section("本轮输入") { Text(task.payload.input).textSelection(.enabled) }
+                    if let remoteError = task.error, !remoteError.isEmpty {
+                        Section("需要处理") {
+                            Text(taskErrorNextStep(task.status)).font(.subheadline)
+                            DisclosureGroup("查看错误详情") {
+                                Text(remoteError).foregroundStyle(.red).textSelection(.enabled)
+                            }
+                        }
+                    }
+                    if let approval = task.approval, task.status == .waitingForApproval {
+                        Section(approval.title) {
+                            Text(approval.description)
+                            HStack {
+                                Button("仅本次允许") { approve("once") }
+                                    .disabled(working)
+                                    .buttonStyle(.borderless)
+                                    .accessibilityIdentifier("agentTaskApproveOnce")
+                                Button("拒绝", role: .destructive) { approve("deny") }
+                                    .disabled(working)
+                                    .buttonStyle(.borderless)
+                                    .accessibilityIdentifier("agentTaskDenyApproval")
+                            }
+                        }
+                    }
                     if let output = task.output, !output.isEmpty {
                         Section("结果") {
-                            Text(output).textSelection(.enabled)
+                            Text(output)
+                                .lineLimit(expandedOutput ? nil : 8)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                .accessibilityIdentifier("agentTaskResultText")
+                                .accessibilityValue(expandedOutput ? "expanded" : "collapsed")
+                            Button(expandedOutput ? "收起回答" : "查看完整回答",
+                                   systemImage: expandedOutput ? "chevron.up" : "chevron.down") {
+                                expandedOutput.toggle()
+                            }
+                            .accessibilityIdentifier("agentTaskOutputDisclosure")
                             if task.status == .completed {
                                 Button("预览并添加到笔记", systemImage: "doc.text.image") {
                                     showingResultToPaper = true
@@ -388,29 +497,6 @@ public struct AgentTaskDetailView: View {
                             .accessibilityIdentifier("agentVideoStoryboardEntry")
                             Text("连接电脑后可初始化任务、生成分镜并审核批准。")
                                 .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let remoteError = task.error, !remoteError.isEmpty {
-                        Section("需要处理") {
-                            Text(taskErrorNextStep(task.status)).font(.subheadline)
-                            DisclosureGroup("查看错误详情") {
-                                Text(remoteError).foregroundStyle(.red).textSelection(.enabled)
-                            }
-                        }
-                    }
-                    if let approval = task.approval, task.status == .waitingForApproval {
-                        Section(approval.title) {
-                            Text(approval.description)
-                            HStack {
-                                Button("仅本次允许") { approve("once") }
-                                    .disabled(working)
-                                    .buttonStyle(.borderless)
-                                    .accessibilityIdentifier("agentTaskApproveOnce")
-                                Button("拒绝", role: .destructive) { approve("deny") }
-                                    .disabled(working)
-                                    .buttonStyle(.borderless)
-                                    .accessibilityIdentifier("agentTaskDenyApproval")
-                            }
                         }
                     }
                     if task.status == .completed, task.artifacts.contains(where: { $0.mediaType == "video/mp4" }) {
@@ -498,6 +584,40 @@ public struct AgentTaskDetailView: View {
                             }
                         }
                     }
+                    if !task.delivery.expected.isEmpty {
+                        Section {
+                            DisclosureGroup("文件交付详情") {
+                                LabeledContent("状态", value: deliveryLabel(task))
+                                if task.delivery.status == .missing, task.status == .completed {
+                                    if task.delivery.serverVerified {
+                                        Text("电脑已完成本轮交付核验。")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text("这是根据已返回附件类型进行的本地检查。")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                } else if task.delivery.status == .delivered {
+                                    Text(task.delivery.serverVerified
+                                        ? "电脑已核验并返回所需类型的附件（\(task.delivery.artifactCount) 项）；文件内容本身未作语义验证。"
+                                        : "已返回所需类型的附件（\(task.delivery.artifactCount) 项）；PadNote 仅按附件类型本地检查，不核验文件内容。")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                } else if task.status.terminal {
+                                    Text("任务未正常完成，本轮文件交付状态未核对。请先处理任务结果或错误详情。")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Text("执行完成后将核对：\(task.delivery.expected.map(\.displayName).joined(separator: "、"))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .accessibilityIdentifier("agentTaskDeliveryDetails")
+                        }
+                    }
+                    Section {
+                        DisclosureGroup("查看本轮输入") {
+                            Text(task.payload.input).textSelection(.enabled)
+                        }
+                        .accessibilityIdentifier("agentTaskInputDisclosure")
+                    }
                     if history.count > 1 {
                         Section("对话历史") {
                             ForEach(Array(history.enumerated()), id: \.element.id) { index, round in
@@ -508,6 +628,13 @@ public struct AgentTaskDetailView: View {
                                         Text("第\(index + 1)轮 · \(round.payload.input)").lineLimit(2)
                                         Text("\(label(round.status)) · \(round.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                                             .font(.caption).foregroundStyle(.secondary)
+                                        if let cue = AgentTaskDeliveryCue.text(status: round.status, delivery: round.delivery) {
+                                            Text(cue)
+                                                .font(.caption2)
+                                                .foregroundStyle(round.status == .completed && round.delivery.status == .missing
+                                                    ? Color.orange : Color.secondary)
+                                                .accessibilityIdentifier("agentTaskHistoryDeliveryCue-\(round.id.uuidString.lowercased())")
+                                        }
                                     }
                                 }.accessibilityIdentifier("agentTaskHistoryRound-\(index + 1)")
                             }
@@ -523,19 +650,35 @@ public struct AgentTaskDetailView: View {
                             Button("重试同一任务") { retry() }.disabled(working)
                                 .accessibilityIdentifier("agentTaskRetrySubmission")
                         }
-                        Button("刷新状态") { refresh() }.disabled(working || task.remoteTaskID == nil)
+                        Button(task.status == .completed && task.connection.transport == .bridge
+                               && task.remoteTaskID != nil && !task.followupAvailable
+                               ? "刷新任务信息" : "刷新状态") { refresh() }
+                            .disabled(working || task.remoteTaskID == nil)
+                            .accessibilityIdentifier("agentTaskRefreshStatus")
                         if !task.status.terminal && task.remoteTaskID != nil {
                             Button("停止任务", role: .destructive) { stop() }.disabled(working)
                         }
                     }
-                    if task.connection.transport == .bridge {
+                    if task.connection.transport == .bridge, task.delivery.status != .missing {
                         Section("继续沟通") {
                             if let child = (try? store.followup(of: task.id)) ?? nil {
-                                NavigationLink("查看后续轮次（\(label(child.status))）") {
+                                NavigationLink {
                                     AgentTaskDetailView(taskID: child.id, store: store, service: service)
-                                }.accessibilityIdentifier("agentTaskChildRoundLink")
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("查看后续轮次（\(label(child.status))）")
+                                        if let cue = AgentTaskDeliveryCue.text(status: child.status, delivery: child.delivery) {
+                                            Text(cue).font(.caption)
+                                                .foregroundStyle(child.status == .completed && child.delivery.status == .missing
+                                                    ? Color.orange : Color.secondary)
+                                        }
+                                    }
+                                }
+                                .accessibilityIdentifier("agentTaskChildRoundLink")
                             } else if task.status == .completed && task.followupAvailable {
-                                Button("继续沟通") { composingFollowup = true }.disabled(working)
+                                Button("继续沟通") {
+                                    followupPresentation = AgentTaskFollowupPresentation(parentTaskID: task.id, initialExpected: [])
+                                }.disabled(working)
                                     .accessibilityIdentifier("agentTaskContinueFollowup")
                                 Text("继续使用这次任务的内容快照；需要更换材料时请新建任务。")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -543,7 +686,7 @@ public struct AgentTaskDetailView: View {
                                 Text(task.followupReason?.isEmpty == false
                                      ? task.followupReason!
                                      : (task.status == .completed
-                                        ? "电脑尚未确认此任务可以继续沟通。刷新状态后，支持追问的连接会显示继续入口。"
+                                        ? "电脑尚未确认此任务可以继续沟通。刷新任务信息后，支持追问的连接会显示继续入口。"
                                         : "任务完成后，电脑会返回是否可以继续沟通。"))
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
@@ -603,12 +746,14 @@ public struct AgentTaskDetailView: View {
                     .environmentObject(noteLibrary)
                 }
             }
-            .sheet(isPresented: $composingFollowup, onDismiss: {
+            .sheet(item: $followupPresentation, onDismiss: {
                 if let childToOpen { openChild = childToOpen; self.childToOpen = nil }
-            }) {
-                if let task { AgentTaskFollowupComposeView(task: task) { input in
+            }) { presentation in
+                if let task, task.id == presentation.parentTaskID {
+                    AgentTaskFollowupComposeView(task: task,
+                    initialExpected: presentation.initialExpected) { input, expectedOutputs in
                     do {
-                        let submitted = try await service.createFollowup(parentID: task.id, input: input)
+                        let submitted = try await service.createFollowup(parentID: task.id, input: input, expectedOutputs: expectedOutputs)
                         childToOpen = submitted.id
                         reloadHistory()
                         return nil
@@ -1307,11 +1452,13 @@ private struct AgentImageToPaperView: View {
     @State private var targetSession: NoteGroupEditorSession?
     @State private var targetDraftRevision: Int?
     @State private var targetRevisionSnapshot: NoteDraftRevisionSnapshot?
+    @State private var targetCaptureReady = false
     @State private var newNote = NoteDocument(title: "Agent 图片")
     @State private var title = "Agent 图片"
     @State private var imageData: Data?
     @State private var imagePixelWidth = 0
     @State private var imagePixelHeight = 0
+    @State private var initialPlacementConfigured = false
     @State private var receipt: AgentImageReceipt?
     @State private var candidate: NoteDocument?
     @State private var paperImage: UIImage?
@@ -1379,7 +1526,9 @@ private struct AgentImageToPaperView: View {
                             Text("图片按比例放在纸面上。点按预览可调整位置，也可用宽度滑块改变大小。")
                                 .font(.footnote).foregroundStyle(.secondary)
                             Text("图片宽度")
-                            Slider(value: $width, in: 80...max(80, candidate.pageWidth - x - 8), step: 10)
+                            let maxWidth = min(candidate.pageWidth - x,
+                                               candidate.pageHeight * imageAspectRatio)
+                            Slider(value: $width, in: min(80, maxWidth)...maxWidth)
                                 .accessibilityIdentifier("agentImageWidthSlider")
                             Text("约占纸宽 \(Int(width / candidate.pageWidth * 100))%")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -1417,7 +1566,7 @@ private struct AgentImageToPaperView: View {
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("确认放置") { confirm() }
-                        .disabled(working || !previewReady || candidate == nil || imageData == nil || receipt == nil ||
+                        .disabled(working || !targetCaptureReady || !previewReady || candidate == nil || imageData == nil || receipt == nil ||
                                       (overlap && !acceptsOverlap))
                             .accessibilityIdentifier("agentImagePlacementConfirm")
                     }
@@ -1441,9 +1590,25 @@ private struct AgentImageToPaperView: View {
     }
 
     private func captureTarget() {
+        if candidate != nil || renderOperation != nil {
+            generation += 1
+            renderOperation?.cancel()
+            renderOperation = nil
+        }
+        targetCaptureReady = false
+        previewReady = false
+        candidate = nil
+        paperImage = nil
+        targetSession = nil
+        targetDraftRevision = nil
+        targetRevisionSnapshot = nil
+        overlap = false
+        acceptsOverlap = false
+        error = nil
         guard !isNew else {
             targetSession = nil; targetDraftRevision = nil; targetRevisionSnapshot = nil
             page = 0; x = max(0, (newNote.pageWidth - width) / 2); y = 180
+            targetCaptureReady = true
             return
         }
         do {
@@ -1460,11 +1625,13 @@ private struct AgentImageToPaperView: View {
                 targetDraftRevision = nil
                 targetSession = try noteLibrary.captureAgentResultTarget(noteID: targetID)
             }
+            targetCaptureReady = true
             page = targetSession!.document.pageCount
             x = max(0, (targetSession!.document.pageWidth - width) / 2)
             y = targetSession!.document.pageHeight / 2
         } catch {
             targetSession = nil
+            targetCaptureReady = false
             let revision = noteLibrary.draftRevisionSnapshot(noteID: targetID)
             self.error = revision.latest > revision.saved
                 ? "这份笔记仍有未保存的编辑。等它保存后再打开图片预览。"
@@ -1514,6 +1681,15 @@ private struct AgentImageToPaperView: View {
                 imageData = normalized.png
                 imagePixelWidth = normalized.width
                 imagePixelHeight = normalized.height
+                if !initialPlacementConfigured,
+                   let initial = AgentImageInitialPlacement.fit(
+                    pageWidth: baseDocument.pageWidth, pageHeight: baseDocument.pageHeight,
+                    pixelWidth: normalized.width, pixelHeight: normalized.height) {
+                    width = initial.width
+                    x = initial.x
+                    y = initial.y
+                    initialPlacementConfigured = true
+                }
                 let sourceID = task.payload.source.noteID.isEmpty ? nil : task.payload.source.noteID
                 receipt = AgentImageReceipt(taskId: task.id.uuidString.lowercased(),
                     connectionId: task.connection.connectionID.uuidString.lowercased(),
@@ -1532,7 +1708,7 @@ private struct AgentImageToPaperView: View {
     }
 
     private func rebuildCandidate() {
-        guard let imageData, let receipt, !working, isNew || targetSession != nil else { return }
+        guard targetCaptureReady, let imageData, let receipt, !working, isNew || targetSession != nil else { return }
         generation += 1
         renderOperation?.cancel()
         let currentGeneration = generation
@@ -1550,10 +1726,18 @@ private struct AgentImageToPaperView: View {
             }
             page = targetPage
             let ratio = imagePixelHeight > 0 ? Double(imagePixelWidth) / Double(imagePixelHeight) : 1
-            let actualWidth = min(max(80, width), proposed.pageWidth - x - 8)
-            let actualHeight = actualWidth / max(0.05, ratio)
+            guard ratio.isFinite, ratio > 0 else {
+                throw NoteDocumentError.malformed("图片比例无效。")
+            }
+            let maximumWidth = min(proposed.pageWidth - x, proposed.pageHeight * ratio)
+            guard maximumWidth.isFinite, maximumWidth > 0 else {
+                throw NoteDocumentError.malformed("纸面尺寸不足以放置图片。")
+            }
+            let actualWidth = min(max(width, Double.leastNonzeroMagnitude), maximumWidth)
+            width = actualWidth
+            let actualHeight = actualWidth / ratio
             if y + actualHeight > proposed.pageHeight { y = max(0, (proposed.pageHeight - actualHeight) / 2) }
-            guard actualWidth >= 80, actualHeight.isFinite, actualHeight > 0,
+            guard actualWidth.isFinite, actualWidth > 0, actualHeight.isFinite, actualHeight > 0,
                   x >= 0, y >= 0, x + actualWidth <= proposed.pageWidth,
                   y + actualHeight <= proposed.pageHeight else {
                 throw NoteDocumentError.malformed("图片大小或位置超出纸面范围。")
@@ -1648,7 +1832,7 @@ private struct AgentImageToPaperView: View {
         guard let imageData else { return }
         let ratio = imageAspectRatio
         x = max(0, min(baseDocument.pageWidth - width, Double(point.x)))
-        y = max(0, min(baseDocument.pageHeight - width / max(0.05, ratio), Double(point.y)))
+        y = max(0, min(baseDocument.pageHeight - width / ratio, Double(point.y)))
         page = shownPage
         rebuildCandidate()
     }
@@ -1674,7 +1858,7 @@ private struct AgentImageToPaperView: View {
     }
 
     private func confirm() {
-        guard let candidate, !working else { return }
+        guard targetCaptureReady, previewReady, let candidate, !working else { return }
         working = true; error = nil; status = "正在保存并核对笔记…"
         let generationAtConfirm = generation
         Task { @MainActor in
@@ -1735,10 +1919,19 @@ enum AgentImagePaperUITestSupport {
 private struct AgentTaskFollowupComposeView: View {
     @Environment(\.dismiss) private var dismiss
     let task: AgentTaskRecord
-    let submit: (String) async -> String?
-    @State private var input = ""
+    let submit: (String, [AgentTaskOutputKind]) async -> String?
+    @State private var input: String
+    @State private var expectedOutputs: Set<AgentTaskOutputKind>
     @State private var sending = false
     @State private var error: String?
+
+    init(task: AgentTaskRecord, initialExpected: [AgentTaskOutputKind] = [],
+         submit: @escaping (String, [AgentTaskOutputKind]) async -> String?) {
+        self.task = task
+        self.submit = submit
+        _input = State(initialValue: initialExpected.isEmpty ? "" : "请继续使用本轮已确认的材料，只补齐所选文件：\(initialExpected.map(\.displayName).joined(separator: "、"))。请保存真实可读取的文件，并在结束前核对文件存在。")
+        _expectedOutputs = State(initialValue: Set(initialExpected))
+    }
 
     var body: some View {
         NavigationStack {
@@ -1748,8 +1941,26 @@ private struct AgentTaskFollowupComposeView: View {
                     Text("会沿用第1轮确认的材料快照，并单独保存本轮输入、结果、审批和产物。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("本轮需要交付") {
+                    Text("本轮要求单独选择，不会自动沿用上一轮的文件要求。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !task.deliveryContractSupported {
+                        Text("此电脑连接不提供交付核验；PadNote 会根据返回的附件类型在本地检查。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    ForEach(AgentTaskOutputKind.allCases) { kind in
+                        Toggle(kind.displayName, isOn: Binding(
+                            get: { expectedOutputs.contains(kind) },
+                            set: { selected in
+                                if selected { expectedOutputs.insert(kind) }
+                                else { expectedOutputs.remove(kind) }
+                            }))
+                            .accessibilityIdentifier("agentFollowupExpectedOutput-\(kind.rawValue)")
+                    }
+                }
                 if let error { Text(error).foregroundStyle(.red) }
             }
+            .accessibilityIdentifier("agentTaskFollowupComposeForm")
             .navigationTitle("继续沟通")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
@@ -1757,7 +1968,8 @@ private struct AgentTaskFollowupComposeView: View {
                     Button(sending ? "正在发送…" : "发送追问") {
                         sending = true
                         Task { @MainActor in
-                            if let message = await submit(input) { error = message }
+                            let selected = AgentTaskOutputKind.allCases.filter { expectedOutputs.contains($0) }
+                            if let message = await submit(input, selected) { error = message }
                             else { dismiss() }
                             sending = false
                         }
@@ -1773,18 +1985,37 @@ private struct AgentTaskFollowupComposeView: View {
 /// Isolated entry point selected only by the dedicated UI test launch argument.
 /// It uses an in-memory credential and a URLProtocol that rejects every non-fixture host.
 struct AgentTaskUITestHost: View {
-    private let store: AgentTaskStore
-    private let service: AgentTaskService
+    private let store: AgentTaskStore?
+    private let service: AgentTaskService?
     private let setupError: String?
 
-    init() {
-        let suite = "PadNote.AgentFollowup.UITest"
+    init(resultUX: Bool = false) {
+        let arguments = ProcessInfo.processInfo.arguments
+        let fixtureArgumentIndex = arguments.firstIndex(of: "--result-ux-fixture-id").flatMap { $0 + 1 < arguments.count ? $0 + 1 : nil }
+        let requestedFixtureID = fixtureArgumentIndex.map { arguments[$0] }
+        let fixtureID: String?
+        if resultUX {
+            guard let requestedFixtureID,
+                  let parsed = UUID(uuidString: requestedFixtureID),
+                  requestedFixtureID == parsed.uuidString.lowercased() else {
+                store = nil
+                service = nil
+                setupError = "合成任务测试标识无效。"
+                return
+            }
+            fixtureID = parsed.uuidString.lowercased()
+        } else {
+            fixtureID = nil
+        }
+        let namespace = fixtureID
+        let suite = namespace.map { "PadNote.AgentResultUX.UITest.\($0)" } ?? "PadNote.AgentFollowup.UITest"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let tokens = AgentTaskUITestTokenStore()
         let connections = AgentConnectionStore(defaults: defaults, keychain: tokens)
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PadNoteAgentFollowupUITest-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        let directoryName = namespace.map { "PadNoteAgentResultUXUITest-\($0)" }
+            ?? "PadNoteAgentFollowupUITest-\(ProcessInfo.processInfo.processIdentifier)"
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(directoryName, isDirectory: true)
         try? FileManager.default.removeItem(at: directory)
         let taskStore = AgentTaskStore(fileURL: directory)
         let configuration = URLSessionConfiguration.ephemeral
@@ -1806,9 +2037,12 @@ struct AgentTaskUITestHost: View {
             let parent = try taskStore.create(profile: verified, payload: parentPayload)
             _ = try taskStore.mutate(id: parent.id, expectedRevision: parent.recordRevision) {
                 $0.remoteTaskID = AgentTaskUITestURLProtocol.parentRemoteTaskID
-                $0.conversationID = AgentTaskUITestURLProtocol.parentRemoteTaskID
-                $0.status = .running
-                $0.output = nil
+                // Model a completed POST receipt that predates reusable-session metadata.
+                // Terminal auto-poll stops; the user can explicitly refresh this same task.
+                $0.status = .completed
+                $0.output = "父轮结果：已总结材料。"
+                $0.followupAvailable = false
+                $0.followupReason = "尚未刷新任务信息"
             }
 
             let pendingPayload = try AgentTaskPayload(
@@ -1821,6 +2055,42 @@ struct AgentTaskUITestHost: View {
                 $0.remoteTaskID = AgentTaskUITestURLProtocol.pendingRemoteTaskID
                 $0.conversationID = AgentTaskUITestURLProtocol.pendingRemoteTaskID
                 $0.status = .submitting
+            }
+            let deliveryPayload = try AgentTaskPayload(
+                clientTaskID: AgentTaskUITestURLProtocol.deliveryClientTaskID,
+                title: "UITest 缺少文件", input: "请返回示例图片",
+                source: AgentTaskSource(noteID: "uitest-snapshot", noteRevision: 3), expectedOutputs: [.image]
+            )
+            let deliveryTask = try taskStore.create(profile: verified, payload: deliveryPayload)
+            _ = try taskStore.mutate(id: deliveryTask.id, expectedRevision: deliveryTask.recordRevision) {
+                $0.remoteTaskID = AgentTaskUITestURLProtocol.parentRemoteTaskID
+                $0.conversationID = AgentTaskUITestURLProtocol.parentRemoteTaskID
+                $0.status = .completed
+                $0.followupAvailable = true
+                $0.followupReason = "可沿用本轮继续沟通"
+                $0.delivery = AgentTaskDeliveryState.evaluate(expected: [.image], artifacts: [], taskStatus: .completed, serverVerified: false)
+            }
+            if resultUX {
+                let output = Array(repeating: "这是仅用于界面布局检查的合成回答内容。", count: 24)
+                    .joined(separator: "\n") + "\n末尾标记：RESULT-UX-END-MARKER"
+                let longInput = Array(repeating: "本轮输入材料描述仅为合成测试内容。", count: 18).joined(separator: "\n")
+                let payload = try AgentTaskPayload(
+                    clientTaskID: AgentTaskUITestURLProtocol.resultUXClientTaskID,
+                    title: "UITest 缺件长回答", input: longInput,
+                    source: AgentTaskSource(noteID: "uitest-result-ux", noteRevision: 1),
+                    expectedOutputs: [.image, .pdf])
+                let resultUXTask = try taskStore.create(profile: verified, payload: payload)
+                _ = try taskStore.mutate(id: resultUXTask.id, expectedRevision: resultUXTask.recordRevision) {
+                    $0.remoteTaskID = "result-ux-fixture"
+                    $0.conversationID = "result-ux-fixture"
+                    $0.status = .completed
+                    $0.output = output
+                    $0.artifacts = [AgentImagePaperUITestSupport.artifact]
+                    $0.followupAvailable = true
+                    $0.followupReason = "可沿用本轮继续沟通"
+                    $0.delivery = AgentTaskDeliveryState.evaluate(expected: [.image, .pdf],
+                        artifacts: $0.artifacts, taskStatus: .completed, serverVerified: false)
+                }
             }
             service = AgentTaskService(connectionStore: connections, taskStore: taskStore, client: client)
             setupError = nil
@@ -1835,8 +2105,10 @@ struct AgentTaskUITestHost: View {
         Group {
             if let setupError {
                 ContentUnavailableView("测试夹具启动失败", systemImage: "exclamationmark.triangle", description: Text(setupError))
-            } else {
+            } else if let store, let service {
                 AgentTaskListView(store: store, service: service)
+            } else {
+                ContentUnavailableView("测试夹具启动失败", systemImage: "exclamationmark.triangle", description: Text("合成任务测试数据不可用。"))
             }
         }
     }
@@ -1862,6 +2134,8 @@ private final class AgentTaskUITestURLProtocol: URLProtocol {
 
     static let parentClientTaskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     static let pendingClientTaskID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    static let deliveryClientTaskID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    static let resultUXClientTaskID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
     static let parentRemoteTaskID = "bridge-parent-fixture"
     static let pendingRemoteTaskID = "bridge-pending-fixture"
     private static let lock = NSLock()
@@ -2017,6 +2291,56 @@ private final class AgentTaskUITestURLProtocol: URLProtocol {
 }
 #endif
 
+struct AgentTaskDeliveryCue {
+    static func text(status: AgentTaskStatus, delivery: AgentTaskDeliveryState) -> String? {
+        guard !delivery.expected.isEmpty else { return nil }
+        switch status {
+        case .failed, .cancelled, .interrupted, .waitingForApproval:
+            return nil
+        case .completed:
+            break
+        case .submitting, .running, .stopping:
+            return "附件状态待核对"
+        }
+        switch delivery.status {
+        case .notRequested:
+            return nil
+        case .pending:
+            return "附件状态待核对"
+        case .delivered:
+            return "所需附件已齐"
+        case .missing:
+            let names = delivery.missing.map(\.displayName).joined(separator: "、")
+            return names.isEmpty ? "附件待补齐" : "缺少：\(names)"
+        }
+    }
+}
+
+struct AgentImageInitialPlacement: Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    static func fit(pageWidth: Double, pageHeight: Double, pixelWidth: Int, pixelHeight: Int,
+                    fillFraction: Double = 0.82) -> AgentImageInitialPlacement? {
+        guard pageWidth.isFinite, pageHeight.isFinite, pageWidth > 0, pageHeight > 0,
+              pixelWidth > 0, pixelHeight > 0,
+              fillFraction.isFinite, (0..<1).contains(fillFraction) else { return nil }
+        let ratio = Double(pixelWidth) / Double(pixelHeight)
+        guard ratio.isFinite, ratio > 0 else { return nil }
+        let availableWidth = max(Double.leastNonzeroMagnitude, pageWidth * fillFraction)
+        let availableHeight = max(Double.leastNonzeroMagnitude, pageHeight * fillFraction)
+        let width = min(availableWidth, availableHeight * ratio)
+        let height = width / ratio
+        guard width.isFinite, height.isFinite, width > 0, height > 0,
+              width <= availableWidth, height <= availableHeight else { return nil }
+        return AgentImageInitialPlacement(x: (pageWidth - width) / 2,
+                                          y: (pageHeight - height) / 2,
+                                          width: width, height: height)
+    }
+}
+
 private func label(_ status: AgentTaskStatus) -> String {
     switch status {
     case .submitting: return "正在提交"
@@ -2027,6 +2351,15 @@ private func label(_ status: AgentTaskStatus) -> String {
     case .failed: return "失败"
     case .cancelled: return "已取消"
     case .interrupted: return "已中断"
+    }
+}
+
+private func deliveryLabel(_ task: AgentTaskRecord) -> String {
+    switch task.delivery.status {
+    case .notRequested: return "未要求文件"
+    case .pending: return task.status.terminal ? "尚未核对" : "等待文件清单"
+    case .delivered: return "已返回所需附件"
+    case .missing: return "文件待补齐"
     }
 }
 
@@ -2297,9 +2630,11 @@ struct PaperWorkflowView: View {
         let pageCount: Int
         let presetTitle: String
         let instruction: String
+        let input: String
         let stylePrompt: String?
         let aiTurnCount: Int
         let targetID: UUID
+        let expectedOutputs: [AgentTaskOutputKind]
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -2309,6 +2644,8 @@ struct PaperWorkflowView: View {
     @State private var connections: [AgentConnectionProfile] = []
     @State private var connectionID: UUID?
     @State private var presetID = PaperTaskPreset.continueAsRequested.rawValue
+    @State private var expectedOutputs = Set<AgentTaskOutputKind>()
+    @State private var deliverySelectionTouched = false
     @State private var instruction = PaperTaskPreset.continueAsRequested.instruction
     @State private var stylePrompt = PaperTaskVideoStyle.clearLecture.prompt
     @State private var aiTurns: [AIVisibleTurn] = []
@@ -2362,6 +2699,26 @@ struct PaperWorkflowView: View {
                     }
                     Picker("任务", selection: $presetID) {
                         ForEach(PaperTaskPreset.allCases) { preset in Text(preset.title).tag(preset.id) }
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("需要交付").font(.headline)
+                        Text("默认只需要文字回答。视频预设会预选视频文件；你可以随时调整。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(AgentTaskOutputKind.allCases) { kind in
+                            Toggle(kind.displayName, isOn: Binding(
+                                get: { expectedOutputs.contains(kind) },
+                                set: { selected in
+                                    deliverySelectionTouched = true
+                                    if selected { expectedOutputs.insert(kind) }
+                                    else { expectedOutputs.remove(kind) }
+                                }))
+                                .accessibilityIdentifier("paperWorkflowExpectedOutput-\(kind.rawValue)")
+                        }
+                        if let selectedProfile, selectedProfile.capabilities["delivery_contract_v1"] != true,
+                           !expectedOutputs.isEmpty {
+                            Text("此电脑连接不提供交付核验；PadNote 会根据返回的附件类型在本地检查。")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                     }
                     TextField("给 Agent 的任务要求", text: $instruction, axis: .vertical)
                         .lineLimit(3...7)
@@ -2440,8 +2797,12 @@ struct PaperWorkflowView: View {
             .task { loadConnections(); loadAIContext() }
             .onChange(of: presetID) { _, value in
                 instruction = PaperTaskPreset(rawValue: value)?.instruction ?? PaperTaskPreset.continueAsRequested.instruction
+                if !deliverySelectionTouched {
+                    expectedOutputs = selectedPreset == .explainerVideo ? [.video] : []
+                }
                 prepared = nil
             }
+            .onChange(of: expectedOutputs) { _, _ in prepared = nil }
             .onChange(of: instruction) { _, _ in prepared = nil }
             .onChange(of: stylePrompt) { _, _ in prepared = nil }
             .onChange(of: connectionID) { _, _ in prepared = nil }
@@ -2516,15 +2877,19 @@ struct PaperWorkflowView: View {
                 let revision = try Self.noteRevision(export.document)
                 let cleanStylePrompt = stylePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
                 let style = canUseVideoStyle && !cleanStylePrompt.isEmpty ? cleanStylePrompt : nil
+                let selectedOutputs = AgentTaskOutputKind.allCases.filter { expectedOutputs.contains($0) }
+                let frozenInstruction = PaperTaskBundleIO.effectiveInstruction(instruction, expectedOutputs: selectedOutputs)
+                let taskInput = PaperTaskBundleIO.taskInput(for: frozenInstruction)
                 let archive = try PaperTaskBundleIO.make(
                     noteID: export.document.id, noteRevision: revision, title: export.document.title,
-                    markdown: markdown, pdf: export.pdf, instruction: instruction,
+                    markdown: markdown, pdf: export.pdf, instruction: frozenInstruction,
                     presetID: presetID, stylePrompt: style
                 )
                 prepared = PreparedSend(archive: archive, markdown: markdown, pdfBytes: export.pdf.count, textBytes: Data(markdown.utf8).count,
                     revision: revision, noteID: export.document.id, title: export.document.title,
-                    pageCount: export.document.pageCount, presetTitle: selectedPreset.title, instruction: instruction,
-                    stylePrompt: style, aiTurnCount: aiTurns.count, targetID: target.id)
+                    pageCount: export.document.pageCount, presetTitle: selectedPreset.title, instruction: frozenInstruction, input: taskInput,
+                    stylePrompt: style, aiTurnCount: aiTurns.count, targetID: target.id,
+                    expectedOutputs: selectedOutputs)
             } catch let failure { self.error = failure.localizedDescription }
         }
     }
@@ -2581,9 +2946,10 @@ struct PaperWorkflowView: View {
             do {
                 let payload = try AgentTaskPayload(
                     title: "纸面任务：\(prepared.title)",
-                    input: "请按任务包中的 note.work.v1 请求，结合随附整份纸面 PDF、正文和本笔记交流完成任务。",
+                    input: prepared.input,
                     source: AgentTaskSource(noteID: prepared.noteID, noteRevision: prepared.revision),
-                    bundle: prepared.archive, requiredCapability: "note_context_bundle"
+                    bundle: prepared.archive, requiredCapability: "note_context_bundle",
+                    expectedOutputs: prepared.expectedOutputs
                 )
                 let service = AgentTaskService()
                 let local = try service.create(connectionID: profile.id, payload: payload)

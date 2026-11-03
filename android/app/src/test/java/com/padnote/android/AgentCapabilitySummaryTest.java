@@ -107,6 +107,38 @@ public final class AgentCapabilitySummaryTest {
                 true, Collections.emptyList()));
     }
 
+    @Test public void paperHandoffGuidanceRequiresVerifiedBridgeAndAllThreeExactFeatures() {
+        Map<String,Boolean> full=features("run_submission",true,"task_bundle",true,
+                "note_context_bundle",true);
+        assertTrue(AgentCapabilitySummary.canExplainHermesPaperHandoff(AgentConnectionStore.Kind.HERMES,
+                AgentConnectionStore.Transport.BRIDGE,true,true,full));
+        String paper=AgentCapabilitySummary.describe(AgentConnectionStore.Kind.HERMES,
+                AgentConnectionStore.Transport.BRIDGE,true,
+                Arrays.asList("run_submission","task_bundle","note_context_bundle"),true,full);
+        assertTrue(paper.contains("接收笔记纸面上下文：已报告支持"));
+        assertTrue(paper.contains("要从笔记发送纸面上下文，请打开笔记并选择“分享与交给电脑 Agent”"));
+
+        Map<String,Boolean> missingPaper=features("run_submission",true,"task_bundle",true,
+                "note_context_bundle",false);
+        assertFalse(AgentCapabilitySummary.canExplainHermesPaperHandoff(AgentConnectionStore.Kind.HERMES,
+                AgentConnectionStore.Transport.BRIDGE,true,true,missingPaper));
+        String textOnly=AgentCapabilitySummary.describe(AgentConnectionStore.Kind.HERMES,
+                AgentConnectionStore.Transport.BRIDGE,true,Collections.singletonList("run_submission"),
+                true,missingPaper);
+        assertTrue(textOnly.contains("在这条连接的操作菜单中选择“发送文本任务”"));
+        assertFalse(textOnly.contains("要从笔记发送纸面上下文"));
+
+        assertFalse("the full feature set on a direct profile is not a paper-handoff claim",
+                AgentCapabilitySummary.canExplainHermesPaperHandoff(AgentConnectionStore.Kind.HERMES,
+                        AgentConnectionStore.Transport.DIRECT,true,true,full));
+        assertFalse("legacy capability lists do not prove the complete paper feature map",
+                AgentCapabilitySummary.canExplainHermesPaperHandoff(AgentConnectionStore.Kind.HERMES,
+                        AgentConnectionStore.Transport.BRIDGE,true,false,full));
+        assertFalse("other connection kinds do not receive Hermes paper guidance",
+                AgentCapabilitySummary.canExplainHermesPaperHandoff(AgentConnectionStore.Kind.OPENCLAW,
+                        AgentConnectionStore.Transport.BRIDGE,true,true,full));
+    }
+
     @Test public void unverifiedHidesStaleMapClaims() {
         String summary = AgentCapabilitySummary.describe(AgentConnectionStore.Kind.HERMES,
                 AgentConnectionStore.Transport.DIRECT, false,

@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">Ergebnis gespeichert. Öffne die Notiz erneut, um es zu sehen.</string>
     <string name="flow_agent_result_save_uncertain">Der Speicherstatus ist unklar. Öffne die Notiz erneut und prüfe sie, bevor du es noch einmal versuchst.</string>
     <string name="flow_agent_result_save_failed">Ergebnis konnte nicht gespeichert werden. Die Notiz blieb unverändert.</string>
-    <string name="flow_expand_task_details">Aufgabendetails anzeigen</string>
-    <string name="flow_collapse_task_details">Aufgabendetails ausblenden</string>
+    <string name="flow_expand_task_details">Technische Details anzeigen</string>
+    <string name="flow_collapse_task_details">Technische Details ausblenden</string>
     <string name="flow_agent_result_destination_summary">In %1$s speichern, ab Seite %2$d</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">Fehlende Dateien: %1$s</string>
+    <string name="flow_history_delivery_delivered">Dateien erhalten: %1$s</string>
+    <string name="flow_expand_full_result">Vollständige Antwort anzeigen</string>
+    <string name="flow_collapse_full_result">Weniger anzeigen</string>
+    <string name="flow_failure_reason_label">Grund:</string>
+    <string name="flow_delivery_heading">Angeforderte Dateien</string>
+    <string name="flow_delivery_text_default">Textantwort (Standard)</string>
+    <string name="flow_delivery_selector_hint">Wähle die Dateien aus, die diese Aufgabe zurückgeben soll. Die Dateianforderung bestätigt nicht die Richtigkeit der Antwort.</string>
+    <string name="flow_delivery_legacy_hint">Dieser Assistent meldet keinen Lieferstatus. PadNote prüft zurückgegebene Anhänge nach Typ.</string>
+    <string name="flow_delivery_selected">%1$s angefordert</string>
+    <string name="flow_delivery_not_selected">%1$s anfordern</string>
+    <string name="flow_delivery_kind_image">Bild</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">Video</string>
+    <string name="flow_delivery_kind_audio">Audio</string>
+    <string name="flow_delivery_kind_file">Andere Datei</string>
+    <string name="flow_delivery_legacy_instruction">Bitte gib die angeforderten Dateien (%1$s) als tatsächlich lesbare Anhänge zurück. Prüfe vor Abschluss, dass jede Datei existiert und geöffnet werden kann.</string>
+    <string name="flow_delivery_server_checked">Lieferstatus vom verbundenen Assistenten gemeldet.</string>
+    <string name="flow_delivery_local_checked">PadNote hat die Anhangtypen lokal geprüft, da keine verwendbare serverseitige Lieferübersicht vorlag.</string>
+    <string name="flow_delivery_delivered">Angeforderte Anhänge zurückgegeben: %1$s. Geprüft wird nur der Dateityp, nicht die inhaltliche Richtigkeit.</string>
+    <string name="flow_delivery_missing">Ausführung beendet. Es fehlen noch: %1$s. Zurückgegeben: %2$s.</string>
+    <string name="flow_delivery_none">keine</string>
+    <string name="flow_delivery_repair_button">Fehlende Dateien ergänzen</string>
+    <string name="flow_delivery_repair_title">Fehlende Dateien nachreichen</string>
+    <string name="flow_delivery_repair_unavailable">Für diese Aufgabe ist keine Fortsetzung in derselben Sitzung verfügbar.</string>
+    <string name="flow_delivery_repair_prefill">Bitte reiche diese Anhänge nach: %1$s. Speichere sie als lesbare Dateien und bestätige vor Abschluss, dass sie vorhanden und zu öffnen sind.</string>
+    <string name="flow_delivery_repair_empty">Lass alle fehlenden Dateitypen ausgewählt.</string>
+    <string name="flow_pairing_saved_checking">%1$d Verbindungen gespeichert. Die Verfügbarkeit wird im Hintergrund geprüft; du kannst PadNote weiterverwenden.</string>
+    <string name="flow_auto_probe_summary">Prüfung abgeschlossen: %1$d Prüfungen bestanden, bei %2$d ist eine Aktion nötig, %3$d ältere Ergebnisse wurden ignoriert. Öffne die Verbindungsliste für Details und einen manuellen erneuten Versuch.</string>
+    <string name="flow_cap_note_context_bundle">Papierkontext einer Notiz empfangen</string>
+    <string name="flow_cap_hermes_paper_next">Um Papierkontext aus einer Notiz zu senden, öffne sie und wähle „Teilen und an Computer-Agent senden“.</string>
 </resources>

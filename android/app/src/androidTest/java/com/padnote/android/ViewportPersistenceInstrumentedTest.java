@@ -95,6 +95,53 @@ public final class ViewportPersistenceInstrumentedTest {
         }
     }
 
+    @Test public void paperAgentComposerShowsDeliverySelectorAndVideoPresetSelectsVideo() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        NoteStore.Entry entry=createManagedFixture(context,"C42 paper delivery composer ");
+        AgentConnectionStore connections=new AgentConnectionStore(context);
+        AgentConnectionStore.Config saved=connections.addBridge("C42 composer fixture",
+                AgentConnectionStore.Kind.HERMES,"https://bridge.test","bridge-c42","instance-c42",
+                "synthetic-only-token");
+        java.util.Map<String,Boolean> features=new java.util.LinkedHashMap<>();
+        features.put("run_submission",true);features.put("task_bundle",true);
+        features.put("note_context_bundle",true);features.put("delivery_contract_v1",true);
+        assertTrue(connections.applyProbeSuccess(saved.id,saved.revision,
+                new AgentConnectionClient.ProbeResult("synthetic verified","bridge-c42","instance-c42",features)));
+        java.io.File composerPdf=new java.io.File(context.getCacheDir(),"c42-composer-"+UUID.randomUUID()+".pdf");
+        assertTrue(composerPdf.createNewFile());
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+            open(scenario,entry);
+            scenario.onActivity(activity->{
+                try {
+                    MainActivity.PaperCapture capture=(MainActivity.PaperCapture)invoke(activity,"capturePaperRevision");
+                    activity.showNoteWorkComposer(new MainActivity.FrozenPaper(composerPdf,capture));
+                } catch(Throwable error){throw new AssertionError(error);}
+            });
+            onView(withText(context.getString(R.string.core_paper_composer_title)))
+                    .inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(context.getString(R.string.flow_delivery_heading)))
+                    .inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText("✓ "+context.getString(R.string.flow_delivery_text_default)))
+                    .inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(context.getString(R.string.flow_delivery_selector_hint)))
+                    .inRoot(isDialog()).check(matches(isDisplayed()));
+
+            onView(withText(context.getString(R.string.core_preset_continue)))
+                    .inRoot(isDialog()).perform(click());
+            onView(withText(org.hamcrest.Matchers.containsString(
+                    context.getString(R.string.core_preset_video))))
+                    .inRoot(isDialog()).perform(click());
+            onView(withText("✓ "+context.getString(R.string.flow_delivery_kind_video)))
+                    .inRoot(isDialog()).perform(androidx.test.espresso.action.ViewActions.scrollTo())
+                    .check(matches(isDisplayed()));
+            onView(withText(context.getString(R.string.flow_return_to_note)))
+                    .inRoot(isDialog()).perform(click());
+        } finally {
+            composerPdf.delete();
+            connections.delete(saved.id);
+        }
+    }
+
     @Test public void viewportMoveAfterContentSaveSnapshotIsPersistedWithoutAnotherGroupRevision()
             throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();

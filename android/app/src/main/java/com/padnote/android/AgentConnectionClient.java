@@ -245,7 +245,8 @@ final class AgentConnectionClient {
 
     private static void disableUnavailableAgentFeatures(Map<String, Boolean> features) {
         if (features == null) return;
-        for (String key : new String[]{"run_submission", "note_context_bundle", "task_bundle"}) {
+        for (String key : new String[]{"run_submission", "note_context_bundle", "task_bundle",
+                "delivery_contract_v1"}) {
             if (features.containsKey(key)) features.put(key, false);
         }
     }

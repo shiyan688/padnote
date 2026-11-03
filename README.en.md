@@ -66,6 +66,8 @@ Synthetic interface and example state. See the [media provenance and scope](docs
 
 ## Bring task results onto the page
 
+The connection page checks whether each computer Agent is available and also supports a manual recheck. Pair by pasting connection details or open the QR scanner as a separate option. Before sending a task, choose the files you hope to receive: image, PDF, video, audio, or another file. Task completion and file delivery are shown separately; if a requested file is missing, the text result stays available and you can explicitly continue with a follow-up in the same context. Long answers can be expanded or collapsed. Preview a PNG or JPEG before confirming its placement on the paper. You choose the model provider and voice service; a matching file type does not verify its contents. See the [Beta 42 testing guide](BETA42_TESTING.md).
+
 Preview completed text on the actual note page, then append it or choose a starting point and text width on the target page. Long answers continue across pages. If the result overlaps existing text, ink, images, or PDF content, choose another position or width before adding it. Existing material stays in place.
 
 Completed Bridge tasks that list a PNG or JPEG also offer a paper preview and a user-confirmed placement action; ordinary file download remains available. Confirming an image placement upgrades that note to schema 11, which older PadNote versions cannot open. See [Agent image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md).
@@ -152,13 +154,13 @@ When a computer task is complete, supported PNG/JPEG attachments can be previewe
 
 Only a note where you confirm adding an image moves to schema 11; earlier versions cannot open that note. Ordinary notes are unchanged. See [image placement and compatibility](docs/AGENT_IMAGE_TO_PAPER.en.md) and the [beta.39 testing guide](BETA39_TESTING.md).
 
-## Beta 41: Windows assistant status and cleanup
+## Current packages and computer assistant
 
 Finding a Hermes profile does not mean the service is connected. The assistant reports ready only after a successful check within the last 60 seconds and confirmation that task execution is available. An expired result requires a user-triggered recheck; opening the interface does not probe or start a Gateway.
 
 Installer cleanup removes only known Python bytecode caches created under the install tree; it does not recursively delete unknown files. In a native beta.37-to-41 upgrade, Setup completed, all 243 installed package files were verified, and pairing state, durable records, source-directory ACL, and TLS identity were retained. No bytecode caches remained after setup. The uninstall flow was not tested. See the [beta.41 testing guide](BETA41_TESTING.md).
 
-Android remains on the beta.40 APK (versionCode 73); this release has no new Android build. iPad source is included, with no signed IPA; the Windows Connection Assistant is beta.41. The beta.37-to-41 upgrade passed with pairing and task records retained; uninstall was not tested. The graph shown above is a real Agent example, manually imported and saved in Android—not an automatic task-result fetch or an answer to the handwriting.
+The Android beta.42 package uses versionCode 74. iPad source is included; no signed IPA is provided. The Windows Connection Assistant is beta.42. The beta.37-to-41 in-place upgrade belongs to the previous release; the beta.41-to-42 upgrade passed and retained pairing and task records. Uninstall was not tested. The note shown above pairs the author's authorized handwriting with a separate y=x² example: an Agent returned SVG, which was rendered to PNG locally on a Mac and manually imported, saved, and reopened using Android's image picker. The graph is not an answer to the handwritten problem and was not automatically fetched by PadNote as a task result.
 
 ## Beta 38: paper typography profiles
 

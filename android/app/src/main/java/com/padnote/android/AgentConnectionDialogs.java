@@ -6,6 +6,7 @@ import android.graphics.Typeface;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -16,70 +17,180 @@ import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.lang.ref.WeakReference;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Multi-profile Agent settings kept out of MainActivity. */
 final class AgentConnectionDialogs {
     interface QrLauncher { void launch(); }
+    interface TaskDialogsFactory { AgentTaskDialogs create(); }
+    interface SavedProfileProbe { AgentConnectionClient.ProbeResult probe(AgentConnectionStore.Config profile) throws Exception; }
+    enum ProbeState { READY, NEEDS_ATTENTION, STALE }
+    static final class ProbeOutcome {
+        final ProbeState state;
+        final AgentConnectionStore.ProbeFailure failure;
+        final boolean persistenceFailure;
+        ProbeOutcome(ProbeState state, AgentConnectionStore.ProbeFailure failure) {
+            this(state,failure,false);
+        }
+        ProbeOutcome(ProbeState state, AgentConnectionStore.ProbeFailure failure,boolean persistenceFailure) {
+            this.state=state;this.failure=failure;this.persistenceFailure=persistenceFailure;
+        }
+    }
+
+    static ProbeOutcome probeSavedProfile(AgentConnectionStore store,
+                                           AgentConnectionStore.Config saved,
+                                           String attemptId, SavedProfileProbe probe) {
+        if(store==null||saved==null||attemptId==null||attemptId.isEmpty()||probe==null)
+            return new ProbeOutcome(ProbeState.STALE,null);
+        try {
+            AgentConnectionClient.ProbeResult result=probe.probe(saved);
+            if(result==null)throw new IllegalStateException("Probe returned no result");
+            boolean applied=store.applyProbeSuccess(saved.id,saved.revision,attemptId,result);
+            if(!applied)return new ProbeOutcome(ProbeState.STALE,null);
+            return result!=null&&result.partialFailure!=null
+                    ?new ProbeOutcome(ProbeState.NEEDS_ATTENTION,result.partialFailure)
+                    :new ProbeOutcome(ProbeState.READY,null);
+        } catch(Exception error) {
+            AgentConnectionStore.ProbeFailure failure=AgentConnectionClient.safeFailure(error);
+            try {
+                boolean applied=store.applyProbeFailure(saved.id,saved.revision,attemptId,failure);
+                return applied?new ProbeOutcome(ProbeState.NEEDS_ATTENTION,failure)
+                        :new ProbeOutcome(ProbeState.STALE,null);
+            } catch(RuntimeException storageFailure) {
+                return new ProbeOutcome(ProbeState.NEEDS_ATTENTION,
+                        AgentConnectionStore.ProbeFailure.UNKNOWN,true);
+            }
+        }
+    }
+
+    static boolean mayDeliverProbeUi(Activity activity) {
+        return activity!=null&&!activity.isFinishing()&&!activity.isDestroyed();
+    }
+
     private final Activity activity;
     private final AgentConnectionStore store;
     private final ExecutorService worker;
     private final Runnable changed;
     private final QrLauncher qrLauncher;
     private final AgentTaskDialogs.ArtifactSaveLauncher artifactSaveLauncher;
+    private final TaskDialogsFactory taskDialogsFactory;
+    private final SavedProfileProbe savedProfileProbe;
+    private final java.util.Set<String> automaticProbeIds=Collections.newSetFromMap(
+            new ConcurrentHashMap<String,Boolean>());
+    private final ConcurrentHashMap<String,Long> automaticProbeSetupFailures=new ConcurrentHashMap<>();
+    private WeakReference<AlertDialog> connectionListDialog=new WeakReference<>(null);
+    private ConnectionListState connectionListState;
 
     AgentConnectionDialogs(Activity activity, AgentConnectionStore store,
                            ExecutorService worker, Runnable changed) {
-        this(activity, store, worker, changed, null, null);
+        this(activity, store, worker, changed, null, null, null);
     }
 
     AgentConnectionDialogs(Activity activity, AgentConnectionStore store,
                            ExecutorService worker, Runnable changed, QrLauncher qrLauncher,
                            AgentTaskDialogs.ArtifactSaveLauncher artifactSaveLauncher) {
+        this(activity,store,worker,changed,qrLauncher,artifactSaveLauncher,null);
+    }
+
+    AgentConnectionDialogs(Activity activity, AgentConnectionStore store,
+                           ExecutorService worker, Runnable changed, QrLauncher qrLauncher,
+                           AgentTaskDialogs.ArtifactSaveLauncher artifactSaveLauncher,
+                           TaskDialogsFactory taskDialogsFactory) {
+        this(activity,store,worker,changed,qrLauncher,artifactSaveLauncher,taskDialogsFactory,
+                AgentConnectionClient::probeResult);
+    }
+
+    AgentConnectionDialogs(Activity activity, AgentConnectionStore store,
+                           ExecutorService worker, Runnable changed, QrLauncher qrLauncher,
+                           AgentTaskDialogs.ArtifactSaveLauncher artifactSaveLauncher,
+                           TaskDialogsFactory taskDialogsFactory, SavedProfileProbe savedProfileProbe) {
         this.activity = activity; this.store = store; this.worker = worker;
         this.changed = changed == null ? () -> { } : changed;
         this.qrLauncher = qrLauncher;
         this.artifactSaveLauncher = artifactSaveLauncher;
+        this.taskDialogsFactory = taskDialogsFactory;
+        this.savedProfileProbe=savedProfileProbe==null?AgentConnectionClient::probeResult:savedProfileProbe;
+    }
+
+    private AgentTaskDialogs taskDialogs() {
+        AgentTaskDialogs dialogs=taskDialogsFactory==null?null:taskDialogsFactory.create();
+        return dialogs==null?new AgentTaskDialogs(activity,store,worker,artifactSaveLauncher):dialogs;
     }
 
     void show() {
-        List<AgentConnectionStore.Config> profiles;
-        try { profiles = store.listSummaries(); }
-        catch (RuntimeException error) { error(activity.getString(R.string.flow_cannot_read_connections, message(error))); return; }
-        List<String> labels = new ArrayList<>();
+        ConnectionListState state=new ConnectionListState();
+        String[] rows=connectionListRows(state);
+        if(rows==null)return;
+        state.adapter=ChoiceRows.mutableAdapter(activity,rows);
+        AlertDialog dialog=ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_agent_title))
+                .setAdapter(state.adapter, (window,which)->onConnectionListChoice(state,which))
+                .setNegativeButton(activity.getString(R.string.flow_close), null).create();
+        connectionListDialog=new WeakReference<>(dialog);connectionListState=state;
+        dialog.setOnDismissListener(ignored->{
+            if(connectionListDialog.get()==dialog){connectionListDialog.clear();connectionListState=null;}
+        });
+        dialog.show();
+    }
+
+    private String[] connectionListRows(ConnectionListState state) {
+        final List<AgentConnectionStore.Config> profiles;
+        try {profiles=store.listSummaries();}
+        catch(RuntimeException error){
+            error(activity.getString(R.string.flow_cannot_read_connections,message(error)));return null;
+        }
+        state.profileIds.clear();List<String> labels=new ArrayList<>();
         labels.add(activity.getString(R.string.flow_view_tasks));
-        String defaultId = store.defaultId();
-        for (AgentConnectionStore.Config profile : profiles) {
-            labels.add((profile.id.equals(defaultId) ? "★ " : "") +
-                    AgentTaskDestinationLabel.forProfile(activity,profile) + " · " + profile.statusLabel(activity));
+        String defaultId=store.defaultId();
+        for(AgentConnectionStore.Config profile:profiles){
+            state.profileIds.add(profile.id);
+            labels.add((profile.id.equals(defaultId)?"★ ":"")+AgentTaskDestinationLabel.forProfile(activity,profile)+
+                    " · "+statusLabel(profile));
         }
-        int manualIndex = labels.size();
-        labels.add(activity.getString(R.string.flow_manual_add));
-        int qrIndex = -1;
-        if (qrLauncher != null) {
-            qrIndex = labels.size();
-            labels.add(activity.getString(R.string.flow_scan_pair));
+        state.manualIndex=labels.size();labels.add(activity.getString(R.string.flow_manual_add));
+        state.qrIndex=-1;
+        if(qrLauncher!=null){state.qrIndex=labels.size();labels.add(activity.getString(R.string.flow_scan_pair));}
+        state.pasteIndex=labels.size();labels.add(activity.getString(R.string.flow_paste_pair));
+        state.guideIndex=labels.size();labels.add(activity.getString(R.string.flow_connect_other));
+        return labels.toArray(new String[0]);
+    }
+
+    private void onConnectionListChoice(ConnectionListState state,int which) {
+        if(which==0){taskDialogs().showList();return;}
+        if(which>0&&which<=state.profileIds.size()){
+            String profileId=state.profileIds.get(which-1);
+            AgentConnectionStore.Config current=store.get(profileId);
+            if(current==null){error(activity.getString(R.string.flow_connection_missing));return;}
+            showActions(current);return;
         }
-        int pasteIndex = labels.size();
-        labels.add(activity.getString(R.string.flow_paste_pair));
-        int guideIndex = labels.size();
-        labels.add(activity.getString(R.string.flow_connect_other));
-        final int finalQrIndex = qrIndex;
-        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_agent_title))
-                .setAdapter(ChoiceRows.adapter(activity, labels.toArray(new String[0])), (dialog, which) -> {
-                    if (which == 0) new AgentTaskDialogs(activity, store, worker,
-                            artifactSaveLauncher).showList();
-                    else if (which <= profiles.size()) showActions(profiles.get(which - 1));
-                    else if (which == manualIndex) showEditor(null);
-                    else if (which == finalQrIndex) qrLauncher.launch();
-                    else if (which == pasteIndex) showPairingPaste();
-                    else if (which == guideIndex) AgentConnectionGuide.show(activity);
-                })
-                .setNegativeButton(activity.getString(R.string.flow_close), null).show();
+        if(which==state.manualIndex)showEditor(null);
+        else if(which==state.qrIndex&&qrLauncher!=null)qrLauncher.launch();
+        else if(which==state.pasteIndex)showPairingPaste();
+        else if(which==state.guideIndex)AgentConnectionGuide.show(activity);
+    }
+
+    private void refreshConnectionListIfVisible() {
+        AlertDialog dialog=connectionListDialog.get();ConnectionListState state=connectionListState;
+        if(dialog==null||state==null||!dialog.isShowing())return;
+        String[] rows=connectionListRows(state);
+        if(rows!=null&&state.adapter!=null){
+            state.adapter.clear();state.adapter.addAll(Arrays.asList(rows));state.adapter.notifyDataSetChanged();
+        }
+    }
+
+    private static final class ConnectionListState {
+        final List<String> profileIds=new ArrayList<>();
+        ArrayAdapter<String> adapter;
+        int manualIndex,pasteIndex,guideIndex,qrIndex=-1;
     }
 
     private void showActions(AgentConnectionStore.Config summary) {
@@ -96,7 +207,7 @@ final class AgentConnectionDialogs {
         actions.add(activity.getString(R.string.flow_delete));
         LinearLayout body = panel();
         TextView identity = text(activity.getString(R.string.flow_target) + "\n" + AgentTaskDestinationLabel.forProfile(activity,profile) +
-                "\n" + activity.getString(R.string.flow_connection_status_value, profile.statusLabel(activity)), 14);
+                "\n" + activity.getString(R.string.flow_connection_status_value, statusLabel(profile)), 14);
         identity.setTag("agent-target-identity");
         body.addView(identity);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_connection_actions))
@@ -123,8 +234,7 @@ final class AgentConnectionDialogs {
             if (!AgentCapabilitySummary.canSubmitHermesText(profile.kind,
                     profile.verified(), profile.capabilities)) {
                 error(activity.getString(R.string.flow_unsupported_hermes));
-            } else new AgentTaskDialogs(activity, store, worker,
-                    artifactSaveLauncher).showNewText(profile);
+            } else taskDialogs().showNewText(profile);
         } else if (activity.getString(R.string.flow_capabilities).equals(action)) {
             showCapabilitySummary(profile);
         } else if (activity.getString(R.string.flow_test_connection).equals(action)) test(profile);
@@ -210,6 +320,7 @@ final class AgentConnectionDialogs {
     }
 
     private void test(AgentConnectionStore.Config profile) {
+        automaticProbeSetupFailures.remove(profile.id);
         String attemptId = store.beginProbe(profile.id, profile.revision);
         if (attemptId.isEmpty()) {
             error(activity.getString(R.string.flow_connection_state_changed));
@@ -298,7 +409,8 @@ final class AgentConnectionDialogs {
         AlertDialog waiting = new AlertDialog.Builder(activity).setTitle(activity.getString(R.string.flow_waiting_approval))
                 .setMessage(activity.getString(R.string.flow_approve_in_assistant))
                 .setNegativeButton(activity.getString(R.string.flow_cancel), (dialog, which) -> cancelled.set(true))
-                .setCancelable(false).create();
+                .setCancelable(true).create();
+        waiting.setOnCancelListener(dialog -> cancelled.set(true));
         waiting.show();
         worker.execute(() -> {
             try {
@@ -308,6 +420,7 @@ final class AgentConnectionDialogs {
                         AgentDeviceIdentity.name());
                 while (!cancelled.get() && System.currentTimeMillis() < session.expiresAtMillis) {
                     AgentPairingClient.Claim claim = client.claim(session, deviceId);
+                    if (cancelled.get()) return;
                     if (claim.state == AgentPairingClient.ClaimState.PENDING) {
                         Thread.sleep(2500L); continue;
                     }
@@ -315,37 +428,197 @@ final class AgentConnectionDialogs {
                         throw new IllegalStateException(activity.getString(claim.state == AgentPairingClient.ClaimState.DENIED
                                 ? R.string.flow_pair_denied : R.string.flow_pair_expired));
                     }
-                    int saved = 0; List<String> failures = new ArrayList<>();
+                    List<AgentConnectionStore.Config> savedProfiles=new ArrayList<>();
+                    List<String> failures = new ArrayList<>();
                     for (AgentPairingClient.ApprovedConnection item : claim.connections) {
                         if (item.kind == AgentConnectionStore.Kind.OPENCLAW) {
                             failures.add(item.name + "：" + activity.getString(R.string.flow_openclaw_task_unavailable)); continue;
                         }
                         try {
-                            store.addBridge(item.name, item.kind, payload.endpoint,
+                            AgentConnectionStore.Config saved=store.addBridge(item.name, item.kind, payload.endpoint,
                                     payload.bridgeId, item.instanceId, payload.certSha256,
-                                    item.token); saved++;
+                                    item.token);
+                            savedProfiles.add(saved);
                         } catch (Exception error) { failures.add(item.name + "：" + message(error)); }
                     }
-                    int completed = saved; String detail = String.join("\n", failures);
-                    activity.runOnUiThread(() -> {
+                    String detail = String.join("\n", failures);
+                    PreparedProbeBatch probeBatch=savedProfiles.isEmpty()?null:prepareAutomaticProbes(savedProfiles);
+                    runOnUiIfAlive(() -> {
                         waiting.dismiss(); changed.run();
-                        Toast.makeText(activity, activity.getString(R.string.flow_saved_agents, completed) +
+                        int messageId=savedProfiles.isEmpty()?R.string.flow_saved_agents:R.string.flow_pairing_saved_checking;
+                        Toast.makeText(activity, activity.getString(messageId, savedProfiles.size()) +
                                 (detail.isEmpty() ? "" : "\n" + activity.getString(R.string.flow_not_completed, detail)),
                                 Toast.LENGTH_LONG).show(); show();
                     });
+                    if(probeBatch!=null)launchAutomaticProbes(probeBatch);
                     return;
                 }
                 if (!cancelled.get()) throw new IllegalStateException(activity.getString(R.string.flow_pair_expired));
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (Exception error) {
-                if (!cancelled.get()) activity.runOnUiThread(() -> {
+                if (!cancelled.get()) runOnUiIfAlive(() -> {
                     waiting.dismiss(); AgentConnectionDialogs.this.error(activity.getString(R.string.flow_pair_failed, message(error)));
                 });
             } finally {
-                if (cancelled.get()) activity.runOnUiThread(waiting::dismiss);
+                if (cancelled.get()) runOnUiIfAlive(waiting::dismiss);
             }
         });
+    }
+
+    private String statusLabel(AgentConnectionStore.Config profile) {
+        if(automaticProbeIds.contains(profile.id))return activity.getString(R.string.flow_probe_agent_checking_label);
+        Long setupFailureRevision=automaticProbeSetupFailures.get(profile.id);
+        if(setupFailureRevision!=null){
+            if(setupFailureRevision==profile.revision&&!profile.verified()&&profile.probeFailure==null)
+                return AgentConnectionStore.ProbeFailure.UNKNOWN.label(activity);
+            automaticProbeSetupFailures.remove(profile.id,setupFailureRevision);
+        }
+        return profile.statusLabel(activity);
+    }
+
+    void scheduleAutomaticProbes(List<AgentConnectionStore.Config> profiles) {
+        launchAutomaticProbes(prepareAutomaticProbes(profiles));
+    }
+
+    private PreparedProbeBatch prepareAutomaticProbes(List<AgentConnectionStore.Config> profiles) {
+        ProbeBatch batch=new ProbeBatch(profiles.size());
+        List<PendingProbe> pending=new ArrayList<>();
+        for(AgentConnectionStore.Config profile:profiles) {
+            if(!automaticProbeIds.add(profile.id)) {
+                batch.record(new ProbeOutcome(ProbeState.STALE,null));
+                continue;
+            }
+            automaticProbeSetupFailures.remove(profile.id);
+            final String attemptId;
+            try {attemptId=store.beginProbe(profile.id,profile.revision);}
+            catch(RuntimeException error) {
+                automaticProbeIds.remove(profile.id);
+                if(profileStillCurrent(profile)){
+                    recordProbeSetupFailure(profile);
+                    batch.record(new ProbeOutcome(ProbeState.NEEDS_ATTENTION,AgentConnectionStore.ProbeFailure.UNKNOWN));
+                } else batch.record(new ProbeOutcome(ProbeState.STALE,null));
+                continue;
+            }
+            if(attemptId.isEmpty()) {
+                automaticProbeIds.remove(profile.id);
+                if(profileStillCurrent(profile)){
+                    recordProbeSetupFailure(profile);
+                    batch.record(new ProbeOutcome(ProbeState.NEEDS_ATTENTION,AgentConnectionStore.ProbeFailure.UNKNOWN));
+                } else batch.record(new ProbeOutcome(ProbeState.STALE,null));
+                continue;
+            }
+            pending.add(new PendingProbe(profile,attemptId));
+        }
+        runOnUiIfAlive(this::refreshConnectionListIfVisible);
+        if(!pending.isEmpty())try {
+            batch.executor=Executors.newFixedThreadPool(Math.min(3,pending.size()),r->{
+                Thread thread=new Thread(r,"padnote-agent-readiness");thread.setDaemon(true);return thread;
+            });
+        } catch(RuntimeException unavailable) {
+            for(PendingProbe item:pending) {
+                try {store.applyProbeFailure(item.profile.id,item.profile.revision,item.attemptId,
+                        AgentConnectionStore.ProbeFailure.UNKNOWN);} catch(RuntimeException ignored) { }
+                automaticProbeIds.remove(item.profile.id);
+                batch.record(new ProbeOutcome(ProbeState.NEEDS_ATTENTION,
+                        AgentConnectionStore.ProbeFailure.UNKNOWN));
+            }
+            pending.clear();
+        }
+        return new PreparedProbeBatch(batch,pending);
+    }
+
+    private void launchAutomaticProbes(PreparedProbeBatch prepared) {
+        ProbeBatch batch=prepared.batch;
+        for(PendingProbe pending:prepared.pending) {
+            AgentConnectionStore.Config profile=pending.profile;
+            String attemptId=pending.attemptId;
+            try {
+                batch.executor.execute(()->{
+                    ProbeOutcome outcome;
+                    try {outcome=probeSavedProfile(store,profile,attemptId,savedProfileProbe);}
+                    catch(RuntimeException storageOrProbeFailure) {
+                        automaticProbeSetupFailures.put(profile.id,profile.revision);
+                        outcome=new ProbeOutcome(ProbeState.NEEDS_ATTENTION,
+                                AgentConnectionStore.ProbeFailure.UNKNOWN);
+                    } finally {
+                        automaticProbeIds.remove(profile.id);
+                    }
+                    if(outcome.persistenceFailure)
+                        automaticProbeSetupFailures.put(profile.id,profile.revision);
+                    try {completeProbeBatch(batch,outcome);} catch(RuntimeException ignored) { }
+                    try {changedIfActivityAlive();} catch(RuntimeException ignored) { }
+                });
+            } catch(RuntimeException rejected) {
+                AgentConnectionStore.ProbeFailure failure=AgentConnectionStore.ProbeFailure.UNKNOWN;
+                boolean applied=false;
+                try {applied=store.applyProbeFailure(profile.id,profile.revision,attemptId,failure);}
+                catch(RuntimeException storageFailure) {automaticProbeSetupFailures.put(profile.id,profile.revision);}
+                automaticProbeIds.remove(profile.id);
+                try {changedIfActivityAlive();} catch(RuntimeException ignored) { }
+                batch.record(applied?new ProbeOutcome(ProbeState.NEEDS_ATTENTION,failure)
+                        :new ProbeOutcome(ProbeState.NEEDS_ATTENTION,failure));
+            }
+        }
+        completeProbeBatch(batch,null);
+    }
+
+    private void changedIfActivityAlive() {
+        runOnUiIfAlive(()->{
+            try {refreshConnectionListIfVisible();} catch(RuntimeException ignored) { }
+            try {changed.run();} catch(RuntimeException ignored) { }
+        });
+    }
+
+    private void recordProbeSetupFailure(AgentConnectionStore.Config profile) {
+        automaticProbeSetupFailures.put(profile.id,profile.revision);
+        try {store.applyProbeFailure(profile.id,profile.revision);} catch(RuntimeException ignored) { }
+    }
+
+    private boolean profileStillCurrent(AgentConnectionStore.Config profile) {
+        try {return profile.sameIdentityRevision(store.get(profile.id));}
+        catch(RuntimeException ignored) {return true;}
+    }
+
+    private void completeProbeBatch(ProbeBatch batch,ProbeOutcome outcome) {
+        if(outcome!=null)batch.record(outcome);
+        if(!batch.isComplete()||!batch.reported.compareAndSet(false,true))return;
+        if(batch.executor!=null)batch.executor.shutdown();
+        runOnUiIfAlive(()->Toast.makeText(activity,activity.getString(
+                R.string.flow_auto_probe_summary,batch.ready.get(),batch.attention.get(),batch.stale.get()),
+                Toast.LENGTH_LONG).show());
+    }
+
+    private static final class PendingProbe {
+        final AgentConnectionStore.Config profile;final String attemptId;
+        PendingProbe(AgentConnectionStore.Config profile,String attemptId){this.profile=profile;this.attemptId=attemptId;}
+    }
+
+    private static final class PreparedProbeBatch {
+        final ProbeBatch batch;final List<PendingProbe> pending;
+        PreparedProbeBatch(ProbeBatch batch,List<PendingProbe> pending){this.batch=batch;this.pending=pending;}
+    }
+
+    private void runOnUiIfAlive(Runnable callback) {
+        if(!mayDeliverProbeUi(activity))return;
+        activity.runOnUiThread(()->{if(mayDeliverProbeUi(activity))callback.run();});
+    }
+
+    private static final class ProbeBatch {
+        private final AtomicInteger remaining;
+        final AtomicInteger ready=new AtomicInteger();
+        final AtomicInteger attention=new AtomicInteger();
+        final AtomicInteger stale=new AtomicInteger();
+        final AtomicBoolean reported=new AtomicBoolean();
+        ExecutorService executor;
+        ProbeBatch(int count){remaining=new AtomicInteger(count);}
+        void record(ProbeOutcome outcome){
+            if(outcome.state==ProbeState.READY)ready.incrementAndGet();
+            else if(outcome.state==ProbeState.NEEDS_ATTENTION)attention.incrementAndGet();
+            else stale.incrementAndGet();
+            remaining.decrementAndGet();
+        }
+        boolean isComplete(){return remaining.get()==0;}
     }
 
     private LinearLayout panel() { LinearLayout v = new LinearLayout(activity); v.setOrientation(LinearLayout.VERTICAL); v.setPadding(dp(20), dp(8), dp(20), dp(8)); return v; }

@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">Résultat enregistré. Rouvrez la note pour le voir.</string>
     <string name="flow_agent_result_save_uncertain">L’état de l’enregistrement est incertain. Rouvrez la note et vérifiez avant de réessayer.</string>
     <string name="flow_agent_result_save_failed">Impossible d’enregistrer le résultat. La note n’a pas été modifiée.</string>
-    <string name="flow_expand_task_details">Afficher les détails de la tâche</string>
-    <string name="flow_collapse_task_details">Masquer les détails de la tâche</string>
+    <string name="flow_expand_task_details">Afficher les détails techniques</string>
+    <string name="flow_collapse_task_details">Masquer les détails techniques</string>
     <string name="flow_agent_result_destination_summary">Enregistrer dans %1$s, à partir de la page %2$d</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">Fichiers manquants : %1$s</string>
+    <string name="flow_history_delivery_delivered">Fichiers reçus : %1$s</string>
+    <string name="flow_expand_full_result">Afficher la réponse complète</string>
+    <string name="flow_collapse_full_result">Réduire</string>
+    <string name="flow_failure_reason_label">Motif :</string>
+    <string name="flow_delivery_heading">Fichiers demandés</string>
+    <string name="flow_delivery_text_default">Réponse écrite (par défaut)</string>
+    <string name="flow_delivery_selector_hint">Choisissez les fichiers que cette tâche doit renvoyer. La demande de fichiers ne vérifie pas l’exactitude de la réponse.</string>
+    <string name="flow_delivery_legacy_hint">Cet assistant ne signale pas l’état de livraison. PadNote vérifie le type des pièces jointes reçues.</string>
+    <string name="flow_delivery_selected">%1$s demandé</string>
+    <string name="flow_delivery_not_selected">Demander %1$s</string>
+    <string name="flow_delivery_kind_image">Image</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">Vidéo</string>
+    <string name="flow_delivery_kind_audio">Audio</string>
+    <string name="flow_delivery_kind_file">Autre fichier</string>
+    <string name="flow_delivery_legacy_instruction">Veuillez renvoyer %1$s sous forme de véritables fichiers lisibles. Avant de terminer, confirmez que chaque fichier existe et peut être ouvert.</string>
+    <string name="flow_delivery_server_checked">État de livraison signalé par l’assistant connecté.</string>
+    <string name="flow_delivery_local_checked">PadNote a vérifié localement les types de pièces jointes, car aucun résumé de livraison exploitable du serveur n’était disponible.</string>
+    <string name="flow_delivery_delivered">Pièces jointes demandées reçues : %1$s. Seul le type de fichier est vérifié, pas l’exactitude du contenu.</string>
+    <string name="flow_delivery_missing">Exécution terminée. Fichiers manquants : %1$s. Reçus : %2$s.</string>
+    <string name="flow_delivery_none">aucun</string>
+    <string name="flow_delivery_repair_button">Compléter les fichiers manquants</string>
+    <string name="flow_delivery_repair_title">Compléter les fichiers manquants</string>
+    <string name="flow_delivery_repair_unavailable">La poursuite dans la même session est indisponible pour cette tâche.</string>
+    <string name="flow_delivery_repair_prefill">Veuillez fournir ces pièces jointes manquantes : %1$s. Enregistrez-les comme fichiers lisibles et confirmez qu’elles existent et peuvent être ouvertes avant de terminer.</string>
+    <string name="flow_delivery_repair_empty">Gardez sélectionnés tous les types de fichiers manquants.</string>
+    <string name="flow_pairing_saved_checking">%1$d connexions enregistrées. Leur disponibilité sera vérifiée en arrière-plan ; vous pouvez continuer à utiliser PadNote.</string>
+    <string name="flow_auto_probe_summary">Vérification terminée : %1$d contrôles réussis, %2$d nécessitent une action et %3$d anciens résultats ont été ignorés. Ouvrez la liste des connexions pour voir les détails et réessayer manuellement.</string>
+    <string name="flow_cap_note_context_bundle">Recevoir le contexte papier d’une note</string>
+    <string name="flow_cap_hermes_paper_next">Pour envoyer le contexte papier d’une note, ouvrez-la et choisissez « Partager et envoyer à l’Agent sur ordinateur ».</string>
 </resources>

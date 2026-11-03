@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">El resultado se guardó. Vuelve a abrir la nota para verlo.</string>
     <string name="flow_agent_result_save_uncertain">No se pudo confirmar el guardado. Vuelve a abrir la nota y compruébalo antes de intentarlo otra vez.</string>
     <string name="flow_agent_result_save_failed">No se pudo guardar el resultado. La nota no cambió.</string>
-    <string name="flow_expand_task_details">Ver detalles de la tarea</string>
-    <string name="flow_collapse_task_details">Ocultar detalles de la tarea</string>
+    <string name="flow_expand_task_details">Ver detalles técnicos</string>
+    <string name="flow_collapse_task_details">Ocultar detalles técnicos</string>
     <string name="flow_agent_result_destination_summary">Guardar en %1$s, desde la página %2$d</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">Faltan archivos: %1$s</string>
+    <string name="flow_history_delivery_delivered">Archivos recibidos: %1$s</string>
+    <string name="flow_expand_full_result">Ver respuesta completa</string>
+    <string name="flow_collapse_full_result">Mostrar menos</string>
+    <string name="flow_failure_reason_label">Motivo:</string>
+    <string name="flow_delivery_heading">Archivos solicitados</string>
+    <string name="flow_delivery_text_default">Respuesta de texto (predeterminada)</string>
+    <string name="flow_delivery_selector_hint">Elige los archivos que debe devolver esta tarea. Solicitar archivos no verifica que la respuesta sea correcta.</string>
+    <string name="flow_delivery_legacy_hint">Este asistente no informa del estado de entrega. PadNote comprueba el tipo de los archivos adjuntos recibidos.</string>
+    <string name="flow_delivery_selected">%1$s solicitado</string>
+    <string name="flow_delivery_not_selected">Solicitar %1$s</string>
+    <string name="flow_delivery_kind_image">Imagen</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">Vídeo</string>
+    <string name="flow_delivery_kind_audio">Audio</string>
+    <string name="flow_delivery_kind_file">Otro archivo</string>
+    <string name="flow_delivery_legacy_instruction">Devuelve %1$s como archivos adjuntos reales y legibles. Antes de terminar, confirma que cada archivo existe y se puede abrir.</string>
+    <string name="flow_delivery_server_checked">Estado de entrega informado por el asistente conectado.</string>
+    <string name="flow_delivery_local_checked">PadNote comprobó localmente los tipos de archivo porque no había un resumen de entrega del servidor utilizable.</string>
+    <string name="flow_delivery_delivered">Archivos solicitados recibidos: %1$s. Solo se comprueba el tipo, no la corrección del contenido.</string>
+    <string name="flow_delivery_missing">La ejecución terminó. Faltan: %1$s. Recibidos: %2$s.</string>
+    <string name="flow_delivery_none">ninguno</string>
+    <string name="flow_delivery_repair_button">Completar archivos pendientes</string>
+    <string name="flow_delivery_repair_title">Completar los archivos que faltan</string>
+    <string name="flow_delivery_repair_unavailable">Esta tarea no permite continuar en la misma sesión.</string>
+    <string name="flow_delivery_repair_prefill">Proporciona estos archivos pendientes: %1$s. Guárdalos como archivos legibles y confirma que existen y se abren antes de terminar.</string>
+    <string name="flow_delivery_repair_empty">Mantén seleccionados todos los tipos de archivo que faltan.</string>
+    <string name="flow_pairing_saved_checking">%1$d conexiones guardadas. Se comprobará su disponibilidad en segundo plano; puedes seguir usando PadNote.</string>
+    <string name="flow_auto_probe_summary">Comprobación terminada: %1$d comprobaciones correctas, %2$d requieren atención y se ignoraron %3$d resultados anteriores. Abre la lista de conexiones para ver detalles y volver a intentarlo manualmente.</string>
+    <string name="flow_cap_note_context_bundle">Recibir el contexto en papel de una nota</string>
+    <string name="flow_cap_hermes_paper_next">Para enviar el contexto en papel de una nota, ábrela y elige «Compartir y enviar al Agent del ordenador».</string>
 </resources>

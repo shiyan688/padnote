@@ -14,6 +14,10 @@ import android.widget.ArrayAdapter;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 /** Shared paper-style rows and popup styling for Android option selectors. */
 final class ChoiceRows {
     private static final int INK = Color.rgb(31, 41, 51);
@@ -23,6 +27,10 @@ final class ChoiceRows {
 
     static ArrayAdapter<String> adapter(Context context, String[] values) {
         return new Rows(context, values);
+    }
+
+    static ArrayAdapter<String> mutableAdapter(Context context, String[] values) {
+        return new Rows(context, Arrays.asList(values));
     }
 
     static ArrayAdapter<String> spinnerAdapter(Spinner owner, String[] values) {
@@ -49,6 +57,9 @@ final class ChoiceRows {
         private final Spinner owner;
         Rows(Context context, String[] values) {
             super(context, android.R.layout.simple_list_item_1, values); this.owner = null;
+        }
+        Rows(Context context, List<String> values) {
+            super(context, android.R.layout.simple_list_item_1, new ArrayList<>(values)); this.owner = null;
         }
         Rows(Context context, String[] values, Spinner owner) {
             super(context, android.R.layout.simple_list_item_1, values); this.owner = owner;

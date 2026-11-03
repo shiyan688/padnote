@@ -65,6 +65,9 @@ final class AgentTaskStore {
         final Status status;
         final String output, error, approvalId, approvalTitle, approvalDescription;
         final List<Artifact> artifacts;
+        final List<String> expectedOutputs;
+        final boolean deliveryContractSupported;
+        final AgentDelivery.Summary delivery;
         final long createdAt, updatedAt;
 
         Task(String clientTaskId, String connectionId, long connectionRevision, String origin,
@@ -91,6 +94,25 @@ final class AgentTaskStore {
              List<Artifact> artifacts, long createdAt, long updatedAt, String conversationId,
              String parentTaskId, String parentClientTaskId, String childClientTaskId,
              boolean followupAvailable, String followupReason) {
+            this(clientTaskId, connectionId, connectionRevision, origin, kind, transport,
+                    credentialRef, bridgeId, instanceId, title, connectionName, noteId,
+                    noteRevision, submissionJson, submissionSha256, remoteTaskId, status,
+                    output, error, approvalId, approvalTitle, approvalDescription, artifacts,
+                    createdAt, updatedAt, conversationId, parentTaskId, parentClientTaskId,
+                    childClientTaskId, followupAvailable, followupReason,
+                    Collections.emptyList(), false, null);
+        }
+
+        Task(String clientTaskId, String connectionId, long connectionRevision, String origin,
+             AgentConnectionStore.Kind kind, AgentConnectionStore.Transport transport,
+             String credentialRef, String bridgeId, String instanceId, String title,
+             String connectionName, String noteId, long noteRevision, String submissionJson,
+             String submissionSha256, String remoteTaskId, Status status, String output,
+             String error, String approvalId, String approvalTitle, String approvalDescription,
+             List<Artifact> artifacts, long createdAt, long updatedAt, String conversationId,
+             String parentTaskId, String parentClientTaskId, String childClientTaskId,
+             boolean followupAvailable, String followupReason, List<String> expectedOutputs,
+             boolean deliveryContractSupported, AgentDelivery.Summary delivery) {
             this.clientTaskId = clientTaskId; this.connectionId = connectionId;
             this.connectionRevision = connectionRevision; this.origin = origin;
             this.kind = kind; this.transport = transport; this.credentialRef = credentialRef;
@@ -105,6 +127,12 @@ final class AgentTaskStore {
             this.error = error; this.approvalId = approvalId; this.approvalTitle = approvalTitle;
             this.approvalDescription = approvalDescription;
             this.artifacts = Collections.unmodifiableList(new ArrayList<>(artifacts));
+            this.expectedOutputs = AgentDelivery.normalize(expectedOutputs);
+            this.deliveryContractSupported = deliveryContractSupported;
+            this.delivery = delivery == null
+                    ? AgentDelivery.initial(this.expectedOutputs, this.artifacts.size()) : delivery;
+            if (!this.delivery.expected.equals(this.expectedOutputs))
+                throw new IllegalArgumentException("delivery_expectation_mismatch");
             this.createdAt = createdAt; this.updatedAt = updatedAt;
         }
 
@@ -118,7 +146,8 @@ final class AgentTaskStore {
 
         JSONObject toJson() {
             JSONArray files = new JSONArray(); for (Artifact artifact : artifacts) files.put(artifact.toJson());
-            try { return new JSONObject().put("schemaVersion", 2).put("clientTaskId", clientTaskId)
+            JSONArray expected = AgentDelivery.requestArray(expectedOutputs);
+            try { return new JSONObject().put("schemaVersion", 3).put("clientTaskId", clientTaskId)
                     .put("connectionId", connectionId).put("connectionRevision", connectionRevision)
                     .put("origin", origin).put("kind", kind.name()).put("transport", transport.name())
                     .put("credentialRef", credentialRef).put("bridgeId", bridgeId)
@@ -132,13 +161,32 @@ final class AgentTaskStore {
                     .put("createdAt", createdAt).put("updatedAt", updatedAt)
                     .put("conversationId",conversationId).put("parentTaskId",parentTaskId)
                     .put("parentClientTaskId",parentClientTaskId).put("childClientTaskId",childClientTaskId)
-                    .put("followupAvailable",followupAvailable).put("followupReason",followupReason); }
+                    .put("followupAvailable",followupAvailable).put("followupReason",followupReason)
+                    .put("expectedOutputs",expected)
+                    .put("deliveryContractSupported",deliveryContractSupported)
+                    .put("delivery",delivery.toJson()); }
             catch (org.json.JSONException error) { throw new IllegalStateException(error); }
         }
 
         static Task fromJson(JSONObject j) {
             List<Artifact> artifacts = new ArrayList<>(); JSONArray a = j.optJSONArray("artifacts");
             if (a != null) for (int i=0;i<a.length();i++) { JSONObject x=a.optJSONObject(i); if(x!=null) artifacts.add(Artifact.fromJson(x)); }
+            Object rawExpected=j.opt("expectedOutputs"),rawContract=j.opt("deliveryContractSupported"),
+                    rawDelivery=j.opt("delivery");
+            if(j.has("expectedOutputs")&&!(rawExpected instanceof JSONArray))
+                throw new IllegalArgumentException("saved_delivery_expectations_invalid");
+            if(j.has("deliveryContractSupported")&&!(rawContract instanceof Boolean))
+                throw new IllegalArgumentException("saved_delivery_contract_flag_invalid");
+            if(j.has("delivery")&&!(rawDelivery instanceof JSONObject))
+                throw new IllegalArgumentException("saved_delivery_invalid");
+            List<String> expected = rawExpected instanceof JSONArray
+                    ? AgentDelivery.parseArray((JSONArray)rawExpected) : Collections.emptyList();
+            boolean deliveryContract = j.opt("deliveryContractSupported") instanceof Boolean &&
+                    j.optBoolean("deliveryContractSupported");
+            AgentDelivery.Summary delivery = AgentDelivery.Summary.fromJson(
+                    rawDelivery instanceof JSONObject?(JSONObject)rawDelivery:null, expected, artifacts.size());
+            Status savedStatus=Status.valueOf(required(j,"status"));
+            AgentDelivery.validateStored(delivery,expected,savedStatus,artifacts);
             return new Task(required(j,"clientTaskId"), required(j,"connectionId"),
                     j.optLong("connectionRevision"), required(j,"origin"),
                     AgentConnectionStore.Kind.valueOf(required(j,"kind")),
@@ -153,7 +201,7 @@ final class AgentTaskStore {
                     j.optLong("createdAt"), j.optLong("updatedAt"), j.optString("conversationId"),
                     j.optString("parentTaskId"),j.optString("parentClientTaskId"),
                     j.optString("childClientTaskId"),j.optBoolean("followupAvailable",false),
-                    j.optString("followupReason"));
+                    j.optString("followupReason"),expected,deliveryContract,delivery);
         }
     }
 
@@ -187,6 +235,13 @@ final class AgentTaskStore {
 
     Task create(AgentConnectionStore.Config connection, String title, String input,
                 String noteId, long noteRevision, byte[] bundle,String requiredCapability) throws Exception {
+        return create(connection,title,input,noteId,noteRevision,bundle,requiredCapability,
+                Collections.emptyList());
+    }
+
+    Task create(AgentConnectionStore.Config connection, String title, String input,
+                String noteId, long noteRevision, byte[] bundle,String requiredCapability,
+                List<String> requestedOutputs) throws Exception {
         if (connection == null || connection.id.isEmpty() || !connection.verified())
             throw new IllegalArgumentException("请选择已验证的 Agent");
         byte[] inputBytes = value(input).getBytes(StandardCharsets.UTF_8);
@@ -196,6 +251,8 @@ final class AgentTaskStore {
             throw new IllegalArgumentException("任务标题必须在 1–256 字符之间");
         if (bundle != null && bundle.length > MAX_BUNDLE)
             throw new IllegalArgumentException("任务包不能超过 8 MiB");
+        List<String> expectedOutputs = AgentDelivery.normalize(requestedOutputs);
+        boolean deliveryContract = AgentDelivery.contractSupported(connection);
         if(requiredCapability!=null&&!requiredCapability.isEmpty()&&
                 (!"note_context_bundle".equals(requiredCapability)||
                         connection.transport!=AgentConnectionStore.Transport.BRIDGE||
@@ -219,31 +276,44 @@ final class AgentTaskStore {
             if(requiredCapability!=null&&!requiredCapability.isEmpty()) {
                 body.put("required_capability",requiredCapability);
             }
+            if(deliveryContract && !expectedOutputs.isEmpty())
+                body.put("expected_outputs",AgentDelivery.requestArray(expectedOutputs));
         } else {
             if (bundle != null && bundle.length > 0)
                 throw new IllegalArgumentException("Hermes 直连不支持任务包，请改用 Bridge");
             body = new JSONObject().put("input", input);
+            if(deliveryContract && !expectedOutputs.isEmpty())
+                body.put("expected_outputs",AgentDelivery.requestArray(expectedOutputs));
         }
         String json = body.toString(); long now = System.currentTimeMillis();
         Task task = new Task(clientId, connection.id, connection.revision, connection.endpoint,
                 connection.kind, connection.transport, connection.credentialRef,
                 connection.bridgeId, connection.instanceId, title, connection.name, sourceNoteId,
                 Math.max(1L,noteRevision), json, sha256(json.getBytes(StandardCharsets.UTF_8)),
-                "", Status.SUBMITTING, "", "", "", "", "", Collections.emptyList(), now, now);
+                "", Status.SUBMITTING, "", "", "", "", "", Collections.emptyList(), now, now,
+                "", "", "", "", false, "", expectedOutputs, deliveryContract,
+                AgentDelivery.initial(expectedOutputs, 0));
         write(task); setSubmissionAttemptState(clientId,false); return task;
     }
 
     Task createFollowup(Task parent, AgentConnectionStore.Config connection, String input)
             throws Exception {
+        return createFollowup(parent, connection, input, Collections.emptyList());
+    }
+
+    Task createFollowup(Task parent, AgentConnectionStore.Config connection, String input,
+                        List<String> requestedOutputs) throws Exception {
+        List<String> expectedOutputs = AgentDelivery.normalize(requestedOutputs);
+        boolean deliveryContract = AgentDelivery.contractSupported(connection);
         synchronized (LOCK) {
             Task current=get(parent.clientTaskId);
             if(current==null)throw new IllegalArgumentException("父任务记录不存在");
             if(current.transport!=AgentConnectionStore.Transport.BRIDGE || !current.matches(connection))
                 throw new IllegalStateException("任务连接身份已变化，不能继续沟通");
             if(current.childClientTaskId.length()>0) {
-                Task child=get(current.childClientTaskId); if(child!=null)return existingFollowup(child,input);
+                Task child=get(current.childClientTaskId); if(child!=null)return existingFollowup(child,input,expectedOutputs);
             }
-            for(Task candidate:list()) if(parent.clientTaskId.equals(candidate.parentClientTaskId))return existingFollowup(candidate,input);
+            for(Task candidate:list()) if(parent.clientTaskId.equals(candidate.parentClientTaskId))return existingFollowup(candidate,input,expectedOutputs);
             if(current.status!=Status.COMPLETED || !current.followupAvailable)
                 throw new IllegalStateException(current.followupReason.isEmpty()?"电脑 Agent 尚未允许继续沟通":current.followupReason);
             if(current.remoteTaskId.isEmpty() || current.conversationId.isEmpty())
@@ -254,13 +324,16 @@ final class AgentTaskStore {
             JSONObject body=new JSONObject().put("client_task_id",clientId).put("title",current.title)
                     .put("input",input).put("source",new JSONObject().put("note_id",current.noteId)
                     .put("note_revision",current.noteRevision)).put("parent_task_id",current.remoteTaskId);
+            if(deliveryContract && !expectedOutputs.isEmpty())
+                body.put("expected_outputs",AgentDelivery.requestArray(expectedOutputs));
             String json=body.toString();long now=System.currentTimeMillis();
             Task child=new Task(clientId,current.connectionId,current.connectionRevision,current.origin,
                     current.kind,current.transport,current.credentialRef,current.bridgeId,current.instanceId,
                     current.title,current.connectionName,current.noteId,current.noteRevision,json,
                     sha256(json.getBytes(StandardCharsets.UTF_8)),"",Status.SUBMITTING,"","","","","",
                     Collections.emptyList(),now,now,current.conversationId,current.remoteTaskId,
-                    current.clientTaskId,"",false,"等待电脑确认追问任务");
+                    current.clientTaskId,"",false,"等待电脑确认追问任务",expectedOutputs,
+                    deliveryContract,AgentDelivery.initial(expectedOutputs,0));
             write(child);
             setSubmissionAttemptState(child.clientTaskId,false);
             write(withChild(current,clientId));
@@ -268,10 +341,10 @@ final class AgentTaskStore {
         }
     }
 
-    private static Task existingFollowup(Task child,String input) {
+    private static Task existingFollowup(Task child,String input,List<String> expectedOutputs) {
         String saved="";try{saved=new JSONObject(child.submissionJson).optString("input","");}
         catch(Exception ignored){}
-        if(!saved.equals(value(input)))throw new IllegalStateException(
+        if(!saved.equals(value(input)) || !child.expectedOutputs.equals(AgentDelivery.normalize(expectedOutputs)))throw new IllegalStateException(
                 "已有追问已保存，新文字未发送；请打开后续轮次");
         return child;
     }
@@ -306,17 +379,57 @@ final class AgentTaskStore {
     boolean applySubmission(String clientId, String connectionId, long revision,
                             String remoteId, Status status,String conversationId,
                             String parentTaskId) throws Exception {
+        return applySubmission(clientId,connectionId,revision,remoteId,status,conversationId,
+                parentTaskId,Collections.emptyList(),null);
+    }
+    boolean applySubmission(String clientId, String connectionId, long revision,
+                            String remoteId, Status status,String conversationId,
+                            String parentTaskId,List<Artifact> artifacts,
+                            AgentDelivery.Summary serverDelivery) throws Exception {
+        return applySubmissionSnapshot(clientId,connectionId,revision,remoteId,status,
+                conversationId,parentTaskId,artifacts,serverDelivery,"","","","","",
+                false,"",true);
+    }
+
+    boolean applySubmission(String clientId,String connectionId,long revision,
+                            AgentTaskClient.Submission submission) throws Exception {
+        if(submission==null)return false;
+        AgentTaskClient.RemoteStatus accepted=submission.acceptedStatus;
+        if(accepted==null)return applySubmission(clientId,connectionId,revision,
+                submission.remoteTaskId,submission.status,submission.conversationId,
+                submission.parentTaskId,submission.artifacts,submission.delivery);
+        return applySubmissionSnapshot(clientId,connectionId,revision,submission.remoteTaskId,
+                accepted.status,accepted.conversationId,accepted.parentTaskId,accepted.artifacts,
+                accepted.delivery,accepted.output,accepted.error,accepted.approvalId,
+                accepted.approvalTitle,accepted.approvalDescription,accepted.followupAvailable,
+                accepted.followupReason,false);
+    }
+
+    private boolean applySubmissionSnapshot(String clientId,String connectionId,long revision,
+                            String remoteId,Status status,String conversationId,String parentTaskId,
+                            List<Artifact> artifacts,AgentDelivery.Summary serverDelivery,
+                            String output,String error,String approvalId,String approvalTitle,
+                            String approvalDescription,boolean followupAvailable,
+                            String followupReason,boolean requireDeliverySummary) throws Exception {
         synchronized (LOCK) { Task t=get(clientId);
             if(!submissionIdentity(t,connectionId,revision,remoteId) || t.status.terminal()) return false;
+            List<Artifact> safeArtifacts=artifacts==null?Collections.emptyList():artifacts;
+            if(requireDeliverySummary&&t.deliveryContractSupported&&serverDelivery==null)
+                throw new IllegalStateException("delivery_summary_missing");
+            AgentDelivery.Summary delivery=serverDelivery!=null?serverDelivery:
+                    AgentDelivery.forCurrentTask(t.expectedOutputs,status,safeArtifacts);
             if(t.transport==AgentConnectionStore.Transport.BRIDGE) {
                 if(!t.parentTaskId.isEmpty() &&
                         (!parentTaskId.equals(t.parentTaskId)||!conversationId.equals(t.conversationId)))return false;
                 if(!parentTaskId.isEmpty()&&!parentTaskId.equals(t.parentTaskId))return false;
                 if(!conversationId.isEmpty() && !t.parentTaskId.isEmpty() && !conversationId.equals(t.conversationId))return false;
             }
-            write(copy(t,remoteId,status,"","","","","",Collections.emptyList(),
+            boolean canFollowup=t.transport==AgentConnectionStore.Transport.BRIDGE&&
+                    status==Status.COMPLETED&&followupAvailable;
+            write(copy(t,remoteId,status,value(output),value(error),value(approvalId),
+                    value(approvalTitle),value(approvalDescription),safeArtifacts,
                     conversationId.isEmpty()?t.conversationId:conversationId,
-                    t.followupAvailable,t.followupReason)); return true; }
+                    canFollowup,value(followupReason),delivery)); return true; }
     }
 
     boolean applyStatus(String clientId, String connectionId, long revision, String remoteId,
@@ -331,17 +444,38 @@ final class AgentTaskStore {
                                             "rejected".equals(status.stopDelivery) ||
                                             "superseded".equals(status.stopDelivery))))) return false;
             if(t.transport==AgentConnectionStore.Transport.BRIDGE && !status.parentTaskId.equals(t.parentTaskId))return false;
-            String output=t.status.terminal()&&!t.output.isEmpty()?t.output:status.output;
-            List<Artifact> artifacts=t.status.terminal()&&!t.artifacts.isEmpty()?t.artifacts:status.artifacts;
-            String conversation=status.conversationId.isEmpty()?t.conversationId:status.conversationId;
-            if(t.status==status.status&&t.output.equals(output)&&t.error.equals(status.error)&&
-                    t.approvalId.equals(status.approvalId)&&t.approvalTitle.equals(status.approvalTitle)&&
-                    t.approvalDescription.equals(status.approvalDescription)&&sameArtifacts(t.artifacts,artifacts)&&
+            boolean terminal=t.status.terminal();
+            boolean refreshCompletedBridge=t.status==Status.COMPLETED&&
+                    t.transport==AgentConnectionStore.Transport.BRIDGE;
+            boolean backfillLegacyOutput=terminal&&t.status==Status.COMPLETED&&
+                    t.output.isEmpty()&&!status.output.isEmpty();
+            String output=terminal&&!backfillLegacyOutput?t.output:status.output;
+            String error=terminal?t.error:status.error;
+            String approvalId=terminal?t.approvalId:status.approvalId;
+            String approvalTitle=terminal?t.approvalTitle:status.approvalTitle;
+            String approvalDescription=terminal?t.approvalDescription:status.approvalDescription;
+            List<Artifact> artifacts=terminal?t.artifacts:status.artifacts;
+            if (t.deliveryContractSupported && status.delivery == null)
+                throw new IllegalStateException("delivery_summary_missing");
+            AgentDelivery.Summary delivery = t.status.terminal() ? t.delivery : status.delivery != null ? status.delivery
+                    : AgentDelivery.forCurrentTask(t.expectedOutputs, status.status, artifacts);
+            String conversation=terminal
+                    ?(refreshCompletedBridge&&t.conversationId.isEmpty()&&!status.conversationId.isEmpty()
+                            ?status.conversationId:t.conversationId)
+                    :(status.conversationId.isEmpty()?t.conversationId:status.conversationId);
+            boolean followupAvailable=refreshCompletedBridge?status.followupAvailable:
+                    terminal?t.followupAvailable:status.followupAvailable;
+            String followupReason=refreshCompletedBridge?status.followupReason:
+                    terminal?t.followupReason:status.followupReason;
+            if(t.status==status.status&&t.output.equals(output)&&t.error.equals(error)&&
+                    t.approvalId.equals(approvalId)&&t.approvalTitle.equals(approvalTitle)&&
+                    t.approvalDescription.equals(approvalDescription)&&sameArtifacts(t.artifacts,artifacts)&&
                     t.conversationId.equals(conversation)&&t.parentTaskId.equals(status.parentTaskId)&&
-                    t.followupAvailable==status.followupAvailable&&t.followupReason.equals(status.followupReason))return true;
-            write(copy(t,remoteId,status.status,output,status.error,status.approvalId,
-                    status.approvalTitle,status.approvalDescription,artifacts,
-                    conversation,status.followupAvailable,status.followupReason)); return true; }
+                    t.followupAvailable==followupAvailable&&t.followupReason.equals(followupReason)&&
+                    sameDelivery(t.delivery,delivery))return true;
+            write(copy(t,remoteId,status.status,output,error,approvalId,
+                    approvalTitle,approvalDescription,artifacts,
+                    conversation,followupAvailable,followupReason,delivery)); return true; }
     }
 
     boolean applyControlStatus(Task expectedTask, AgentTaskClient.RemoteStatus status) throws Exception {
@@ -365,6 +499,12 @@ final class AgentTaskStore {
                     a.sizeBytes!=b.sizeBytes||!a.sha256.equals(b.sha256))return false;
         }
         return true;
+    }
+
+    private static boolean sameDelivery(AgentDelivery.Summary left,AgentDelivery.Summary right){
+        return left!=null&&right!=null&&left.status==right.status&&left.expected.equals(right.expected)&&
+                left.missing.equals(right.missing)&&left.artifactCount==right.artifactCount&&
+                left.reportedByServer==right.reportedByServer;
     }
 
     boolean markLocal(String clientId, Status status, String error) throws Exception {
@@ -436,12 +576,21 @@ final class AgentTaskStore {
                              String approvalId,String approvalTitle,String approvalDescription,
                              List<Artifact> artifacts,String conversationId,boolean followupAvailable,
                              String followupReason) {
+        return copy(t,remote,status,output,error,approvalId,approvalTitle,approvalDescription,
+                artifacts,conversationId,followupAvailable,followupReason,t.delivery);
+    }
+
+    private static Task copy(Task t,String remote,Status status,String output,String error,
+                             String approvalId,String approvalTitle,String approvalDescription,
+                             List<Artifact> artifacts,String conversationId,boolean followupAvailable,
+                             String followupReason,AgentDelivery.Summary delivery) {
         return new Task(t.clientTaskId,t.connectionId,t.connectionRevision,t.origin,t.kind,t.transport,
                 t.credentialRef,t.bridgeId,t.instanceId,t.title,t.connectionName,t.noteId,t.noteRevision,
                 t.submissionJson,t.submissionSha256,remote,status,value(output),value(error),
                 value(approvalId),value(approvalTitle),value(approvalDescription),artifacts,
                 t.createdAt,Math.max(System.currentTimeMillis(),t.updatedAt+1L),conversationId,
-                t.parentTaskId,t.parentClientTaskId,t.childClientTaskId,followupAvailable,followupReason);
+                t.parentTaskId,t.parentClientTaskId,t.childClientTaskId,followupAvailable,followupReason,
+                t.expectedOutputs,t.deliveryContractSupported,delivery);
     }
 
     private static Task withChild(Task t,String child) {
@@ -450,7 +599,8 @@ final class AgentTaskStore {
                 t.submissionJson,t.submissionSha256,t.remoteTaskId,t.status,t.output,t.error,t.approvalId,
                 t.approvalTitle,t.approvalDescription,t.artifacts,t.createdAt,
                 Math.max(System.currentTimeMillis(),t.updatedAt+1L),t.conversationId,t.parentTaskId,
-                t.parentClientTaskId,child,t.followupAvailable,t.followupReason);
+                t.parentClientTaskId,child,t.followupAvailable,t.followupReason,t.expectedOutputs,
+                t.deliveryContractSupported,t.delivery);
     }
 
     private void write(Task task) throws Exception {

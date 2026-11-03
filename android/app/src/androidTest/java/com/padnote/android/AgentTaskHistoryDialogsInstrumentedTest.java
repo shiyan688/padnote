@@ -2,13 +2,16 @@ package com.padnote.android;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.isRoot;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -21,6 +24,7 @@ import android.graphics.Rect;
 import android.app.UiAutomation;
 import android.os.SystemClock;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.TextView;
 import android.text.Layout;
 
@@ -62,6 +66,243 @@ public final class AgentTaskHistoryDialogsInstrumentedTest {
 
     @Test public void emptyTaskListRoutesExistingUnverifiedProfileThroughCurrentGate() throws Exception {
         runEmptyTaskFlow(true);
+    }
+
+    @Test public void connectionTaskRouteKeepsImagePlacementCallbackAndSourceContext() throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        String preferencePrefix="ui-fixture-"+fixtureId+"-";
+        File activityRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(new File(activityRoot,"cache"),"task-history");
+        File prefsDirectory=new File(target.getApplicationInfo().dataDir,"shared_prefs");
+        assertFalse("refuse a reused Activity fixture UUID",activityRoot.exists());
+        assertFalse("refuse a reused task-cache UUID",taskDirectory.exists());
+        assertNoPreferenceFiles(prefsDirectory,preferencePrefix);
+
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config("profile-image-route-"+fixtureId,
+                "合成电脑",AgentConnectionStore.Kind.HERMES,"https://fixture.invalid",
+                "synthetic-token","synthetic-credential",AgentConnectionStore.Transport.BRIDGE,
+                "fixture-bridge","fixture-instance","",3L,1700000000000L,
+                Arrays.asList("run_submission","run_status"));
+        AgentConnectionStore connections=isolatedStore(Collections.singletonList(profile));
+        NoOpExecutor worker=new NoOpExecutor();
+        ActivityScenario<IsolatedLibraryRestoreActivity> scenario=null;
+        AtomicReference<AgentTaskStore> taskStore=new AtomicReference<>();
+        AtomicInteger placementCalls=new AtomicInteger();
+        AtomicReference<AgentTaskStore.Task> placedTask=new AtomicReference<>();
+        AtomicReference<AgentTaskStore.Artifact> placedArtifact=new AtomicReference<>();
+        AtomicReference<String> seededClientTaskId=new AtomicReference<>();
+        String noteId="source-note-"+fixtureId;
+        long noteRevision=37L;
+        try {
+            scenario=launch(target,fixtureId);
+            scenario.onActivity(activity->{
+                assertEquals("task cache belongs to the isolated Activity fixture",
+                        taskDirectory.getAbsolutePath(),new File(activity.getCacheDir(),"task-history").getAbsolutePath());
+                assertFalse("isolated task cache starts empty",taskDirectory.exists());
+                AgentTaskStore tasks=new AgentTaskStore(taskDirectory);taskStore.set(tasks);
+                try {
+                    AgentTaskStore.Task draft=tasks.create(profile,"Synthetic image result",
+                            "Synthetic-only result",noteId,noteRevision,null);
+                    seededClientTaskId.set(draft.clientTaskId);
+                    AgentTaskStore.Artifact artifact=new AgentTaskStore.Artifact("fixture-image",
+                            "graph.png","image/png",128,
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                    assertTrue("persist a completed synthetic PNG task",
+                            tasks.applySubmission(draft.clientTaskId,profile.id,profile.revision,
+                                    "fixture-remote-task",AgentTaskStore.Status.COMPLETED,"","",
+                                    Collections.singletonList(artifact),null));
+                } catch(Exception error){throw new AssertionError("unable to seed isolated task",error);}
+
+                AgentTaskDialogs.ArtifactSaveLauncher save=(task,artifact)->{};
+                AgentConnectionDialogs.TaskDialogsFactory factory=()->{
+                    AgentTaskDialogs dialogs=new AgentTaskDialogs(activity,connections,worker,save,tasks,
+                            VideoTaskDialogs::new,null,AgentTaskClient::new,
+                            new AgentTaskDialogs.TaskConnectionSource(){
+                                @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                                @Override public AgentConnectionStore.Config get(String id){
+                                    return profile.id.equals(id)?profile:null;
+                                }
+                            });
+                    dialogs.setArtifactImagePlacementLauncher((task,artifact)->{
+                        placementCalls.incrementAndGet();placedTask.set(task);placedArtifact.set(artifact);
+                    });
+                    return dialogs;
+                };
+                new AgentConnectionDialogs(activity,connections,worker,()->{},null,save,factory).show();
+            });
+
+            onView(withText("查看电脑任务")).inRoot(isDialog()).perform(click());
+            onView(withText(containsString("Synthetic image result"))).inRoot(isDialog()).perform(click());
+            onView(withText(containsString("放回纸面 · graph.png"))).inRoot(isDialog())
+                    .perform(scrollTo(),click());
+            assertEquals("the injected placement callback runs once",1,placementCalls.get());
+            assertEquals(noteId,placedTask.get().noteId);
+            assertEquals(noteRevision,placedTask.get().noteRevision);
+            assertEquals(seededClientTaskId.get(),placedTask.get().clientTaskId);
+            assertEquals("fixture-image",placedArtifact.get().id);
+            assertEquals(1,taskStore.get().list().size());
+            assertEquals(noteId,taskStore.get().list().get(0).noteId);
+        } finally {
+            worker.shutdownNow();
+            try{if(scenario!=null)scenario.close();}
+            finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
+        }
+    }
+
+    @Test public void resultActionsStayNearCollapsedAnswerAndHistoryShowsDeliveryCues() throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        String preferencePrefix="ui-fixture-"+fixtureId+"-";
+        File activityRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(activityRoot,"cache/task-history");
+        File prefsDirectory=new File(target.getApplicationInfo().dataDir,"shared_prefs");
+        assertFalse("refuse reused Activity fixture UUID",activityRoot.exists());
+        assertFalse("refuse reused task cache",taskDirectory.exists());
+        assertNoPreferenceFiles(prefsDirectory,preferencePrefix);
+
+        Map<String,Boolean> features=new HashMap<>();
+        features.put("run_submission",true);features.put("run_status",true);
+        features.put("delivery_contract_v1",true);
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config(
+                "result-layout-"+fixtureId,"Synthetic result Bridge",AgentConnectionStore.Kind.HERMES,
+                "https://result-layout.example.test/v1","synthetic-token","credential-ref",
+                AgentConnectionStore.Transport.BRIDGE,"bridge-result-layout","instance-result-layout",
+                "",7L,System.currentTimeMillis(),Arrays.asList("run_submission","run_status"),features);
+        String noteId="synthetic-note-"+fixtureId;
+        String answerMarker="ANSWER_VISIBLE_ONCE_"+fixtureId;
+        String technicalMarker="TECHNICAL_INPUT_ONLY_"+fixtureId;
+        StringBuilder longAnswer=new StringBuilder(answerMarker);
+        for(int i=1;i<=24;i++)longAnswer.append("\nSynthetic answer line ").append(i);
+        AgentTaskStore store=new AgentTaskStore(taskDirectory);
+        AgentTaskStore.Task parent;
+        AgentTaskStore.Task child;
+        try{
+            AgentTaskStore.Task draft=store.create(profile,"Synthetic missing-file parent",
+                    "synthetic parent input",noteId,12L,null,"",Collections.singletonList("image"));
+            AgentDelivery.Summary missing=AgentDelivery.forCurrentTask(draft.expectedOutputs,
+                    AgentTaskStore.Status.COMPLETED,Collections.emptyList());
+            assertEquals(AgentDelivery.Status.MISSING,missing.status);
+            assertTrue(store.applySubmission(draft.clientTaskId,profile.id,profile.revision,
+                    "remote-parent-"+fixtureId,AgentTaskStore.Status.COMPLETED,
+                    "remote-parent-"+fixtureId,"",Collections.emptyList(),missing));
+            AgentTaskClient.RemoteStatus parentStatus=new AgentTaskClient.RemoteStatus(
+                    AgentTaskStore.Status.COMPLETED,"Parent result","","","","",
+                    Collections.emptyList(),"remote-parent-"+fixtureId,"",true,"","",missing);
+            assertTrue(store.applyStatus(draft.clientTaskId,profile.id,profile.revision,
+                    "remote-parent-"+fixtureId,parentStatus));
+            parent=store.get(draft.clientTaskId);
+            child=store.createFollowup(parent,profile,technicalMarker,Collections.singletonList("image"));
+            AgentTaskStore.Artifact artifact=new AgentTaskStore.Artifact("synthetic-image-"+fixtureId,
+                    "graph.png","image/png",128,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            AgentDelivery.Summary delivered=AgentDelivery.forCurrentTask(child.expectedOutputs,
+                    AgentTaskStore.Status.COMPLETED,Collections.singletonList(artifact));
+            assertEquals(AgentDelivery.Status.DELIVERED,delivered.status);
+            assertTrue(store.applySubmission(child.clientTaskId,profile.id,profile.revision,
+                    "remote-child-"+fixtureId,AgentTaskStore.Status.COMPLETED,
+                    "remote-parent-"+fixtureId,"remote-parent-"+fixtureId,
+                    Collections.singletonList(artifact),delivered));
+            AgentTaskClient.RemoteStatus acceptedAnswer=new AgentTaskClient.RemoteStatus(
+                    AgentTaskStore.Status.COMPLETED,longAnswer.toString(),"","","","",
+                    Collections.singletonList(artifact),"remote-parent-"+fixtureId,
+                    "remote-parent-"+fixtureId,false,"","",delivered);
+            assertTrue("backfill the accepted answer once into the legacy empty terminal snapshot",
+                    store.applyStatus(child.clientTaskId,profile.id,profile.revision,
+                            "remote-child-"+fixtureId,acceptedAnswer));
+            child=store.get(child.clientTaskId);
+            assertEquals("fixture contains the long accepted answer before opening UI",
+                    longAnswer.toString(),child.output);
+            assertEquals("fixture contains exactly one delivered image",1,child.artifacts.size());
+            assertEquals(AgentDelivery.Status.DELIVERED,child.delivery.status);
+        }catch(Exception error){throw new AssertionError("prepare isolated result-layout task history",error);}
+
+        ActivityScenario<IsolatedLibraryRestoreActivity> scenario=null;
+        NoOpExecutor worker=new NoOpExecutor();
+        AtomicInteger appendCalls=new AtomicInteger(),saveCalls=new AtomicInteger(),placeCalls=new AtomicInteger();
+        String childId=child.clientTaskId;
+        String parentId=parent.clientTaskId;
+        try{
+            scenario=launch(target,fixtureId);
+            scenario.onActivity(activity->{
+                AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+                    @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                    @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+                };
+                AgentTaskDialogs dialogs=new AgentTaskDialogs(activity,isolatedStore(Collections.emptyList()),
+                        worker,(task,artifact)->saveCalls.incrementAndGet(),store,
+                        VideoTaskDialogs::new,note->true,AgentTaskClient::new,source);
+                dialogs.setResultAppender(id->{assertEquals(childId,id);appendCalls.incrementAndGet();});
+                dialogs.setArtifactImagePlacementLauncher((task,artifact)->{
+                    assertEquals(childId,task.clientTaskId);assertEquals("graph.png",artifact.name);
+                    placeCalls.incrementAndGet();
+                });
+                dialogs.showForNote(noteId);
+            });
+
+            String missingCue=target.getString(R.string.flow_history_delivery_missing,
+                    target.getString(R.string.flow_delivery_kind_image));
+            String deliveredCue=target.getString(R.string.flow_history_delivery_delivered,
+                    target.getString(R.string.flow_delivery_kind_image));
+            onView(withText(containsString(missingCue))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(containsString(deliveredCue))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(allOf(containsString("Synthetic missing-file parent"),
+                    containsString(missingCue)))).inRoot(isDialog()).perform(click());
+            onView(withText(containsString(deliveredCue))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(target.getString(R.string.flow_close))).inRoot(isDialog()).perform(click());
+
+            scenario.onActivity(activity->{
+                AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+                    @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                    @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+                };
+                AgentTaskDialogs dialogs=new AgentTaskDialogs(activity,isolatedStore(Collections.emptyList()),
+                        worker,(task,artifact)->saveCalls.incrementAndGet(),store,
+                        VideoTaskDialogs::new,note->true,AgentTaskClient::new,source);
+                dialogs.setResultAppender(id->{assertEquals(childId,id);appendCalls.incrementAndGet();});
+                dialogs.setArtifactImagePlacementLauncher((task,artifact)->{
+                    assertEquals(childId,task.clientTaskId);assertEquals("graph.png",artifact.name);
+                    placeCalls.incrementAndGet();
+                });
+                dialogs.showDetail(childId);
+            });
+
+            String placeLabel=target.getString(R.string.agent_image_place_on_paper,"graph.png");
+            String saveLabel=target.getString(R.string.flow_save_artifact,"graph.png","128 B");
+            String appendLabel=target.getString(R.string.flow_append_result_to_note);
+            String sourceLabel=target.getString(R.string.flow_return_to_note);
+            String technicalLabel=target.getString(R.string.flow_expand_task_details);
+            onView(withText(containsString(answerMarker))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(isRoot()).inRoot(isDialog()).perform(assertVisibleTextCount(answerMarker,1));
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextMaxLines(answerMarker,8));
+            onView(withText(target.getString(R.string.flow_expand_full_result))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(placeLabel)).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(saveLabel)).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(appendLabel)).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(sourceLabel)).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextOrder(placeLabel,technicalLabel));
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextOrder(saveLabel,technicalLabel));
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextOrder(appendLabel,technicalLabel));
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextOrder(sourceLabel,technicalLabel));
+            assertEquals("visibility does not invoke the placement callback",0,placeCalls.get());
+            assertEquals("visibility does not invoke the save callback",0,saveCalls.get());
+            assertEquals("visibility does not append the answer",0,appendCalls.get());
+
+            onView(withText(target.getString(R.string.flow_expand_task_details))).inRoot(isDialog()).perform(click());
+            onView(withText(containsString(technicalMarker))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText(containsString(answerMarker))).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(isRoot()).inRoot(isDialog()).perform(assertVisibleTextCount(answerMarker,1));
+            onView(withText(target.getString(R.string.flow_expand_full_result))).inRoot(isDialog()).perform(click());
+            onView(isRoot()).inRoot(isDialog()).perform(assertTextMaxLines(answerMarker,Integer.MAX_VALUE));
+            assertEquals("one child task remains linked to its parent",1,store.children(parentId).size());
+            assertEquals("the child still carries exactly one returned image artifact",1,
+                    store.get(childId).artifacts.size());
+            onView(withText(target.getString(R.string.flow_close))).inRoot(isDialog()).perform(click());
+        }finally{
+            worker.shutdownNow();
+            try{if(scenario!=null)scenario.close();}
+            finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
+        }
     }
 
     private void runEmptyTaskFlow(boolean hasProfile) throws Exception {
@@ -355,6 +596,132 @@ public final class AgentTaskHistoryDialogsInstrumentedTest {
                     statusQueried.await(5,TimeUnit.SECONDS));
             onView(withText("关闭")).inRoot(isDialog()).perform(click());
         } finally {
+            worker.shutdownNow();
+            try{if(scenario!=null)scenario.close();}
+            finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
+        }
+    }
+
+    @Test public void completedMissingImageCanBeExplicitlyRefreshedIntoRepairWithoutChangingParentId() throws Exception {
+        Context target=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String fixtureId=java.util.UUID.randomUUID().toString();
+        File activityRoot=new File(target.getFilesDir(),"ui-fixtures/"+fixtureId);
+        File taskDirectory=new File(activityRoot,"cache/task-history");
+        File prefsDirectory=new File(target.getApplicationInfo().dataDir,"shared_prefs");
+        String preferencePrefix="ui-fixture-"+fixtureId+"-";
+        assertFalse("refuse reused Activity fixture UUID",activityRoot.exists());
+        java.util.Map<String,Boolean> features=new java.util.LinkedHashMap<>();
+        features.put("run_submission",true);features.put("run_status",true);
+        features.put("delivery_contract_v1",true);
+        AgentConnectionStore.Config profile=new AgentConnectionStore.Config(
+                "completed-refresh-"+fixtureId,"Synthetic refresh Bridge",AgentConnectionStore.Kind.HERMES,
+                "https://bridge.example.test/v1","synthetic-token","credential-refresh-"+fixtureId,
+                AgentConnectionStore.Transport.BRIDGE,"bridge-refresh-"+fixtureId,"instance-refresh-"+fixtureId,
+                "",7L,20L,Arrays.asList("run_submission","run_status"),features);
+        AtomicReference<AgentTaskStore> storeRef=new AtomicReference<>();
+        AtomicReference<AgentTaskStore.Task> originalRef=new AtomicReference<>();
+        AtomicInteger gets=new AtomicInteger(),posts=new AtomicInteger();
+        CountDownLatch statusRead=new CountDownLatch(1);
+        AgentTaskClient.Factory clients=()->new AgentTaskClient(request->{
+            if(!"GET".equals(request.method)){
+                posts.incrementAndGet();
+                return response(request,500,"{\"error\":{\"message\":\"unexpected method\"}}");
+            }
+            gets.incrementAndGet();
+            statusRead.countDown();
+            String remote="remote-missing-image";
+            org.json.JSONObject artifact=new org.json.JSONObject().put("id","late-image")
+                    .put("name","late.png").put("media_type","image/png")
+                    .put("size_bytes",8L).put("sha256","a".repeat(64));
+            org.json.JSONObject delivery=new org.json.JSONObject().put("status","delivered")
+                    .put("expected",new org.json.JSONArray(Collections.singletonList("image")))
+                    .put("missing",new org.json.JSONArray()).put("artifact_count",1)
+                    .put("reported_by_server",true);
+            org.json.JSONObject body=new org.json.JSONObject().put("task_id",remote)
+                    .put("status","completed").put("instance_id",profile.instanceId)
+                    .put("conversation_id",remote).put("parent_task_id","")
+                    .put("followup_available",true).put("followup_reason","")
+                    .put("output","late changed output").put("error","late changed error")
+                    .put("approval",new org.json.JSONObject().put("approval_id","late-approval"))
+                    .put("artifacts",new org.json.JSONArray().put(artifact)).put("delivery",delivery);
+            return response(request,200,body.toString());
+        });
+        ActivityScenario<IsolatedLibraryRestoreActivity> scenario=null;
+        NoOpExecutor worker=new NoOpExecutor();
+        try{
+            scenario=launch(target,fixtureId);
+            scenario.onActivity(activity->{
+                AgentTaskStore store=new AgentTaskStore(taskDirectory);
+                try{
+                    AgentTaskStore.Task draft=store.create(profile,"Missing image task",
+                            "C42_FIXTURE:missing-image","synthetic-note-"+fixtureId,9L,
+                            null,"",Collections.singletonList("image"));
+                    AgentDelivery.Summary missing=AgentDelivery.forCurrentTask(draft.expectedOutputs,
+                            AgentTaskStore.Status.COMPLETED,Collections.emptyList());
+                    assertEquals(AgentDelivery.Status.MISSING,missing.status);
+                    assertTrue(store.applySubmission(draft.clientTaskId,profile.id,profile.revision,
+                            "remote-missing-image",AgentTaskStore.Status.COMPLETED,"","",
+                            Collections.emptyList(),missing));
+                    assertTrue("set the accepted terminal text before testing GET-only metadata refresh",
+                            store.applyStatus(draft.clientTaskId,profile.id,profile.revision,
+                                    "remote-missing-image",new AgentTaskClient.RemoteStatus(
+                                            AgentTaskStore.Status.COMPLETED,"original accepted text","","","","",
+                                            Collections.emptyList(),"","",false,"", "",missing)));
+                    originalRef.set(store.get(draft.clientTaskId));
+                }catch(Exception error){throw new AssertionError("prepare terminal missing-image task",error);}
+                storeRef.set(store);
+                AgentTaskDialogs.TaskConnectionSource source=new AgentTaskDialogs.TaskConnectionSource(){
+                    @Override public List<AgentConnectionStore.Config> list(){return Collections.singletonList(profile);}
+                    @Override public AgentConnectionStore.Config get(String id){return profile.id.equals(id)?profile:null;}
+                };
+                new AgentTaskDialogs(activity,isolatedStore(Collections.emptyList()),worker,null,store,
+                        VideoTaskDialogs::new,null,clients,source).showDetail(originalRef.get().clientTaskId);
+            });
+
+            assertEquals(AgentTaskStore.Status.COMPLETED,originalRef.get().status);
+            assertEquals(AgentDelivery.Status.MISSING,originalRef.get().delivery.status);
+            assertFalse(originalRef.get().followupAvailable);
+            assertTrue("completed Bridge receipt exposes an explicit status read",
+                    AgentTaskDialogs.canRefreshRemoteStatus(originalRef.get()));
+            onView(withText("刷新")).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText("继续补齐文件")).inRoot(isDialog()).check(matches(not(isDisplayed())));
+            assertEquals("opening a completed task does not poll or submit",0,gets.get());
+            assertEquals(0,posts.get());
+
+            onView(withText("刷新")).inRoot(isDialog()).perform(click());
+            assertTrue("one explicit click makes one bounded status read",statusRead.await(5,TimeUnit.SECONDS));
+            long deadline=SystemClock.uptimeMillis()+5000L;
+            AgentTaskStore.Task refreshed=null;
+            while(SystemClock.uptimeMillis()<deadline){
+                refreshed=storeRef.get().get(originalRef.get().clientTaskId);
+                if(refreshed!=null&&refreshed.followupAvailable)break;
+                SystemClock.sleep(25L);
+            }
+            assertTrue("GET supplies the missing session metadata",refreshed!=null);
+            assertTrue(refreshed.followupAvailable);
+            assertEquals(originalRef.get().clientTaskId,refreshed.clientTaskId);
+            assertEquals("remote-missing-image",refreshed.remoteTaskId);
+            assertEquals(AgentTaskStore.Status.COMPLETED,refreshed.status);
+            assertEquals("remote-missing-image",refreshed.conversationId);
+            assertEquals("terminal output stays frozen",originalRef.get().output,refreshed.output);
+            assertEquals("terminal error stays frozen",originalRef.get().error,refreshed.error);
+            assertTrue("late artifacts do not replace the terminal snapshot",refreshed.artifacts.isEmpty());
+            assertEquals(AgentDelivery.Status.MISSING,refreshed.delivery.status);
+            assertEquals(Collections.singletonList("image"),refreshed.expectedOutputs);
+            assertEquals("refresh is GET-only",1,gets.get());
+            assertEquals("refresh never submits or creates a task",0,posts.get());
+            assertTrue(storeRef.get().children(originalRef.get().clientTaskId).isEmpty());
+            onView(withText("继续补齐文件")).inRoot(isDialog()).check(matches(isDisplayed())).perform(click());
+            onView(withText("继续补齐缺少的文件")).inRoot(isDialog()).check(matches(isDisplayed()));
+            onView(withText("取消")).inRoot(isDialog()).perform(click());
+            assertTrue("canceling the repair prompt creates no child",
+                    storeRef.get().children(originalRef.get().clientTaskId).isEmpty());
+            AgentTaskStore.Task finalParent=storeRef.get().get(originalRef.get().clientTaskId);
+            assertEquals(originalRef.get().clientTaskId,finalParent.clientTaskId);
+            assertEquals(AgentTaskStore.Status.COMPLETED,finalParent.status);
+            assertEquals(AgentDelivery.Status.MISSING,finalParent.delivery.status);
+            onView(withText("关闭")).inRoot(isDialog()).perform(click());
+        }finally{
             worker.shutdownNow();
             try{if(scenario!=null)scenario.close();}
             finally{cleanupOwnedFixture(target,activityRoot,taskDirectory,prefsDirectory,preferencePrefix);}
@@ -736,6 +1103,66 @@ public final class AgentTaskHistoryDialogsInstrumentedTest {
 
     private static void assertTextAbsent(String text) {
         onView(withText(containsString(text))).inRoot(isDialog()).check(doesNotExist());
+    }
+
+    private static ViewAction assertTextOrder(String first,String second) {
+        return new ViewAction() {
+            @Override public Matcher<View> getConstraints(){return isRoot();}
+            @Override public String getDescription(){return "verify dialog layout order for result actions";}
+            @Override public void perform(UiController controller,View root){
+                List<String> texts=new ArrayList<>();collectText(root,texts);
+                int firstIndex=texts.indexOf(first),secondIndex=texts.indexOf(second);
+                assertTrue("first result action is in the dialog: "+first,firstIndex>=0);
+                assertTrue("technical-details toggle is in the dialog: "+second,secondIndex>=0);
+                assertTrue("result action precedes technical details",firstIndex<secondIndex);
+            }
+        };
+    }
+
+    private static ViewAction assertVisibleTextCount(String fragment,int expected) {
+        return new ViewAction() {
+            @Override public Matcher<View> getConstraints(){return isRoot();}
+            @Override public String getDescription(){return "count visible dialog text containing a marker";}
+            @Override public void perform(UiController controller,View root){
+                AtomicInteger count=new AtomicInteger();countVisibleText(root,fragment,count);
+                assertEquals("visible result marker occurrences",expected,count.get());
+            }
+        };
+    }
+
+    private static ViewAction assertTextMaxLines(String fragment,int expectedMaxLines) {
+        return new ViewAction() {
+            @Override public Matcher<View> getConstraints(){return isRoot();}
+            @Override public String getDescription(){return "verify bounded or expanded result preview";}
+            @Override public void perform(UiController controller,View root){
+                AtomicInteger matches=new AtomicInteger();findTextMaxLines(root,fragment,expectedMaxLines,matches);
+                assertEquals("one visible answer view has the expected max-lines policy",1,matches.get());
+            }
+        };
+    }
+
+    private static void collectText(View view,List<String> values){
+        if(view instanceof TextView){CharSequence text=((TextView)view).getText();if(text!=null)values.add(text.toString());}
+        if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)collectText(group.getChildAt(i),values);}
+    }
+
+    private static void countVisibleText(View view,String fragment,AtomicInteger count){
+        if(view.getVisibility()==View.VISIBLE&&view.isShown()&&view instanceof TextView){
+            CharSequence text=((TextView)view).getText();
+            if(text!=null&&text.toString().contains(fragment))count.incrementAndGet();
+        }
+        if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)countVisibleText(group.getChildAt(i),fragment,count);}
+    }
+
+    private static void findTextMaxLines(View view,String fragment,int expectedMaxLines,AtomicInteger matches){
+        if(view.getVisibility()==View.VISIBLE&&view.isShown()&&view instanceof TextView){
+            TextView textView=(TextView)view;CharSequence text=textView.getText();
+            if(text!=null&&text.toString().contains(fragment)){
+                assertEquals("result TextView maxLines",expectedMaxLines,textView.getMaxLines());
+                matches.incrementAndGet();
+            }
+        }
+        if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)findTextMaxLines(group.getChildAt(i),fragment,expectedMaxLines,matches);}
     }
 
     private static void assertNoPreferenceFiles(File directory, String prefix) {

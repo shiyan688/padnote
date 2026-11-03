@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">結果を保存しました。ノートを開き直すと表示されます。</string>
     <string name="flow_agent_result_save_uncertain">保存状態を確認できません。再試行する前にノートを開き直して確認してください。</string>
     <string name="flow_agent_result_save_failed">結果を保存できませんでした。ノートは変更されていません。</string>
-    <string name="flow_expand_task_details">タスクの詳細を表示</string>
-    <string name="flow_collapse_task_details">タスクの詳細を閉じる</string>
+    <string name="flow_expand_task_details">技術的な詳細を表示</string>
+    <string name="flow_collapse_task_details">技術的な詳細を隠す</string>
     <string name="flow_agent_result_destination_summary">%1$s に保存（%2$d ページ目から）</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">不足しているファイル: %1$s</string>
+    <string name="flow_history_delivery_delivered">受け取ったファイル: %1$s</string>
+    <string name="flow_expand_full_result">全文を表示</string>
+    <string name="flow_collapse_full_result">折りたたむ</string>
+    <string name="flow_failure_reason_label">理由：</string>
+    <string name="flow_delivery_heading">受け取りたいファイル</string>
+    <string name="flow_delivery_text_default">テキスト回答（既定）</string>
+    <string name="flow_delivery_selector_hint">このタスクで受け取りたいファイルを選択します。ファイルの指定は回答内容の正しさを確認するものではありません。</string>
+    <string name="flow_delivery_legacy_hint">このアシスタントは納品状態を報告しません。PadNote は返された添付ファイルの種類を確認します。</string>
+    <string name="flow_delivery_selected">%1$sを指定</string>
+    <string name="flow_delivery_not_selected">%1$sを指定する</string>
+    <string name="flow_delivery_kind_image">画像</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">動画</string>
+    <string name="flow_delivery_kind_audio">音声</string>
+    <string name="flow_delivery_kind_file">その他のファイル</string>
+    <string name="flow_delivery_legacy_instruction">指定された%1$sを、実際に読み取れる添付ファイルとして返してください。終了前に各ファイルが存在し、開けることを確認してください。</string>
+    <string name="flow_delivery_server_checked">接続中のアシスタントが報告した納品状態です。</string>
+    <string name="flow_delivery_local_checked">使用可能なサーバーの納品概要が得られなかったため、PadNote が添付ファイルの種類を端末内で確認しました。</string>
+    <string name="flow_delivery_delivered">指定した添付ファイルを受信しました：%1$s。確認するのはファイルの種類のみで、内容の正しさは確認していません。</string>
+    <string name="flow_delivery_missing">タスクの実行は終了しました。不足：%1$s。受信済み：%2$s。</string>
+    <string name="flow_delivery_none">なし</string>
+    <string name="flow_delivery_repair_button">不足ファイルを追加する</string>
+    <string name="flow_delivery_repair_title">不足ファイルを追加する</string>
+    <string name="flow_delivery_repair_unavailable">このタスクでは同じセッションでの続行を利用できません。</string>
+    <string name="flow_delivery_repair_prefill">不足している添付ファイルを提出してください：%1$s。読み取れる実ファイルとして保存し、終了前に存在と開けることを確認してください。</string>
+    <string name="flow_delivery_repair_empty">不足しているすべてのファイル種類を選択したままにしてください。</string>
+    <string name="flow_pairing_saved_checking">%1$d 件の接続を保存しました。バックグラウンドで利用状況を確認します。PadNote は引き続き使用できます。</string>
+    <string name="flow_auto_probe_summary">確認完了：%1$d 件の確認に成功、%2$d 件は対応が必要、%3$d 件の古い結果は無視されました。接続一覧で詳細を確認し、手動で再試行してください。</string>
+    <string name="flow_cap_note_context_bundle">ノートの紙面コンテキストを受信</string>
+    <string name="flow_cap_hermes_paper_next">ノートの紙面コンテキストを送るには、ノートを開いて「共有してパソコンの Agent に送信」を選択します。</string>
 </resources>

@@ -29,7 +29,7 @@
 `GET /padnote/v1/agents/{instance_id}/capabilities`，Bearer 为该设备该实例的 token。返回：
 
 ```json
-{"object":"padnote.agent.capabilities","protocol_version":1,"bridge_id":"uuid","instance_id":"uuid","kind":"hermes","name":"家用电脑 Hermes","features":{"run_submission":true,"run_status":true,"run_stop":true,"run_approval_response":true,"task_bundle":true,"artifacts":true}}
+{"object":"padnote.agent.capabilities","protocol_version":1,"bridge_id":"uuid","instance_id":"uuid","kind":"hermes","name":"家用电脑 Hermes","features":{"run_submission":true,"run_status":true,"run_stop":true,"run_approval_response":true,"task_bundle":true,"artifacts":true,"delivery_contract_v1":true}}
 ```
 
 能力反映真实上游检查和当前已实现功能；不宣传未知/未实现的能力。该响应不等于视频 Skill/TTS/渲染依赖已可用。OpenClaw 本轮先检测和引导，其原生配对/任务适配未完成时不得签发可执行连接。
@@ -37,14 +37,14 @@
 ## 任务
 
 - 首期采用有界状态轮询，避免三端各自猜测 SSE 恢复语义；SSE 为后续可选能力，不因缺少 SSE 假报离线。前台 2–3 秒刷新，失败退避；切后台/关闭页停止轮询，重开按持久任务ID恢复。保留用户手动刷新。
-- `POST /padnote/v1/agents/{instance_id}/runs`，Bearer + `Idempotency-Key: <client_task_id>`。JSON：`{client_task_id, title, input, source:{note_id, note_revision}, bundle_base64?, bundle_sha256?}`。客户端先持久化任务与不可变 payload，再提交；网络结果不明使用同一 key 与完全相同正文重试。
+- `POST /padnote/v1/agents/{instance_id}/runs`，Bearer + `Idempotency-Key: <client_task_id>`。JSON：`{client_task_id, title, input, source:{note_id, note_revision}, bundle_base64?, bundle_sha256?, expected_outputs?:["image","pdf"]}`。`expected_outputs` 仅在能力 `delivery_contract_v1=true` 时发送；允许唯一的 `file`、`image`、`pdf`、`video`、`audio` 枚举，最多五项。缺省或空数组表示纯文字/不要求文件；不从提示词推断。后续回合可以显式选择交付类型，但不能携带 bundle 或 `required_capability`。客户端先持久化任务与不可变 payload，再提交；网络结果不明使用同一 key 与完全相同正文重试。
 - input 最多 128 KiB，title 最多 256 字符；可选 ZIP 原始大小最多 8 MiB，整个请求最多 12 MiB。素材必须来自用户明确选定的当前内容快照，不能后台上传整本笔记。
 - Bridge 将任务绑定到服务端签发的 connection_id/实例，创建随机任务目录。device_id 为客户端自报信息，只作显示关联，不能授予旧配对的任务访问权限；重新配对不自动继承旧 connection_id 的任务。ZIP 只接受 `request.json`、`input/manifest.json`、`input/content.md` 和空 `work/.keep`、`output/.keep`，拒绝其他条目、重复路径、绝对路径、符号链接、越界、过大解压及哈希不符；校验后写入专属目录，不直接 extractall。
 - ZIP 中的 `request.json` 沿用已有 `video.explain.v1` 契约，必须保留原内容，不能用 Bridge 的网络提交正文覆盖。验证其 source.note_id/note_revision 与本次提交对应，并核对 manifest 和内容摘要。Bridge 提交信息可另存 `work/padnote-submission.json`；两种 task_id 各有自己的命名空间，不要求相等。
-- Bridge 调用 Hermes `POST /v1/runs`，只传 input（含已确认的说明、任务目录位置）、可选 session_id/instructions；Hermes 不支持直接上传此 ZIP。助手须与 Hermes 文件系统互通，WSL 场景优先在同一 distro 运行。不能把提示词路径限制称为 OS 沙箱。
+- Bridge 调用 Hermes `POST /v1/runs`，只传 input（含已确认的说明、任务目录位置）、可选 session_id/instructions；Hermes 不支持直接上传此 ZIP。助手须与 Hermes 文件系统互通，WSL 场景优先在同一 distro 运行。当前回合的绝对 output 目录会写入指令；请求文件时需在该目录实际生成文件，并在结束前确认文件存在、可读且格式符合要求。不要依赖当前工作目录。路径约定是工作流指引，不是操作系统沙箱。
 - Bridge 使用带服务端 connection_id/实例命名空间的确定幂等键调用上游，持久化原始 payload 摘要、状态和映射后再发起调用；同键异文返回 409。结果不明保留 submitting，超过上游幂等保留窗口不自动重发。
-- 返回 202：`{task_id, instance_id, status:"running"}`。task_id 为 Bridge 的不透明任务ID，不能直接暴露远端 run ID 为授权依据。
-- `GET /padnote/v1/agents/{instance_id}/runs/{task_id}` 返回 `{task_id,instance_id,status,output?,error?,approval?,artifacts:[]}`。标准状态：submitting / running / waiting_for_approval / stopping / completed / failed / cancelled / interrupted。终态对账后持久化，避免上游短时保留导致历史丢失。
+- 返回 202：`{task_id, instance_id, status:"running", delivery:{status,expected,missing,artifact_count}}`。task_id 为 Bridge 的不透明任务ID，不能直接暴露远端 run ID 为授权依据。
+- `GET /padnote/v1/agents/{instance_id}/runs/{task_id}` 返回 `{task_id,instance_id,status,output?,error?,approval?,artifacts:[],delivery:{status,expected,missing,artifact_count}}`。delivery 状态独立于执行状态：未声明时 `not_requested`，执行尚未 completed 时 `pending`；completed 后使用终态时已验证并保存的 artifact 快照判定为 `delivered` 或 `missing`。缺项只提示补齐，不覆盖失败/取消等执行结果。旧任务无声明时不从文本猜测。标准执行状态：submitting / running / waiting_for_approval / stopping / completed / failed / cancelled / interrupted。终态对账后持久化，避免上游短时保留导致历史丢失。
 - `POST .../runs/{task_id}/stop`：空 JSON，请求后显示 stopping，最终 cancelled 只能由上游状态确认。
 - `POST .../runs/{task_id}/approval`：`{approval_id, decision:"once"|"deny"}`。只接受当前任务当前待审批ID；禁止任意工具全局 allow。已核验 Hermes 固定版本 `c3e01c753dcbb0e881e693df89fe4141b79b2b03`：上游待审批字段为 `approval.request_id`，上游 POST 正文必须是 `{request_id: approval_id, choice: decision}`，不是把 Bridge 的字段直接转发。只支持 once/deny，显式拒绝 all/resolve_all/session/always；上游缺少 request_id 时显示等待电脑处理，不发无绑定审批。
 - 规范化待审批对象为 `{approval_id, title, description}`；只从当前上游 `approval.request_id` 构造 ID，title/description 为受长度限制的纯文本（可引用已脱敏 command/reason），不可当 HTML/指令执行。
@@ -52,7 +52,7 @@
 
 ## 产物
 
-Bridge 仅从当前任务的 `output/` 收集允许类型的普通文件：Markdown/text、PDF、PNG/JPEG、MP4、PPTX，拒绝符号链接和目录越界。响应条目 `{id,name,media_type,size_bytes,sha256}`；id 不包含文件路径。
+Bridge 仅从当前任务的 `output/` 收集允许类型的普通文件：Markdown/text、PDF、PNG/JPEG、MP4、PPTX、WAV、MP3、M4A、OGG、FLAC，拒绝符号链接和目录越界。响应条目 `{id,name,media_type,size_bytes,sha256}`；id 不包含文件路径。交付类型按已验证快照中的 MIME 判定：`file` 接受任何非空已暴露产物，`image` 仅接受 PNG/JPEG，`pdf` 为 PDF，`video`/`audio` 接受对应 MIME 主类型。此检查确认文件已返回及其描述符类型，不等于内容或数学结果的语义验收；客户端仍使用既有下载校验。
 
 `GET .../runs/{task_id}/artifacts/{id}` 在相同授权下返回二进制。单件默认最大 100 MiB，任务目录总量默认 256 MiB；有限枚举/读取，客户端下载到临时文件，校验大小和SHA256后再提供预览/保存，不跟随产物给出的外部URL，也不自动执行或写回笔记。上游 output 文本作为可读结果先返回；文件生成取决于所选Agent的Skill/工具实际能力。
 

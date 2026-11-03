@@ -779,6 +779,7 @@ class BridgeService:
                 "video_revision": False, "video_operations": operations,
                 "video_production": operations, "video_task_submission": operations,
                 "note_context_bundle": False,
+                "delivery_contract_v1": False,
             })
             self.store.authenticate(instance_id, bearer)
             readiness["source"] = "cached"
@@ -802,6 +803,8 @@ class BridgeService:
             and features.get("task_bundle") is True
             and features.get("run_submission") is True)
         features["artifacts"] = True
+        features["delivery_contract_v1"] = bool(
+            instance["kind"] == "hermes" and features.get("run_submission") is True)
         # Video revision protocol remains disabled.
         features["video_revision"] = False
         scheduler = self._video_scheduler
@@ -1912,15 +1915,17 @@ class BridgeService:
             if status == "completed":
                 artifacts = public_artifacts(collect_artifacts(
                     self.store.tasks_dir / run["task_id"], run["task_id"]))
-            run = self.store.update_run(
-                run["task_id"],
-                upstream_run_id=upstream_run_id,
-                status=status,
-                output=normalized["output"],
-                error=normalized["error"],
-                approval=normalized["approval"],
-                artifacts=artifacts,
-            )
+            fields = {
+                "upstream_run_id": upstream_run_id,
+                "status": status,
+                "output": normalized["output"],
+                "error": normalized["error"],
+                "approval": normalized["approval"],
+                "artifacts": artifacts,
+            }
+            if normalized.get("session_id"):
+                fields["session_id"] = normalized["session_id"]
+            run = self.store.update_run(run["task_id"], **fields)
         except HermesError as error:
             if run.get("upstream_run_id"):
                 if error.code == "upstream_status_unknown":
@@ -2422,6 +2427,7 @@ class BridgeService:
         task_root = projected["task_root"]
         input_root = projected["input_root"]
         output_root = projected["output_root"]
+        delivery_instruction = BridgeService._delivery_instruction(payload.get("expected_outputs"))
         if payload.get("parent_task_id"):
             parent_root = projected["parent_input_root"]
             return (
@@ -2430,6 +2436,7 @@ class BridgeService:
                 f"{payload['title']}\n\n{payload['input']}\n\n"
                 f"PadNote follow-up workspace: {task_root}\n"
                 f"Write only this turn's deliverables under {output_root}/. The reference snapshot belongs to the parent turn. "
+                f"{delivery_instruction} "
                 "This is a workflow boundary, not an operating-system sandbox."
             )
         if payload.get("required_capability") == "note_context_bundle":
@@ -2451,13 +2458,14 @@ class BridgeService:
                 "assume a particular model/provider or incur paid usage without user approval. This is not a "
                 "built-in video job.\n\n"
                 f"PadNote task workspace: {task_root}\n"
-                f"Write deliverable files under {output_root}/. This is a workflow boundary, not an "
+                f"Write deliverable files under {output_root}/. {delivery_instruction} This is a workflow boundary, not an "
                 "operating-system sandbox."
             )
         return (
             f"{payload['title']}\n\n{payload['input']}\n\n"
             f"PadNote task workspace: {task_root}\n"
             f"Read only the user-confirmed input in this workspace. Write deliverable files under {output_root}/. "
+            f"{delivery_instruction} "
             "This is a workflow boundary, not an operating-system sandbox."
         )
 
@@ -2485,7 +2493,8 @@ class BridgeService:
         if validate_identifier(idempotency_key, "Idempotency-Key") != client_task_id:
             raise ValidationError("Idempotency-Key must equal client_task_id")
         allowed_fields = {"client_task_id", "title", "input", "source", "bundle_base64",
-                          "bundle_sha256", "parent_task_id", "required_capability"}
+                          "bundle_sha256", "parent_task_id", "required_capability",
+                          "expected_outputs"}
         if set(payload) - allowed_fields:
             raise ValidationError("request contains unsupported fields")
         parent_task_id = None
@@ -2509,6 +2518,13 @@ class BridgeService:
             raise ValidationError("required_capability is unsupported")
         if required_capability is not None and (parent_task_id or "bundle_base64" not in payload):
             raise ValidationError("required_capability is valid only for a bundled root task")
+        expected_outputs = payload.get("expected_outputs", [])
+        output_kinds = {"file", "image", "pdf", "video", "audio"}
+        if not isinstance(expected_outputs, list) or len(expected_outputs) > len(output_kinds) \
+                or any(not isinstance(item, str) or item not in output_kinds
+                       for item in expected_outputs) \
+                or len(set(expected_outputs)) != len(expected_outputs):
+            raise ValidationError("expected_outputs must contain unique supported output kinds")
         clean = {
             "client_task_id": client_task_id,
             "title": title,
@@ -2519,6 +2535,10 @@ class BridgeService:
             clean["parent_task_id"] = parent_task_id
         if required_capability is not None:
             clean["required_capability"] = required_capability
+        # Omit the empty value so legacy idempotency digests for ordinary
+        # requests remain compatible with pre-contract request bodies.
+        if expected_outputs:
+            clean["expected_outputs"] = sorted(expected_outputs)
         if "bundle_base64" in payload or "bundle_sha256" in payload:
             clean["bundle_base64"] = payload.get("bundle_base64")
             clean["bundle_sha256"] = validate_text(payload.get("bundle_sha256"), "bundle_sha256", 64)
@@ -2527,6 +2547,8 @@ class BridgeService:
     @staticmethod
     def _upstream_input(payload: dict[str, Any], task_dir: Path,
                         source_snapshot: Path | None = None) -> str:
+        output_root = str((task_dir / "output").resolve())
+        delivery_instruction = BridgeService._delivery_instruction(payload.get("expected_outputs"))
         if payload.get("parent_task_id"):
             if source_snapshot is None:
                 raise ValidationError("follow-up source snapshot is unavailable")
@@ -2535,7 +2557,8 @@ class BridgeService:
                 f"Read the original confirmed snapshot at {source_snapshot} as read-only reference.\n\n"
                 f"{payload['title']}\n\n{payload['input']}\n\n"
                 f"PadNote follow-up workspace: {task_dir}\n"
-                "Write only this turn's deliverables under output/. The reference snapshot belongs to the parent turn. "
+                f"Write only this turn's deliverables under {output_root}/. The reference snapshot belongs to the parent turn. "
+                f"{delivery_instruction} "
                 "This path instruction is a workflow boundary, not an operating-system sandbox."
             )
         if payload.get("required_capability") == "note_context_bundle":
@@ -2557,14 +2580,33 @@ class BridgeService:
                 "assume a particular model/provider or incur paid usage without user approval. This is not a "
                 "built-in video job.\n\n"
                 f"PadNote task workspace: {task_dir}\n"
-                "Write deliverable files under output/. This path instruction is a workflow boundary, not an "
+                f"Write deliverable files under {output_root}/. {delivery_instruction} This path instruction is a workflow boundary, not an "
                 "operating-system sandbox."
             )
         return (
             f"{payload['title']}\n\n{payload['input']}\n\n"
             f"PadNote task workspace: {task_dir}\n"
-            "Read only the user-confirmed input in this workspace. Write deliverable files under output/. "
+            f"Read only the user-confirmed input in this workspace. Write deliverable files under {output_root}/. "
+            f"{delivery_instruction} "
             "This path instruction is a workflow boundary, not an operating-system sandbox."
+        )
+
+    @staticmethod
+    def _delivery_instruction(expected_outputs: Any) -> str:
+        if not isinstance(expected_outputs, list) or not expected_outputs:
+            return ""
+        formats = {
+            "file": "any file type supported by the PadNote assistant",
+            "image": "PNG or JPEG image",
+            "pdf": "PDF document",
+            "video": "video file",
+            "audio": "WAV, MP3, M4A, OGG, or FLAC audio file",
+        }
+        requested = ", ".join(formats[item] for item in expected_outputs if item in formats)
+        return (
+            f"The user requested: {requested}. Save actual deliverable files in the absolute output directory above. "
+            "Before you finish, verify each requested file exists, is readable, and has the requested format. "
+            "The workspace path is a workflow boundary, not an operating-system sandbox."
         )
 
     def _public_run(self, run: dict[str, Any]) -> dict[str, Any]:
@@ -2589,9 +2631,56 @@ class BridgeService:
             "parent_task_id": run.get("parent_task_id", ""),
             "followup_available": available,
             "followup_reason": reason,
+            "delivery": self._delivery_projection(run),
         }
         for key in ("output", "error", "approval", "video_workflow_state", "video_workflow_error"):
             if run.get(key) is not None:
                 value[key] = run[key]
         controls = getattr(self, "_run_controls", None)
         return controls.project(run, value) if controls is not None else value
+
+    @staticmethod
+    def _delivery_projection(run: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"file", "image", "pdf", "video", "audio"}
+        expected = run.get("expected_outputs")
+        if not isinstance(expected, list) or any(
+                not isinstance(item, str) or item not in allowed for item in expected) \
+                or len(set(expected)) != len(expected):
+            expected = []
+        artifacts = run.get("artifacts")
+        if not isinstance(artifacts, list):
+            artifacts = []
+        verified_descriptors = [
+            item for item in artifacts
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str) and bool(item["id"])
+            and isinstance(item.get("name"), str) and bool(item["name"])
+            and isinstance(item.get("media_type"), str) and bool(item["media_type"])
+            and type(item.get("size_bytes")) is int and item["size_bytes"] > 0
+            and isinstance(item.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is not None
+        ]
+        missing: list[str] = []
+        if not expected:
+            status = "not_requested"
+        elif run.get("status") != "completed":
+            status = "pending"
+        else:
+            media_types = {
+                item["media_type"] for item in verified_descriptors
+            }
+            has_file = bool(verified_descriptors)
+            for kind in expected:
+                if kind == "file":
+                    found = has_file
+                elif kind == "image":
+                    found = bool(media_types & {"image/png", "image/jpeg"})
+                elif kind == "pdf":
+                    found = "application/pdf" in media_types
+                else:
+                    found = any(media_type.startswith(kind + "/") for media_type in media_types)
+                if not found:
+                    missing.append(kind)
+            status = "delivered" if not missing else "missing"
+        return {"status": status, "expected": list(expected), "missing": missing,
+                "artifact_count": len(artifacts)}

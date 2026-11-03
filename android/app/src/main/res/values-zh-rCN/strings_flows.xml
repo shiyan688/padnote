@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">结果已保存，重新打开笔记即可查看。</string>
     <string name="flow_agent_result_save_uncertain">保存结果状态不确定。请重新打开笔记检查，再决定是否重试。</string>
     <string name="flow_agent_result_save_failed">无法保存结果，笔记未更改。</string>
-    <string name="flow_expand_task_details">查看任务详情</string>
-    <string name="flow_collapse_task_details">收起任务详情</string>
+    <string name="flow_expand_task_details">查看技术详情</string>
+    <string name="flow_collapse_task_details">收起技术详情</string>
     <string name="flow_agent_result_destination_summary">保存到《%1$s》，从第 %2$d 页开始</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">缺少：%1$s</string>
+    <string name="flow_history_delivery_delivered">已收到：%1$s</string>
+    <string name="flow_expand_full_result">展开完整回答</string>
+    <string name="flow_collapse_full_result">收起回答</string>
+    <string name="flow_failure_reason_label">原因：</string>
+    <string name="flow_delivery_heading">希望返回的文件</string>
+    <string name="flow_delivery_text_default">文字回答（默认）</string>
+    <string name="flow_delivery_selector_hint">选择这项任务需要返回的文件类型。这只表示文件要求，不代表答案内容已核实。</string>
+    <string name="flow_delivery_legacy_hint">此助手不报告交付状态。PadNote 会按附件类型检查返回的文件。</string>
+    <string name="flow_delivery_selected">已选择：%1$s</string>
+    <string name="flow_delivery_not_selected">选择%1$s</string>
+    <string name="flow_delivery_kind_image">图片</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">视频</string>
+    <string name="flow_delivery_kind_audio">音频</string>
+    <string name="flow_delivery_kind_file">其他文件</string>
+    <string name="flow_delivery_legacy_instruction">请将所选的%1$s作为可读取的实际附件文件返回。结束前确认每个文件确实存在且可以打开。</string>
+    <string name="flow_delivery_server_checked">交付状态由当前连接的助手报告。</string>
+    <string name="flow_delivery_local_checked">PadNote 因未取得可用的服务端交付摘要，在本地按附件类型进行了检查。</string>
+    <string name="flow_delivery_delivered">已返回所需附件：%1$s。这里只确认文件类型，不代表内容正确。</string>
+    <string name="flow_delivery_missing">任务执行已结束，仍缺少：%1$s。已返回：%2$s。</string>
+    <string name="flow_delivery_none">无</string>
+    <string name="flow_delivery_repair_button">继续补齐文件</string>
+    <string name="flow_delivery_repair_title">继续补齐缺少的文件</string>
+    <string name="flow_delivery_repair_unavailable">此任务当前无法在同一会话中继续沟通。</string>
+    <string name="flow_delivery_repair_prefill">请补齐这些附件：%1$s。请保存为可读取的实际文件，并在结束前确认文件存在且可以打开。</string>
+    <string name="flow_delivery_repair_empty">请保留所有缺失的文件类型。</string>
+    <string name="flow_pairing_saved_checking">已保存 %1$d 个连接；正在后台检查可用性，你可以继续使用 PadNote。</string>
+    <string name="flow_auto_probe_summary">检查完成：%1$d 项检测通过，%2$d 项需要处理，%3$d 个旧结果已忽略。打开连接列表查看详情并手动重试。</string>
+    <string name="flow_cap_note_context_bundle">接收笔记纸面上下文</string>
+    <string name="flow_cap_hermes_paper_next">要从笔记发送纸面上下文，请打开笔记并选择“分享与交给电脑 Agent”。</string>
 </resources>

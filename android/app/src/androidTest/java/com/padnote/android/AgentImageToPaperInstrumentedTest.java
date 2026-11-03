@@ -60,6 +60,7 @@ public final class AgentImageToPaperInstrumentedTest {
             scenario.onActivity(a->a.showCachedAgentImageTaskForTest(fixture.task.clientTaskId,
                     fixture.tasks,fixture.connection,fixture.source()));
             openPlacementPreview(fixture,scenario);
+            assertInitialImageFit(scenario);
             onView(withText(R.string.core_cancel)).perform(click());
             await(()->scenarioIdle(scenario)&&NoteStore.load(fixture.context,fixture.note.id)
                     .getInt("schemaVersion")==10,"cancel did not release the synthetic placement transaction");
@@ -394,6 +395,23 @@ public final class AgentImageToPaperInstrumentedTest {
             try{onView(withText(R.string.agent_image_confirm)).check(matches(isEnabled()));return true;}
             catch(RuntimeException|AssertionError rendering){return false;}
         },"production paper renderer did not prepare the candidate");
+    }
+
+    private static void assertInitialImageFit(ActivityScenario<MainActivity> scenario){
+        final double[][] observed={new double[0]};
+        scenario.onActivity(activity->observed[0]=activity.agentImagePlacementGeometryForTest());
+        double[] g=observed[0];
+        assertEquals("preview geometry should expose image and page bounds",9,g.length);
+        double margin=g[8],pageWidth=g[4],pageHeight=g[5];
+        assertTrue(g[2]>0d&&g[3]>0d&&g[6]>0d&&g[7]>0d);
+        assertTrue(g[0]>=margin&&g[1]>=margin);
+        assertTrue(g[0]+g[2]<=pageWidth-margin+1e-6d);
+        assertTrue(g[1]+g[3]<=pageHeight-margin+1e-6d);
+        assertTrue(g[2]<=(pageWidth-2d*margin)*AgentImagePlacementGeometry.DEFAULT_PAGE_FRACTION+1e-6d);
+        assertTrue(g[3]<=(pageHeight-2d*margin)*AgentImagePlacementGeometry.DEFAULT_PAGE_FRACTION+1e-6d);
+        assertEquals(g[6]/g[7],g[2]/g[3],1e-6d);
+        assertEquals(pageWidth/2d,g[0]+g[2]/2d,1e-6d);
+        assertEquals(pageHeight/2d,g[1]+g[3]/2d,1e-6d);
     }
 
     private static void openTargetNote(Fixture f,ActivityScenario<MainActivity> scenario)throws Exception{

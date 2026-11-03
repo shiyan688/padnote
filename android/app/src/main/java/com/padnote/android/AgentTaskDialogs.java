@@ -16,6 +16,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -159,8 +160,24 @@ final class AgentTaskDialogs {
     }
 
     private String historyRow(AgentTaskStore.Task task) {
-        return task.title+"\n"+taskStatus(task)+"\n"+activity.getString(R.string.flow_task_target_line,
+        String row=task.title+"\n"+taskStatus(task);
+        String delivery=historyDeliveryCue(task);
+        if(!delivery.isEmpty())row+="\n"+delivery;
+        return row+"\n"+activity.getString(R.string.flow_task_target_line,
                 AgentTaskDestinationLabel.forTask(activity,task));
+    }
+
+    private String historyDeliveryCue(AgentTaskStore.Task task) {
+        if(task==null||task.status!=AgentTaskStore.Status.COMPLETED||task.delivery==null||
+                task.expectedOutputs.isEmpty())return "";
+        AgentDelivery.Summary summary=task.delivery;
+        if(summary.status==AgentDelivery.Status.MISSING)
+            return activity.getString(R.string.flow_history_delivery_missing,
+                    deliveryTypeList(summary.missing));
+        if(summary.status==AgentDelivery.Status.DELIVERED)
+            return activity.getString(R.string.flow_history_delivery_delivered,
+                    deliveryTypeList(summary.expected));
+        return "";
     }
 
     private ArrayAdapter<String> multilineRows(List<String> labels) {
@@ -179,11 +196,16 @@ final class AgentTaskDialogs {
         EditText input=new EditText(activity);input.setHint(activity.getString(R.string.flow_text_task_hint));
         input.setMinLines(6);input.setGravity(android.view.Gravity.TOP);input.setInputType(
                 InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_send_text_to,destinationLabel(activity, profile))).setView(input)
+        DeliverySelector selector=new DeliverySelector(activity,Collections.emptyList(),
+                AgentDelivery.contractSupported(profile));
+        LinearLayout form=new LinearLayout(activity);form.setOrientation(LinearLayout.VERTICAL);
+        form.addView(input);form.addView(selector.view());
+        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_send_text_to,destinationLabel(activity, profile))).setView(scroll(form))
                 .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send),(d,w)->{
                     String text=input.getText().toString().trim();
                     if(text.isEmpty()){toast(activity.getString(R.string.flow_empty_task));return;}
-                    createAndSubmit(profile,activity.getString(R.string.flow_plain_text_task),text,"",1,null);
+                    createAndSubmit(profile,activity.getString(R.string.flow_plain_text_task),text,"",1,null,
+                            "",selector.selected());
                 }).show();
     }
 
@@ -197,12 +219,20 @@ final class AgentTaskDialogs {
         String[] labels=new String[profiles.size()];for(int i=0;i<labels.length;i++)labels[i]=destinationLabel(activity, profiles.get(i));
         ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_choose_agent)).setAdapter(ChoiceRows.adapter(activity, labels),(d,w)->{
                     AgentConnectionStore.Config selected=profiles.get(w);
+                    DeliverySelector selector=new DeliverySelector(activity,Collections.singletonList("video"),
+                            AgentDelivery.contractSupported(selected));
+                    LinearLayout confirmation=new LinearLayout(activity);confirmation.setOrientation(LinearLayout.VERTICAL);
+                    TextView description=new TextView(activity);description.setText(
+                            activity.getString(R.string.flow_target)+": "+destinationLabel(activity, selected)+"\n"+
+                                    activity.getString(R.string.flow_material)+": "+title+
+                                    activity.getString(R.string.flow_confirm_package_body));
+                    confirmation.addView(description);confirmation.addView(selector.view());
                     ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_confirm_package))
-                            .setMessage(activity.getString(R.string.flow_target)+": "+destinationLabel(activity, selected)+"\n"+activity.getString(R.string.flow_material)+": "+title+
-                                    activity.getString(R.string.flow_confirm_package_body))
+                            .setView(scroll(confirmation))
                             .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send_to_agent),(confirm,which)->
                                     worker.execute(()->{try{byte[] bundle=factory.make();main.post(()->
-                                            createAndSubmit(selected,title,input,noteId,noteRevision,bundle));}
+                                            createAndSubmit(selected,title,input,noteId,noteRevision,bundle,
+                                                    "",selector.selected()));}
                                         catch(Exception e){main.post(()->toast(activity.getString(R.string.flow_package_failed,message(e))));}})).show();
                 })
                 .setNegativeButton(activity.getString(R.string.flow_cancel),null).show();
@@ -210,6 +240,11 @@ final class AgentTaskDialogs {
 
     void sendNoteWork(AgentConnectionStore.Config selected,NoteWorkBundleIO.Frozen frozen,
                       String title,String input,String noteId) {
+        sendNoteWork(selected,frozen,title,input,noteId,Collections.emptyList());
+    }
+
+    void sendNoteWork(AgentConnectionStore.Config selected,NoteWorkBundleIO.Frozen frozen,
+                      String title,String input,String noteId,List<String> requestedOutputs) {
         if(selected==null||!selected.verified()||selected.transport!=AgentConnectionStore.Transport.BRIDGE||
                 selected.featureMap==null||
                 selected.kind==AgentConnectionStore.Kind.BUILTIN_VIDEO||
@@ -218,6 +253,8 @@ final class AgentTaskDialogs {
                 !Boolean.TRUE.equals(selected.featureMap.get("run_submission"))) {
             toast(activity.getString(R.string.flow_task_package_unsupported));return;
         }
+        List<String> expectedOutputs=AgentDelivery.normalize(requestedOutputs);
+        final String baseTaskInput=input;
         WeakReference<AgentTaskDialogs> dialogRef=new WeakReference<>(this);
         AgentTaskStore taskStore=tasks;
         TaskConnectionSource connectionSource=taskConnectionSource;
@@ -225,8 +262,17 @@ final class AgentTaskDialogs {
         android.content.Context appContext=activity.getApplicationContext();
         if(!AgentTaskSubmissionExecutor.prepare(()->{
             final AgentTaskStore.Task task;
-            try{task=taskStore.create(selected,title,input,noteId,frozen.noteRevision,
-                    frozen.zip.clone(),"note_context_bundle");}
+            try{
+                AgentConnectionStore.Config current=connectionSource.get(selected.id);
+                if(!selected.sameIdentityRevision(current)||!current.verified())
+                    throw new IllegalStateException(appContext.getString(R.string.flow_identity_changed_new));
+                String taskInput=baseTaskInput;
+                if(!expectedOutputs.isEmpty()&&!AgentDelivery.contractSupported(current))
+                    taskInput+="\n\n"+appContext.getString(R.string.flow_delivery_legacy_instruction,
+                            deliveryTypeList(expectedOutputs));
+                task=taskStore.create(current,title,taskInput,noteId,frozen.noteRevision,
+                        frozen.zip.clone(),"note_context_bundle",expectedOutputs);
+            }
             catch(Exception error){main.post(()->{AgentTaskDialogs d=dialogRef.get();if(d!=null)d.toast(appContext.getString(R.string.flow_task_create_failed,safeError(error)));});return;}
             AgentTaskSubmissionExecutor.submit(task,taskStore,connectionSource,clients,appContext);
             main.post(()->{AgentTaskDialogs d=dialogRef.get();if(d!=null)d.toast(appContext.getString(R.string.flow_task_submitting));});
@@ -244,13 +290,30 @@ final class AgentTaskDialogs {
 
     private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
                                  String noteId,long noteRevision,byte[] bundle) {
-        createAndSubmit(profile,title,input,noteId,noteRevision,bundle,"");
+        createAndSubmit(profile,title,input,noteId,noteRevision,bundle,"",Collections.emptyList());
     }
 
     private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
                                  String noteId,long noteRevision,byte[] bundle,String requiredCapability) {
+        createAndSubmit(profile,title,input,noteId,noteRevision,bundle,requiredCapability,
+                Collections.emptyList());
+    }
+
+    private void createAndSubmit(AgentConnectionStore.Config profile,String title,String input,
+                                 String noteId,long noteRevision,byte[] bundle,String requiredCapability,
+                                 List<String> expectedOutputs) {
         final AgentTaskStore.Task task;
-        try{task=tasks.create(profile,title,input,noteId,noteRevision,bundle,requiredCapability);}
+        List<String> normalized=AgentDelivery.normalize(expectedOutputs);
+        String wireInput=input;
+        try{
+            AgentConnectionStore.Config current=taskConnectionSource.get(profile.id);
+            if(!profile.sameIdentityRevision(current)||!current.verified())
+                throw new IllegalStateException(activity.getString(R.string.flow_identity_changed_new));
+            if(!normalized.isEmpty()&&!AgentDelivery.contractSupported(current))
+                wireInput=input+"\n\n"+activity.getString(R.string.flow_delivery_legacy_instruction,
+                        deliveryTypeList(normalized));
+            task=tasks.create(current,title,wireInput,noteId,noteRevision,bundle,requiredCapability,normalized);
+        }
         catch(Exception e){toast(activity.getString(R.string.flow_task_create_failed_short,message(e)));return;}
         submit(task);
     }
@@ -264,29 +327,72 @@ final class AgentTaskDialogs {
     private static String safeError(Throwable error){String m=error.getMessage();return m==null?"Unknown error":m.replaceAll("[\\r\\n]"," ");}
 
     private void askFollowup(String parentId,AlertDialog parentDialog) {
+        askFollowup(parentId,parentDialog,false);
+    }
+
+    private void askFollowup(String parentId,AlertDialog parentDialog,boolean repair) {
         AgentTaskStore.Task parent=tasks.get(parentId);if(parent==null)return;
+        if(parent.status!=AgentTaskStore.Status.COMPLETED||!parent.followupAvailable||
+                parent.transport!=AgentConnectionStore.Transport.BRIDGE){
+            toast(activity.getString(R.string.flow_delivery_repair_unavailable));return;
+        }
+        List<String> initialKinds=repair?parent.delivery.missing:Collections.emptyList();
+        if(repair&&(parent.delivery.status!=AgentDelivery.Status.MISSING||initialKinds.isEmpty()))return;
+        AgentConnectionStore.Config initialConnection=taskConnectionSource.get(parent.connectionId);
+        if(!parent.matches(initialConnection)){
+            toast(activity.getString(R.string.flow_identity_changed_followup));return;
+        }
         EditText input=new EditText(activity);input.setHint(activity.getString(R.string.flow_followup_hint));
         input.setMinLines(4);input.setGravity(android.view.Gravity.TOP);input.setInputType(
                 InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        ChoiceRows.builder(activity).setTitle(activity.getString(R.string.flow_continue_chat)).setView(input)
-                .setNegativeButton(activity.getString(R.string.flow_cancel),null).setPositiveButton(activity.getString(R.string.flow_send),(d,w)->{
-                    String text=input.getText().toString().trim();if(text.isEmpty()){toast(activity.getString(R.string.flow_followup_empty));return;}
+        if(repair)input.setText(activity.getString(R.string.flow_delivery_repair_prefill,
+                deliveryTypeList(initialKinds)));
+        DeliverySelector selector=new DeliverySelector(activity,initialKinds,
+                AgentDelivery.contractSupported(initialConnection));
+        LinearLayout form=new LinearLayout(activity);form.setOrientation(LinearLayout.VERTICAL);
+        form.addView(input);form.addView(selector.view());
+        AlertDialog followupDialog=ChoiceRows.builder(activity).setTitle(activity.getString(repair
+                ?R.string.flow_delivery_repair_title:R.string.flow_continue_chat)).setView(scroll(form))
+                .setNegativeButton(activity.getString(R.string.flow_cancel),null)
+                .setPositiveButton(activity.getString(R.string.flow_send),null).create();
+        followupDialog.setOnShowListener(ignored->followupDialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v->{
+                    String text=input.getText().toString().trim();
+                    if(text.isEmpty()){toast(activity.getString(R.string.flow_followup_empty));return;}
+                    List<String> expected=selector.selected();
+                    if(repair&&!expected.containsAll(initialKinds)){
+                        toast(activity.getString(R.string.flow_delivery_repair_empty));return;
+                    }
+                    AgentTaskStore.Task current=tasks.get(parentId);
+                    if(current==null||(repair&&(current.updatedAt!=parent.updatedAt||
+                            current.delivery.status!=AgentDelivery.Status.MISSING||
+                            !current.delivery.missing.equals(initialKinds)))){
+                        followupDialog.dismiss();
+                        toast(activity.getString(R.string.flow_task_changed_during_submit));return;
+                    }
                     AgentConnectionStore.Config connection=taskConnectionSource.get(parent.connectionId);
-                    if(!parent.matches(connection)){toast(activity.getString(R.string.flow_identity_changed_followup));return;}
+                    if(!parent.matches(connection)){
+                        followupDialog.dismiss();toast(activity.getString(R.string.flow_identity_changed_followup));return;
+                    }
+                    String wireText=text;
+                    if(!expected.isEmpty()&&!AgentDelivery.contractSupported(connection))
+                        wireText=text+"\n\n"+activity.getString(R.string.flow_delivery_legacy_instruction,
+                                deliveryTypeList(expected));
                     try {
                         boolean childAlreadySaved=!tasks.children(parentId).isEmpty();
-                        AgentTaskStore.Task child=tasks.createFollowup(parent,connection,text);
-                        parentDialog.dismiss();
+                        AgentTaskStore.Task child=tasks.createFollowup(parent,connection,wireText,expected);
+                        followupDialog.dismiss();parentDialog.dismiss();
                         if(child.status==AgentTaskStore.Status.SUBMITTING&&!childAlreadySaved)submit(child);
                         else showDetail(child.clientTaskId);
                     } catch(Exception e){
                         List<AgentTaskStore.Task> existing=tasks.children(parentId);
                         if(!existing.isEmpty()&&message(e).contains(activity.getString(R.string.flow_new_text_not_sent))){
                             toast(activity.getString(R.string.flow_followup_saved_not_sent));
-                            parentDialog.dismiss();showDetail(existing.get(0).clientTaskId);
+                            followupDialog.dismiss();parentDialog.dismiss();showDetail(existing.get(0).clientTaskId);
                         }else toast(activity.getString(R.string.flow_continue_failed,message(e)));
                     }
-                }).show();
+                }));
+        followupDialog.show();
     }
 
     AlertDialog showDetail(String clientId) {
@@ -298,10 +404,31 @@ final class AgentTaskDialogs {
         TextView statusText=new TextView(activity);statusText.setTextColor(android.graphics.Color.rgb(31,41,51));
         statusText.setTextSize(15);statusText.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
         statusCard.addView(statusText,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView primaryNotice=new TextView(activity);primaryNotice.setTextColor(android.graphics.Color.rgb(72,80,88));
+        primaryNotice.setTextSize(14);primaryNotice.setVisibility(View.GONE);
+        LinearLayout.LayoutParams noticeParams=new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+        noticeParams.topMargin=dp(6);statusCard.addView(primaryNotice,noticeParams);
+        TextView deliveryText=new TextView(activity);deliveryText.setTextColor(android.graphics.Color.rgb(54,64,74));
+        deliveryText.setTextSize(14);deliveryText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams deliveryParams=new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+        deliveryParams.topMargin=dp(8);statusCard.addView(deliveryText,deliveryParams);
+        TextView repairUnavailableText=new TextView(activity);
+        repairUnavailableText.setText(R.string.flow_delivery_repair_unavailable);
+        repairUnavailableText.setTextColor(android.graphics.Color.rgb(91,100,109));
+        repairUnavailableText.setTextSize(13);repairUnavailableText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams repairUnavailableParams=new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+        repairUnavailableParams.topMargin=dp(6);statusCard.addView(repairUnavailableText,repairUnavailableParams);
         body.addView(statusCard,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
         TextView resultText=new TextView(activity);resultText.setTextIsSelectable(true);
+        resultText.setMaxLines(8);resultText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        Button resultExpand=button(activity.getString(R.string.flow_expand_full_result));
+        resultExpand.setVisibility(View.GONE);
         LinearLayout resultCard=paperCard();resultCard.addView(resultText,new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        addAction(resultCard,resultExpand);
         body.addView(resultCard);
         TextView content=new TextView(activity);
         LinearLayout detailCard=paperCard();detailCard.addView(content,new LinearLayout.LayoutParams(
@@ -311,58 +438,84 @@ final class AgentTaskDialogs {
         toggleDetail.setOnClickListener(v->{boolean show=detailCard.getVisibility()!=View.VISIBLE;
             detailCard.setVisibility(show?View.VISIBLE:View.GONE);
             toggleDetail.setText(activity.getString(show?R.string.flow_collapse_task_details:R.string.flow_expand_task_details));});
-        body.addView(toggleDetail);body.addView(detailCard);
         content.setTextIsSelectable(true);
-        LinearLayout actions=new LinearLayout(activity);actions.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout resultActions=new LinearLayout(activity);resultActions.setOrientation(LinearLayout.VERTICAL);
         Button openSource=button(activity.getString(R.string.flow_return_to_note));
         if(initial.noteId.isEmpty()||sourceNoteOpener==null)openSource.setVisibility(View.GONE);
-        addAction(actions,openSource);
+        addAction(resultActions,openSource);
         Button continueWriting=button(activity.getString(R.string.flow_return_to_note));
         if(initial.noteId.isEmpty()||sourceNoteOpener==null)continueWriting.setVisibility(View.VISIBLE);
         else continueWriting.setVisibility(View.GONE);
-        addAction(actions,continueWriting);
-        Button openTaskList=button(activity.getString(R.string.flow_open_task_list));addAction(actions,openTaskList);
-        Button copyDiagnostic=button(activity.getString(R.string.flow_copy_diagnostic));addAction(actions,copyDiagnostic);
+        addAction(resultActions,continueWriting);
         Button appendResult=primaryButton(activity.getString(R.string.flow_append_result_to_note));
-        appendResult.setVisibility(View.GONE);addAction(actions,appendResult);
+        appendResult.setVisibility(View.GONE);addAction(resultActions,appendResult);
+        LinearLayout artifacts=new LinearLayout(activity);artifacts.setOrientation(LinearLayout.VERTICAL);
+        artifacts.setVisibility(View.GONE);
+        body.addView(artifacts);
+        body.addView(resultActions);
+        LinearLayout actions=new LinearLayout(activity);actions.setOrientation(LinearLayout.VERTICAL);
+        Button openTaskList=button(activity.getString(R.string.flow_open_task_list));addAction(actions,openTaskList);
         Button refresh=button(activity.getString(R.string.flow_refresh)),retry=button(activity.getString(R.string.flow_retry_submit)),stop=button(activity.getString(R.string.flow_stop)),once=button(activity.getString(R.string.flow_closed_approval)),deny=button(activity.getString(R.string.flow_deny));
         addAction(actions,refresh);addAction(actions,retry);addAction(actions,stop);addAction(actions,once);addAction(actions,deny);body.addView(actions);
-        Button continueTask=button(activity.getString(R.string.flow_continue_chat)),previous=button(activity.getString(R.string.flow_previous_round)),video=button(activity.getString(R.string.flow_video_storyboard));
-        addAction(actions,continueTask);addAction(actions,previous);
+        Button copyDiagnostic=button(activity.getString(R.string.flow_copy_diagnostic));
+        LinearLayout technicalActions=new LinearLayout(activity);technicalActions.setOrientation(LinearLayout.VERTICAL);
+        addAction(technicalActions,copyDiagnostic);
+        detailCard.addView(technicalActions,new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        Button continueTask=button(activity.getString(R.string.flow_continue_chat)),
+                repairDelivery=button(activity.getString(R.string.flow_delivery_repair_button)),
+                previous=button(activity.getString(R.string.flow_previous_round)),video=button(activity.getString(R.string.flow_video_storyboard));
+        addAction(actions,continueTask);addAction(actions,repairDelivery);addAction(actions,previous);
         addAction(actions,video);
         LinearLayout history=new LinearLayout(activity);history.setOrientation(LinearLayout.VERTICAL);
         body.addView(history);
-        LinearLayout artifacts=new LinearLayout(activity);artifacts.setOrientation(LinearLayout.VERTICAL);
-        body.addView(artifacts);
+        body.addView(toggleDetail);body.addView(detailCard);
         AlertDialog dialog=ChoiceRows.builder(activity).setTitle(initial.title).setView(scroll(body))
                 .setNegativeButton(activity.getString(R.string.flow_close),null).create();
         AgentTaskStore.Task[] latestTask={initial};
+        boolean[] resultExpanded={false};
         continueWriting.setOnClickListener(v->{AgentTaskStore.Task t=latestTask[0];
             if(t!=null&&!t.status.terminal())dialog.dismiss();});
         String[] displayInput={inputText(initial)};
         long[] observedVersion={AgentTaskSubmissionExecutor.stateVersion(clientId)};
-        statusText.setText(statusCardText(initial));content.setText(detail(initial,displayInput[0]));
-        updateResult(resultText,resultCard,initial);
+        statusText.setText(statusCardText(initial));deliveryText.setText(deliverySummaryText(initial));
+        String initialNotice=primaryNoticeText(initial);primaryNotice.setText(initialNotice);
+        primaryNotice.setVisibility(initialNotice.isEmpty()?View.GONE:View.VISIBLE);
+        deliveryText.setVisibility(deliverySummaryText(initial).isEmpty()?View.GONE:View.VISIBLE);
+        content.setText(detail(initial,displayInput[0]));
+        updateResult(resultText,resultCard,resultExpand,initial,resultExpanded[0]);
+        resultExpand.setOnClickListener(v->{resultExpanded[0]=!resultExpanded[0];
+            updateResult(resultText,resultCard,resultExpand,latestTask[0],resultExpanded[0]);});
         for(AgentTaskStore.Task child:tasks.children(clientId)){
             String input=inputText(child);String summary=input.length()>48?input.substring(0,48)+"…":input;
-            Button open=button(activity.getString(R.string.flow_open_followup_round,status(child.status))+" · "+summary);
+            String childLabel=activity.getString(R.string.flow_open_followup_round,status(child.status))+" · "+summary;
+            String childDelivery=historyDeliveryCue(child);
+            if(!childDelivery.isEmpty())childLabel+="\n"+childDelivery;
+            Button open=button(childLabel);
             open.setOnClickListener(v->{dialog.dismiss();showDetail(child.clientTaskId);});history.addView(open);
         }
+        history.setVisibility(history.getChildCount()==0?View.GONE:View.VISIBLE);
         AtomicBoolean polling=new AtomicBoolean();
         long[] retryDelay={2500L};
         Runnable[] update=new Runnable[1];
         update[0]=()->{
             long version=AgentTaskSubmissionExecutor.stateVersion(clientId);
-            if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));updateResult(resultText,resultCard,reloaded);observedVersion[0]=version;}}
+            if(version!=observedVersion[0]){AgentTaskStore.Task reloaded=tasks.get(clientId);if(reloaded!=null){latestTask[0]=reloaded;content.setText(detail(reloaded,displayInput[0]));updateResult(resultText,resultCard,resultExpand,reloaded,resultExpanded[0]);observedVersion[0]=version;}}
             AgentTaskStore.Task task=latestTask[0];if(task==null||!dialog.isShowing())return;
             boolean canReturnToWriting=(task.noteId==null||task.noteId.isEmpty()||sourceNoteOpener==null)
                     &&!task.status.terminal();
             continueWriting.setVisibility(canReturnToWriting?View.VISIBLE:View.GONE);
             statusText.setText(statusCardText(task));
-            updateResult(resultText,resultCard,task);
+            String notice=primaryNoticeText(task);primaryNotice.setText(notice);
+            primaryNotice.setVisibility(notice.isEmpty()?View.GONE:View.VISIBLE);
+            String deliverySummary=deliverySummaryText(task);deliveryText.setText(deliverySummary);
+            deliveryText.setVisibility(deliverySummary.isEmpty()?View.GONE:View.VISIBLE);
+            updateResult(resultText,resultCard,resultExpand,task,resultExpanded[0]);
             appendResult.setVisibility(task.status==AgentTaskStore.Status.COMPLETED
                     &&task.output!=null&&!task.output.trim().isEmpty()&&resultAppender!=null
                     ?View.VISIBLE:View.GONE);
+            resultActions.setVisibility(openSource.getVisibility()==View.VISIBLE||canReturnToWriting||
+                    appendResult.getVisibility()==View.VISIBLE?View.VISIBLE:View.GONE);
             boolean inFlight=AgentTaskSubmissionExecutor.isInFlight(task.clientTaskId);
             boolean bridgeRecovery=canOfferSameTaskRecovery(task,
                     tasks.submissionAttemptState(task.clientTaskId),inFlight);
@@ -378,15 +531,23 @@ final class AgentTaskDialogs {
             video.setVisibility(videoBundleValid&&!task.remoteTaskId.isEmpty()?View.VISIBLE:View.GONE);
             AgentConnectionStore.Config bound=null;
             try{bound=taskConnectionSource.get(task.connectionId);}catch(Exception ignored){}
+            boolean hasChild=!tasks.children(task.clientTaskId).isEmpty();
             boolean canContinue=task.transport==AgentConnectionStore.Transport.BRIDGE&&
                     task.status==AgentTaskStore.Status.COMPLETED&&task.followupAvailable&&
-                    task.childClientTaskId.isEmpty()&&task.matches(bound);
+                    task.childClientTaskId.isEmpty()&&!hasChild&&task.matches(bound);
             continueTask.setVisibility(canContinue?View.VISIBLE:View.GONE);
+            boolean canRepair=task.delivery.status==AgentDelivery.Status.MISSING&&canContinue&&!hasChild;
+            repairDelivery.setVisibility(canRepair?View.VISIBLE:View.GONE);
+            boolean missingDelivery=task.status==AgentTaskStore.Status.COMPLETED&&
+                    task.delivery.status==AgentDelivery.Status.MISSING;
+            repairUnavailableText.setVisibility(missingDelivery&&!canRepair&&!hasChild
+                    ?View.VISIBLE:View.GONE);
             previous.setVisibility(task.parentClientTaskId.isEmpty()?View.GONE:View.VISIBLE);
             stop.setVisibility(!task.status.terminal()&&!task.remoteTaskId.isEmpty()?View.VISIBLE:View.GONE);
             boolean approval=task.status==AgentTaskStore.Status.WAITING_FOR_APPROVAL&&!task.approvalId.isEmpty();
             once.setVisibility(approval?View.VISIBLE:View.GONE);deny.setVisibility(approval?View.VISIBLE:View.GONE);
             artifacts.removeAllViews();
+            artifacts.setVisibility(task.artifacts.isEmpty()||artifactSaveLauncher==null?View.GONE:View.VISIBLE);
             if(artifactSaveLauncher!=null)for(AgentTaskStore.Artifact artifact:task.artifacts){
                 Button save=button(activity.getString(R.string.flow_save_artifact,artifact.name,size(artifact.sizeBytes)));
                 save.setOnClickListener(v->artifactSaveLauncher.choose(task,artifact));artifacts.addView(save);
@@ -412,7 +573,7 @@ final class AgentTaskDialogs {
                     finally{polling.set(false);}
                     final boolean refreshSucceeded=success;final AgentTaskStore.Task refreshed=fresh;
                     retryDelay[0]=refreshSucceeded?2500L:Math.min(30000L,retryDelay[0]*2L);
-                    main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));}observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);main.postDelayed(update[0],retryDelay[0]);});
+                    main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));updateResult(resultText,resultCard,resultExpand,refreshed,resultExpanded[0]);}observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);main.postDelayed(update[0],retryDelay[0]);});
                 });
             } catch(RejectedExecutionException rejected) {
                 polling.set(false);
@@ -427,7 +588,7 @@ final class AgentTaskDialogs {
                 try{refresh(t);fresh=tasks.get(clientId);}catch(RuntimeException ignored){}
                 finally{polling.set(false);}
                 final AgentTaskStore.Task refreshed=fresh;
-                main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));}
+                main.post(()->{if(refreshed!=null){latestTask[0]=refreshed;content.setText(detail(refreshed,displayInput[0]));updateResult(resultText,resultCard,resultExpand,refreshed,resultExpanded[0]);}
                     observedVersion[0]=AgentTaskSubmissionExecutor.stateVersion(clientId);
                     update[0].run();});
             });}catch(RejectedExecutionException rejected){polling.set(false);toast(activity.getString(R.string.flow_task_queue_busy));}
@@ -468,7 +629,10 @@ final class AgentTaskDialogs {
                             if(current!=null){
                                 latestTask[0]=current;
                                 statusText.setText(statusCardText(current));
+                                String notice=primaryNoticeText(current);primaryNotice.setText(notice);
+                                primaryNotice.setVisibility(notice.isEmpty()?View.GONE:View.VISIBLE);
                                 content.setText(detail(current,displayInput[0]));
+                                updateResult(resultText,resultCard,resultExpand,current,resultExpanded[0]);
                             }
                             toast(activity.getString(R.string.flow_task_changed_during_submit));
                             update[0].run();
@@ -479,7 +643,8 @@ final class AgentTaskDialogs {
                             toast(activity.getString(R.string.flow_task_queue_busy));
                         update[0].run();
                     }).show();});
-        continueTask.setOnClickListener(v->askFollowup(clientId,dialog));
+        continueTask.setOnClickListener(v->askFollowup(clientId,dialog,false));
+        repairDelivery.setOnClickListener(v->askFollowup(clientId,dialog,true));
         previous.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null&&!t.parentClientTaskId.isEmpty()){dialog.dismiss();showDetail(t.parentClientTaskId);}});
         video.setOnClickListener(v->{AgentTaskStore.Task t=tasks.get(clientId);if(t!=null)videoDialogFactory.create(activity,connections,tasks,worker).show(t);});
         stop.setOnClickListener(v->control(clientId,"stop",dialog));once.setOnClickListener(v->control(clientId,"once",dialog));deny.setOnClickListener(v->control(clientId,"deny",dialog));
@@ -496,6 +661,146 @@ final class AgentTaskDialogs {
         artifactImagePlacementLauncher=launcher;
     }
 
+    static final class DeliverySelector {
+        private final Activity activity;
+        private final LinearLayout card;
+        private final java.util.LinkedHashSet<String> selected = new java.util.LinkedHashSet<>();
+        private final java.util.Map<String,TextView> chips = new java.util.LinkedHashMap<>();
+        private final TextView hint;
+        private boolean userTouched;
+
+        DeliverySelector(Activity activity,List<String> initial, boolean serverContract) {
+            this.activity=activity;
+            this.card=new LinearLayout(activity);
+            selected.addAll(AgentDelivery.normalize(initial));
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(14),dp(12),dp(14),dp(12));
+            card.setBackground(deliveryCardBackground());
+            LinearLayout.LayoutParams cardParams=new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+            cardParams.topMargin=dp(8);cardParams.bottomMargin=dp(8);card.setLayoutParams(cardParams);
+            TextView title=new TextView(activity);title.setText(R.string.flow_delivery_heading);
+            title.setTextColor(android.graphics.Color.rgb(31,41,51));
+            title.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+            title.setTextSize(15);card.addView(title);
+            TextView textDefault=deliveryChip(activity.getString(R.string.flow_delivery_text_default),true);
+            textDefault.setClickable(false);textDefault.setFocusable(false);card.addView(textDefault);
+            hint=new TextView(activity);
+            setServerContract(serverContract);
+            hint.setTextColor(android.graphics.Color.rgb(91,100,109));hint.setTextSize(12);
+            LinearLayout.LayoutParams hintParams=new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+            hintParams.topMargin=dp(4);hintParams.bottomMargin=dp(6);card.addView(hint,hintParams);
+            addChipRows();
+        }
+
+        View view(){return card;}
+        List<String> selected(){return AgentDelivery.normalize(selected);}
+        void setSelected(List<String> values){
+            selected.clear();selected.addAll(AgentDelivery.normalize(values));
+            for(String kind:chips.keySet())updateChip(kind);
+        }
+        void setPresetDefaultIfUntouched(List<String> values){
+            if(userTouched)return;
+            setSelected(values);
+        }
+        boolean userTouchedSelection(){return userTouched;}
+        void setServerContract(boolean supported){
+            hint.setText(supported?R.string.flow_delivery_selector_hint:R.string.flow_delivery_legacy_hint);
+        }
+        String selectedLabelList(){
+            List<String> labels=new ArrayList<>();
+            for(String kind:selected())labels.add(deliveryKindLabel(kind));
+            return android.text.TextUtils.join(" · ",labels);
+        }
+
+        private void addChipRows(){
+            String[][] rows={{"image","pdf"},{"video","audio"},{"file"}};
+            for(String[] rowKinds:rows){
+                LinearLayout row=new LinearLayout(activity);row.setOrientation(LinearLayout.HORIZONTAL);
+                for(String kind:rowKinds){
+                    TextView chip=deliveryChip(deliveryKindLabel(kind),selected.contains(kind));
+                    chip.setFocusable(true);chip.setClickable(true);
+                    chip.setTag("delivery-kind-"+kind);
+                    chip.setOnClickListener(v->{
+                        userTouched=true;
+                        if(selected.contains(kind))selected.remove(kind);else selected.add(kind);
+                        updateChip(kind);
+                    });
+                    chips.put(kind,chip);
+                    updateChip(kind);
+                    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,1f);
+                    lp.setMargins(dp(3),dp(3),dp(3),dp(3));row.addView(chip,lp);
+                }
+                if(rowKinds.length==1){View spacer=new View(activity);
+                    row.addView(spacer,new LinearLayout.LayoutParams(0,dp(42),1f));}
+                card.addView(row);
+            }
+        }
+
+        private void updateChip(String kind){
+            TextView chip=chips.get(kind);if(chip==null)return;
+            boolean checked=selected.contains(kind);
+            chip.setBackground(deliveryChipBackground(checked));
+            chip.setSelected(checked);
+            chip.setText((checked?"✓ ":"")+deliveryKindLabel(kind));
+            chip.setContentDescription(activity.getString(checked
+                    ?R.string.flow_delivery_selected:R.string.flow_delivery_not_selected,
+                    deliveryKindLabel(kind)));
+        }
+
+        private TextView deliveryChip(String label,boolean checked){
+            TextView text=new TextView(activity);text.setText((checked?"✓ ":"")+label);
+            text.setGravity(android.view.Gravity.CENTER);text.setTextSize(13);
+            text.setPadding(dp(8),dp(10),dp(8),dp(10));text.setTextColor(checked
+                    ?PadNoteUi.ACCENT:android.graphics.Color.rgb(43,51,59));
+            text.setBackground(deliveryChipBackground(checked));return text;
+        }
+
+        private android.graphics.drawable.GradientDrawable deliveryChipBackground(boolean checked){
+            android.graphics.drawable.GradientDrawable bg=new android.graphics.drawable.GradientDrawable();
+            bg.setColor(checked?android.graphics.Color.rgb(232,241,252):android.graphics.Color.rgb(249,248,244));
+            bg.setCornerRadius(dp(18));bg.setStroke(dp(1),checked?PadNoteUi.ACCENT:android.graphics.Color.rgb(218,216,209));
+            return bg;
+        }
+
+        private android.graphics.drawable.GradientDrawable deliveryCardBackground(){
+            android.graphics.drawable.GradientDrawable bg=new android.graphics.drawable.GradientDrawable();
+            bg.setColor(android.graphics.Color.rgb(255,254,250));bg.setCornerRadius(dp(14));
+            bg.setStroke(dp(1),android.graphics.Color.rgb(224,220,211));return bg;
+        }
+
+        private String deliveryKindLabel(String kind){
+            switch(kind){
+                case "image":return activity.getString(R.string.flow_delivery_kind_image);
+                case "pdf":return activity.getString(R.string.flow_delivery_kind_pdf);
+                case "video":return activity.getString(R.string.flow_delivery_kind_video);
+                case "audio":return activity.getString(R.string.flow_delivery_kind_audio);
+                case "file":return activity.getString(R.string.flow_delivery_kind_file);
+                default:return kind;
+            }
+        }
+
+        private int dp(float value){return Math.round(value*activity.getResources().getDisplayMetrics().density);}
+    }
+
+    private String deliveryKindLabel(String kind){
+        switch(kind){
+            case "image":return activity.getString(R.string.flow_delivery_kind_image);
+            case "pdf":return activity.getString(R.string.flow_delivery_kind_pdf);
+            case "video":return activity.getString(R.string.flow_delivery_kind_video);
+            case "audio":return activity.getString(R.string.flow_delivery_kind_audio);
+            case "file":return activity.getString(R.string.flow_delivery_kind_file);
+            default:return kind;
+        }
+    }
+
+    private String deliveryTypeList(List<String> kinds){
+        List<String> labels=new ArrayList<>();for(String kind:AgentDelivery.normalize(kinds))labels.add(deliveryKindLabel(kind));
+        return android.text.TextUtils.join(" · ",labels);
+    }
+
     private LinearLayout paperCard(){
         LinearLayout card=new LinearLayout(activity);card.setOrientation(LinearLayout.VERTICAL);
         android.graphics.drawable.GradientDrawable background=new android.graphics.drawable.GradientDrawable();
@@ -505,18 +810,63 @@ final class AgentTaskDialogs {
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);lp.bottomMargin=dp(12);card.setLayoutParams(lp);return card;
     }
 
-    private void updateResult(TextView resultText,View resultCard,AgentTaskStore.Task task){
+    private void updateResult(TextView resultText,View resultCard,Button resultExpand,
+                              AgentTaskStore.Task task,boolean expanded){
         String output=task.output==null?"":task.output;
-        resultCard.setVisibility(output.trim().isEmpty()?View.GONE:View.VISIBLE);
-        resultText.setText(output.isEmpty()?"":activity.getString(R.string.flow_result_label)+"\n"+output);
+        boolean hasOutput=!output.trim().isEmpty();
+        resultCard.setVisibility(hasOutput?View.VISIBLE:View.GONE);
+        resultText.setText(hasOutput?activity.getString(R.string.flow_result_label)+"\n"+output:"");
+        resultText.setMaxLines(expanded?Integer.MAX_VALUE:8);
+        resultText.setEllipsize(expanded?null:android.text.TextUtils.TruncateAt.END);
+        resultExpand.setText(activity.getString(expanded?R.string.flow_collapse_full_result:
+                R.string.flow_expand_full_result));
+        resultExpand.setVisibility(hasOutput?View.VISIBLE:View.GONE);
+    }
+
+    private String primaryNoticeText(AgentTaskStore.Task task) {
+        if(task==null)return "";
+        if(task.status==AgentTaskStore.Status.WAITING_FOR_APPROVAL&&
+                (!task.approvalTitle.isEmpty()||!task.approvalDescription.isEmpty())) {
+            StringBuilder text=new StringBuilder(activity.getString(R.string.flow_pending_approval_label));
+            if(!task.approvalTitle.isEmpty())text.append(" ").append(task.approvalTitle);
+            if(!task.approvalDescription.isEmpty())text.append("\n").append(task.approvalDescription);
+            return text.toString();
+        }
+        if((task.status==AgentTaskStore.Status.FAILED||task.status==AgentTaskStore.Status.CANCELLED||
+                task.status==AgentTaskStore.Status.INTERRUPTED)&&!task.error.trim().isEmpty())
+            return activity.getString(R.string.flow_failure_reason_label)+" "+task.error;
+        return "";
     }
 
     private String statusCardText(AgentTaskStore.Task task){AgentTaskSubmissionExecutor.ProgressInfo progress=AgentTaskSubmissionExecutor.progressInfo(task.clientTaskId);long updated=Math.max(task.updatedAt,progress==null?tasks.submissionAttemptTime(task.clientTaskId):progress.updatedAt);long age=Math.max(0,(System.currentTimeMillis()-updated)/1000L);return taskStatus(task)+"\n"+
             task.connectionName+"\n"+
             activity.getString(R.string.flow_stage_updated_ago,age);}
 
+    private String deliverySummaryText(AgentTaskStore.Task task) {
+        if (task == null || task.status != AgentTaskStore.Status.COMPLETED ||
+                task.delivery == null || task.expectedOutputs.isEmpty()) return "";
+        AgentDelivery.Summary summary=task.delivery;
+        if(summary.status==AgentDelivery.Status.PENDING||summary.status==AgentDelivery.Status.NOT_REQUESTED)
+            return "";
+        String provenance=summary.reportedByServer
+                ?activity.getString(R.string.flow_delivery_server_checked)
+                :activity.getString(R.string.flow_delivery_local_checked);
+        if(summary.status==AgentDelivery.Status.DELIVERED)
+            return activity.getString(R.string.flow_delivery_delivered,
+                    deliveryTypeList(summary.expected))+"\n"+provenance;
+        List<String> present=new ArrayList<>(summary.expected);present.removeAll(summary.missing);
+        return activity.getString(R.string.flow_delivery_missing,
+                deliveryTypeList(summary.missing),present.isEmpty()?activity.getString(R.string.flow_delivery_none):
+                        deliveryTypeList(present))+"\n"+provenance;
+    }
+
     private boolean refresh(AgentTaskStore.Task task) {
         try{AgentConnectionStore.Config c=taskConnectionSource.get(task.connectionId);if(!task.matches(c)){
+            if(task.status.terminal()){
+                main.post(()->toast(activity.getString(R.string.flow_task_refresh_failed,
+                        activity.getString(R.string.flow_connection_identity_changed))));
+                return false;
+            }
             tasks.markLocal(task.clientTaskId,AgentTaskStore.Status.INTERRUPTED,activity.getString(R.string.flow_connection_revoked));return true;}
             AgentTaskClient.RemoteStatus remote=taskClientFactory.create().status(task,c);
             AgentConnectionStore.Config latest=taskConnectionSource.get(task.connectionId);
@@ -525,8 +875,13 @@ final class AgentTaskDialogs {
             tasks.applyStatus(task.clientTaskId,task.connectionId,task.connectionRevision,
                     task.remoteTaskId,remote);
             return true;
-        }catch(Exception e){try{tasks.markError(task.clientTaskId,task.updatedAt,
-                activity.getString(R.string.flow_task_refresh_error,message(e)));}catch(Exception ignored){}return false;}
+        }catch(Exception e){
+            if(task.status.terminal()){
+                main.post(()->toast(activity.getString(R.string.flow_task_refresh_failed,message(e))));
+            }else try{tasks.markError(task.clientTaskId,task.updatedAt,
+                    activity.getString(R.string.flow_task_refresh_error,message(e)));}catch(Exception ignored){}
+            return false;
+        }
     }
 
     private void control(String id,String action,AlertDialog dialog){
@@ -553,16 +908,15 @@ final class AgentTaskDialogs {
                             (t.followupReason.isEmpty()?activity.getString(R.string.flow_not_available):t.followupReason));
         }
         if(!input.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_round_note)).append("\n").append(input);
-        if(!t.approvalTitle.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_pending_approval_label))
-                .append(" ").append(t.approvalTitle).append("\n").append(t.approvalDescription);
-        if(!t.output.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_result_label)).append("\n").append(t.output);
         if(!t.error.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_tip_label)).append(" ").append(t.error);
         if(!t.artifacts.isEmpty())s.append("\n\n").append(activity.getString(R.string.flow_artifacts_count,t.artifacts.size()));
         return s.toString().trim();
     }
     static boolean computerHasReceipt(AgentTaskStore.Status status,String remoteTaskId){return status==AgentTaskStore.Status.SUBMITTING&&remoteTaskId!=null&&!remoteTaskId.isEmpty();}
     static boolean canRefreshRemoteStatus(AgentTaskStore.Task task){
-        return task!=null&&!task.status.terminal()&&task.remoteTaskId!=null&&!task.remoteTaskId.isEmpty();
+        return task!=null&&task.remoteTaskId!=null&&!task.remoteTaskId.isEmpty()&&
+                (!task.status.terminal()||task.transport==AgentConnectionStore.Transport.BRIDGE&&
+                        task.status==AgentTaskStore.Status.COMPLETED);
     }
     static boolean shouldContinueObserving(AgentTaskStore.Status status,String remoteTaskId,boolean inFlight){
         return status!=null&&!status.terminal()&&((remoteTaskId!=null&&!remoteTaskId.isEmpty())||inFlight);

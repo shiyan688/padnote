@@ -117,8 +117,8 @@ final class AgentTaskSubmissionExecutor {
                 AgentConnectionStore.Config latest=connections.get(task.connectionId);
                 if(!immediatelyBeforeNetwork.matches(latest))throw new IllegalStateException(
                         appContext.getString(R.string.flow_task_changed_during_submit));
-                boolean applied=store.applySubmission(task.clientTaskId,task.connectionId,task.connectionRevision,
-                        result.remoteTaskId,result.status,result.conversationId,result.parentTaskId);
+                boolean applied=store.applySubmission(task.clientTaskId,task.connectionId,
+                        task.connectionRevision,result);
                 if(!applied)throw new IllegalStateException("Computer accepted the task but local confirmation could not be saved");
                 ProgressInfo before=PROGRESS.get(clientTaskId);setProgress(clientTaskId,Phase.COMPUTER_ACCEPTED,
                         before==null?0:before.sent,before==null?0:before.total);
@@ -152,7 +152,9 @@ final class AgentTaskSubmissionExecutor {
                 first.credentialRef.equals(second.credentialRef)&&first.bridgeId.equals(second.bridgeId)&&
                 first.instanceId.equals(second.instanceId)&&first.noteId.equals(second.noteId)&&
                 first.noteRevision==second.noteRevision&&first.submissionJson.equals(second.submissionJson)&&
-                first.submissionSha256.equalsIgnoreCase(second.submissionSha256);
+                first.submissionSha256.equalsIgnoreCase(second.submissionSha256)&&
+                first.expectedOutputs.equals(second.expectedOutputs)&&
+                first.deliveryContractSupported==second.deliveryContractSupported;
     }
 
     private static String safeMessage(Throwable error){

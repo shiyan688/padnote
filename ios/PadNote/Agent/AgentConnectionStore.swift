@@ -140,6 +140,7 @@ public struct AgentProbeSnapshot: Equatable, Sendable {
     public let id: UUID
     public let revision: Int
     public let lifecycleEpoch: UInt64
+    public let attemptID: UUID?
     public let config: AgentConnectionConfig
 }
 
@@ -179,6 +180,15 @@ public enum AgentStoreError: Error, LocalizedError, Equatable {
 }
 
 public final class AgentConnectionStore: @unchecked Sendable {
+    private struct ProbeAttemptKey: Hashable {
+        let defaultsDomainID: String
+        let profileID: UUID
+    }
+
+    private final class ProbeAttemptRegistry: @unchecked Sendable {
+        var attempts: [ProbeAttemptKey: UUID] = [:]
+    }
+
     private struct Payload: Codable {
         var schemaVersion: Int
         var defaultProfileID: UUID?
@@ -194,8 +204,12 @@ public final class AgentConnectionStore: @unchecked Sendable {
     // already holds this lock. The runtime barrier remains the outer lock; a
     // recursive store lock avoids same-thread self-deadlock during that read.
     private static let mutationLock = NSRecursiveLock()
+    private static let probeAttemptRegistry = ProbeAttemptRegistry()
     private static let schemaVersion = 1
     private static let payloadKey = "padnote.agent.connections.v1"
+    // Shared by Settings windows backed by the same defaults suite. This runtime namespace
+    // contains no connection or credential data and stays outside the profile payload schema.
+    private static let probeRuntimeDomainKey = "padnote.agent.probe.runtime-domain.v1"
     private static let credentialGarbageKey = "padnote.agent.credentials.gc.v1"
     private static let processEpoch = UUID().uuidString.lowercased()
     private static let legacyKindKey = "padnote.agent.kind"
@@ -269,7 +283,31 @@ public final class AgentConnectionStore: @unchecked Sendable {
             let token = try readCredential(reference: profile.credentialReference) ?? ""
             return AgentProbeSnapshot(id: id, revision: profile.revision,
                                       lifecycleEpoch: lifecycleRuntime.epochSnapshot,
+                                      attemptID: nil,
                                       config: AgentConnectionConfig(profile: profile, token: token))
+        }
+    }
+
+    /// Starts a new UI probe attempt. A later manual or automatic probe supersedes this result
+    /// even when the connection identity revision has not changed.
+    public func beginProbeSnapshot(id: UUID) throws -> AgentProbeSnapshot {
+        try withStoreLock {
+            guard let profile = try readPayload().profiles.first(where: { $0.id == id }) else {
+                throw AgentStoreError.profileNotFound
+            }
+            let token = try readCredential(reference: profile.credentialReference) ?? ""
+            let attemptID = UUID()
+            Self.probeAttemptRegistry.attempts[probeAttemptKey(id)] = attemptID
+            return AgentProbeSnapshot(id: id, revision: profile.revision,
+                                      lifecycleEpoch: lifecycleRuntime.epochSnapshot,
+                                      attemptID: attemptID,
+                                      config: AgentConnectionConfig(profile: profile, token: token))
+        }
+    }
+
+    public func cancelProbeAttempt(id: UUID, attemptID: UUID) {
+        withStoreLock {
+            finishProbeAttempt(id: id, attemptID: attemptID)
         }
     }
 
@@ -379,6 +417,7 @@ public final class AgentConnectionStore: @unchecked Sendable {
                 if stagedReference != previous.credentialReference { keychain.delete(reference: stagedReference) }
                 throw error
             }
+            if identityChanged { Self.probeAttemptRegistry.attempts.removeValue(forKey: probeAttemptKey(id)) }
             if stagedReference != previous.credentialReference {
                 enqueueCredentialCleanup(previous.credentialReference)
             }
@@ -403,17 +442,22 @@ public final class AgentConnectionStore: @unchecked Sendable {
             guard let index = payload.profiles.firstIndex(where: { $0.id == id }) else { return }
             let removed = payload.profiles.remove(at: index)
             if payload.defaultProfileID == id { payload.defaultProfileID = payload.profiles.first?.id }
-            if (try? writePayload(payload)) != nil { enqueueCredentialCleanup(removed.credentialReference) }
+            if (try? writePayload(payload)) != nil {
+                Self.probeAttemptRegistry.attempts.removeValue(forKey: probeAttemptKey(id))
+                enqueueCredentialCleanup(removed.credentialReference)
+            }
         }
     }
 
     @discardableResult
     public func applyProbeSuccess(id: UUID, revision: Int, lifecycleEpoch: UInt64? = nil,
                                   capabilities: [String: Bool], readiness: AgentReadinessStatus? = nil,
-                                  verifiedAt: Date = Date()) -> Bool {
+                                  verifiedAt: Date = Date(), attemptID: UUID? = nil) -> Bool {
         withStoreLock {
             guard lifecycleRuntime.allowsMutation,
-                  lifecycleEpoch == nil || lifecycleEpoch == lifecycleRuntime.epochSnapshot else { return false }
+                  lifecycleEpoch == nil || lifecycleEpoch == lifecycleRuntime.epochSnapshot,
+                  acceptsProbeAttempt(id: id, attemptID: attemptID) else { return false }
+            defer { finishProbeAttempt(id: id, attemptID: attemptID) }
             guard var payload = try? readPayload() else { return false }
             guard let index = payload.profiles.firstIndex(where: { $0.id == id && $0.revision == revision }) else { return false }
             payload.profiles[index].verifiedAt = verifiedAt
@@ -425,10 +469,13 @@ public final class AgentConnectionStore: @unchecked Sendable {
     }
 
     @discardableResult
-    public func applyProbeFailure(id: UUID, revision: Int, lifecycleEpoch: UInt64? = nil, message: String) -> Bool {
+    public func applyProbeFailure(id: UUID, revision: Int, lifecycleEpoch: UInt64? = nil,
+                                  message: String, attemptID: UUID? = nil) -> Bool {
         withStoreLock {
             guard lifecycleRuntime.allowsMutation,
-                  lifecycleEpoch == nil || lifecycleEpoch == lifecycleRuntime.epochSnapshot else { return false }
+                  lifecycleEpoch == nil || lifecycleEpoch == lifecycleRuntime.epochSnapshot,
+                  acceptsProbeAttempt(id: id, attemptID: attemptID) else { return false }
+            defer { finishProbeAttempt(id: id, attemptID: attemptID) }
             guard var payload = try? readPayload() else { return false }
             guard let index = payload.profiles.firstIndex(where: { $0.id == id && $0.revision == revision }) else { return false }
             payload.profiles[index].verifiedAt = nil
@@ -585,6 +632,31 @@ public final class AgentConnectionStore: @unchecked Sendable {
 
     private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
         try lifecycleRuntime.withMutation { try Self.mutationLock.withLock(body) }
+    }
+
+    private func acceptsProbeAttempt(id: UUID, attemptID: UUID?) -> Bool {
+        let key = probeAttemptKey(id)
+        if let attemptID { return Self.probeAttemptRegistry.attempts[key] == attemptID }
+        return Self.probeAttemptRegistry.attempts[key] == nil
+    }
+
+    private func finishProbeAttempt(id: UUID, attemptID: UUID?) {
+        guard let attemptID else { return }
+        let key = probeAttemptKey(id)
+        guard Self.probeAttemptRegistry.attempts[key] == attemptID else { return }
+        Self.probeAttemptRegistry.attempts.removeValue(forKey: key)
+    }
+
+    private func probeAttemptKey(_ id: UUID) -> ProbeAttemptKey {
+        let domainID: String
+        if let existing = defaults.string(forKey: Self.probeRuntimeDomainKey), !existing.isEmpty {
+            domainID = existing
+        } else {
+            let created = UUID().uuidString.lowercased()
+            defaults.set(created, forKey: Self.probeRuntimeDomainKey)
+            domainID = created
+        }
+        return ProbeAttemptKey(defaultsDomainID: domainID, profileID: id)
     }
 
     private func readCredential(reference: String) throws -> String? {

@@ -51,7 +51,7 @@
     <string name="core_paper_handoff">Partager / envoyer à Agent</string>
     <string name="core_paper_share_action">Partager la page actuelle en PDF…</string>
     <string name="core_paper_agent_action">Envoyer à un Agent sur ordinateur…</string>
-    <string name="core_paper_agent_missing_title">Connectez d’abord un Agent sur ordinateur</string>
+    <string name="core_paper_agent_missing_title">Vérifiez la connexion de l’Agent sur ordinateur</string>
     <string name="core_paper_agent_missing">Aucune connexion ordinateur ne peut recevoir cette note. Connectez-en une ou vérifiez que la connexion existante est validée et accepte les tâches de note. Rien n’a été envoyé.</string>
     <string name="core_later">Plus tard</string>
     <string name="core_connection_settings">Paramètres de connexion</string>

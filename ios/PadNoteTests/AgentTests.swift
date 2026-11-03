@@ -8,8 +8,10 @@ final class AgentTests: XCTestCase {
             "run_submission": true,
             "run_status": false,
             "task_bundle": true,
+            "note_context_bundle": true,
             "video_task_submission": false,
             "runtime_verified": true,
+            "delivery_contract_v1": true,
             "future_feature": true
         ]
         let verified = AgentCapabilitySummary.items(kind: .hermes, capabilities: reported,
@@ -18,6 +20,8 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(verified.first { $0.id == "run_status" }?.state, .unsupported)
         XCTAssertEqual(verified.first { $0.id == "run_stop" }?.state, .notReported)
         XCTAssertEqual(verified.first { $0.id == "runtime_verified" }?.state, .supported)
+        XCTAssertEqual(verified.first { $0.id == "delivery_contract_v1" }?.state, .supported)
+        XCTAssertEqual(verified.first { $0.id == "note_context_bundle" }?.state, .supported)
         XCTAssertEqual(AgentCapabilitySummary.unknownCount(capabilities: reported), 1)
 
         let unverified = AgentCapabilitySummary.items(kind: .hermes, capabilities: reported,
@@ -59,6 +63,35 @@ final class AgentTests: XCTestCase {
         let withUnknown = AgentCapabilitySummary.nextStep(kind: .hermes, transport: .direct,
             capabilities: ["run_submission": false, "future_feature": true], verified: true, credentialDisabled: false)
         XCTAssertEqual(withUnknown, withoutUnknown, "unknown capabilities are informational only")
+    }
+
+    func testPaperNoteCapabilityRequiresBridgeAndAllThreeReportedFeatures() {
+        let complete: [String: Bool] = [
+            "run_submission": true,
+            "task_bundle": true,
+            "note_context_bundle": true,
+            "future_feature": true
+        ]
+        let supported = AgentCapabilitySummary.items(kind: .hermes, capabilities: complete,
+            verified: true, credentialDisabled: false)
+        XCTAssertEqual(supported.first { $0.id == "note_context_bundle" }?.state, .supported)
+        XCTAssertEqual(AgentCapabilitySummary.unknownCount(capabilities: complete), 1)
+        XCTAssertTrue(AgentCapabilitySummary.nextStep(kind: .hermes, transport: .bridge,
+            capabilities: complete, verified: true, credentialDisabled: false).contains("从笔记中分享"))
+
+        let incompleteCapabilities: [[String: Bool]] = [
+            ["run_submission": true, "task_bundle": true],
+            ["run_submission": true, "note_context_bundle": true],
+            ["task_bundle": true, "note_context_bundle": true]
+        ]
+        for incomplete in incompleteCapabilities {
+            XCTAssertFalse(AgentCapabilitySummary.nextStep(kind: .hermes, transport: .bridge,
+                capabilities: incomplete, verified: true, credentialDisabled: false).contains("从笔记中分享"))
+        }
+        XCTAssertFalse(AgentCapabilitySummary.nextStep(kind: .hermes, transport: .direct,
+            capabilities: complete, verified: true, credentialDisabled: false).contains("从笔记中分享"))
+        XCTAssertTrue(AgentCapabilitySummary.nextStep(kind: .hermes, transport: .bridge,
+            capabilities: ["run_submission": true], verified: true, credentialDisabled: false).contains("文字任务流程"))
     }
 
     func testDuplicateTaskDestinationsAreDistinctAndNeverExposeSecrets() {
@@ -475,6 +508,29 @@ final class AgentTests: XCTestCase {
         }
     }
 
+    func testPaperWorkflowDeliveryExpectationIsFrozenInPaperBrief() throws {
+        let baseInstruction = "分析这份笔记并制作配套材料。"
+        XCTAssertEqual(PaperTaskBundleIO.effectiveInstruction(baseInstruction, expectedOutputs: []), baseInstruction,
+            "an empty selection leaves the existing brief unchanged")
+
+        let effective = PaperTaskBundleIO.effectiveInstruction(baseInstruction, expectedOutputs: [.image, .audio, .pdf])
+        XCTAssertTrue(effective.hasPrefix(baseInstruction))
+        XCTAssertTrue(effective.contains("图片：请生成 PNG 或 JPEG 图片文件。"))
+        XCTAssertTrue(effective.contains("PDF：请生成非空且可打开的 PDF 文件。"))
+        XCTAssertTrue(effective.contains("音频：请生成 WAV、MP3、M4A、OGG 或 FLAC 文件。"))
+        XCTAssertTrue(PaperTaskBundleIO.taskInput(for: effective).hasSuffix("任务要求：\(effective)"),
+            "the outer PreparedSend input carries the exact brief that is frozen in the ZIP")
+
+        let archive = try PaperTaskBundleIO.make(noteID: "note-delivery", noteRevision: 7, title: "交付测试",
+            markdown: "# 纸面", pdf: Data("%PDF-1.7\n%%EOF".utf8), instruction: effective,
+            presetID: PaperTaskPreset.continueAsRequested.rawValue)
+        let files = try unzipStored(archive)
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(files["request.json"])) as? [String: Any])
+        let brief = try XCTUnwrap(request["brief"] as? [String: Any])
+        XCTAssertEqual(brief["instruction"] as? String, effective,
+            "the frozen task bundle must carry the same effective instruction shown in the preview")
+    }
+
     func testPaperTaskCapabilityIsCheckedWhenCreatingAndSubmitting() async throws {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -571,7 +627,8 @@ final class AgentTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let corrupt = Data("not-json".utf8)
         defaults.set(corrupt, forKey: "padnote.agent.connections.v1")
-        let store = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let tokens = MemoryTokenStore()
+        let store = AgentConnectionStore(defaults: defaults, keychain: tokens)
 
         XCTAssertThrowsError(try store.create(name: "Hermes", kind: .hermes, endpoint: "https://host.test", token: "secret")) {
             XCTAssertEqual($0 as? AgentStoreError, .corruptStore)
@@ -666,6 +723,210 @@ final class AgentTests: XCTestCase {
         XCTAssertNil(store.profile(id: profile.id)?.verifiedAt)
         XCTAssertTrue(store.applyProbeFailure(id: changed.id, revision: changed.revision, message: "offline"))
         XCTAssertEqual(store.profile(id: profile.id)?.revision, changed.revision, "probe result does not change identity revision")
+    }
+
+    func testPostPairProbeChecksEachSavedConnectionOnceAndKeepsFailureSaved() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let ready = try store.create(name: "Ready Mac", kind: .hermes, endpoint: "https://ready.fixture.test", token: "ready-token")
+        let offline = try store.create(name: "Offline Mac", kind: .hermes, endpoint: "https://offline.fixture.test", token: "offline-token", makeDefault: false)
+        let script = AgentProbeTestScript(steps: [ready.id: [.succeed], offline.id: [.fail]])
+        let runner = AgentConnectionProbeRunner(store: store) { config in try await script.run(config) }
+
+        let outcomes = await runner.check(profileIDs: [ready.id, offline.id, ready.id])
+
+        let readyCalls = await script.callCount(for: ready.id)
+        let offlineCalls = await script.callCount(for: offline.id)
+        XCTAssertEqual(outcomes.count, 2, "a batch must probe each saved connection only once")
+        XCTAssertEqual(readyCalls, 1)
+        XCTAssertEqual(offlineCalls, 1)
+        XCTAssertTrue(outcomes.contains { if case let .succeeded(id, _) = $0 { return id == ready.id }; return false })
+        XCTAssertTrue(outcomes.contains { if case let .failed(id, _) = $0 { return id == offline.id }; return false })
+        let savedReady = try XCTUnwrap(store.profile(id: ready.id))
+        XCTAssertTrue(savedReady.connected)
+        XCTAssertEqual(savedReady.capabilities["run_submission"], true)
+        let savedOffline = try XCTUnwrap(store.profile(id: offline.id), "a failed check must not delete the paired connection")
+        XCTAssertFalse(savedOffline.connected)
+        XCTAssertEqual(savedOffline.lastProbeError, "fixture offline")
+    }
+
+    func testNewerProbeAndIdentityChangesIgnoreLateAutomaticResults() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokens = MemoryTokenStore()
+        let store = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let overlapping = try store.create(name: "Overlap", kind: .hermes, endpoint: "https://overlap.fixture.test", token: "old-overlap")
+        let edited = try store.create(name: "Edited", kind: .hermes, endpoint: "https://edited.fixture.test", token: "old-edited", makeDefault: false)
+        let deleted = try store.create(name: "Deleted", kind: .hermes, endpoint: "https://deleted.fixture.test", token: "deleted-token", makeDefault: false)
+        let reopenedStore = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let script = AgentProbeTestScript(steps: [
+            overlapping.id: [.wait, .succeed],
+            edited.id: [.wait],
+            deleted.id: [.wait]
+        ])
+        let runner = AgentConnectionProbeRunner(store: store) { config in try await script.run(config) }
+
+        let oldAutomatic = Task { await runner.check(profileIDs: [overlapping.id]) }
+        let editedProbe = Task { await runner.check(profileIDs: [edited.id]) }
+        let deletedProbe = Task { await runner.check(profileIDs: [deleted.id]) }
+        let allStarted = await script.waitForPending([overlapping.id, edited.id, deleted.id])
+        guard allStarted else {
+            XCTFail("all synthetic read-only probes must reach their controlled response gate")
+            await script.resume(overlapping.id, with: .failure(.offline))
+            let cleanupResult = AgentProbeResult(message: "fixture ready", capabilities: ["run_submission": true], partialStatus: .ready)
+            await script.resume(edited.id, with: .success(cleanupResult))
+            await script.resume(deleted.id, with: .success(cleanupResult))
+            _ = await oldAutomatic.value
+            _ = await editedProbe.value
+            _ = await deletedProbe.value
+            return
+        }
+
+        let manualRunner = AgentConnectionProbeRunner(store: reopenedStore) { config in try await script.run(config) }
+        let manual = await manualRunner.check(profileIDs: [overlapping.id])
+        XCTAssertTrue(manual.contains { if case let .succeeded(id, _) = $0 { return id == overlapping.id }; return false })
+        let changed = try store.update(id: edited.id, expectedRevision: edited.revision, name: "Edited",
+            kind: .hermes, endpoint: "https://edited-new.fixture.test", token: "new-edited", transport: .direct)
+        store.delete(id: deleted.id)
+        await script.resume(overlapping.id, with: .failure(.offline))
+        let readyResult = AgentProbeResult(message: "fixture ready", capabilities: ["run_submission": true], partialStatus: .ready)
+        await script.resume(edited.id, with: .success(readyResult))
+        await script.resume(deleted.id, with: .success(readyResult))
+        let oldAutomaticResult = await oldAutomatic.value
+        let editedResult = await editedProbe.value
+        let deletedResult = await deletedProbe.value
+
+        XCTAssertEqual(oldAutomaticResult, [.ignored(profileID: overlapping.id)],
+                       "a late automatic failure cannot overwrite a newer same-revision manual success")
+        XCTAssertEqual(editedResult, [.ignored(profileID: edited.id)], "an edited identity rejects its old probe result")
+        XCTAssertEqual(deletedResult, [.ignored(profileID: deleted.id)], "a removed identity rejects its old probe result")
+        let overlappingCalls = await script.callCount(for: overlapping.id)
+        XCTAssertEqual(overlappingCalls, 2)
+        let currentOverlap = try XCTUnwrap(store.profile(id: overlapping.id))
+        XCTAssertTrue(currentOverlap.connected)
+        XCTAssertEqual(currentOverlap.lastProbeError, nil)
+        XCTAssertFalse(changed.connected)
+        XCTAssertNil(changed.lastProbeError)
+        XCTAssertNil(store.profile(id: deleted.id))
+    }
+
+    func testProbeAttemptRegistryIsSharedWithinDefaultsButIsolatedAcrossSuites() async throws {
+        let (sameDefaults, sameSuite) = makeDefaults()
+        defer { sameDefaults.removePersistentDomain(forName: sameSuite) }
+        let sharedTokens = MemoryTokenStore()
+        let firstStore = AgentConnectionStore(defaults: sameDefaults, keychain: sharedTokens)
+        let profile = try firstStore.create(name: "Shared window", kind: .hermes, endpoint: "https://shared.fixture.test", token: "shared")
+        let sameDomainScript = AgentProbeTestScript(steps: [profile.id: [.wait, .succeed]])
+        let delayedAutomatic = AgentConnectionProbeRunner(store: firstStore) { config in try await sameDomainScript.run(config) }
+        let oldCheck = Task { await delayedAutomatic.check(profileIDs: [profile.id]) }
+        let sameDomainStarted = await sameDomainScript.waitForPending([profile.id])
+        guard sameDomainStarted else {
+            XCTFail("automatic probe must reach its gate before the second store starts a manual probe")
+            await sameDomainScript.resume(profile.id, with: .failure(.offline))
+            _ = await oldCheck.value
+            return
+        }
+        let secondDefaults = try XCTUnwrap(UserDefaults(suiteName: sameSuite))
+        let secondStore = AgentConnectionStore(defaults: secondDefaults, keychain: sharedTokens)
+        let newerManual = AgentConnectionProbeRunner(store: secondStore) { config in try await sameDomainScript.run(config) }
+        let manualResult = await newerManual.check(profileIDs: [profile.id])
+        XCTAssertTrue(manualResult.contains { if case let .succeeded(id, _) = $0 { return id == profile.id }; return false })
+        await sameDomainScript.resume(profile.id, with: .failure(.offline))
+        let oldCheckResult = await oldCheck.value
+        XCTAssertEqual(oldCheckResult, [.ignored(profileID: profile.id)])
+        XCTAssertTrue(try XCTUnwrap(secondStore.profile(id: profile.id)).connected)
+
+        let isolatedID = UUID()
+        let firstSuiteName = "agent-probe-isolation-a-\(UUID().uuidString)"
+        let secondSuiteName = "agent-probe-isolation-b-\(UUID().uuidString)"
+        let firstDefaults = try XCTUnwrap(UserDefaults(suiteName: firstSuiteName))
+        let secondSuiteDefaults = try XCTUnwrap(UserDefaults(suiteName: secondSuiteName))
+        defer {
+            firstDefaults.removePersistentDomain(forName: firstSuiteName)
+            secondSuiteDefaults.removePersistentDomain(forName: secondSuiteName)
+        }
+        let isolatedProfile = AgentConnectionProfile(id: isolatedID, name: "Independent suite",
+            endpoint: "https://isolated.fixture.test")
+        try seedProbeProfile(isolatedProfile, defaults: firstDefaults)
+        try seedProbeProfile(isolatedProfile, defaults: secondSuiteDefaults)
+        let suiteATokens = MemoryTokenStore(values: [isolatedProfile.credentialReference: "token-a"])
+        let suiteBTokens = MemoryTokenStore(values: [isolatedProfile.credentialReference: "token-b"])
+        let suiteAStore = AgentConnectionStore(defaults: firstDefaults, keychain: suiteATokens)
+        let suiteBStore = AgentConnectionStore(defaults: secondSuiteDefaults, keychain: suiteBTokens)
+        let suiteAScript = AgentProbeTestScript(steps: [isolatedID: [.wait]])
+        let suiteBScript = AgentProbeTestScript(steps: [isolatedID: [.succeed]])
+        let suiteARunner = AgentConnectionProbeRunner(store: suiteAStore) { config in try await suiteAScript.run(config) }
+        let suiteBRunner = AgentConnectionProbeRunner(store: suiteBStore) { config in try await suiteBScript.run(config) }
+        let suiteACheck = Task { await suiteARunner.check(profileIDs: [isolatedID]) }
+        let suiteAStarted = await suiteAScript.waitForPending([isolatedID])
+        guard suiteAStarted else {
+            XCTFail("isolated-suite probe must reach its gate")
+            await suiteAScript.resume(isolatedID, with: .failure(.offline))
+            _ = await suiteACheck.value
+            return
+        }
+        _ = await suiteBRunner.check(profileIDs: [isolatedID])
+        await suiteAScript.resume(isolatedID, with: .failure(.offline))
+        let suiteAResult = await suiteACheck.value
+        XCTAssertTrue(suiteAResult.contains { if case let .failed(id, _) = $0 { return id == isolatedID }; return false })
+        XCTAssertTrue(try XCTUnwrap(suiteBStore.profile(id: isolatedID)).connected,
+                      "a same-ID probe in an independent defaults suite must not supersede this suite")
+        XCTAssertEqual(try XCTUnwrap(suiteAStore.profile(id: isolatedID)).lastProbeError, "fixture offline")
+    }
+
+    func testCancelledProbeDoesNotPersistFailureOrStartNextBatch() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokens = MemoryTokenStore()
+        let store = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let profiles = try (0..<4).map { index in
+            try store.create(name: "Cancel \(index)", kind: .hermes, endpoint: "https://cancel-\(index).fixture.test", token: "token-\(index)", makeDefault: index == 0)
+        }
+        let script = AgentProbeTestScript(steps: Dictionary(uniqueKeysWithValues:
+            profiles.enumerated().map { ($0.element.id, $0.offset < 3 ? [.wait] : [.succeed]) }))
+        let runner = AgentConnectionProbeRunner(store: store) { config in try await script.run(config) }
+        let checking = Task { await runner.check(profileIDs: profiles.map(\.id)) }
+        let firstBatchIDs = Array(profiles.prefix(3).map(\.id))
+        let firstBatchStarted = await script.waitForPending(firstBatchIDs)
+        guard firstBatchStarted else {
+            XCTFail("all slots in the first cancellable batch must reach the controlled gate")
+            checking.cancel()
+            let cleanup = AgentProbeResult(message: "cleanup", capabilities: ["run_submission": true], partialStatus: .ready)
+            for id in firstBatchIDs { await script.resume(id, with: .success(cleanup)) }
+            _ = await checking.value
+            return
+        }
+        checking.cancel()
+        let success = AgentProbeResult(message: "late success", capabilities: ["run_submission": true], partialStatus: .ready)
+        for profile in profiles.prefix(3) { await script.resume(profile.id, with: .success(success)) }
+        let outcomes = await checking.value
+        XCTAssertEqual(outcomes.count, 4)
+        XCTAssertTrue(outcomes.allSatisfy { if case .ignored = $0 { return true }; return false })
+        let lastCallCount = await script.callCount(for: profiles[3].id)
+        XCTAssertEqual(lastCallCount, 0, "a cancelled batch must not schedule the next profiles")
+        for (index, profile) in profiles.enumerated() {
+            let saved = try XCTUnwrap(store.profile(id: profile.id))
+            XCTAssertFalse(saved.connected)
+            XCTAssertNil(saved.lastProbeError)
+            XCTAssertEqual(try tokens.read(reference: saved.credentialReference), "token-\(index)")
+        }
+    }
+
+    func testURLCancelledProbeDoesNotPersistFailure() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokens = MemoryTokenStore()
+        let store = AgentConnectionStore(defaults: defaults, keychain: tokens)
+        let profile = try store.create(name: "Cancelled transport", kind: .hermes, endpoint: "https://cancelled.fixture.test", token: "keep-me")
+        let script = AgentProbeTestScript(steps: [profile.id: [.urlCancelled]])
+        let runner = AgentConnectionProbeRunner(store: store) { config in try await script.run(config) }
+        let outcome = await runner.check(profileIDs: [profile.id])
+        XCTAssertEqual(outcome, [.ignored(profileID: profile.id)])
+        let saved = try XCTUnwrap(store.profile(id: profile.id))
+        XCTAssertNil(saved.lastProbeError)
+        XCTAssertFalse(saved.connected)
+        XCTAssertEqual(try tokens.read(reference: saved.credentialReference), "keep-me")
     }
 
     func testPartialReadinessProbeKeepsConnectionAndPersistsWithoutChangingCredentials() throws {
@@ -1045,6 +1306,7 @@ final class AgentTests: XCTestCase {
             if name == "state.json" {
                 object.removeValue(forKey: "followupAvailable")
                 object.removeValue(forKey: "followupReason")
+                object.removeValue(forKey: "delivery")
             }
             try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: file, options: .atomic)
         }
@@ -1054,6 +1316,7 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(restored.payload.canonicalData, payload.canonicalData)
         XCTAssertEqual(restored.payloadSHA256, task.payloadSHA256)
         XCTAssertFalse(restored.followupAvailable)
+        XCTAssertEqual(restored.delivery.status, .notRequested)
     }
 
     func testBridgeFollowupSubmissionSendsPersistedParentAndChecksResponseLineage() async throws {
@@ -1091,6 +1354,75 @@ final class AgentTests: XCTestCase {
         } catch let error as AgentTaskError {
             XCTAssertEqual(error, .invalidResponse)
         }
+        let parentMismatch = fixtureSession { _ in FixtureResponse(status: 202, json: [
+            "task_id": "child-1", "instance_id": "instance-1", "status": "running",
+            "conversation_id": "root-1", "parent_task_id": "other-parent"
+        ]) }
+        do {
+            _ = try await AgentTaskClient(session: parentMismatch).submit(task: task, token: "device-token")
+            XCTFail("an explicit conflicting parent must remain rejected")
+        } catch let error as AgentTaskError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    func testBridgeBoundChildAcceptedPOSTInheritsMissingLineageAndPersistsReceipt() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let created = try connections.create(name: "Fixture", kind: .hermes, endpoint: "https://fixture.test",
+            token: "fixture-token", transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        XCTAssertTrue(connections.applyProbeSuccess(id: created.id, revision: created.revision,
+            capabilities: ["run_submission": true]))
+        let profile = try XCTUnwrap(connections.profile(id: created.id))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-task-followup-post-lineage-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tasks = AgentTaskStore(fileURL: root.appendingPathComponent("tasks", isDirectory: true))
+        let parentPayload = try AgentTaskPayload(title: "Review", input: "First request",
+            source: AgentTaskSource(noteID: "note-1", noteRevision: 1))
+        let parent = try tasks.create(profile: profile, payload: parentPayload)
+        let completedParent = try tasks.mutate(id: parent.id, expectedRevision: parent.recordRevision) {
+            $0.remoteTaskID = "root-1"
+            $0.conversationID = "root-1"
+            $0.status = .completed
+            $0.followupAvailable = true
+        }
+        let child = try tasks.createFollowup(parentID: completedParent.id, profile: profile, input: "Continue")
+        XCTAssertEqual(child.payload.parentTaskID, "root-1")
+        XCTAssertEqual(child.conversationID, "root-1")
+
+        let requestLock = NSLock()
+        var requestCount = 0
+        let session = fixtureSession { request in
+            requestLock.lock(); defer { requestLock.unlock() }
+            requestCount += 1
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/padnote/v1/agents/instance-1/runs")
+            return FixtureResponse(status: 202, json: [
+                "task_id": "child-accepted-1", "instance_id": "instance-1",
+                "status": "completed", "output": "Child result",
+                "followup_available": true, "followup_reason": "继续"
+                // Optional lineage is absent. Follow-up eligibility must remain unverified.
+            ])
+        }
+        let service = AgentTaskService(connectionStore: connections, taskStore: tasks,
+            client: AgentTaskClient(session: session))
+        let accepted = try await service.submit(id: child.id)
+
+        XCTAssertEqual(requestCount, 1, "acceptance must not trigger a GET or another POST")
+        XCTAssertEqual(accepted.remoteTaskID, "child-accepted-1")
+        XCTAssertEqual(accepted.status, .completed)
+        XCTAssertEqual(accepted.output, "Child result")
+        XCTAssertEqual(accepted.payload.parentTaskID, "root-1")
+        XCTAssertEqual(accepted.conversationID, "root-1")
+        XCTAssertFalse(accepted.followupAvailable, "inherited local lineage is not server proof of follow-up eligibility")
+        let reopened = try XCTUnwrap(AgentTaskStore(fileURL: root.appendingPathComponent("tasks", isDirectory: true)).task(id: child.id))
+        XCTAssertEqual(reopened.remoteTaskID, "child-accepted-1")
+        XCTAssertEqual(reopened.output, "Child result")
+        XCTAssertEqual(reopened.payload.parentTaskID, "root-1")
+        XCTAssertEqual(reopened.conversationID, "root-1")
+        XCTAssertFalse(reopened.followupAvailable)
     }
 
     func testBridgeSubmittingTaskWithKnownRemoteIDReplaysExactRequest() async throws {
@@ -1184,6 +1516,85 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(try tasks.task(id: local.id)?.output, "Saved result")
     }
 
+    func testCompletedMetadataRefreshEnablesBridgeFollowupAndPreservesTerminalSnapshot() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let initial = try connections.create(name: "Fixture", kind: .hermes, endpoint: "https://fixture.test",
+            token: "fixture-token", transport: .bridge, bridgeID: "bridge-1", instanceID: "instance-1")
+        XCTAssertTrue(connections.applyProbeSuccess(id: initial.id, revision: initial.revision,
+            capabilities: ["run_submission": true, "run_status": true]))
+        let profile = try XCTUnwrap(connections.profile(id: initial.id))
+        let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-task-completed-session-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: taskRoot) }
+        let tasks = AgentTaskStore(fileURL: taskRoot)
+        let payload = try AgentTaskPayload(title: "Completed", input: "Original request",
+            source: AgentTaskSource(noteID: "note-source", noteRevision: 7), expectedOutputs: [.image])
+        let local = try tasks.create(profile: profile, payload: payload)
+        let originalArtifact = AgentTaskArtifact(id: "original-image", name: "kept.png", mediaType: "image/png",
+            sizeBytes: 9, sha256: String(repeating: "a", count: 64))
+        _ = try tasks.mutate(id: local.id, expectedRevision: local.recordRevision) {
+            $0.remoteTaskID = "completed-without-session"
+            $0.status = .completed
+            $0.output = "Original completed answer"
+            $0.artifacts = [originalArtifact]
+            $0.delivery = AgentTaskDeliveryState.evaluate(expected: [.image], artifacts: [originalArtifact],
+                taskStatus: .completed, serverVerified: false)
+            $0.followupAvailable = false
+            $0.followupReason = "尚未刷新任务信息"
+        }
+        let terminalBaseline = try XCTUnwrap(tasks.task(id: local.id),
+            "the fixture baseline must reflect the canonical persisted terminal delivery state")
+        XCTAssertEqual(terminalBaseline.delivery.status, .delivered)
+        var statusRequestCount = 0
+        let session = fixtureSession { request in
+            statusRequestCount += 1
+            XCTAssertEqual(request.httpMethod, "GET", "terminal metadata refresh must be a read-only status request")
+            XCTAssertEqual(request.url?.path, "/padnote/v1/agents/instance-1/runs/completed-without-session")
+            if statusRequestCount > 1 { return FixtureResponse(status: 503, json: ["error": "temporary failure"]) }
+            return FixtureResponse(json: [
+                "task_id": "completed-without-session", "instance_id": "instance-1", "status": "completed",
+                "output": "Different replacement text must not overwrite the saved terminal result",
+                "conversation_id": "completed-without-session", "parent_task_id": "",
+                "followup_available": true, "followup_reason": "可以继续沟通",
+                "artifacts": []
+            ])
+        }
+        let service = AgentTaskService(connectionStore: connections, taskStore: tasks, client: AgentTaskClient(session: session))
+
+        let refreshed = try await service.refresh(id: local.id)
+        XCTAssertEqual(refreshed.status, .completed)
+        XCTAssertEqual(refreshed.remoteTaskID, "completed-without-session")
+        XCTAssertEqual(refreshed.conversationID, "completed-without-session")
+        XCTAssertTrue(refreshed.followupAvailable)
+        XCTAssertEqual(refreshed.followupReason, "可以继续沟通")
+        XCTAssertEqual(refreshed.payload, payload, "refresh must preserve the immutable task/source binding")
+        XCTAssertEqual(refreshed.connection, local.connection)
+        XCTAssertEqual(refreshed.output, "Original completed answer")
+        XCTAssertEqual(refreshed.artifacts, [originalArtifact], "a sparse terminal GET must not replace saved artifacts")
+        XCTAssertEqual(refreshed.delivery, terminalBaseline.delivery)
+
+        let reopened = try XCTUnwrap(AgentTaskStore(fileURL: taskRoot).task(id: local.id))
+        XCTAssertTrue(reopened.followupAvailable, "the newly learned session eligibility must persist across reopen")
+        XCTAssertEqual(reopened.conversationID, "completed-without-session")
+        XCTAssertEqual(reopened.output, "Original completed answer")
+        XCTAssertEqual(reopened.artifacts, [originalArtifact])
+        XCTAssertEqual(reopened.payload.source, payload.source)
+
+        do {
+            _ = try await service.refresh(id: local.id)
+            XCTFail("a failed follow-up metadata GET must not alter the completed task")
+        } catch { }
+        let afterFailedRefresh = try XCTUnwrap(AgentTaskStore(fileURL: taskRoot).task(id: local.id))
+        XCTAssertEqual(afterFailedRefresh.status, .completed)
+        XCTAssertEqual(afterFailedRefresh.conversationID, reopened.conversationID)
+        XCTAssertTrue(afterFailedRefresh.followupAvailable)
+        XCTAssertEqual(afterFailedRefresh.output, "Original completed answer")
+        XCTAssertEqual(afterFailedRefresh.artifacts, [originalArtifact])
+        XCTAssertEqual(afterFailedRefresh.delivery, reopened.delivery)
+    }
+
     func testNonterminalRefreshClearsResolvedApprovalAndError() async throws {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -1225,6 +1636,8 @@ final class AgentTests: XCTestCase {
         let state = try await AgentTaskClient(session: session).status(task: task, token: "device-token")
         XCTAssertFalse(state.followupAvailable)
         XCTAssertNil(state.conversationID)
+        XCTAssertEqual(state.delivery.status, .notRequested)
+        XCTAssertFalse(state.delivery.serverVerified)
     }
 
     func testBridgeFollowupEligibilityRequiresReasonMetadata() async throws {
@@ -1282,6 +1695,275 @@ final class AgentTests: XCTestCase {
         let state = try await AgentTaskClient(session: session).submit(task: AgentTaskRecord(profile: profile, payload: payload), token: "secret")
         XCTAssertEqual(state.remoteTaskID, "run-1")
         XCTAssertEqual(state.status, .running)
+    }
+
+    func testDeliveryKindsRequireVerifiedNonemptyMatchingDescriptors() {
+        func artifact(_ id: String, _ mime: String, _ bytes: Int = 12) -> AgentTaskArtifact {
+            AgentTaskArtifact(id: id, name: "result-\(id).bin", mediaType: mime, sizeBytes: bytes, sha256: String(repeating: "a", count: 64))
+        }
+        let artifacts = [artifact("img", "image/png"), artifact("pdf", "application/pdf"),
+                         artifact("vid", "video/mp4"), artifact("aud", "audio/mpeg"),
+                         artifact("other", "application/octet-stream")]
+        let all = AgentTaskOutputKind.allCases
+        let delivered = AgentTaskDeliveryState.evaluate(expected: all, artifacts: artifacts, taskStatus: .completed, serverVerified: false)
+        XCTAssertEqual(delivered.status, .delivered)
+        XCTAssertEqual(delivered.expected, AgentTaskOutputKind.normalized(all))
+        XCTAssertEqual(delivered.missing, [])
+        XCTAssertFalse(delivered.serverVerified)
+
+        let partial = AgentTaskDeliveryState.evaluate(expected: [.image, .pdf], artifacts: [artifact("pdf", "application/pdf")], taskStatus: .completed, serverVerified: false)
+        XCTAssertEqual(partial.status, .missing)
+        XCTAssertEqual(partial.missing, [.image])
+        let empty = AgentTaskDeliveryState.evaluate(expected: [.file], artifacts: [artifact("zero", "application/octet-stream", 0)], taskStatus: .completed, serverVerified: false)
+        XCTAssertEqual(empty.status, .missing)
+        let textOnly = AgentTaskDeliveryState.evaluate(expected: [], artifacts: [], taskStatus: .completed, serverVerified: false)
+        XCTAssertEqual(textOnly.status, .notRequested)
+    }
+
+    func testHistoryDeliveryCueKeepsAttachmentStateSeparateFromExecutionState() {
+        func artifact(_ id: String, _ mime: String) -> AgentTaskArtifact {
+            AgentTaskArtifact(id: id, name: "\(id).bin", mediaType: mime, sizeBytes: 12,
+                              sha256: String(repeating: "a", count: 64))
+        }
+        let partial = AgentTaskDeliveryState.evaluate(expected: [.image, .pdf],
+            artifacts: [artifact("paper", "application/pdf")], taskStatus: .completed, serverVerified: false)
+        XCTAssertEqual(AgentTaskDeliveryCue.text(status: .completed, delivery: partial), "缺少：图片")
+
+        let delivered = AgentTaskDeliveryState.evaluate(expected: [.image],
+            artifacts: [artifact("graph", "image/png")], taskStatus: .completed, serverVerified: true)
+        XCTAssertEqual(AgentTaskDeliveryCue.text(status: .completed, delivery: delivered), "所需附件已齐")
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .failed, delivery: delivered),
+                       "a delivery cue must not overrule a failed execution state")
+
+        let pending = AgentTaskDeliveryState.evaluate(expected: [.image], artifacts: [],
+            taskStatus: .failed, serverVerified: false)
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .failed, delivery: pending))
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .cancelled, delivery: pending))
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .interrupted, delivery: pending))
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .waitingForApproval, delivery: pending))
+
+        let unrequested = AgentTaskDeliveryState.evaluate(expected: [], artifacts: [],
+            taskStatus: .completed, serverVerified: false)
+        XCTAssertNil(AgentTaskDeliveryCue.text(status: .completed, delivery: unrequested))
+    }
+
+    func testAgentImageInitialPlacementFitsBothPaperDimensionsAndRejectsInvalidGeometry() {
+        let landscape = try! XCTUnwrap(AgentImageInitialPlacement.fit(
+            pageWidth: 768, pageHeight: 1086, pixelWidth: 1000, pixelHeight: 720))
+        XCTAssertEqual(landscape.width, 768 * 0.82, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(landscape.width, 768 * 0.82)
+        XCTAssertLessThanOrEqual(landscape.height, 1086 * 0.82)
+        XCTAssertEqual(landscape.x, (768 - landscape.width) / 2, accuracy: 0.001)
+        XCTAssertEqual(landscape.y, (1086 - landscape.height) / 2, accuracy: 0.001)
+
+        let tall = try! XCTUnwrap(AgentImageInitialPlacement.fit(
+            pageWidth: 768, pageHeight: 1086, pixelWidth: 3, pixelHeight: 8))
+        XCTAssertLessThanOrEqual(tall.height, 1086 * 0.82)
+        XCTAssertLessThanOrEqual(tall.width, 768 * 0.82)
+        let narrow = try! XCTUnwrap(AgentImageInitialPlacement.fit(
+            pageWidth: 768, pageHeight: 1086, pixelWidth: 1, pixelHeight: 1_000))
+        XCTAssertGreaterThan(narrow.width, 0)
+        XCTAssertGreaterThan(narrow.height, 0)
+        XCTAssertLessThanOrEqual(narrow.height, 1086 * 0.82)
+        XCTAssertLessThanOrEqual(narrow.width, 768 * 0.82)
+        let tiny = try! XCTUnwrap(AgentImageInitialPlacement.fit(
+            pageWidth: 16, pageHeight: 24, pixelWidth: 4_000, pixelHeight: 1))
+        XCTAssertGreaterThan(tiny.width, 0)
+        XCTAssertGreaterThan(tiny.height, 0)
+        XCTAssertLessThanOrEqual(tiny.width, 16 * 0.82)
+        XCTAssertLessThanOrEqual(tiny.height, 24 * 0.82)
+        XCTAssertNil(AgentImageInitialPlacement.fit(pageWidth: .nan, pageHeight: 1086,
+                                                     pixelWidth: 1000, pixelHeight: 720))
+        XCTAssertNil(AgentImageInitialPlacement.fit(pageWidth: 768, pageHeight: 1086,
+                                                     pixelWidth: 0, pixelHeight: 720))
+    }
+
+    func testExpectedOutputsPersistAcrossTaskStoreRestartAndStaySparseForOldTask() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-delivery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profile = AgentConnectionProfile(name: "Bridge", endpoint: "https://fixture.test", transport: .bridge,
+            bridgeID: "bridge-1", instanceID: "instance-1", capabilities: ["delivery_contract_v1": true])
+        let oldProfile = AgentConnectionProfile(name: "Old Bridge", endpoint: "https://fixture.test", transport: .bridge,
+            bridgeID: "bridge-1", instanceID: "instance-1")
+        let expected = try AgentTaskPayload(title: "Image", input: "draw", source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.image, .pdf])
+        let old = try AgentTaskPayload(title: "Text", input: "answer", source: AgentTaskSource(noteID: "manual", noteRevision: 1))
+        let allKinds = try AgentTaskPayload(title: "All files", input: "make files",
+            source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: AgentTaskOutputKind.allCases)
+        let allKindsJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: allKinds.canonicalData) as? [String: Any])
+        XCTAssertEqual(allKindsJSON["expected_outputs"] as? [String], ["audio", "file", "image", "pdf", "video"])
+        let store = AgentTaskStore(fileURL: root)
+        let current = try store.create(profile: profile, payload: expected)
+        let legacy = try store.create(profile: oldProfile, payload: old)
+        _ = try store.mutate(id: current.id, expectedRevision: current.recordRevision) { task in
+            task.status = .completed
+            task.artifacts = [AgentTaskArtifact(id: "image-1", name: "image.png", mediaType: "image/png", sizeBytes: 10, sha256: String(repeating: "b", count: 64))]
+            task.delivery = AgentTaskDeliveryState.evaluate(expected: task.payload.expectedOutputs ?? [], artifacts: task.artifacts, taskStatus: .completed, serverVerified: true)
+        }
+        let reopened = AgentTaskStore(fileURL: root)
+        let restored = try XCTUnwrap(reopened.task(id: current.id))
+        XCTAssertEqual(restored.payload.expectedOutputs, [.image, .pdf])
+        XCTAssertTrue(restored.deliveryContractSupported)
+        XCTAssertEqual(restored.delivery.status, .missing)
+        XCTAssertEqual(restored.delivery.missing, [.pdf])
+        XCTAssertFalse(try XCTUnwrap(reopened.task(id: legacy.id)).deliveryContractSupported)
+        XCTAssertNil(try XCTUnwrap(reopened.task(id: legacy.id)).payload.expectedOutputs)
+        XCTAssertThrowsError(try AgentTaskPayload(title: "Duplicate", input: "draw",
+            source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.image, .image]))
+    }
+
+    func testRepairFollowupStoresOnlyExplicitExpectationsAndNeverInherits() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-delivery-child-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profile = AgentConnectionProfile(name: "Bridge", endpoint: "https://fixture.test", transport: .bridge,
+            bridgeID: "bridge-1", instanceID: "instance-1", capabilities: ["delivery_contract_v1": true])
+        let store = AgentTaskStore(fileURL: root)
+        let parentPayload = try AgentTaskPayload(title: "Task", input: "First", source: AgentTaskSource(noteID: "n", noteRevision: 1), expectedOutputs: [.image])
+        let parent = try store.create(profile: profile, payload: parentPayload)
+        let done = try store.mutate(id: parent.id, expectedRevision: parent.recordRevision) {
+            $0.remoteTaskID = "root-task"; $0.conversationID = "root-task"; $0.status = .completed; $0.followupAvailable = true
+        }
+        let child = try store.createFollowup(parentID: done.id, profile: profile, input: "Continue")
+        XCTAssertNil(child.payload.expectedOutputs, "normal follow-up does not inherit the parent's file request")
+        XCTAssertNil(try store.createFollowup(parentID: done.id, profile: profile, input: "Continue").payload.expectedOutputs)
+
+        let secondRoot = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-delivery-repair-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: secondRoot) }
+        let repairStore = AgentTaskStore(fileURL: secondRoot)
+        let repairParent = try repairStore.create(profile: profile, payload: parentPayload)
+        let repairReady = try repairStore.mutate(id: repairParent.id, expectedRevision: repairParent.recordRevision) {
+            $0.remoteTaskID = "repair-root"; $0.conversationID = "repair-root"; $0.status = .completed; $0.followupAvailable = true
+        }
+        let repair = try repairStore.createFollowup(parentID: repairReady.id, profile: profile,
+            input: "请补齐图片和 PDF", expectedOutputs: [.pdf, .image])
+        XCTAssertEqual(repair.payload.expectedOutputs, [.image, .pdf])
+        XCTAssertNil(repair.payload.bundleBase64)
+        XCTAssertNil(repair.payload.requiredCapability)
+        XCTAssertEqual(try AgentTaskStore(fileURL: secondRoot).followup(of: repairParent.id)?.payload.expectedOutputs, [.image, .pdf])
+    }
+
+    func testDeliveryContractWireAndServerMissingStateAreValidated() async throws {
+        let session = fixtureSession { request in
+            let body = try! XCTUnwrap(request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+            XCTAssertEqual(body["expected_outputs"] as? [String], ["image", "pdf"])
+            return FixtureResponse(status: 202, json: [
+                "task_id": "delivery-task", "instance_id": "delivery-instance", "status": "completed",
+                "artifacts": [["id": "pdf", "name": "result.pdf", "media_type": "application/pdf", "size_bytes": 12, "sha256": String(repeating: "c", count: 64)]],
+                "delivery": ["status": "missing", "expected": ["image", "pdf"], "missing": ["image"], "artifact_count": 1]
+            ])
+        }
+        let profile = AgentConnectionProfile(name: "Bridge", endpoint: "https://fixture.test", transport: .bridge,
+            bridgeID: "bridge-1", instanceID: "delivery-instance", capabilities: ["delivery_contract_v1": true])
+        let payload = try AgentTaskPayload(title: "Draw", input: "draw", source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.pdf, .image])
+        let task = AgentTaskRecord(profile: profile, payload: payload)
+        let remote = try await AgentTaskClient(session: session).submit(task: task, token: "fixture-token")
+        XCTAssertEqual(remote.delivery.status, .missing)
+        XCTAssertEqual(remote.delivery.missing, [.image])
+        XCTAssertTrue(remote.delivery.serverVerified)
+    }
+
+    func testOldAssistantUsesStableVisibleInstructionAndLocalDeliveryFallback() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let created = try connections.create(name: "Legacy", kind: .hermes, endpoint: "https://fixture.test", token: "fixture-token",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "legacy-instance")
+        XCTAssertTrue(connections.applyProbeSuccess(id: created.id, revision: created.revision, capabilities: ["run_submission": true]))
+        let profile = try XCTUnwrap(connections.profile(id: created.id))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-legacy-delivery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskStore = AgentTaskStore(fileURL: root)
+        let lock = NSLock()
+        var bodies = [Data]()
+        let session = fixtureSession { request in
+            lock.lock(); bodies.append(request.httpBody ?? Data()); lock.unlock()
+            return FixtureResponse(status: 202, json: ["task_id": "legacy-task", "instance_id": "legacy-instance", "status": "running",
+                "conversation_id": "legacy-task", "parent_task_id": "", "followup_available": false,
+                "delivery": ["status": "not_requested", "expected": [], "missing": [], "artifact_count": 0]])
+        }
+        let payload = try AgentTaskPayload(clientTaskID: "15151515-1515-1515-1515-151515151515", title: "Need PDF", input: "Summarize", source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.pdf])
+        let local = try taskStore.create(profile: profile, payload: payload)
+        let service = AgentTaskService(connectionStore: connections, taskStore: taskStore, client: AgentTaskClient(session: session))
+        let localFallback = try await service.submit(id: local.id)
+        XCTAssertFalse(localFallback.deliveryContractSupported)
+        let refreshedProfile = try XCTUnwrap(connections.profile(id: created.id))
+        XCTAssertTrue(connections.applyProbeSuccess(id: created.id, revision: refreshedProfile.revision,
+            capabilities: ["run_submission": true, "delivery_contract_v1": true]))
+        // A capability refresh after an uncertain/legacy submission does not rewrite its reserved request.
+        _ = try await service.submit(id: local.id)
+        lock.lock(); let savedBodies = bodies; lock.unlock()
+        XCTAssertEqual(savedBodies.count, 2)
+        XCTAssertEqual(savedBodies[0], savedBodies[1])
+        XCTAssertEqual(localFallback.delivery.status, .pending)
+        XCTAssertFalse(localFallback.delivery.serverVerified)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: savedBodies[0]) as? [String: Any])
+        XCTAssertNil(object["expected_outputs"])
+        XCTAssertTrue((object["input"] as? String ?? "").contains("application/pdf") || (object["input"] as? String ?? "").contains("PDF"))
+        XCTAssertFalse(try XCTUnwrap(taskStore.task(id: local.id)).deliveryContractSupported,
+            "wire policy comes from the original persisted task snapshot")
+    }
+
+    func testDeliveryContractMismatchFallsBackWithoutLosingAcceptedTaskReceipt() async throws {
+        let session = fixtureSession { _ in FixtureResponse(status: 202, json: [
+            "task_id": "delivery-bad", "instance_id": "delivery-bad-instance", "status": "completed",
+            "artifacts": [],
+            "delivery": ["status": "delivered", "expected": ["image"], "missing": [], "artifact_count": 0]
+        ]) }
+        let payload = try AgentTaskPayload(title: "Draw", input: "draw", source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.image])
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let connection = try connections.create(name: "Bridge", kind: .hermes, endpoint: "https://fixture.test", token: "fixture-token",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "delivery-bad-instance")
+        XCTAssertTrue(connections.applyProbeSuccess(id: connection.id, revision: connection.revision,
+            capabilities: ["run_submission": true, "delivery_contract_v1": true]))
+        let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-bad-delivery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: taskRoot) }
+        let store = AgentTaskStore(fileURL: taskRoot)
+        let local = try store.create(profile: try XCTUnwrap(connections.profile(id: connection.id)), payload: payload)
+        let service = AgentTaskService(connectionStore: connections, taskStore: store, client: AgentTaskClient(session: session))
+        let accepted = try await service.submit(id: local.id)
+        XCTAssertEqual(accepted.remoteTaskID, "delivery-bad")
+        XCTAssertEqual(accepted.status, .completed)
+        XCTAssertEqual(accepted.delivery.status, .missing)
+        XCTAssertEqual(accepted.delivery.missing, [.image])
+        XCTAssertFalse(accepted.delivery.serverVerified)
+        let reopened = try XCTUnwrap(AgentTaskStore(fileURL: taskRoot).task(id: local.id))
+        XCTAssertEqual(reopened.remoteTaskID, "delivery-bad", "malformed additive delivery metadata must not erase a valid task receipt")
+        XCTAssertEqual(reopened.status, .completed)
+        XCTAssertEqual(reopened.delivery.status, .missing)
+    }
+
+    func testRefreshWithMissingDeliveryKeepsVerifiedTaskStatusAndUsesLocalCheck() async throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connections = AgentConnectionStore(defaults: defaults, keychain: MemoryTokenStore())
+        let connection = try connections.create(name: "Bridge", kind: .hermes, endpoint: "https://fixture.test", token: "fixture-token",
+            transport: .bridge, bridgeID: "bridge-1", instanceID: "delivery-status-instance")
+        XCTAssertTrue(connections.applyProbeSuccess(id: connection.id, revision: connection.revision,
+            capabilities: ["run_submission": true, "run_status": true, "delivery_contract_v1": true]))
+        let profile = try XCTUnwrap(connections.profile(id: connection.id))
+        let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("agent-task-status-delivery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: taskRoot) }
+        let store = AgentTaskStore(fileURL: taskRoot)
+        let payload = try AgentTaskPayload(title: "Draw", input: "draw", source: AgentTaskSource(noteID: "manual", noteRevision: 1), expectedOutputs: [.image])
+        let local = try store.create(profile: profile, payload: payload)
+        _ = try store.mutate(id: local.id, expectedRevision: local.recordRevision) {
+            $0.remoteTaskID = "delivery-status-task"; $0.conversationID = "delivery-status-task"; $0.status = .running
+        }
+        let session = fixtureSession { _ in FixtureResponse(json: [
+            "task_id": "delivery-status-task", "instance_id": "delivery-status-instance", "status": "completed",
+            "conversation_id": "delivery-status-task", "parent_task_id": "", "artifacts": []
+        ]) }
+        let service = AgentTaskService(connectionStore: connections, taskStore: store, client: AgentTaskClient(session: session))
+        let completed = try await service.refresh(id: local.id)
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.remoteTaskID, "delivery-status-task")
+        XCTAssertEqual(completed.delivery.status, .missing)
+        XCTAssertEqual(completed.delivery.missing, [.image])
+        XCTAssertFalse(completed.delivery.serverVerified)
+        let reopened = try XCTUnwrap(AgentTaskStore(fileURL: taskRoot).task(id: local.id))
+        XCTAssertEqual(reopened.status, .completed)
+        XCTAssertEqual(reopened.delivery.status, .missing)
     }
 
     func testDirectApprovalUsesGenerationBoundTokenAndShowsActualReason() async throws {
@@ -2399,6 +3081,18 @@ final class AgentTests: XCTestCase {
         return (defaults, suite)
     }
 
+    private func seedProbeProfile(_ profile: AgentConnectionProfile, defaults: UserDefaults) throws {
+        let encodedProfile = try JSONEncoder().encode(profile)
+        let profileObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encodedProfile) as? [String: Any])
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "defaultProfileID": profile.id.uuidString,
+            "profiles": [profileObject]
+        ]
+        defaults.set(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+                     forKey: "padnote.agent.connections.v1")
+    }
+
     private func makeUnknownVideoReconcileSetup(session: URLSession,
                                                 initialStatus: AgentVideoRemoteStatus = .unknown) throws ->
         (root: URL, suite: String, connections: AgentConnectionStore, connectionID: UUID,
@@ -2533,6 +3227,64 @@ private final class MemoryTokenStore: AgentTokenStore {
         return values[reference]
     }
     func delete(reference: String) { values.removeValue(forKey: reference) }
+}
+
+private enum AgentProbeFixtureFailure: Error, LocalizedError, Sendable {
+    case offline
+    var errorDescription: String? { "fixture offline" }
+}
+
+private actor AgentProbeTestScript {
+    enum Step: Sendable { case succeed, fail, wait, urlCancelled }
+
+    private var steps: [UUID: [Step]]
+    private var calls: [UUID: Int] = [:]
+    private var pending: [UUID: [CheckedContinuation<Result<AgentProbeResult, AgentProbeFixtureFailure>, Never>]] = [:]
+
+    init(steps: [UUID: [Step]]) { self.steps = steps }
+
+    func run(_ config: AgentConnectionConfig) async throws -> AgentProbeResult {
+        guard let id = config.id else { throw AgentProbeFixtureFailure.offline }
+        calls[id, default: 0] += 1
+        let step: Step
+        if var queue = steps[id], !queue.isEmpty {
+            step = queue.removeFirst()
+            steps[id] = queue
+        } else {
+            step = .succeed
+        }
+        switch step {
+        case .succeed:
+            return AgentProbeResult(message: "fixture ready", capabilities: ["run_submission": true], partialStatus: .ready)
+        case .fail:
+            throw AgentProbeFixtureFailure.offline
+        case .urlCancelled:
+            throw URLError(.cancelled)
+        case .wait:
+            let result = await withCheckedContinuation { continuation in
+                pending[id, default: []].append(continuation)
+            }
+            return try result.get()
+        }
+    }
+
+    func callCount(for id: UUID) -> Int { calls[id, default: 0] }
+
+    func waitForPending(_ ids: [UUID], timeout: TimeInterval = 3) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if ids.allSatisfy({ !(pending[$0]?.isEmpty ?? true) }) { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return ids.allSatisfy({ !(pending[$0]?.isEmpty ?? true) })
+    }
+
+    func resume(_ id: UUID, with result: Result<AgentProbeResult, AgentProbeFixtureFailure>) {
+        guard var queue = pending[id], !queue.isEmpty else { return }
+        let continuation = queue.removeFirst()
+        pending[id] = queue
+        continuation.resume(returning: result)
+    }
 }
 
 private extension Data {

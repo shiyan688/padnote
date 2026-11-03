@@ -921,13 +921,19 @@ final class PadNoteUITests: XCTestCase {
         let completedOutput = parentForm.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "父轮结果：已总结材料。")).firstMatch
         if !completedOutput.waitForExistence(timeout: 12) {
             attachUITestDiagnostics("followup-parent-not-completed")
-            XCTFail("the fixture GET must confirm the parent run completed")
+            XCTFail("the completed fixture parent must display its saved result before metadata refresh")
             return
         }
+        let refreshTaskMetadata = parentForm.buttons["agentTaskRefreshStatus"]
+        scrollUntilHittable(refreshTaskMetadata, in: parentForm, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(refreshTaskMetadata.isHittable,
+                      "a terminal Bridge task without session metadata must expose an explicit refresh action")
+        XCTAssertEqual(refreshTaskMetadata.label, "刷新任务信息")
+        refreshTaskMetadata.tap()
         scrollUntilHittable(continueButton, in: parentForm, direction: .towardBottom, maxSwipes: 8)
         if !continueButton.isHittable {
             attachUITestDiagnostics("followup-parent-no-continue")
-            XCTFail("the completed parent must expose continue after scrolling the detail form")
+            XCTFail("an explicit terminal metadata refresh should make the eligible follow-up available")
             return
         }
         continueButton.tap()
@@ -936,12 +942,27 @@ final class PadNoteUITests: XCTestCase {
         input.tap(); input.typeText("Explain the second step")
         app.buttons["agentTaskSendFollowup"].tap()
 
-        XCTAssertTrue(app.staticTexts["Explain the second step"].waitForExistence(timeout: 8), "the submitted child detail must open")
+        let childResult = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "追问结果：按原材料说明了原因。")
+        ).firstMatch
+        XCTAssertTrue(childResult.waitForExistence(timeout: 12),
+                      "the child result, not the still-visible parent result, must appear after submission")
         let childForm = topmostTaskForm()
+        XCTAssertTrue(childForm.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "追问结果：按原材料说明了原因。")
+        ).firstMatch.exists, "the foreground detail must be the submitted child round")
+        let childInputDisclosure = childForm.buttons["agentTaskInputDisclosure"]
+        scrollUntilHittable(childInputDisclosure, in: childForm, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(childInputDisclosure.waitForExistence(timeout: 5), "the original input remains available below the result actions")
+        XCTAssertTrue(childInputDisclosure.isHittable)
+        childInputDisclosure.tap()
+        let childInputText = childForm.staticTexts["Explain the second step"]
+        scrollUntilHittable(childInputText, in: childForm, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(childInputText.waitForExistence(timeout: 5),
+            "opening the input disclosure must show the exact saved follow-up input")
         let childOutput = childForm.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "追问结果：按原材料说明了原因。" )).firstMatch
-        scrollUntilHittable(childOutput, in: childForm, direction: .towardBottom, maxSwipes: 8)
+        scrollUntilHittable(childOutput, in: childForm, direction: .towardTop, maxSwipes: 8)
         XCTAssertTrue(childOutput.waitForExistence(timeout: 8), "the local fixture response should be shown in the child round")
-        XCTAssertTrue(childForm.staticTexts["Explain the second step"].exists, "the exact follow-up input must be visible in its own saved round")
         let fixtureSnapshot = childForm.staticTexts["fixtureSnapshot"]
         scrollUntilHittable(fixtureSnapshot, in: childForm, direction: .towardBottom, maxSwipes: 8)
         let childSnapshot = fixtureFields(fixtureSnapshot.label)
@@ -955,17 +976,78 @@ final class PadNoteUITests: XCTestCase {
         scrollUntilHittable(parentHistoryLink, in: childForm, direction: .towardTop, maxSwipes: 8)
         XCTAssertTrue(parentHistoryLink.waitForExistence(timeout: 5))
         parentHistoryLink.tap()
-        let historicalParentForm = topmostTaskForm()
-        XCTAssertTrue(historicalParentForm.staticTexts["请总结选中的材料"].waitForExistence(timeout: 5))
+        guard let historicalParentForm = waitForTopmostTaskForm(
+            containingResult: "父轮结果：已总结材料。", timeout: 12
+        ) else { return }
+        let parentInputDisclosure = historicalParentForm.buttons["agentTaskInputDisclosure"]
+        scrollUntilHittable(parentInputDisclosure, in: historicalParentForm, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(parentInputDisclosure.waitForExistence(timeout: 5))
+        XCTAssertTrue(parentInputDisclosure.isHittable)
+        parentInputDisclosure.tap()
+        let parentInputText = historicalParentForm.staticTexts["请总结选中的材料"]
+        scrollUntilHittable(parentInputText, in: historicalParentForm, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(parentInputText.waitForExistence(timeout: 5))
         let childHistoryLink = historicalParentForm.buttons["agentTaskChildRoundLink"]
         scrollUntilHittable(childHistoryLink, in: historicalParentForm, direction: .towardBottom, maxSwipes: 8)
         XCTAssertTrue(childHistoryLink.waitForExistence(timeout: 5))
         childHistoryLink.tap()
-        XCTAssertTrue(app.staticTexts["Explain the second step"].waitForExistence(timeout: 5))
-        let reopenedChildForm = topmostTaskForm()
+        guard let reopenedChildForm = waitForTopmostTaskForm(
+            containingResult: "追问结果：按原材料说明了原因。", timeout: 12
+        ) else { return }
+        let reopenedChildInputDisclosure = reopenedChildForm.buttons["agentTaskInputDisclosure"]
+        scrollUntilHittable(reopenedChildInputDisclosure, in: reopenedChildForm,
+                            direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(reopenedChildInputDisclosure.waitForExistence(timeout: 5))
+        XCTAssertTrue(reopenedChildInputDisclosure.isHittable)
+        reopenedChildInputDisclosure.tap()
+        let reopenedChildInput = reopenedChildForm.staticTexts["Explain the second step"]
+        scrollUntilHittable(reopenedChildInput, in: reopenedChildForm,
+                            direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(reopenedChildInput.waitForExistence(timeout: 5),
+                      "reopening the child round must show the exact saved follow-up input")
         let reopenedChildOutput = reopenedChildForm.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "追问结果：按原材料说明了原因。" )).firstMatch
-        scrollUntilHittable(reopenedChildOutput, in: reopenedChildForm, direction: .towardBottom, maxSwipes: 8)
+        scrollUntilHittable(reopenedChildOutput, in: reopenedChildForm, direction: .towardTop, maxSwipes: 8)
         XCTAssertTrue(reopenedChildOutput.waitForExistence(timeout: 5), "the saved child must reopen from its parent history")
+    }
+
+    func testMissingDeliveryOffersConfirmedFollowupWithExplicitOutputSelection() throws {
+        launchAgentFollowupFixture()
+        let row = app.buttons["agentTaskRow-cccccccc-cccc-4ccc-8ccc-cccccccccccc"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        var form = topmostTaskForm()
+        let missingNotice = form.staticTexts["agentDeliveryMissingNotice"]
+        XCTAssertTrue(missingNotice.waitForExistence(timeout: 5))
+        XCTAssertTrue(form.staticTexts["agentDeliveryMissingKinds"].label.contains("图片"))
+        let repair = form.buttons["agentDeliveryRepair"]
+        scrollUntilHittable(repair, in: form, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(repair.isHittable)
+        repair.tap()
+
+        let imageSelection = app.switches["agentFollowupExpectedOutput-image"]
+        XCTAssertTrue(imageSelection.waitForExistence(timeout: 5))
+        XCTAssertEqual(imageSelection.value as? String, "1", "repair follow-up must preselect the missing image expectation")
+        let composeForm = app.descendants(matching: .any).matching(identifier: "agentTaskFollowupComposeForm").firstMatch
+        XCTAssertTrue(composeForm.waitForExistence(timeout: 5), "the follow-up form must contain the input and delivery choices")
+        for kind in ["file", "pdf", "video", "audio"] {
+            let selection = app.switches["agentFollowupExpectedOutput-\(kind)"]
+            scrollUntilHittable(selection, in: composeForm, direction: .towardBottom, maxSwipes: 8)
+            XCTAssertTrue(selection.isHittable, "the \(kind) choice must be reachable in the follow-up form")
+            XCTAssertEqual(selection.value as? String, "0", "repair follows only the missing image kind; \(kind) stays off")
+        }
+        let sendFollowup = app.buttons["agentTaskSendFollowup"]
+        XCTAssertTrue(sendFollowup.waitForExistence(timeout: 5))
+        XCTAssertTrue(sendFollowup.isHittable, "the explicit send action must remain available after reviewing all choices")
+        sendFollowup.tap()
+
+        form = topmostTaskForm()
+        XCTAssertTrue(form.staticTexts["agentDeliveryMissingNotice"].waitForExistence(timeout: 8),
+            "a returned text answer must not be presented as a delivered image")
+        XCTAssertTrue(form.staticTexts["agentDeliveryMissingKinds"].label.contains("图片"))
+        let childLink = form.buttons["agentTaskHistoryRound-2"]
+        scrollUntilHittable(childLink, in: form, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(childLink.waitForExistence(timeout: 5), "repair must create a separately saved child round")
+        XCTAssertTrue(childLink.isHittable, "the saved repair round must remain reachable from history")
     }
 
     func testBridgeSubmittingRunWithTaskIDCanRetrySameRequest() throws {
@@ -1021,6 +1103,24 @@ final class PadNoteUITests: XCTestCase {
             return app.otherElements.firstMatch
         }
         return forms.element(boundBy: forms.count - 1)
+    }
+
+    private func waitForTopmostTaskForm(containingResult resultText: String,
+                                        timeout: TimeInterval) -> XCUIElement? {
+        let forms = app.descendants(matching: .any).matching(identifier: "agentTaskDetailForm")
+        let resultPredicate = NSPredicate(format: "label CONTAINS %@", resultText)
+        let foregroundResult = NSPredicate { _, _ in
+            guard forms.count > 0 else { return false }
+            let candidate = forms.element(boundBy: forms.count - 1)
+            return candidate.staticTexts.containing(resultPredicate).firstMatch.isHittable
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: foregroundResult, object: app)
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            attachUITestDiagnostics("followup-round-transition-\(resultText.hashValue)")
+            XCTFail("the foreground task detail must show its own expected result before interacting with its input")
+            return nil
+        }
+        return topmostTaskForm()
     }
 
     private func scrollUntilHittable(_ element: XCUIElement, in form: XCUIElement, direction: FormScrollDirection, maxSwipes: Int) {
@@ -1458,6 +1558,140 @@ final class AgentSettingsLayoutUITests: XCTestCase {
         assertIdentityAndCapabilities()
     }
 
+    func testPastePairApproveAndAutoProbeKeepsReadyAndUnavailableTargets() throws {
+        let suppliedEnvironment = ProcessInfo.processInfo.environment
+        let readyJSON = suppliedEnvironment["PADNOTE_QA_PAIR_READY_JSON"] ?? app.launchEnvironment["PADNOTE_QA_PAIR_READY_JSON"] ?? ""
+        let unavailableJSON = suppliedEnvironment["PADNOTE_QA_PAIR_UNAVAILABLE_JSON"] ?? app.launchEnvironment["PADNOTE_QA_PAIR_UNAVAILABLE_JSON"] ?? ""
+        XCTAssertFalse(readyJSON.isEmpty, "the owned fixture runner must supply the ready pairing JSON privately")
+        XCTAssertFalse(unavailableJSON.isEmpty, "the owned fixture runner must supply the unavailable pairing JSON privately")
+
+        app.launchArguments = ["--uitesting-agent-settings-layout", "--agent-settings-layout-fixture-id", fixtureID,
+                               "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchEnvironment = [
+            "PADNOTE_QA_PAIR_READY_JSON": readyJSON,
+            "PADNOTE_QA_PAIR_UNAVAILABLE_JSON": unavailableJSON
+        ]
+        app.launch()
+        XCTAssertTrue(app.navigationBars["电脑 Agent"].waitForExistence(timeout: 8))
+
+        pairThroughVisibleUI(json: readyJSON, targetName: "QA Ready Hermes", expectedStatus: "Agent 可用")
+        attachScreenshot("pairing-ui-ready-target-and-auto-probe")
+        pairThroughVisibleUI(json: unavailableJSON, targetName: "QA Unavailable Hermes", expectedStatus: "Agent 不可用")
+        let readyRow = app.cells.containing(NSPredicate(format: "label CONTAINS %@", "QA Ready Hermes")).firstMatch
+        scrollCellIntoHittable(readyRow)
+        let readyName = readyRow.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "QA Ready Hermes")).firstMatch
+        let readyStatus = readyRow.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Agent 可用")).firstMatch
+        XCTAssertTrue(readyRow.exists, "the first newly paired row remains in the list")
+        XCTAssertTrue(readyName.exists)
+        XCTAssertTrue(readyStatus.exists, "the ready status remains attached to its own saved target row")
+        let unavailableRow = app.cells.containing(NSPredicate(format: "label CONTAINS %@", "QA Unavailable Hermes")).firstMatch
+        let unavailableRetry = unavailableRow.buttons.matching(NSPredicate(format: "label CONTAINS %@", "测试连接")).firstMatch
+        scrollCellIntoHittable(unavailableRow)
+        XCTAssertTrue(unavailableRetry.isHittable, "an unavailable but saved connection retains its explicit retry action")
+        attachScreenshot("pairing-ui-unavailable-target-retained-with-retry")
+    }
+
+    private func pairThroughVisibleUI(json: String, targetName: String, expectedStatus: String) {
+        let pairButton = app.buttons["用连接助手配对"]
+        scrollToHittable(pairButton, toward: .bottom)
+        pairButton.tap()
+        XCTAssertTrue(app.navigationBars["连接助手配对"].waitForExistence(timeout: 8))
+
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5), "the ordinary pairing sheet exposes its JSON paste editor")
+        editor.tap()
+        editor.typeText(json)
+        XCTAssertTrue((editor.value as? String) == json, "the paste editor retains the supplied payload without writing it into test logs")
+        let parse = app.buttons["解析粘贴内容"]
+        scrollPairingControlIntoHittable(parse)
+        XCTAssertTrue(parse.isHittable, "the pasted pairing payload can be parsed from the normal sheet")
+        parse.tap()
+        let request = app.buttons["向电脑申请连接"]
+        let scannerNavigation = app.navigationBars["扫描二维码"]
+        XCTAssertTrue(request.waitForExistence(timeout: 8), "a valid parse exposes the normal request action")
+        XCTAssertFalse(scannerNavigation.exists, "parsing pasted text must not present the camera scanner")
+        scrollPairingControlIntoHittable(request)
+        XCTAssertTrue(request.isHittable, "a valid pasted code exposes the normal request action")
+        request.tap()
+
+        let pairingBar = app.navigationBars["连接助手配对"]
+        let settingsBar = app.navigationBars["电脑 Agent"]
+        let returnedToSettings = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !pairingBar.exists && settingsBar.isHittable
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [returnedToSettings], timeout: 45), .completed,
+                       "wait until the pairing sheet is gone and its parent settings list is hittable")
+        let targetRow = app.cells.containing(NSPredicate(format: "label CONTAINS %@", targetName)).firstMatch
+        scrollCellIntoHittable(targetRow)
+        XCTAssertTrue(targetRow.exists, "only the requested newly paired target satisfies this identity check")
+        let targetIdentity = targetRow.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", targetName)).firstMatch
+        let status = targetRow.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", expectedStatus)).firstMatch
+        XCTAssertTrue(targetIdentity.exists, "the exact QA target name is present inside its row")
+        XCTAssertTrue(status.waitForExistence(timeout: 20), "the expected automatic-probe status appears inside that same row")
+    }
+
+    func testUnavailableScannerCanReturnToPaste() throws {
+        launchFixture(accessibilityTextSize: false)
+        let pairButton = app.buttons["用连接助手配对"]
+        scrollCellIntoHittable(pairButton)
+        pairButton.tap()
+        XCTAssertTrue(app.navigationBars["连接助手配对"].waitForExistence(timeout: 8))
+
+        let scan = app.buttons["扫描二维码"]
+        scrollPairingControlIntoHittable(scan)
+        XCTAssertTrue(scan.isHittable)
+        scan.tap()
+        let scannerNavigation = app.navigationBars["扫描二维码"]
+        XCTAssertTrue(scannerNavigation.waitForExistence(timeout: 8), "the scanner opens in its own titled sheet")
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let permissionAlert = springboard.alerts.firstMatch
+        if permissionAlert.waitForExistence(timeout: 4) {
+            let cameraPromptText = permissionAlert.staticTexts.matching(NSPredicate(format:
+                "label CONTAINS[c] %@ OR label CONTAINS %@", "camera", "相机")).firstMatch
+            XCTAssertTrue(cameraPromptText.exists, "the test only dismisses the system camera-permission alert")
+            let deny = permissionAlert.buttons.matching(NSPredicate(format: "label IN %@",
+                ["Don't Allow", "不允许", "不允许一次", "不允许访问"])).firstMatch
+            XCTAssertTrue(deny.waitForExistence(timeout: 3), "the isolated test denies camera permission only if iOS asks")
+            deny.tap()
+        }
+
+        let unavailable = app.staticTexts["相机不可用。请返回并粘贴配对 JSON。"]
+        XCTAssertTrue(unavailable.waitForExistence(timeout: 8), "unavailable-camera guidance remains visible in the scanner")
+        attachScreenshot("pairing-camera-unavailable-with-return-action")
+        let returnToPaste = app.buttons["返回粘贴配对"]
+        XCTAssertTrue(returnToPaste.waitForExistence(timeout: 5))
+        XCTAssertTrue(returnToPaste.isHittable)
+        returnToPaste.tap()
+        let pairingNavigation = app.navigationBars["连接助手配对"]
+        let returnedToPaste = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !scannerNavigation.exists && pairingNavigation.isHittable
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [returnedToPaste], timeout: 8), .completed,
+                       "the explicit scanner return keeps the pairing sheet open")
+
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5), "the paste editor remains available after scanner dismissal")
+        scrollPairingControlIntoHittable(editor)
+        XCTAssertTrue(editor.isHittable)
+        attachScreenshot("pairing-returned-to-paste-editor")
+    }
+
+    private func scrollPairingControlIntoHittable(_ element: XCUIElement) {
+        for _ in 0..<8 where !element.isHittable { app.swipeUp() }
+        for _ in 0..<16 where !element.isHittable { app.swipeDown() }
+        XCTAssertTrue(element.exists && element.isHittable,
+                      "the requested pairing control is visible in the current sheet")
+    }
+
+    private func scrollCellIntoHittable(_ cell: XCUIElement) {
+        for _ in 0..<8 where !cell.isHittable { app.swipeUp() }
+        for _ in 0..<16 where !cell.isHittable { app.swipeDown() }
+        XCTAssertTrue(cell.isHittable, "the requested QA connection row is reachable in the saved connection list")
+    }
+
     private func launchFixture(accessibilityTextSize: Bool) {
         app.launchArguments = ["--uitesting-agent-settings-layout", "--agent-settings-layout-fixture-id", fixtureID]
         if accessibilityTextSize {
@@ -1716,6 +1950,7 @@ final class AgentSettingsLayoutUITests: XCTestCase {
 final class AgentTaskHistoryIdentityUITests: XCTestCase {
     private let fixtureID = UUID().uuidString.lowercased()
     private var app: XCUIApplication!
+    private enum ScrollDirection { case towardTop, towardBottom }
 
     private let fixtures: [(String, String, String, String)] = [
         ("a1111111-1111-4111-8111-111111111111", "history-hermes-long-host.fixture.invalid:18443", "Hermes", "Bridge 助手 bridgeHERMES01 · 实例 instanceHERMES01"),
@@ -1748,6 +1983,60 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
         app = nil
     }
 
+    func testAgentResultUXKeepsLongAnswerAndFileActionsDiscoverable() throws {
+        let resultFixtureID = UUID().uuidString.lowercased()
+        let resultSuite = "PadNote.AgentResultUX.UITest.\(resultFixtureID)"
+        let resultRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PadNoteAgentResultUXUITest-\(resultFixtureID)", isDirectory: true)
+        app.launchArguments = ["--uitesting", "--uitesting-agent-result-ux",
+                               "--result-ux-fixture-id", resultFixtureID]
+        app.launch()
+        defer {
+            app.terminate()
+            try? FileManager.default.removeItem(at: resultRoot)
+            UserDefaults(suiteName: resultSuite)?.removePersistentDomain(forName: resultSuite)
+        }
+
+        let clientTaskID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        let row = app.buttons["agentTaskRow-\(clientTaskID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 8), "the isolated synthetic result fixture must load")
+        XCTAssertTrue(row.label.contains("已完成"), "execution status remains visible as the primary row state")
+        let deliveryCue = app.staticTexts["agentTaskDeliveryCue-\(clientTaskID)"]
+        XCTAssertTrue(deliveryCue.waitForExistence(timeout: 5))
+        XCTAssertEqual(deliveryCue.label, "缺少：PDF")
+        row.tap()
+
+        let forms = app.descendants(matching: .any).matching(identifier: "agentTaskDetailForm")
+        XCTAssertTrue(forms.firstMatch.waitForExistence(timeout: 5))
+        let form = forms.element(boundBy: forms.count - 1)
+        let answer = form.staticTexts["agentTaskResultText"]
+        XCTAssertTrue(answer.waitForExistence(timeout: 5))
+        XCTAssertEqual(answer.value as? String, "collapsed")
+        let collapsedHeight = answer.frame.height
+        let disclosure = form.buttons["agentTaskOutputDisclosure"]
+        scrollUntilHittable(disclosure, in: form, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(disclosure.exists, "the full answer must always remain reachable, including short wrapped answers")
+        XCTAssertTrue(disclosure.isHittable)
+        attach("agent-result-ux-answer-collapsed")
+        disclosure.tap()
+        XCTAssertEqual(answer.value as? String, "expanded")
+        XCTAssertTrue(answer.label.contains("RESULT-UX-END-MARKER"), "expansion must expose the original answer ending")
+        XCTAssertGreaterThan(answer.frame.height, collapsedHeight, "the collapsed presentation must bound the long answer")
+        attach("agent-result-ux-answer-expanded")
+        scrollUntilHittable(disclosure, in: form, direction: .towardBottom, maxSwipes: 8)
+        XCTAssertTrue(disclosure.isHittable, "the collapse control must remain reachable after expanding a long answer")
+        disclosure.tap()
+        XCTAssertEqual(answer.value as? String, "collapsed", "the full answer must collapse again without changing its text")
+
+        XCTAssertTrue(form.buttons["agentResultPreviewToPaper"].exists)
+        XCTAssertTrue(form.buttons["agentVideoPlayArtifact-synthetic-image-1"].exists,
+                      "the returned image file action must remain discoverable")
+        XCTAssertTrue(form.buttons["agentImagePlaceArtifact-synthetic-image-1"].exists,
+                      "placing the returned image must remain discoverable")
+        XCTAssertTrue(form.descendants(matching: .any)["agentTaskInputDisclosure"].exists,
+                      "the long original input remains available in its collapsed section after result actions")
+    }
+
     func testSavedTaskDestinationsAreVisuallyDistinctAtDefaultTextSize() throws {
         launchFixture(accessibilityTextSize: false)
         assertHistoryRowsAndSameNamedTaskSelection(suffix: "default")
@@ -1766,6 +2055,16 @@ final class AgentTaskHistoryIdentityUITests: XCTestCase {
         }
         app.launch()
         XCTAssertTrue(app.navigationBars["电脑任务"].waitForExistence(timeout: 10))
+    }
+
+    private func scrollUntilHittable(_ element: XCUIElement, in container: XCUIElement,
+                                     direction: ScrollDirection, maxSwipes: Int) {
+        for _ in 0..<maxSwipes where !element.isHittable {
+            switch direction {
+            case .towardBottom: container.swipeUp()
+            case .towardTop: container.swipeDown()
+            }
+        }
     }
 
     private func assertHistoryRowsAndSameNamedTaskSelection(suffix: String) {

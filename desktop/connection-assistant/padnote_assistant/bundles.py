@@ -38,6 +38,11 @@ MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".mp4": "video/mp4",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".srt": "application/x-subrip",
 }

@@ -623,6 +623,7 @@ class StateStore:
                 "parent_task_id": parent_task_id or "",
                 "conversation_id": root_task_id,
                 "source": payload.get("source"),
+                "expected_outputs": list(payload.get("expected_outputs", [])),
                 "session_id": None,
                 "input_session_id": parent.get("session_id") if parent else None,
                 "source_snapshot_digest": parent.get("source_snapshot_digest") if parent else None,

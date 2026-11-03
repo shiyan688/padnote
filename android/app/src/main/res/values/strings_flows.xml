@@ -455,7 +455,40 @@
     <string name="flow_agent_result_saved_reopen">The result was saved. Reopen the note to see it.</string>
     <string name="flow_agent_result_save_uncertain">The save result is uncertain. Reopen the note and check before trying again.</string>
     <string name="flow_agent_result_save_failed">Could not save the result. The note was not changed.</string>
-    <string name="flow_expand_task_details">Show task details</string>
-    <string name="flow_collapse_task_details">Hide task details</string>
+    <string name="flow_expand_task_details">Show technical details</string>
+    <string name="flow_collapse_task_details">Hide technical details</string>
     <string name="flow_agent_result_destination_summary">Save to %1$s, starting on page %2$d</string>
+
+    <!-- Delivery expectations are separate from task execution status. -->
+    <string name="flow_history_delivery_missing">Files missing: %1$s</string>
+    <string name="flow_history_delivery_delivered">Files returned: %1$s</string>
+    <string name="flow_expand_full_result">Show full answer</string>
+    <string name="flow_collapse_full_result">Show less</string>
+    <string name="flow_failure_reason_label">Reason:</string>
+    <string name="flow_delivery_heading">Requested files</string>
+    <string name="flow_delivery_text_default">Text answer (default)</string>
+    <string name="flow_delivery_selector_hint">Choose files this task should return. This requests files; it does not check answer correctness.</string>
+    <string name="flow_delivery_legacy_hint">This assistant does not report delivery status. PadNote checks returned attachments by type.</string>
+    <string name="flow_delivery_selected">%1$s requested</string>
+    <string name="flow_delivery_not_selected">Request %1$s</string>
+    <string name="flow_delivery_kind_image">Image</string>
+    <string name="flow_delivery_kind_pdf">PDF</string>
+    <string name="flow_delivery_kind_video">Video</string>
+    <string name="flow_delivery_kind_audio">Audio</string>
+    <string name="flow_delivery_kind_file">Other file</string>
+    <string name="flow_delivery_legacy_instruction">Please return the requested %1$s as actual readable attachment files. Confirm each file exists and opens before you finish.</string>
+    <string name="flow_delivery_server_checked">Delivery state reported by the connected assistant.</string>
+    <string name="flow_delivery_local_checked">PadNote checked attachment types locally because no usable server delivery summary was available.</string>
+    <string name="flow_delivery_delivered">Requested attachments returned: %1$s. File type only; content correctness is not verified.</string>
+    <string name="flow_delivery_missing">Execution ended. Files still missing: %1$s. Returned: %2$s.</string>
+    <string name="flow_delivery_none">none</string>
+    <string name="flow_delivery_repair_button">Continue to add missing files</string>
+    <string name="flow_delivery_repair_title">Continue to add missing files</string>
+    <string name="flow_delivery_repair_unavailable">A same-session follow-up is not available for this task.</string>
+    <string name="flow_delivery_repair_prefill">Please provide these missing attachments: %1$s. Save them as readable files and confirm they exist and open before finishing.</string>
+    <string name="flow_delivery_repair_empty">Keep every missing file type selected.</string>
+    <string name="flow_pairing_saved_checking">Saved %1$d connections. Availability is being checked in the background; you can keep using PadNote.</string>
+    <string name="flow_auto_probe_summary">Check complete: %1$d checks passed, %2$d need attention, and %3$d older results were ignored. Open the connection list for details and manual retry.</string>
+    <string name="flow_cap_note_context_bundle">Receive a note’s paper context</string>
+    <string name="flow_cap_hermes_paper_next">To send paper context from a note, open it and choose “Share and send to computer Agent”.</string>
 </resources>

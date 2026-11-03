@@ -13,10 +13,10 @@ import java.util.Set;
 final class AgentCapabilitySummary {
     private enum TextId {
         RUN_SUBMISSION, RUN_STATUS, RUN_STOP, APPROVAL, BUNDLE, VIDEO_TASK,
-        VIDEO_OPS, VIDEO_PRODUCTION, RUNTIME, ARTIFACTS, UNKNOWN, OLD_INFO,
+        PAPER_CONTEXT, VIDEO_OPS, VIDEO_PRODUCTION, RUNTIME, ARTIFACTS, UNKNOWN, OLD_INFO,
         LEGACY_VERIFIED, LEGACY_SUPPORTED, UNKNOWN_MORE, REPORTED, UNREPORTED,
         RECENT_PASS, RECENT_FAIL, SUPPORTED, NOT_SUPPORTED, NEXT_STEP,
-        HERMES_NEXT, HERMES_ENTRY, OPENCLAW_NEXT, VIDEO_NEXT_VERIFIED,
+        HERMES_NEXT, HERMES_PAPER_NEXT, HERMES_ENTRY, OPENCLAW_NEXT, VIDEO_NEXT_VERIFIED,
         VIDEO_NEXT_UNVERIFIED, UNKNOWN_KIND, FOOTER
     }
 
@@ -34,6 +34,7 @@ final class AgentCapabilitySummary {
             new Capability("run_stop", TextId.RUN_STOP),
             new Capability("run_approval_response", TextId.APPROVAL),
             new Capability("task_bundle", TextId.BUNDLE),
+            new Capability("note_context_bundle", TextId.PAPER_CONTEXT),
             new Capability("video_task_submission", TextId.VIDEO_TASK),
             new Capability("video_operations", TextId.VIDEO_OPS),
             new Capability("video_production", TextId.VIDEO_PRODUCTION),
@@ -58,6 +59,7 @@ final class AgentCapabilitySummary {
             case RUN_STOP: return context.getString(R.string.flow_cap_run_stop);
             case APPROVAL: return context.getString(R.string.flow_cap_approval);
             case BUNDLE: return context.getString(R.string.flow_cap_bundle);
+            case PAPER_CONTEXT: return context.getString(R.string.flow_cap_note_context_bundle);
             case VIDEO_TASK: return context.getString(R.string.flow_cap_video_task);
             case VIDEO_OPS: return context.getString(R.string.flow_cap_video_ops);
             case VIDEO_PRODUCTION: return context.getString(R.string.flow_cap_video_prod);
@@ -76,6 +78,7 @@ final class AgentCapabilitySummary {
             case NOT_SUPPORTED: return context.getString(R.string.flow_cap_not_supported);
             case NEXT_STEP: return context.getString(R.string.flow_cap_next_step);
             case HERMES_NEXT: return context.getString(R.string.flow_cap_hermes_next);
+            case HERMES_PAPER_NEXT: return context.getString(R.string.flow_cap_hermes_paper_next);
             case HERMES_ENTRY: return context.getString(R.string.flow_cap_hermes_entry);
             case OPENCLAW_NEXT: return context.getString(R.string.flow_cap_openclaw_next);
             case VIDEO_NEXT_VERIFIED: return context.getString(R.string.flow_cap_video_next_verified);
@@ -92,6 +95,7 @@ final class AgentCapabilitySummary {
             case RUN_STOP: return "请求停止任务";
             case APPROVAL: return "回复待处理审批";
             case BUNDLE: return "接收任务包";
+            case PAPER_CONTEXT: return "接收笔记纸面上下文";
             case VIDEO_TASK: return "接受视频任务";
             case VIDEO_OPS: return "执行视频工作流操作";
             case VIDEO_PRODUCTION: return "启动视频生产";
@@ -110,6 +114,7 @@ final class AgentCapabilitySummary {
             case NOT_SUPPORTED: return "电脑明确报告不支持";
             case NEXT_STEP: return "下一步：";
             case HERMES_NEXT: return "在这条连接的操作菜单中选择“发送文本任务”。";
+            case HERMES_PAPER_NEXT: return "要从笔记发送纸面上下文，请打开笔记并选择“分享与交给电脑 Agent”。";
             case HERMES_ENTRY: return "只有已验证且电脑明确报告支持提交文字任务的 Hermes 连接，才会显示文本任务入口；请先测试连接。";
             case OPENCLAW_NEXT: return "连接身份可检查；当前版本不支持提交 OpenClaw 任务。可重新测试、编辑或删除连接。";
             case VIDEO_NEXT_VERIFIED: return "打开一份笔记，选择“视频任务与成果”→“生成讲解视频”；准备好材料后可发送到电脑或导出任务包。需先有已整理文本，未准备时界面会提示整理。此连接不提供文本任务入口。";
@@ -123,6 +128,19 @@ final class AgentCapabilitySummary {
                                        List<String> capabilities) {
         return kind == AgentConnectionStore.Kind.HERMES && verified &&
                 capabilities != null && capabilities.contains("run_submission");
+    }
+
+    /** Presentation guidance only; the actual paper-task gate remains in MainActivity. */
+    static boolean canExplainHermesPaperHandoff(AgentConnectionStore.Kind kind,
+                                                 AgentConnectionStore.Transport transport,
+                                                 boolean verified,
+                                                 boolean featureMapAvailable,
+                                                 Map<String, Boolean> featureMap) {
+        return kind==AgentConnectionStore.Kind.HERMES&&
+                transport==AgentConnectionStore.Transport.BRIDGE&&verified&&featureMapAvailable&&
+                featureMap!=null&&Boolean.TRUE.equals(featureMap.get("run_submission"))&&
+                Boolean.TRUE.equals(featureMap.get("task_bundle"))&&
+                Boolean.TRUE.equals(featureMap.get("note_context_bundle"));
     }
 
     static String describe(AgentConnectionStore.Kind kind,
@@ -171,7 +189,10 @@ final class AgentCapabilitySummary {
             }
         }
         if (kind == AgentConnectionStore.Kind.HERMES) {
-            if (canSubmitHermesText(kind, verified, capabilities)) {
+            if (canExplainHermesPaperHandoff(kind,transport,verified,featureMapAvailable,featureMap)) {
+                out.append("\n").append(copy.get(TextId.NEXT_STEP))
+                        .append(copy.get(TextId.HERMES_PAPER_NEXT));
+            } else if (canSubmitHermesText(kind, verified, capabilities)) {
                 out.append("\n").append(copy.get(TextId.NEXT_STEP))
                         .append(copy.get(TextId.HERMES_NEXT));
             } else {

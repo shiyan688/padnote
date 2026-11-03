@@ -2,7 +2,7 @@
 
 推荐在运行 Hermes 的电脑上打开 PadNote 连接助手，平板和电脑连同一个 Wi‑Fi，扫码即可配对，不需要安装其他软件。支持保存多个连接；也可以手动填写已有 HTTPS 地址和令牌。所有模型与 Agent 的 API Key 都由你自己提供并留在你的设备上。教程可离线阅读。
 
-> 本文与应用内教程（`android/app/src/main/assets/agent-connection-guide.json`，Android 与 iPad 共用）内容相同。
+> 本文与应用内教程（`android/app/src/main/assets/agent-connection-guide.json`，Android 与 iPad 共用）步骤和命令保持一致；各自按对应语言显示。
 
 ## 先选连接方式
 
@@ -12,7 +12,7 @@ OpenClaw 目前只有检测与引导，尚不能在 PadNote 中执行任务。�
 
 ## 1 · 打开电脑连接助手
 
-Windows / WSL2：解压连接助手，运行 Start-PadNote.cmd，选择已经安装 Hermes 的 WSL 发行版。助手和 Hermes 必须在同一 WSL 环境中，才能共享本次任务的文件。Hermes 已能在终端对话时，保留原有安装和模型配置。
+Windows 本机模式：安装并运行 Windows 连接助手，连接安装在 Windows 本机的 Hermes。Windows 安装包不会直接控制 WSL 中的 Hermes。若使用 WSL 中的 Hermes，请在安装 Hermes 的同一 WSL 发行版内，从助手源码目录运行 `python3 start.py --lan`；助手和 Hermes 需要在该发行版中运行，才能访问同一任务文件。不要用 `Start-PadNote.cmd` 启动 WSL 助手。Hermes 已能在终端对话时，保留原有安装和模型配置。
 电脑管理页默认在 http://127.0.0.1:8766 打开。只在自己的电脑打开这个页面；它不会出现在局域网上。
 
 ## 2 · 选择 Hermes 并检查接口
@@ -22,12 +22,12 @@ Windows / WSL2：解压连接助手，运行 Start-PadNote.cmd，选择已经安
 
 ## 3 · 让平板能找到电脑（同一个 Wi‑Fi）
 
-平板和电脑连接同一个 Wi‑Fi 或同一台路由器。Start-PadNote.cmd 默认开启同网连接：助手在 8767 端口提供加密的设备接口，证书由电脑自己生成，指纹写进配对二维码，平板只信任这一张证书。
-Windows 需要做两件事（管理员 PowerShell，只需一次）：1）让 WSL 能收到局域网连接：Windows 11 22H2 及以上在 %UserProfile%\.wslconfig 写入 [wsl2] 和 networkingMode=mirrored，然后执行 wsl --shutdown 再重新打开；Windows 10 用下面的端口转发。2）只对“专用网络”放行 8767，并确认当前 Wi‑Fi 设为专用网络。
+平板和电脑连接同一个 Wi‑Fi 或同一台路由器。Windows 原生助手和 WSL 助手都在 8767 端口提供加密的设备接口；证书由电脑生成，指纹写进配对二维码，平板只信任这一张证书。
+Windows 上只对“专用网络”的“本地子网”放行 TCP 8767，并确认当前 Wi‑Fi 设为专用网络。若使用 Windows 原生助手，可在图形窗口点击“允许同 Wi‑Fi 连接”，或运行下面的防火墙命令。后面的 WSL 网络设置只适用于助手本身运行在 WSL 的情形：Windows 11 22H2 及以上可在 %UserProfile%\.wslconfig 写入 [wsl2] 和 networkingMode=mirrored，然后执行 wsl --shutdown 再重新打开；Windows 10 使用下面的端口转发。
 
 ```
-New-NetFirewallRule -DisplayName "PadNote LAN" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private
-# 仅 Windows 10：WSL 地址变化后需重跑
+New-NetFirewallRule -DisplayName "PadNote LAN" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private -RemoteAddress LocalSubnet
+# 仅在 WSL 助手运行于 Windows 10 时使用；WSL 地址变化后需重跑
 $wslIp = (wsl hostname -I).Split(" ")[0]
 netsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp
 ```
@@ -39,7 +39,7 @@ netsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 conne
 ## 5 · 扫码，在电脑确认
 
 在 PadNote 的电脑 Agent 页面选择扫码添加；也可复制完整配对内容，用粘贴入口添加。核对显示的电脑地址后发起申请，再回电脑点击“刷新待批准设备”，核对后批准这台平板。
-配对码只有 5 分钟有效且只能使用一次。平板不需要复制 Hermes 的长期令牌。配对成功后检查连接，再发送简单任务验证。电脑重装助手或删除其证书后，平板需要重新配对。
+配对码只有 5 分钟有效且只能使用一次。平板不需要复制 Hermes 的长期令牌。电脑批准配对后，平板会自动检查新连接；若状态不可用或结果过期，再从连接列表手动重试。检查通过后可发送简单任务验证。电脑重装助手或删除其证书后，平板需要重新配对。
 
 ## 连接多个 Agent
 
@@ -52,7 +52,7 @@ netsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 conne
 
 ## 补充 · 启用 Hermes API Server
 
-在安装 Hermes 的 WSL 中编辑该实例实际使用的 .env。默认是 ~/.hermes/.env；使用 profile 或 HERMES_HOME 时以实际配置为准。保留原有内容，只补充缺失的 API Server 设置。已有 API_SERVER_KEY 就沿用；没有时可先用 openssl rand -hex 32 生成随机令牌，替换下面的占位文字。这个令牌与模型厂商 API Key 不同。
+在该 Hermes 实例实际运行的环境中编辑它使用的 .env；只有 Hermes 安装在 WSL 时才在 WSL 中操作。默认是 ~/.hermes/.env；使用 profile 或 HERMES_HOME 时以实际配置为准。保留原有内容，只补充缺失的 API Server 设置。已有 API_SERVER_KEY 就沿用；没有时可先用 openssl rand -hex 32 生成随机令牌，替换下面的占位文字。这个令牌与模型厂商 API Key 不同。
 
 ```
 API_SERVER_ENABLED=true
@@ -63,7 +63,7 @@ API_SERVER_PORT=8642
 
 ## 补充 · 启动接口
 
-在同一个 Hermes 环境中运行 hermes gateway。已经运行的 Gateway 需要等当前任务结束后重启，才能加载新配置；不要同时启动重复进程。确认日志中出现 API Server 后，回助手点击“刷新发现”，再次点击“使用这套配置”，然后检测实例。电脑、WSL、Hermes 和连接助手都需保持运行。
+在同一个 Hermes 环境中运行 hermes gateway。已经运行的 Gateway 需要等当前任务结束后重启，才能加载新配置；不要同时启动重复进程。确认日志中出现 API Server 后，回助手点击“刷新发现”，再次点击“使用这套配置”，然后检测实例。电脑、Hermes 和连接助手都需保持运行；只有使用 WSL Hermes 时才需要保持 WSL 运行。
 
 ```
 hermes gateway
@@ -90,10 +90,10 @@ tailscale serve status
 
 ## 连接失败时
 
-超时 / 找不到电脑：确认电脑没有休眠，WSL、Hermes 与助手都在运行；平板和电脑在同一个 Wi‑Fi；Windows 已放行 8767 且当前网络是“专用网络”；WSL 已开启 mirrored 网络或端口转发。
+超时 / 找不到电脑：确认电脑没有休眠，Hermes 与助手都在运行；平板和电脑在同一个 Wi‑Fi；Windows 已对“专用网络”的“本地子网”放行 8767。若助手运行在 WSL，再确认 WSL 已开启 mirrored 网络或端口转发。
 证书与配对时不一致：电脑重新生成了证书，请重新生成配对码并配对。
 401 / 403：手动直连时核对 API_SERVER_KEY；助手连接时检查设备授权是否被撤销，必要时重新配对。
-502 / 接口未启用：先在助手检测 Hermes，再检查 Windows 到 WSL 的 localhost。
+502 / 接口未启用：先在助手检测 Hermes；若 Hermes 运行在 WSL，再检查 Windows 到 WSL 的 localhost。
 404 / 服务身份不符：确认没有混用 Hermes 直连与助手地址，也没有附加 /v1。
 任务已提交但结果不明：保留原任务，使用原任务重试或查询，不要连续新建相同任务。
 配置发生变化：旧任务不会向新地址或新实例发送凭据；回原电脑检查任务状态。

@@ -56,7 +56,7 @@
     <string name="core_paper_handoff">分享与交给 Agent</string>
     <string name="core_paper_share_action">分享当前纸面 PDF…</string>
     <string name="core_paper_agent_action">交给电脑 Agent…</string>
-    <string name="core_paper_agent_missing_title">先连接电脑 Agent</string>
+    <string name="core_paper_agent_missing_title">检查电脑 Agent 连接</string>
     <string name="core_paper_agent_missing">还没有能接收这份笔记的电脑连接。请先连接电脑，或检查现有连接是否已验证并支持接收笔记任务。笔记没有发送。</string>
     <string name="core_later">稍后</string>
     <string name="core_connection_settings">连接设置</string>

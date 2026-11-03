@@ -2099,7 +2099,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 }).setNegativeButton(getString(R.string.core_cancel),null).show();
     }
 
-    private static final class PaperCapture {
+    static final class PaperCapture {
         final String noteId,title;
         final long documentRevision,sourceRevision;
         final int pageCount;
@@ -2109,7 +2109,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         }
     }
 
-    private static final class FrozenPaper {
+    static final class FrozenPaper {
         final File file;
         final PaperCapture capture;
         FrozenPaper(File file,PaperCapture capture){this.file=file;this.capture=capture;}
@@ -2139,7 +2139,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 .show();
     }
 
-    private void showNoteWorkComposer(FrozenPaper frozenPaper) {
+    void showNoteWorkComposer(FrozenPaper frozenPaper) {
         if(frozenPaper==null||frozenPaper.file==null||frozenPaper.capture==null)return;
         final File pdf=frozenPaper.file;
         final PaperCapture capture=frozenPaper.capture;
@@ -2176,6 +2176,10 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         HandoffChoiceSpinner preset=new HandoffChoiceSpinner(this);preset.setChoiceTitle(getString(R.string.core_task_preset));
         preset.setAdapter(ChoiceRows.spinnerAdapter(preset,presets));
         choices.addView(labeledField(getString(R.string.core_task_preset),preset));
+        AgentTaskDialogs.DeliverySelector deliverySelector=new AgentTaskDialogs.DeliverySelector(this,
+                java.util.Collections.emptyList(),
+                AgentDelivery.contractSupported(supported.get(0)));
+        choices.addView(deliverySelector.view());
         EditText instruction=new EditText(this);instruction.setMinLines(3);
         instruction.setGravity(Gravity.TOP);instruction.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         instruction.setText(R.string.core_default_task_prompt);
@@ -2202,6 +2206,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         preset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){
                 int visibility=position==3?View.VISIBLE:View.GONE;
+                deliverySelector.setPresetDefaultIfUntouched(position==3?java.util.Collections.singletonList("video"):
+                        java.util.Collections.emptyList());
                 styleField.setVisibility(visibility);stylePromptField.setVisibility(visibility);
                 style.setVisibility(visibility);stylePrompt.setVisibility(visibility);
                 if(position==0)instruction.setText(R.string.core_instruction_continue);
@@ -2211,6 +2217,13 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                 else if(position==4)instruction.setText(R.string.core_instruction_annotation);
                 else if(position==5)instruction.setText(R.string.core_instruction_derivation);
                 else instruction.setText(R.string.core_instruction_cards);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent){}
+        });
+        connection.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){
+                if(position>=0&&position<supported.size())
+                    deliverySelector.setServerContract(AgentDelivery.contractSupported(supported.get(position)));
             }
             @Override public void onNothingSelected(AdapterView<?> parent){}
         });
@@ -2248,7 +2261,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     String styleValue=selected==3?stylePrompt.getText().toString().trim():"";
                     String taskInput=getString(R.string.core_task_bundle_intro,presets[selected])+"\n\n"+
                             instructionText+(styleValue.isEmpty()?"":"\n"+getString(R.string.core_video_style_prefix,styleValue));
-                    AgentConnectionStore.Config target=supported.get(connection.getSelectedItemPosition());
+                    int recipientPosition=connection.getSelectedItemPosition();
+                    if(recipientPosition<0||recipientPosition>=supported.size()){
+                        pdf.delete();Toast.makeText(this,getString(R.string.flow_connection_state_changed),Toast.LENGTH_LONG).show();return;
+                    }
+                    AgentConnectionStore.Config target=supported.get(recipientPosition);
+                    final List<String> expectedOutputs=AgentDelivery.normalize(deliverySelector.selected());
+                    final String expectedOutputLabels=deliverySelector.selectedLabelList();
+                    final String baseTaskInput=taskInput;
                     final String taskTitle=getString(R.string.core_paper_task_title,capture.title);
                     final String noteContext=content;
                     final String presetId=ids[selected];
@@ -2257,13 +2277,29 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
                     final Handler feedbackHandler=new Handler(Looper.getMainLooper());
                     if(!AgentTaskSubmissionExecutor.prepare(()->{
                         try {
+                            AgentConnectionStore connectionStore=new AgentConnectionStore(appContext);
+                            AgentConnectionStore.Config current=connectionStore.get(target.id);
+                            if(!target.sameIdentityRevision(current)||!current.verified())
+                                throw new IllegalStateException(appContext.getString(R.string.flow_identity_changed_new));
+                            boolean deliveryContract=AgentDelivery.contractSupported(current);
+                            String taskInputForWire=baseTaskInput;
+                            String bundleInstruction=instructionText;
+                            if(!expectedOutputs.isEmpty()&&!deliveryContract){
+                                String instructionForFiles=appContext.getString(
+                                        R.string.flow_delivery_legacy_instruction,expectedOutputLabels);
+                                taskInputForWire+="\n\n"+instructionForFiles;
+                                bundleInstruction+="\n\n"+instructionForFiles;
+                            }
                             byte[] paper=readBounded(pdf,NoteWorkBundleIO.MAX_EXPANDED_BYTES);
                             NoteWorkBundleIO.Frozen frozen=NoteWorkBundleIO.freeze(source.id,capturedSourceRevision,
-                                    capture.title,instructionText,presetId,styleValue,noteContext,paper);
+                                    capture.title,bundleInstruction,presetId,styleValue,noteContext,paper);
                             AgentTaskStore taskStore=new AgentTaskStore(appContext);
-                            AgentTaskStore.Task task=taskStore.create(target,taskTitle,taskInput,capture.noteId,
-                                    frozen.noteRevision,frozen.zip.clone(),"note_context_bundle");
-                            AgentConnectionStore connectionStore=new AgentConnectionStore(appContext);
+                            AgentConnectionStore.Config beforeCreate=connectionStore.get(target.id);
+                            if(!target.sameIdentityRevision(beforeCreate)||!beforeCreate.verified()||
+                                    AgentDelivery.contractSupported(beforeCreate)!=deliveryContract)
+                                throw new IllegalStateException(appContext.getString(R.string.flow_connection_state_changed));
+                            AgentTaskStore.Task task=taskStore.create(beforeCreate,taskTitle,taskInputForWire,capture.noteId,
+                                    frozen.noteRevision,frozen.zip.clone(),"note_context_bundle",expectedOutputs);
                             AgentTaskDialogs.TaskConnectionSource taskConnections=new AgentTaskDialogs.TaskConnectionSource(){
                                 @Override public List<AgentConnectionStore.Config> list(){return connectionStore.list();}
                                 @Override public AgentConnectionStore.Config get(String id){return connectionStore.get(id);}
@@ -2727,10 +2763,20 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         int existingPages=op.newTarget?1:targetCanvas.getPageCount();
         if(!op.newTarget&&existingPages>=500){Toast.makeText(this,getString(R.string.agent_image_page_overflow),Toast.LENGTH_LONG).show();cancelAgentImagePlacement(op);return;}
         op.pageIndex=op.newTarget?0:existingPages; // default to a new blank last page
-        double margin=dp(20),maxW=Math.max(dp(80),pageWidth*0.48f),maxH=Math.max(dp(80),pageHeight*0.38f);
-        double fit=Math.min(maxW/op.image.bitmap.getWidth(),maxH/op.image.bitmap.getHeight());
-        op.width=op.image.bitmap.getWidth()*fit;op.height=op.image.bitmap.getHeight()*fit;
-        op.x=(pageWidth-op.width)/2d;op.y=(pageHeight-op.height)/2d;
+        final double margin;
+        final AgentImagePlacementGeometry.Placement fitted;
+        try {
+            margin=AgentImagePlacementGeometry.defaultMargin(pageWidth,pageHeight);
+            fitted=AgentImagePlacementGeometry.centeredFit(pageWidth,pageHeight,
+                    op.image.bitmap.getWidth(),op.image.bitmap.getHeight(),margin,
+                    AgentImagePlacementGeometry.DEFAULT_PAGE_FRACTION);
+        } catch (IllegalArgumentException invalidGeometry) {
+            Toast.makeText(this,getString(R.string.agent_image_save_failed),Toast.LENGTH_LONG).show();
+            cancelAgentImagePlacement(op);return;
+        }
+        final double maxPlacementWidth=fitted.width,maxPlacementHeight=fitted.height;
+        op.width=maxPlacementWidth;op.height=maxPlacementHeight;
+        op.x=fitted.x;op.y=fitted.y;
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(18),dp(8),dp(18),dp(8));
         TextView hint=text(getString(R.string.agent_image_tap_to_place),13,SECONDARY_TEXT);root.addView(hint);
         TextView compat=text(getString(R.string.agent_image_compatibility),12,SECONDARY_TEXT);root.addView(compat);
@@ -2742,7 +2788,8 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         PaperBitmapViewport viewport=new PaperBitmapViewport(this);op.viewport=viewport;
         viewport.setContentDescription(getString(R.string.agent_image_preview_title));root.addView(viewport,new LinearLayout.LayoutParams(-1,0,1f));
         TextView sizeLabel=text(getString(R.string.agent_image_size),12,SECONDARY_TEXT);root.addView(sizeLabel);
-        SeekBar size=new SeekBar(this);size.setMax(80);size.setProgress(80);root.addView(size);
+        SeekBar size=new SeekBar(this);size.setMax(AgentImagePlacementGeometry.DEFAULT_SLIDER_MAX);
+        size.setProgress(AgentImagePlacementGeometry.DEFAULT_SLIDER_MAX);root.addView(size);
         TextView overlap=text(getString(R.string.agent_image_overlap_warning),13,0xffae5410);root.addView(overlap);overlap.setVisibility(View.GONE);
         CheckBox ack=new CheckBox(this);ack.setText(getString(R.string.agent_image_ack_overlap));ack.setVisibility(View.GONE);op.overlapCheck=ack;root.addView(ack);
         FrameLayout host=new FrameLayout(this);host.setVisibility(View.VISIBLE);host.setAlpha(0.01f);host.setClipChildren(false);host.setClipToPadding(false);
@@ -2789,15 +2836,14 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
         next.setOnClickListener(v->{if(op.pageIndex<maxPage[0]){op.pageIndex++;buildCandidate.run();}});
         viewport.setListener((page,px,py)->{
             if(page!=op.pageIndex||!Float.isFinite(px)||!Float.isFinite(py))return;
-            double marginPage=dp(12);
-            op.x=clampAgentImageOrigin(px,op.width,pageWidth,marginPage);
-            op.y=clampAgentImageOrigin(py,op.height,pageHeight,marginPage);
+            op.x=clampAgentImageOrigin(px,op.width,pageWidth,margin);
+            op.y=clampAgentImageOrigin(py,op.height,pageHeight,margin);
             viewport.setMarker((float)(op.x+op.width/2),(float)(op.y+op.height/2));buildCandidate.run();
         });
         size.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
             public void onProgressChanged(SeekBar bar,int progress,boolean fromUser){if(!fromUser)return;
-                double target=0.25+0.75*(progress/80d),scale=Math.min(maxW/op.image.bitmap.getWidth(),maxH/op.image.bitmap.getHeight())*target;
-                op.width=op.image.bitmap.getWidth()*scale;op.height=op.image.bitmap.getHeight()*scale;
+                double target=AgentImagePlacementGeometry.sliderScale(progress,bar.getMax());
+                op.width=maxPlacementWidth*target;op.height=maxPlacementHeight*target;
                 op.x=Math.max(margin,Math.min(pageWidth-margin-op.width,op.x));op.y=Math.max(margin,Math.min(pageHeight-margin-op.height,op.y));buildCandidate.run();}
             public void onStartTrackingTouch(SeekBar bar){}public void onStopTrackingTouch(SeekBar bar){}
         });
@@ -2930,6 +2976,17 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     boolean agentImagePlacementIdleForTest(){
         return (getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
                 &&activeAgentImagePlacement==null&&!saveInFlight;
+    }
+    double[] agentImagePlacementGeometryForTest(){
+        if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
+            throw new SecurityException("debug-only synthetic image fixture");
+        AgentImagePlacementOperation op=activeAgentImagePlacement;
+        if(op==null||op.targetCanvas==null||op.image==null||op.image.bitmap==null)return new double[0];
+        return new double[]{op.x,op.y,op.width,op.height,
+                op.targetCanvas.paperWidthForPlacement(),op.targetCanvas.paperHeightForPlacement(),
+                op.image.bitmap.getWidth(),op.image.bitmap.getHeight(),
+                AgentImagePlacementGeometry.defaultMargin(op.targetCanvas.paperWidthForPlacement(),
+                        op.targetCanvas.paperHeightForPlacement())};
     }
     String agentImageTargetForTest(){
         if((getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)
@@ -3840,7 +3897,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
     private void showAgentConnectionDialog() {
         new AgentConnectionDialogs(this, agentConnectionStore, aiExecutor,
                 this::refreshBookshelf, this::launchAgentPairingQr,
-                this::launchCreateAgentArtifactDocument).show();
+                this::launchCreateAgentArtifactDocument, this::newVideoTaskDialogs).show();
     }
 
     private void launchAgentPairingQr() {
@@ -11828,7 +11885,7 @@ public class MainActivity extends Activity implements NoteCanvasView.Listener {
             if (scan.getContents() != null) {
                 new AgentConnectionDialogs(this, agentConnectionStore, aiExecutor,
                         this::refreshBookshelf, this::launchAgentPairingQr,
-                        this::launchCreateAgentArtifactDocument)
+                        this::launchCreateAgentArtifactDocument, this::newVideoTaskDialogs)
                         .showPairingPayload(scan.getContents());
             }
             return;

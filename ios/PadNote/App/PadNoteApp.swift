@@ -73,7 +73,7 @@ struct PadNoteApp: App {
 #endif
         let testing: Bool
 #if DEBUG
-        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history") || arguments.contains("--uitesting-agent-result-paper") || arguments.contains("--uitesting-wk-load-probe")
+        testing = arguments.contains("--uitesting") || arguments.contains("--uitesting-credential-clear") || arguments.contains("--uitesting-agent-followup") || arguments.contains("--uitesting-agent-result-ux") || arguments.contains("--uitesting-agent-video") || arguments.contains("--uitesting-library-backup") || arguments.contains("--uitesting-content-outline") || arguments.contains("--uitesting-agent-settings-layout") || arguments.contains("--uitesting-agent-task-history") || arguments.contains("--uitesting-agent-result-paper") || arguments.contains("--uitesting-wk-load-probe")
 #else
         testing = false
 #endif
@@ -211,6 +211,8 @@ struct PadNoteApp: App {
                     }
                 } else if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-followup") {
                     AgentTaskUITestHost().environmentObject(library)
+                } else if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-result-ux") {
+                    AgentTaskUITestHost(resultUX: true).environmentObject(library)
                 } else if ProcessInfo.processInfo.arguments.contains("--uitesting-note-video-roundtrip") {
                     AgentVideoRoundTripUITestHost().environmentObject(library)
                 } else if ProcessInfo.processInfo.arguments.contains("--uitesting-agent-video") {

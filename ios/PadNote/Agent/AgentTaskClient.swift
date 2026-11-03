@@ -15,6 +15,7 @@ public struct AgentTaskRemoteState: Equatable, Sendable {
     public let error: String?
     public let approval: AgentTaskApproval?
     public let artifacts: [AgentTaskArtifact]
+    public let delivery: AgentTaskDeliveryState
     public let conversationID: String?
     public let parentTaskID: String?
     public let followupAvailable: Bool
@@ -22,11 +23,12 @@ public struct AgentTaskRemoteState: Equatable, Sendable {
     let stopDelivery: AgentTaskStopDelivery?
 
     init(remoteTaskID: String, status: AgentTaskStatus, output: String?, error: String?,
-         approval: AgentTaskApproval?, artifacts: [AgentTaskArtifact], conversationID: String?,
+         approval: AgentTaskApproval?, artifacts: [AgentTaskArtifact], delivery: AgentTaskDeliveryState,
+         conversationID: String?,
          parentTaskID: String?, followupAvailable: Bool, followupReason: String?,
          stopDelivery: AgentTaskStopDelivery? = nil) {
         self.remoteTaskID = remoteTaskID; self.status = status; self.output = output; self.error = error
-        self.approval = approval; self.artifacts = artifacts; self.conversationID = conversationID
+        self.approval = approval; self.artifacts = artifacts; self.delivery = delivery; self.conversationID = conversationID
         self.parentTaskID = parentTaskID; self.followupAvailable = followupAvailable
         self.followupReason = followupReason; self.stopDelivery = stopDelivery
     }
@@ -148,12 +150,18 @@ public struct AgentTaskClient {
     public func submit(task: AgentTaskRecord, token: String) async throws -> AgentTaskRemoteState {
         let url = try endpoint(for: task, suffix: "runs")
         let body: Data
+        let legacyInput = task.legacyDeliveryInputSnapshot
+            ?? AgentTaskRecord.legacyDeliveryInput(payload: task.payload, contractSupported: false)
+            ?? task.payload.input
         switch task.connection.transport {
         case .direct:
             guard task.payload.bundleBase64 == nil else { throw AgentTaskError.capabilityUnavailable("task_bundle") }
-            body = try JSONSerialization.data(withJSONObject: ["input": task.payload.input], options: [.sortedKeys])
+            body = try Self.legacyCompatibleBody(legacyInput, expected: task.payload.expectedOutputs ?? [], object: ["input": task.payload.input])
         case .bridge:
-            body = task.payload.canonicalData
+            body = task.deliveryContractSupported
+                ? task.payload.canonicalData
+                : try Self.legacyCompatibleBody(legacyInput, expected: task.payload.expectedOutputs ?? [],
+                    object: JSONSerialization.jsonObject(with: task.payload.canonicalData) as? [String: Any] ?? [:])
             guard body.count <= 12 * 1024 * 1024 else { throw AgentTaskError.bundleTooLarge }
         }
         let object = try await connectionClient.requestJSON(
@@ -166,14 +174,18 @@ public struct AgentTaskClient {
         )
         let idKey = task.connection.transport == .bridge ? "task_id" : "run_id"
         guard let remoteID = object[idKey] as? String, !remoteID.isEmpty else { throw AgentTaskError.invalidResponse }
-        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .running, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
+        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .running,
+            transport: task.connection.transport, expectedInstanceID: task.connection.instanceID,
+            expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID,
+            allowMissingBoundChildLineage: true, expectedOutputs: task.payload.expectedOutputs ?? [],
+            deliveryContractSupported: task.deliveryContractSupported)
     }
 
     public func status(task: AgentTaskRecord, token: String) async throws -> AgentTaskRemoteState {
         guard let remoteID = task.remoteTaskID else { throw AgentTaskError.invalidResponse }
         let url = try endpoint(for: task, suffix: "runs/\(remoteID)")
         let object = try await connectionClient.requestJSON(url: url, method: "GET", token: token, maximumBytes: 2 * 1024 * 1024)
-        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: nil, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
+        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: nil, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID, expectedOutputs: task.payload.expectedOutputs ?? [], deliveryContractSupported: task.deliveryContractSupported)
     }
 
     public func stop(task: AgentTaskRecord, token: String) async throws -> AgentTaskRemoteState {
@@ -184,7 +196,7 @@ public struct AgentTaskClient {
             ? ["X-PadNote-Control-Receipt": "1"] : [:]
         let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body,
                                                             headers: headers)
-        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .stopping, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
+        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .stopping, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID, expectedOutputs: task.payload.expectedOutputs ?? [], deliveryContractSupported: task.deliveryContractSupported)
     }
 
     public func approve(task: AgentTaskRecord, approvalID: String, decision: String, token: String) async throws -> AgentTaskRemoteState {
@@ -205,7 +217,7 @@ public struct AgentTaskClient {
             ? ["X-PadNote-Control-Receipt": "1"] : [:]
         let object = try await connectionClient.requestJSON(url: url, method: "POST", token: token, body: body,
                                                             headers: headers)
-        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .running, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID)
+        return try Self.state(from: object, fallbackID: remoteID, fallbackStatus: .running, transport: task.connection.transport, expectedInstanceID: task.connection.instanceID, expectedParentTaskID: task.payload.parentTaskID ?? "", expectedConversationID: task.conversationID, expectedOutputs: task.payload.expectedOutputs ?? [], deliveryContractSupported: task.deliveryContractSupported)
     }
 
     public func downloadArtifact(task: AgentTaskRecord, artifact: AgentTaskArtifact, token: String) async throws -> URL {
@@ -287,7 +299,10 @@ public struct AgentTaskClient {
         transport: AgentTransport,
         expectedInstanceID: String?,
         expectedParentTaskID: String? = nil,
-        expectedConversationID: String? = nil
+        expectedConversationID: String? = nil,
+        allowMissingBoundChildLineage: Bool = false,
+        expectedOutputs: [AgentTaskOutputKind] = [],
+        deliveryContractSupported: Bool = false
     ) throws -> AgentTaskRemoteState {
         let id = (object[transport == .bridge ? "task_id" : "run_id"] as? String) ?? fallbackID
         guard id == fallbackID || fallbackID.isEmpty else { throw AgentTaskError.invalidResponse }
@@ -295,17 +310,43 @@ public struct AgentTaskClient {
             guard let instanceID = object["instance_id"] as? String,
                   instanceID == expectedInstanceID else { throw AgentTaskError.invalidResponse }
         }
-        let conversationID = object["conversation_id"] as? String
-        let parentTaskID = object["parent_task_id"] as? String
+        var conversationID = object["conversation_id"] as? String
+        var parentTaskID = object["parent_task_id"] as? String
+        var responseLineageIsComplete = false
         if transport == .bridge {
-            if let expectedParentTaskID, let parentTaskID, parentTaskID != expectedParentTaskID { throw AgentTaskError.invalidResponse }
-            if expectedParentTaskID?.isEmpty == true, let parentTaskID, !parentTaskID.isEmpty { throw AgentTaskError.invalidResponse }
-            if let expectedConversationID, let conversationID, conversationID != expectedConversationID { throw AgentTaskError.invalidResponse }
-            if expectedParentTaskID?.isEmpty == false,
-               parentTaskID != expectedParentTaskID || conversationID == nil || conversationID != expectedConversationID {
-                throw AgentTaskError.invalidResponse
+            if let expectedParentTaskID, !expectedParentTaskID.isEmpty {
+                guard let expectedConversationID, !expectedConversationID.isEmpty else {
+                    throw AgentTaskError.invalidResponse
+                }
+                if let parentTaskID, !parentTaskID.isEmpty, parentTaskID != expectedParentTaskID {
+                    throw AgentTaskError.invalidResponse
+                }
+                if let conversationID, !conversationID.isEmpty, conversationID != expectedConversationID {
+                    throw AgentTaskError.invalidResponse
+                }
+                responseLineageIsComplete = parentTaskID == expectedParentTaskID
+                    && conversationID == expectedConversationID
+                if !responseLineageIsComplete && !allowMissingBoundChildLineage {
+                    throw AgentTaskError.invalidResponse
+                }
+                if allowMissingBoundChildLineage {
+                    // The accepted POST may omit additive lineage fields. Reuse the child's
+                    // immutable local binding, but don't treat inherited values as server proof
+                    // for follow-up eligibility.
+                    parentTaskID = expectedParentTaskID
+                    conversationID = expectedConversationID
+                }
+            } else {
+                if let expectedParentTaskID, let parentTaskID, parentTaskID != expectedParentTaskID {
+                    throw AgentTaskError.invalidResponse
+                }
+                if let parentTaskID, !parentTaskID.isEmpty { throw AgentTaskError.invalidResponse }
+                if let expectedConversationID, let conversationID, conversationID != expectedConversationID {
+                    throw AgentTaskError.invalidResponse
+                }
+                if let conversationID, conversationID != id { throw AgentTaskError.invalidResponse }
+                responseLineageIsComplete = parentTaskID != nil && conversationID == id
             }
-            if expectedParentTaskID?.isEmpty == true, let conversationID, conversationID != id { throw AgentTaskError.invalidResponse }
         }
         let rawFollowupAvailable = object["followup_available"] as? Bool ?? false
         let followupReason = object["followup_reason"] as? String
@@ -347,15 +388,77 @@ public struct AgentTaskClient {
            let decoded = try? JSONDecoder().decode([AgentTaskArtifact].self, from: data) {
             artifacts = decoded
         } else { artifacts = [] }
-        let lineageIsComplete = transport == .bridge && conversationID != nil && parentTaskID != nil
-            && parentTaskID == expectedParentTaskID
-            && (expectedConversationID == nil ? conversationID == id : conversationID == expectedConversationID)
+        let localDelivery = AgentTaskDeliveryState.evaluate(expected: expectedOutputs, artifacts: artifacts,
+            taskStatus: status, serverVerified: false)
+        let delivery = deliveryContractSupported
+            ? ((try? parseDelivery(object["delivery"], expected: expectedOutputs, artifacts: artifacts,
+                status: status, required: true)) ?? localDelivery)
+            : localDelivery
+        let lineageIsComplete = transport == .bridge && responseLineageIsComplete
         return AgentTaskRemoteState(remoteTaskID: id, status: status, output: output,
             error: finalError.isEmpty ? nil : finalError, approval: normalizedApproval,
-            artifacts: artifacts, conversationID: conversationID, parentTaskID: parentTaskID,
+            artifacts: artifacts, delivery: delivery, conversationID: conversationID, parentTaskID: parentTaskID,
             followupAvailable: rawFollowupAvailable && status == .completed && lineageIsComplete
                 && followupReason != nil,
             followupReason: followupReason, stopDelivery: stopDelivery)
+    }
+
+    private static func parseDelivery(_ raw: Any?, expected: [AgentTaskOutputKind], artifacts: [AgentTaskArtifact],
+                                      status: AgentTaskStatus, required: Bool) throws -> AgentTaskDeliveryState {
+        guard required else {
+            return AgentTaskDeliveryState.evaluate(expected: expected, artifacts: artifacts, taskStatus: status, serverVerified: false)
+        }
+        guard let raw else {
+            throw AgentTaskError.invalidResponse
+        }
+        guard let object = raw as? [String: Any],
+              Set(object.keys) == Set(["status", "expected", "missing", "artifact_count"]),
+              let statusString = object["status"] as? String,
+              let deliveryStatus = AgentTaskDeliveryStatus(rawValue: statusString),
+              let expectedStrings = object["expected"] as? [String],
+              let missingStrings = object["missing"] as? [String],
+              let countNumber = object["artifact_count"] as? NSNumber,
+              CFGetTypeID(countNumber) != CFBooleanGetTypeID(),
+              String(cString: countNumber.objCType) != "f", String(cString: countNumber.objCType) != "d",
+              countNumber.doubleValue.rounded(.towardZero) == countNumber.doubleValue,
+              countNumber.doubleValue <= Double(Int.max),
+              countNumber.intValue >= 0, countNumber.intValue == artifacts.count else { throw AgentTaskError.invalidResponse }
+        let parsedExpected = try parseKinds(expectedStrings)
+        let parsedMissing = try parseKinds(missingStrings)
+        let normalizedExpected = AgentTaskOutputKind.normalized(expected)
+        guard parsedExpected == normalizedExpected else { throw AgentTaskError.invalidResponse }
+        if parsedExpected.isEmpty {
+            guard deliveryStatus == .notRequested, parsedMissing.isEmpty else { throw AgentTaskError.invalidResponse }
+        } else if status == .completed {
+            let locallyMissing = AgentTaskDeliveryState.evaluate(expected: parsedExpected, artifacts: artifacts,
+                taskStatus: .completed, serverVerified: false).missing
+            guard parsedMissing == locallyMissing,
+                  deliveryStatus == (locallyMissing.isEmpty ? .delivered : .missing) else { throw AgentTaskError.invalidResponse }
+        } else {
+            guard deliveryStatus == .pending,
+                  parsedMissing.allSatisfy(parsedExpected.contains) else { throw AgentTaskError.invalidResponse }
+        }
+        return AgentTaskDeliveryState(status: deliveryStatus, expected: parsedExpected, missing: parsedMissing,
+            artifactCount: countNumber.intValue, serverVerified: true)
+    }
+
+    private static func parseKinds(_ raw: [String]) throws -> [AgentTaskOutputKind] {
+        let values = try raw.map { value -> AgentTaskOutputKind in
+            guard let kind = AgentTaskOutputKind(rawValue: value) else { throw AgentTaskError.invalidResponse }
+            return kind
+        }
+        guard Set(values).count == values.count else { throw AgentTaskError.invalidResponse }
+        return AgentTaskOutputKind.normalized(values)
+    }
+
+    private static func legacyCompatibleBody(_ input: String, expected: [AgentTaskOutputKind],
+                                             object: [String: Any]) throws -> Data {
+        var payload = object
+        payload.removeValue(forKey: "expected_outputs")
+        if !expected.isEmpty {
+            payload["input"] = input
+        }
+        return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 
     private static func parseApproval(_ raw: Any?, transport: AgentTransport) -> AgentTaskApproval? {
@@ -442,18 +545,23 @@ public final class AgentTaskService: @unchecked Sendable {
 
     /// Atomically saves the follow-up round before sending it. Store-level parent reservation
     /// makes another composer or a reopened screen reuse the same immutable child request.
-    public func createFollowup(parentID: UUID, input: String) async throws -> AgentTaskRecord {
+    public func createFollowup(parentID: UUID, input: String,
+                               expectedOutputs: [AgentTaskOutputKind] = []) async throws -> AgentTaskRecord {
         let parent = try requireTask(parentID)
         guard parent.connection.transport == .bridge else { throw AgentTaskError.capabilityUnavailable("Bridge追问") }
         guard let profile = connectionStore.profile(id: parent.connection.connectionID) else { throw AgentTaskError.connectionUnavailable }
         guard parent.connection.stillMatches(profile) else { throw AgentTaskError.connectionChanged }
-        let child = try taskStore.createFollowup(parentID: parentID, profile: profile, input: input)
+        let child = try taskStore.createFollowup(parentID: parentID, profile: profile, input: input, expectedOutputs: expectedOutputs)
         if child.status != .submitting { return child }
         return try await submit(id: child.id)
     }
 
     public func submit(id: UUID) async throws -> AgentTaskRecord {
         let task = try requireTask(id)
+        if task.payload.expectedOutputs?.isEmpty == false {
+            guard let profile = connectionStore.profile(id: task.connection.connectionID),
+                  task.connection.stillMatches(profile), profile.connected else { throw AgentTaskError.connectionChanged }
+        }
         if task.payload.requiredCapability != nil {
             guard let profile = connectionStore.profile(id: task.connection.connectionID),
                   task.connection.stillMatches(profile) else { throw AgentTaskError.connectionChanged }
@@ -546,13 +654,18 @@ public final class AgentTaskService: @unchecked Sendable {
             value.followupAvailable = value.connection.transport == .bridge && remote.followupAvailable
             if let reason = remote.followupReason { value.followupReason = reason }
             if wasTerminal {
+                if !value.artifacts.isEmpty, !remote.artifacts.isEmpty, value.artifacts != remote.artifacts {
+                    throw AgentTaskError.invalidResponse
+                }
                 if value.output?.isEmpty != false, let output = remote.output, !output.isEmpty { value.output = output }
                 if value.artifacts.isEmpty && !remote.artifacts.isEmpty { value.artifacts = remote.artifacts }
+                if value.artifacts.isEmpty || !remote.artifacts.isEmpty { value.delivery = remote.delivery }
             } else {
                 value.output = remote.output
                 value.error = remote.error
                 value.approval = remote.approval
                 value.artifacts = remote.artifacts
+                value.delivery = remote.delivery
             }
         }
     }

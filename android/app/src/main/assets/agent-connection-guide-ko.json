@@ -16,8 +16,8 @@
     },
     {
       "title": "3 · 같은 Wi-Fi에서 태블릿이 컴퓨터 찾기",
-      "body": "태블릿과 컴퓨터를 같은 Wi-Fi 네트워크 또는 라우터에 연결하세요. Start-PadNote.cmd는 기본적으로 동일 네트워크 접근을 활성화합니다. 도우미는 8767 포트에서 암호화된 장치 API를 제공합니다. 컴퓨터가 자체 인증서를 만들고 지문을 페어링 QR 코드에 포함하며, 태블릿은 해당 인증서만 신뢰합니다.\nWindows에서는 관리자 PowerShell에서 한 번 두 가지 작업을 합니다. (1) WSL이 LAN 연결을 받도록 설정합니다. Windows 11 22H2 이상에서는 %UserProfile%\\.wslconfig에 [wsl2]와 networkingMode=mirrored를 추가하고 wsl --shutdown을 실행한 뒤 WSL을 다시 엽니다. Windows 10에서는 아래 포트 전달 명령을 사용합니다. (2) 8767 포트는 Private 프로필에서만 허용하고 현재 Wi-Fi 네트워크가 Private로 설정됐는지 확인합니다.",
-      "code": "New-NetFirewallRule -DisplayName \"PadNote LAN\" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private\n# 仅 Windows 10：WSL 地址变化后需重跑\n$wslIp = (wsl hostname -I).Split(\" \")[0]\nnetsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp"
+      "body": "태블릿과 컴퓨터를 같은 Wi-Fi 네트워크 또는 라우터에 연결하세요. Windows 기본 도우미와 WSL 도우미 모두 8767 포트에서 암호화된 장치 API를 제공합니다. 컴퓨터가 인증서를 만들고 지문을 페어링 QR 코드에 포함하며, 태블릿은 해당 인증서만 신뢰합니다.\nWindows에서는 Private 프로필의 로컬 서브넷에서만 TCP 8767을 허용하고 현재 Wi-Fi 네트워크도 Private로 설정하세요. Windows 네이티브 도우미는 창의 방화벽 옵션을 사용하거나 아래 명령을 실행하면 됩니다. 아래 WSL 네트워크 설정은 도우미 자체를 WSL에서 실행할 때만 적용됩니다. Windows 11 22H2 이상에서는 %UserProfile%\\.wslconfig에 [wsl2]와 networkingMode=mirrored를 추가하고 wsl --shutdown을 실행한 뒤 WSL을 다시 여세요. Windows 10에서는 아래 포트 전달 명령을 사용하세요.",
+      "code": "New-NetFirewallRule -DisplayName \"PadNote LAN\" -Direction Inbound -Protocol TCP -LocalPort 8767 -Action Allow -Profile Private -RemoteAddress LocalSubnet\n# Windows 10에서 WSL 도우미를 사용할 때만 실행하고 WSL 주소가 바뀌면 다시 실행\n$wslIp = (wsl hostname -I).Split(\" \")[0]\nnetsh interface portproxy add v4tov4 listenport=8767 listenaddress=0.0.0.0 connectport=8767 connectaddress=$wslIp"
     },
     {
       "title": "4 · 같은 네트워크 페어링 코드 만들기",
@@ -25,7 +25,7 @@
     },
     {
       "title": "5 · 스캔하고 컴퓨터에서 승인",
-      "body": "컴퓨터의 PadNote Agent 페이지에서 스캔하여 추가를 선택하세요. 전체 페어링 텍스트를 복사한 뒤 붙여넣기 옵션으로 추가할 수도 있습니다. 표시된 컴퓨터 주소를 확인하고 요청을 제출한 다음 컴퓨터로 돌아가 대기 중인 장치를 새로 고침하고 요청을 확인한 뒤 이 태블릿을 승인하세요.\n페어링 코드는 5분 동안 유효하며 한 번만 사용할 수 있습니다. 태블릿에 장기 Hermes 토큰은 필요하지 않습니다. 페어링 후 연결을 확인하고 간단한 테스트 작업을 보내세요. 컴퓨터 도우미를 재설치하거나 인증서를 삭제하면 다시 페어링하세요."
+      "body": "태블릿의 PadNote에서 “컴퓨터 Agent” 페이지를 열고 스캔하여 추가를 선택하세요. 전체 페어링 텍스트를 복사한 뒤 붙여넣기 옵션으로 추가할 수도 있습니다. 표시된 컴퓨터 주소를 확인하고 요청을 제출한 다음 컴퓨터로 돌아가 대기 중인 장치를 새로 고침하고 요청을 확인한 뒤 이 태블릿을 승인하세요.\n페어링 코드는 5분 동안 유효하며 한 번만 사용할 수 있습니다. 태블릿에 장기 Hermes 토큰은 필요하지 않습니다. 컴퓨터에서 페어링을 승인하면 태블릿이 새 연결을 자동으로 확인합니다. 연결을 사용할 수 없거나 결과가 만료되면 연결 목록에서 수동으로 다시 확인하세요. 확인이 통과되면 간단한 테스트 작업을 보내세요. 컴퓨터 도우미를 재설치하거나 인증서를 삭제하면 다시 페어링하세요."
     },
     {
       "title": "여러 Agent 연결",
@@ -37,12 +37,12 @@
     },
     {
       "title": "추가 · Hermes API Server 활성화",
-      "body": "Hermes가 설치된 WSL 배포판에서 해당 인스턴스가 사용하는 .env를 편집하세요. 기본 경로는 ~/.hermes/.env입니다. 프로필이나 HERMES_HOME을 사용한다면 해당 인스턴스의 실제 설정을 따르세요. 기존 내용은 유지하고 누락된 API Server 설정만 추가합니다. 기존 API_SERVER_KEY가 있으면 재사용하세요. 없다면 openssl rand -hex 32로 임의 토큰을 생성해 아래 자리표시자를 바꿀 수 있습니다. 이 토큰은 모델 제공업체 API 키와 다릅니다.",
+      "body": "선택한 Hermes 인스턴스가 설치되어 실행되는 환경에서 해당 인스턴스가 사용하는 .env를 편집하세요. Hermes가 WSL에서 실행 중이면 같은 WSL 배포판에서 편집하세요. 기본 경로는 ~/.hermes/.env입니다. 프로필이나 HERMES_HOME을 사용한다면 해당 인스턴스의 실제 설정을 따르세요. 기존 내용은 유지하고 누락된 API Server 설정만 추가합니다. 기존 API_SERVER_KEY가 있으면 재사용하세요. 없다면 openssl rand -hex 32로 임의 토큰을 생성해 아래 자리표시자를 바꿀 수 있습니다. 이 토큰은 모델 제공업체 API 키와 다릅니다.",
       "code": "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=替换成你的随机令牌\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8642"
     },
     {
       "title": "추가 · API 시작",
-      "body": "같은 Hermes 환경에서 hermes gateway를 실행하세요. Gateway가 이미 실행 중이면 현재 작업이 끝날 때까지 기다린 다음 새 설정을 불러오도록 재시작하세요. 중복 프로세스를 시작하지 마세요. 로그에 API Server가 표시되면 도우미로 돌아가 “Refresh discovery”, “Use this configuration” 순서로 선택하고 인스턴스를 확인하세요. 컴퓨터, WSL, Hermes, 연결 도우미를 계속 실행 상태로 유지하세요.",
+      "body": "선택한 Hermes 인스턴스와 같은 환경에서 hermes gateway를 실행하세요. Gateway가 이미 실행 중이면 현재 작업이 끝날 때까지 기다린 뒤 새 설정을 불러오도록 재시작하세요. 중복 프로세스를 시작하지 마세요. 로그에 API Server가 표시되면 도우미로 돌아가 “Refresh discovery”, “Use this configuration” 순서로 선택하고 인스턴스를 확인하세요. 컴퓨터, Hermes, 연결 도우미는 계속 실행 상태로 두세요. WSL은 WSL 안의 Hermes를 사용할 때만 실행 상태로 유지하면 됩니다.",
       "code": "hermes gateway"
     },
     {
@@ -60,7 +60,7 @@
     },
     {
       "title": "연결 문제 해결",
-      "body": "시간 초과 / 컴퓨터를 찾을 수 없음: 컴퓨터가 깨어 있고 WSL, Hermes, 도우미가 실행 중인지, 두 장치가 같은 Wi-Fi를 사용하는지, Windows의 Private 프로필에서 8767 포트가 허용됐는지, WSL mirrored 네트워크 또는 포트 전달이 설정됐는지 확인하세요.\n인증서 또는 페어링 불일치: 컴퓨터가 새 인증서를 만들었습니다. 새 페어링 코드를 만들고 다시 페어링하세요.\n401 / 403: 직접 연결은 API_SERVER_KEY를 확인하세요. 도우미 연결은 장치 승인이 취소됐는지 확인하고 필요하면 다시 페어링하세요.\n502 / API 비활성: 먼저 도우미에서 Hermes를 감지한 다음 Windows에서 WSL로의 localhost 전달을 확인하세요.\n404 / 서비스 식별 불일치: Hermes 직접 주소와 도우미 주소를 혼용하지 않았는지, /v1을 덧붙이지 않았는지 확인하세요.\n작업 제출 후 결과가 불분명함: 원래 작업을 유지하고 그 작업을 재시도하거나 조회하세요. 같은 작업을 반복해서 새로 만들지 마세요.\n설정 변경: 기존 작업은 새 주소나 인스턴스로 자격 증명을 보내지 않습니다. 원래 컴퓨터로 돌아가 작업 상태를 확인하세요."
+      "body": "시간 초과 / 컴퓨터를 찾을 수 없음: 컴퓨터가 깨어 있고 Hermes와 도우미가 실행 중인지, 두 장치가 같은 Wi-Fi를 사용하는지, Windows의 Private 프로필에서 로컬 서브넷의 8767 포트만 허용되는지 확인하세요. 도우미가 WSL에서 실행 중이면 WSL mirrored 네트워크 또는 포트 전달도 확인하세요.\n인증서 또는 페어링 불일치: 컴퓨터가 새 인증서를 만들었습니다. 새 페어링 코드를 만들고 다시 페어링하세요.\n401 / 403: 직접 연결은 API_SERVER_KEY를 확인하세요. 도우미 연결은 장치 승인이 취소됐는지 확인하고 필요하면 다시 페어링하세요.\n502 / API 비활성: 도우미에서 선택한 Hermes 인스턴스를 확인하세요. 해당 인스턴스가 WSL에서 실행 중이면 Windows에서 WSL로의 localhost 전달도 확인하세요.\n404 / 서비스 식별 불일치: Hermes 직접 주소와 도우미 주소를 혼용하지 않았는지, /v1을 덧붙이지 않았는지 확인하세요.\n작업 제출 후 결과가 불분명함: 원래 작업을 유지하고 그 작업을 재시도하거나 조회하세요. 같은 작업을 반복해서 새로 만들지 마세요.\n설정 변경: 기존 작업은 새 주소나 인스턴스로 자격 증명을 보내지 않습니다. 원래 컴퓨터로 돌아가 작업 상태를 확인하세요."
     },
     {
       "title": "작업 중지, 연결 삭제 및 권한 취소",

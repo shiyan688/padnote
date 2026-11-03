@@ -54,7 +54,7 @@
     <string name="core_paper_handoff">共有 / Agent に送信</string>
     <string name="core_paper_share_action">現在のページを PDF で共有…</string>
     <string name="core_paper_agent_action">パソコンの Agent に送信…</string>
-    <string name="core_paper_agent_missing_title">先にパソコンの Agent を接続</string>
+    <string name="core_paper_agent_missing_title">パソコンの Agent 接続を確認</string>
     <string name="core_paper_agent_missing">このノートを受信できるパソコン接続がありません。接続するか、既存の接続が検証済みでノートタスクに対応しているか確認してください。送信していません。</string>
     <string name="core_later">後で</string>
     <string name="core_connection_settings">接続設定</string>

@@ -349,7 +349,7 @@ def status_text(text):
     refresh_diagnostics()
 
 def diagnostics_text():
-    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.41", "构建：2026-11-02-beta41-r1",
+    text = ["PadNote 连接助手诊断", "版本：0.18.0-beta.42", "构建：2026-11-02-beta42-r1",
             f"Windows：{platform.release()}（build {platform.version()}）",
             f"Python：{platform.python_version()}", f"状态：{current_status()}",
             f"Hermes：{hermes_status}", f"Hermes 实例：{hermes_instance or '未选择'}",

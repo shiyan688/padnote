@@ -98,6 +98,27 @@ public enum PaperTaskBundleIO {
     public static let maximumArchiveBytes = 8 * 1024 * 1024
     public static let maximumExpandedBytes = 32 * 1024 * 1024
 
+    /// Freezes the selected deliverable requirements into the paper bundle's actual brief.
+    /// With no selected outputs, keep the caller's instruction byte-for-byte unchanged.
+    public static func effectiveInstruction(_ instruction: String,
+                                            expectedOutputs: [AgentTaskOutputKind]) -> String {
+        guard !expectedOutputs.isEmpty else { return instruction }
+        let requirements = AgentTaskOutputKind.normalized(expectedOutputs).map { kind -> String in
+            switch kind {
+            case .file: return "其他文件：请提供一个可下载的非空文件，并使用清楚的文件名。"
+            case .image: return "图片：请生成 PNG 或 JPEG 图片文件。"
+            case .pdf: return "PDF：请生成非空且可打开的 PDF 文件。"
+            case .video: return "视频：请生成可播放的视频文件。"
+            case .audio: return "音频：请生成 WAV、MP3、M4A、OGG 或 FLAC 文件。"
+            }
+        }
+        return instruction + "\n\n交付要求：\n" + requirements.joined(separator: "\n")
+    }
+
+    static func taskInput(for effectiveInstruction: String) -> String {
+        "请按任务包中的 note.work.v1 请求，结合随附整份纸面 PDF、正文和本笔记交流完成任务。\n\n任务要求：\(effectiveInstruction)"
+    }
+
     public static func make(noteID: String, noteRevision: Int, title: String,
                             markdown: String, pdf: Data, instruction: String,
                             presetID: String, stylePrompt: String? = nil) throws -> Data {

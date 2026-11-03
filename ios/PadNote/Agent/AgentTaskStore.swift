@@ -19,6 +19,68 @@ public enum AgentTaskStatus: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum AgentTaskOutputKind: String, Codable, CaseIterable, Sendable, Identifiable {
+    case file, image, pdf, video, audio
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .file: return "其他文件"
+        case .image: return "图片"
+        case .pdf: return "PDF"
+        case .video: return "视频"
+        case .audio: return "音频"
+        }
+    }
+    static func normalized(_ values: [AgentTaskOutputKind]) -> [AgentTaskOutputKind] {
+        values.sorted { $0.rawValue < $1.rawValue }
+    }
+}
+
+public enum AgentTaskDeliveryStatus: String, Codable, Sendable {
+    case notRequested = "not_requested", pending, delivered, missing
+}
+
+public struct AgentTaskDeliveryState: Codable, Equatable, Sendable {
+    public let status: AgentTaskDeliveryStatus
+    public let expected: [AgentTaskOutputKind]
+    public let missing: [AgentTaskOutputKind]
+    public let artifactCount: Int
+    public let serverVerified: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case status, expected, missing
+        case artifactCount = "artifact_count"
+        case serverVerified = "server_verified"
+    }
+
+    public static func evaluate(expected: [AgentTaskOutputKind], artifacts: [AgentTaskArtifact],
+                                taskStatus: AgentTaskStatus, serverVerified: Bool) -> AgentTaskDeliveryState {
+        let normalized = AgentTaskOutputKind.normalized(expected)
+        guard !normalized.isEmpty else {
+            return AgentTaskDeliveryState(status: .notRequested, expected: [], missing: [], artifactCount: artifacts.count, serverVerified: serverVerified)
+        }
+        guard taskStatus == .completed else {
+            return AgentTaskDeliveryState(status: .pending, expected: normalized, missing: [], artifactCount: artifacts.count, serverVerified: serverVerified)
+        }
+        let missing = normalized.filter { kind in
+            !artifacts.contains { artifact in
+                guard artifact.isValidDeliveryDescriptor else { return false }
+                let mime = artifact.mediaType.lowercased().split(separator: ";", maxSplits: 1).first.map(String.init) ?? ""
+                switch kind {
+                case .file: return true
+                case .image: return mime == "image/png" || mime == "image/jpeg"
+                case .pdf: return mime == "application/pdf"
+                case .video: return mime.hasPrefix("video/")
+                case .audio: return mime.hasPrefix("audio/")
+                }
+            }
+        }
+        return AgentTaskDeliveryState(status: missing.isEmpty ? .delivered : .missing, expected: normalized,
+            missing: missing, artifactCount: artifacts.count, serverVerified: serverVerified)
+    }
+}
+
+
 public struct AgentTaskSource: Codable, Equatable, Sendable {
     public let noteID: String
     public let noteRevision: Int
@@ -43,6 +105,7 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
     public let bundleBase64: String?
     public let bundleSHA256: String?
     public let requiredCapability: String?
+    public let expectedOutputs: [AgentTaskOutputKind]?
 
     enum CodingKeys: String, CodingKey {
         case clientTaskID = "client_task_id"
@@ -51,6 +114,7 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         case bundleBase64 = "bundle_base64"
         case bundleSHA256 = "bundle_sha256"
         case requiredCapability = "required_capability"
+        case expectedOutputs = "expected_outputs"
     }
 
     public init(
@@ -60,7 +124,8 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         source: AgentTaskSource,
         bundle: Data? = nil,
         parentTaskID: String? = nil,
-        requiredCapability: String? = nil
+        requiredCapability: String? = nil,
+        expectedOutputs: [AgentTaskOutputKind] = []
     ) throws {
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientTaskID.isEmpty, !normalizedTitle.isEmpty, normalizedTitle.count <= 256,
@@ -68,7 +133,9 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
               !source.noteID.isEmpty,
               (parentTaskID.map { !$0.isEmpty && bundle == nil } ?? true),
               (requiredCapability == nil || requiredCapability == "note_context_bundle"),
-              (requiredCapability == nil || bundle != nil) else { throw AgentTaskError.invalidPayload }
+              (requiredCapability == nil || bundle != nil),
+              expectedOutputs.count <= AgentTaskOutputKind.allCases.count,
+              Set(expectedOutputs).count == expectedOutputs.count else { throw AgentTaskError.invalidPayload }
         if let bundle, bundle.count > 8 * 1024 * 1024 { throw AgentTaskError.bundleTooLarge }
         self.clientTaskID = clientTaskID
         self.title = normalizedTitle
@@ -78,10 +145,18 @@ public struct AgentTaskPayload: Codable, Equatable, Sendable {
         self.bundleBase64 = bundle?.base64EncodedString()
         self.bundleSHA256 = bundle.map { SHA256.hash(data: $0).hex }
         self.requiredCapability = requiredCapability
+        self.expectedOutputs = expectedOutputs.isEmpty ? nil : AgentTaskOutputKind.normalized(expectedOutputs)
     }
 
     public var canonicalData: Data {
         (try? JSONEncoder.sorted.encode(self)) ?? Data()
+    }
+
+    var hasValidExpectedOutputs: Bool {
+        guard let expectedOutputs else { return true }
+        guard expectedOutputs.count <= AgentTaskOutputKind.allCases.count,
+              Set(expectedOutputs).count == expectedOutputs.count else { return false }
+        return expectedOutputs.isEmpty || expectedOutputs == AgentTaskOutputKind.normalized(expectedOutputs)
     }
 }
 
@@ -143,6 +218,20 @@ public struct AgentTaskArtifact: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+private extension AgentTaskArtifact {
+    var isValidDeliveryDescriptor: Bool {
+        guard (1...100 * 1024 * 1024).contains(sizeBytes),
+              !id.isEmpty, id.count <= 200,
+              id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "-_.".unicodeScalars.contains($0) }),
+              !name.isEmpty, name.count <= 256, !name.contains("/"), !name.contains("\\"),
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              mediaType.contains("/"),
+              sha256.count == 64, sha256.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains($0) }) else { return false }
+        return true
+    }
+}
+
+
 public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public let createdAt: Date
@@ -150,6 +239,8 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
     public let connection: AgentTaskConnectionIdentity
     public let payload: AgentTaskPayload
     public let payloadSHA256: String
+    public let deliveryContractSupported: Bool
+    let legacyDeliveryInputSnapshot: String?
     public let parentTaskLocalID: UUID?
     public var remoteTaskID: String?
     public var conversationID: String?
@@ -161,6 +252,7 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
     public var approval: AgentTaskApproval?
     public var artifacts: [AgentTaskArtifact]
     public var recordRevision: Int
+    public var delivery: AgentTaskDeliveryState
 
     public init(profile: AgentConnectionProfile, payload: AgentTaskPayload, parentTaskLocalID: UUID? = nil, now: Date = Date()) {
         id = UUID(uuidString: payload.clientTaskID) ?? UUID()
@@ -169,6 +261,8 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         connection = AgentTaskConnectionIdentity(profile: profile)
         self.payload = payload
         payloadSHA256 = SHA256.hash(data: payload.canonicalData).hex
+        deliveryContractSupported = profile.transport == .bridge && profile.capabilities["delivery_contract_v1"] == true
+        legacyDeliveryInputSnapshot = Self.legacyDeliveryInput(payload: payload, contractSupported: deliveryContractSupported)
         self.parentTaskLocalID = parentTaskLocalID
         remoteTaskID = nil
         conversationID = nil
@@ -180,6 +274,7 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         approval = nil
         artifacts = []
         recordRevision = 1
+        delivery = AgentTaskDeliveryState.evaluate(expected: payload.expectedOutputs ?? [], artifacts: [], taskStatus: .submitting, serverVerified: false)
     }
 
     init(
@@ -189,6 +284,8 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         connection: AgentTaskConnectionIdentity,
         payload: AgentTaskPayload,
         payloadSHA256: String,
+        deliveryContractSupported: Bool = false,
+        legacyDeliveryInputSnapshot: String? = nil,
         parentTaskLocalID: UUID? = nil,
         remoteTaskID: String?,
         conversationID: String? = nil,
@@ -199,7 +296,8 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         error: String?,
         approval: AgentTaskApproval?,
         artifacts: [AgentTaskArtifact],
-        recordRevision: Int
+        recordRevision: Int,
+        delivery: AgentTaskDeliveryState? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -207,6 +305,8 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         self.connection = connection
         self.payload = payload
         self.payloadSHA256 = payloadSHA256
+        self.deliveryContractSupported = deliveryContractSupported
+        self.legacyDeliveryInputSnapshot = legacyDeliveryInputSnapshot
         self.parentTaskLocalID = parentTaskLocalID
         self.remoteTaskID = remoteTaskID
         self.conversationID = conversationID
@@ -218,6 +318,14 @@ public struct AgentTaskRecord: Codable, Equatable, Identifiable, Sendable {
         self.approval = approval
         self.artifacts = artifacts
         self.recordRevision = recordRevision
+        self.delivery = delivery ?? AgentTaskDeliveryState.evaluate(expected: payload.expectedOutputs ?? [], artifacts: artifacts, taskStatus: status, serverVerified: false)
+    }
+
+    static func legacyDeliveryInput(payload: AgentTaskPayload, contractSupported: Bool) -> String? {
+        let expected = payload.expectedOutputs ?? []
+        guard !contractSupported, !expected.isEmpty else { return nil }
+        let names = AgentTaskOutputKind.normalized(expected).map(\.displayName).joined(separator: "、")
+        return payload.input + "\n\n【交付要求】本轮还需要：\(names)。请使用本轮任务专属的绝对输出目录保存真实、可读取的文件，并在结束前确认文件存在且可读取；不要把当前工作目录、work 或 output 当作路径约定。"
     }
 }
 
@@ -263,7 +371,23 @@ public final class AgentTaskStore: @unchecked Sendable {
         let connection: AgentTaskConnectionIdentity
         let payload: AgentTaskPayload
         let payloadSHA256: String
+        let deliveryContractSupported: Bool?
+        let legacyDeliveryInputSnapshot: String?
+        let legacyDeliveryInputSHA256: String?
         let parentTaskLocalID: UUID?
+
+        var hasValidDeliverySnapshot: Bool {
+            let expected = payload.expectedOutputs ?? []
+            if deliveryContractSupported == true && connection.transport != .bridge { return false }
+            guard !expected.isEmpty, deliveryContractSupported != true else {
+                return legacyDeliveryInputSnapshot == nil && legacyDeliveryInputSHA256 == nil
+            }
+            guard let snapshot = legacyDeliveryInputSnapshot,
+                  snapshot.hasPrefix(payload.input + "\n\n【交付要求】"),
+                  Data(snapshot.utf8).count <= 132 * 1024,
+                  let legacyDeliveryInputSHA256 else { return false }
+            return SHA256.hash(data: Data(snapshot.utf8)).hex == legacyDeliveryInputSHA256
+        }
     }
 
     private struct MutableState: Codable {
@@ -279,6 +403,7 @@ public final class AgentTaskStore: @unchecked Sendable {
         var approval: AgentTaskApproval?
         var artifacts: [AgentTaskArtifact]
         var recordRevision: Int
+        var delivery: AgentTaskDeliveryState?
     }
 
     private static let lockRegistry = NSLock()
@@ -331,13 +456,16 @@ public final class AgentTaskStore: @unchecked Sendable {
     /// Atomically reserves the single child slot for a completed Bridge task. If another
     /// composer already created that child, return it so all entry points converge on it.
     @discardableResult
-    public func createFollowup(parentID: UUID, profile: AgentConnectionProfile, input: String) throws -> AgentTaskRecord {
+    public func createFollowup(parentID: UUID, profile: AgentConnectionProfile, input: String,
+                               expectedOutputs: [AgentTaskOutputKind] = []) throws -> AgentTaskRecord {
         try lock.withTaskLock {
+            guard expectedOutputs.count <= AgentTaskOutputKind.allCases.count,
+                  Set(expectedOutputs).count == expectedOutputs.count else { throw AgentTaskError.invalidPayload }
             guard let parent = try read(id: parentID) else { throw AgentTaskError.taskNotFound }
             guard parent.connection.transport == .bridge else { throw AgentTaskError.capabilityUnavailable("Bridge追问") }
             guard parent.connection.stillMatches(profile) else { throw AgentTaskError.connectionChanged }
             if let existing = try readAll().first(where: { $0.parentTaskLocalID == parentID }) {
-                guard existing.payload.input == input else { throw AgentTaskError.followupAlreadyExists }
+                guard existing.payload.input == input, existing.payload.expectedOutputs == (expectedOutputs.isEmpty ? nil : AgentTaskOutputKind.normalized(expectedOutputs)) else { throw AgentTaskError.followupAlreadyExists }
                 return existing
             }
             guard parent.status == .completed, parent.followupAvailable,
@@ -360,7 +488,8 @@ public final class AgentTaskStore: @unchecked Sendable {
                 title: parent.payload.title,
                 input: input,
                 source: parent.payload.source,
-                parentTaskID: parentRemoteID
+                parentTaskID: parentRemoteID,
+                expectedOutputs: expectedOutputs
             )
             var child = AgentTaskRecord(profile: profile, payload: payload, parentTaskLocalID: parentID)
             child.conversationID = conversationID
@@ -437,6 +566,8 @@ public final class AgentTaskStore: @unchecked Sendable {
               let state = try? JSONDecoder().decode(MutableState.self, from: stateData),
               immutable.schemaVersion == 1, state.schemaVersion == 1,
               immutable.id == id,
+              immutable.payload.hasValidExpectedOutputs,
+              immutable.hasValidDeliverySnapshot,
               SHA256.hash(data: immutable.payload.canonicalData).hex == immutable.payloadSHA256 else {
             throw AgentTaskError.corruptStore
         }
@@ -447,6 +578,8 @@ public final class AgentTaskStore: @unchecked Sendable {
             connection: immutable.connection,
             payload: immutable.payload,
             payloadSHA256: immutable.payloadSHA256,
+            deliveryContractSupported: immutable.deliveryContractSupported ?? false,
+            legacyDeliveryInputSnapshot: immutable.legacyDeliveryInputSnapshot,
             parentTaskLocalID: immutable.parentTaskLocalID,
             remoteTaskID: state.remoteTaskID,
             conversationID: state.conversationID,
@@ -457,7 +590,8 @@ public final class AgentTaskStore: @unchecked Sendable {
             error: state.error,
             approval: state.approval,
             artifacts: state.artifacts,
-            recordRevision: state.recordRevision
+            recordRevision: state.recordRevision,
+            delivery: state.delivery
         )
     }
 
@@ -473,6 +607,9 @@ public final class AgentTaskStore: @unchecked Sendable {
                 connection: task.connection,
                 payload: task.payload,
                 payloadSHA256: task.payloadSHA256,
+                deliveryContractSupported: task.deliveryContractSupported,
+                legacyDeliveryInputSnapshot: task.legacyDeliveryInputSnapshot,
+                legacyDeliveryInputSHA256: task.legacyDeliveryInputSnapshot.map { SHA256.hash(data: Data($0.utf8)).hex },
                 parentTaskLocalID: task.parentTaskLocalID
             )
             let immutableURL = directory.appendingPathComponent("immutable.json")
@@ -500,7 +637,8 @@ public final class AgentTaskStore: @unchecked Sendable {
             error: task.error,
             approval: task.approval,
             artifacts: task.artifacts,
-            recordRevision: task.recordRevision
+            recordRevision: task.recordRevision,
+            delivery: task.delivery
         )
         do {
             try FileManager.default.createDirectory(at: taskDirectory(task.id), withIntermediateDirectories: true)
